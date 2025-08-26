@@ -1,0 +1,42 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']  # Prevent files >1MB
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-case-conflict  # Prevent case-sensitive filename conflicts
+      - id: check-symlinks       # Check for broken symlinks
+
+  - repo: local
+    hooks:
+      - id: go-fmt
+        name: go fmt
+        entry: gofmt
+        language: system
+        args: [-w]
+        files: \.go$
+      - id: go-imports
+        name: go imports
+        entry: go
+        language: system
+        args: [run, golang.org/x/tools/cmd/goimports@latest, -w]
+        files: \.go$
+      - id: go-vet
+        name: go vet
+        entry: go
+        language: system
+        args: [vet, ./...]
+        files: \.go$
+        pass_filenames: false
+      - id: go-mod-tidy-check
+        name: go mod tidy check
+        entry: sh
+        language: system
+        args: [-c, 'go mod tidy && git diff --exit-code go.mod go.sum']
+        files: go\.(mod|sum)$
+        pass_filenames: false

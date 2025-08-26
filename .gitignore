@@ -1,0 +1,86 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# Go workspace file
+go.work
+
+# Application specific binaries
+agentmaestro
+agentmaestro.exe
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Configuration and data directories
+.agentmaestro/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+
+# Python virtual environments and cache
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+agentmaestro/  # Minimal Python package for dev dependencies only
+
+# Node.js (for web UI and extension)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+coverage/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Package files
+*.deb
+*.rpm
+*.pkg
+*.dmg
+*.msi

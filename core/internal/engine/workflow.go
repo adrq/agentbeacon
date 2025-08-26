@@ -1,0 +1,65 @@
+package engine
+
+import "time"
+
+// Workflow represents a complete workflow definition
+type Workflow struct {
+	ID          string         `json:"id" yaml:"-"`
+	Name        string         `json:"name" yaml:"name"`
+	Description string         `json:"description" yaml:"description"`
+	Config      WorkflowConfig `json:"config" yaml:"config"`
+	OnError     string         `json:"on_error" yaml:"on_error"`
+	Nodes       []Node         `json:"nodes" yaml:"nodes"`
+	CreatedAt   time.Time      `json:"created_at" yaml:"-"`
+	UpdatedAt   time.Time      `json:"updated_at" yaml:"-"`
+}
+
+// Node represents a single node in a workflow
+type Node struct {
+	ID        string       `json:"id"`
+	Agent     string       `json:"agent"`
+	Prompt    string       `json:"prompt"`
+	DependsOn []string     `json:"depends_on,omitempty"`
+	Timeout   string       `json:"timeout,omitempty"`
+	Retry     *RetryConfig `json:"retry,omitempty"`
+}
+
+// WorkflowConfig contains configuration references for workflows
+type WorkflowConfig struct {
+	APIKeys string `json:"api_keys" yaml:"api_keys"`
+}
+
+// RetryConfig defines retry behavior for nodes
+type RetryConfig struct {
+	Attempts int    `json:"attempts"`
+	Backoff  string `json:"backoff"`
+}
+
+// Execution represents a workflow execution instance
+type Execution struct {
+	ID          string               `json:"id"`
+	WorkflowID  string               `json:"workflow_id"`
+	Status      string               `json:"status"`
+	NodeStates  map[string]NodeState `json:"node_states"`
+	StartedAt   time.Time            `json:"started_at"`
+	CompletedAt *time.Time           `json:"completed_at"`
+}
+
+// NodeState represents the execution state of a single node
+type NodeState struct {
+	Status    string     `json:"status"`
+	Output    string     `json:"output"`
+	Error     string     `json:"error"`
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at"`
+}
+
+// Config represents system-wide configuration
+type Config struct {
+	ID            string                 `json:"id"`
+	Name          string                 `json:"name"`
+	APIKeys       map[string]string      `json:"api_keys"`
+	AgentSettings map[string]interface{} `json:"agent_settings"`
+	CreatedAt     time.Time              `json:"created_at"`
+	UpdatedAt     time.Time              `json:"updated_at"`
+}
