@@ -70,6 +70,11 @@ func ValidateWorkflow(w *Workflow) error {
 		}
 	}
 
+	// Validate DAG structure (no cycles)
+	if err := ValidateDAG(w.Nodes); err != nil {
+		return err
+	}
+
 	return nil
 }
 
