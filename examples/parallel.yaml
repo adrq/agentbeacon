@@ -1,0 +1,28 @@
+name: "Parallel Processing"
+description: "Workflow with parallel branches"
+config:
+  api_keys: "development"
+on_error: "continue_branches"
+nodes:
+  - id: fetch_data
+    agent: demo-agent
+    prompt: "Fetch project data and prepare for analysis"
+    timeout: 120
+  - id: analyze_code
+    agent: demo-agent
+    depends_on: [fetch_data]
+    prompt: "Analyze code quality and identify issues"
+    timeout: 300
+  - id: analyze_docs
+    agent: test-agent-2
+    depends_on: [fetch_data]
+    prompt: "Analyze documentation completeness and quality"
+    timeout: 240
+    retry:
+      attempts: 3
+      backoff: exponential
+  - id: generate_report
+    agent: demo-agent
+    depends_on: [analyze_code, analyze_docs]
+    prompt: "Generate comprehensive report from both analyses"
+    timeout: 180

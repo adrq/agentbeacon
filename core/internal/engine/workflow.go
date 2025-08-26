@@ -16,12 +16,12 @@ type Workflow struct {
 
 // Node represents a single node in a workflow
 type Node struct {
-	ID        string       `json:"id"`
-	Agent     string       `json:"agent"`
-	Prompt    string       `json:"prompt"`
-	DependsOn []string     `json:"depends_on,omitempty"`
-	Timeout   string       `json:"timeout,omitempty"`
-	Retry     *RetryConfig `json:"retry,omitempty"`
+	ID        string       `json:"id" yaml:"id"`
+	Agent     string       `json:"agent" yaml:"agent"`
+	Prompt    string       `json:"prompt" yaml:"prompt"`
+	DependsOn []string     `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
+	Timeout   int          `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Retry     *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
 }
 
 // WorkflowConfig contains configuration references for workflows
@@ -31,8 +31,8 @@ type WorkflowConfig struct {
 
 // RetryConfig defines retry behavior for nodes
 type RetryConfig struct {
-	Attempts int    `json:"attempts"`
-	Backoff  string `json:"backoff"`
+	Attempts int    `json:"attempts" yaml:"attempts"`
+	Backoff  string `json:"backoff" yaml:"backoff"`
 }
 
 // Execution represents a workflow execution instance

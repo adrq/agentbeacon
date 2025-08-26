@@ -132,7 +132,7 @@ func testConfigOperations(t *testing.T, driver, dsn string) {
 		original := &Config{
 			ID:            "test-config-1",
 			Name:          "primary",
-			APIKeys:       datatypes.JSON([]byte(`{"gemini": "key-1"}`)),
+			APIKeys:       datatypes.JSON([]byte(`{"agent-2": "key-1"}`)),
 			AgentSettings: datatypes.JSON([]byte(`{"timeout": 60}`)),
 		}
 
@@ -145,7 +145,7 @@ func testConfigOperations(t *testing.T, driver, dsn string) {
 		updated := &Config{
 			ID:            "test-config-2",
 			Name:          "primary", // Same name to trigger upsert
-			APIKeys:       datatypes.JSON([]byte(`{"gemini": "key-2-updated"}`)),
+			APIKeys:       datatypes.JSON([]byte(`{"agent-2": "key-2-updated"}`)),
 			AgentSettings: datatypes.JSON([]byte(`{"timeout": 120}`)),
 		}
 
@@ -159,7 +159,7 @@ func testConfigOperations(t *testing.T, driver, dsn string) {
 			t.Fatalf("Failed to get updated config: %v", err)
 		}
 
-		if string(retrieved.APIKeys) != `{"gemini": "key-2-updated"}` {
+		if string(retrieved.APIKeys) != `{"agent-2": "key-2-updated"}` {
 			t.Errorf("Config was not properly upserted, got API keys: %s", string(retrieved.APIKeys))
 		}
 	})

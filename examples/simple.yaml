@@ -1,0 +1,15 @@
+name: "Simple Pipeline"
+description: "Basic sequential workflow"
+config:
+  api_keys: "development"
+on_error: "stop_all"
+nodes:
+  - id: analyze
+    agent: demo-agent
+    prompt: "Analyze the codebase structure and identify key components"
+    timeout: 300
+  - id: summarize
+    agent: demo-agent
+    depends_on: [analyze]
+    prompt: "Summarize findings from analysis: ${analyze.output}"
+    timeout: 180
