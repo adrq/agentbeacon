@@ -18,8 +18,7 @@ vendor/
 go.work
 
 # Application specific binaries
-agentmaestro
-agentmaestro.exe
+/bin/
 
 # SQLite databases
 *.db

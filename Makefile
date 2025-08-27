@@ -3,11 +3,11 @@
 # Default target
 all: build
 
-# Build target (currently no main.go exists)
+# Build target
 build:
-	@echo "No main binary to build yet - main.go not implemented"
-	@echo "Run 'make test' to test the current codebase"
-	@echo "When implemented, binary will be named: agentmaestro-bin"
+	@echo "Building agentmaestro..."
+	@mkdir -p bin
+	go build -o bin/agentmaestro ./core/cmd/agentmaestro
 
 # Run tests
 test:
@@ -19,10 +19,10 @@ test-nocache:
 	@echo "Running tests without cache..."
 	go test -count=1 ./...
 
-# Run target (currently no main binary exists)
-run:
-	@echo "No main binary to run yet - main.go not implemented"
-	@echo "Run 'make test' to test the current codebase"
+# Run target
+run: build
+	@echo "Starting agentmaestro server..."
+	./bin/agentmaestro
 
 # Install/update dependencies
 deps:
@@ -33,7 +33,7 @@ deps:
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f agentmaestro-bin
+	rm -rf bin/
 	rm -rf dist/
 	go clean
 
