@@ -8,6 +8,8 @@ build:
 	@echo "Building agentmaestro..."
 	@mkdir -p bin
 	go build -o bin/agentmaestro ./core/cmd/agentmaestro
+	@echo "Building mock-agent for testing..."
+	go build -o bin/mock-agent ./core/cmd/mock-agent
 
 # Run tests
 test:

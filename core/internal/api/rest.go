@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/executor"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/google/uuid"
 )
@@ -29,6 +30,9 @@ func NewRestHandler(db *storage.DB) http.Handler {
 	})
 	mux.HandleFunc("/api/workflows/", func(w http.ResponseWriter, r *http.Request) {
 		workflowByNameHandler(w, r, db)
+	})
+	mux.HandleFunc("/api/executions/start", func(w http.ResponseWriter, r *http.Request) {
+		startExecutionHandler(w, r, db)
 	})
 
 	return mux
@@ -190,6 +194,39 @@ func extractPathParam(path, prefix string) string {
 		return ""
 	}
 	return strings.TrimPrefix(path, prefix)
+}
+
+func startExecutionHandler(w http.ResponseWriter, r *http.Request, db *storage.DB) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		WorkflowName string `json:"workflow_name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	if req.WorkflowName == "" {
+		writeError(w, http.StatusBadRequest, "workflow_name is required")
+		return
+	}
+
+	// Create executor (agents are created per-node internally)
+	exec := executor.NewExecutor(db)
+	execution, err := exec.StartWorkflow(req.WorkflowName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start workflow: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(execution)
 }
 
 func writeError(w http.ResponseWriter, statusCode int, message string) {
