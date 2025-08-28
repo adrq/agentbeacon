@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
@@ -13,9 +14,34 @@ import (
 	"gorm.io/datatypes"
 )
 
+// Task represents a unit of work for the worker pool.
+type Task struct {
+	NodeID    string
+	Execution *engine.Execution
+	Node      *engine.Node
+}
+
+// TaskResult represents the result of executing a task.
+type TaskResult struct {
+	NodeID string
+	Error  error
+}
+
+// WorkerPool manages parallel execution of workflow nodes using a fixed pool of workers.
+type WorkerPool struct {
+	workers    int
+	taskChan   chan Task
+	resultChan chan TaskResult
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	executor   *Executor
+}
+
 // Executor manages workflow execution
 type Executor struct {
-	db *storage.DB
+	db    *storage.DB
+	mutex sync.RWMutex // Thread-safe access to execution state
 }
 
 // NewExecutor creates a new workflow executor
@@ -23,6 +49,111 @@ func NewExecutor(db *storage.DB) *Executor {
 	return &Executor{
 		db: db,
 	}
+}
+
+// NewWorkerPool creates a worker pool with buffered channels (2x worker count).
+func NewWorkerPool(workers int, executor *Executor) *WorkerPool {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &WorkerPool{
+		workers:    workers,
+		taskChan:   make(chan Task, workers*2),
+		resultChan: make(chan TaskResult, workers*2),
+		ctx:        ctx,
+		cancel:     cancel,
+		executor:   executor,
+	}
+}
+
+// Start spawns worker goroutines.
+func (wp *WorkerPool) Start() {
+	for i := 0; i < wp.workers; i++ {
+		wp.wg.Add(1)
+		go wp.worker()
+	}
+}
+
+// Shutdown gracefully stops the worker pool.
+func (wp *WorkerPool) Shutdown() {
+	wp.cancel()
+	close(wp.taskChan)
+	wp.wg.Wait()
+	close(wp.resultChan)
+}
+
+// worker processes tasks from taskChan until shutdown.
+func (wp *WorkerPool) worker() {
+	defer wp.wg.Done()
+
+	for {
+		select {
+		case task, ok := <-wp.taskChan:
+			if !ok {
+				return
+			}
+
+			err := wp.executor.executeNode(wp.ctx, task.Execution, task.Node)
+
+			result := TaskResult{
+				NodeID: task.NodeID,
+				Error:  err,
+			}
+
+			select {
+			case wp.resultChan <- result:
+			case <-wp.ctx.Done():
+				return
+			}
+
+		case <-wp.ctx.Done():
+			return
+		}
+	}
+}
+
+// executeLevelWithNodeMap executes a level using pre-built node map for performance.
+func (wp *WorkerPool) executeLevelWithNodeMap(execution *engine.Execution, nodeMap map[string]*engine.Node, level []string) error {
+	if len(level) == 0 {
+		return nil
+	}
+
+	validTasks := 0
+	for _, nodeID := range level {
+		node := nodeMap[nodeID]
+		if node == nil {
+			continue
+		}
+
+		task := Task{
+			NodeID:    nodeID,
+			Execution: execution,
+			Node:      node,
+		}
+
+		select {
+		case wp.taskChan <- task:
+			validTasks++
+		case <-wp.ctx.Done():
+			return fmt.Errorf("task submission cancelled: %w", wp.ctx.Err())
+		}
+	}
+
+	var errors []error
+	for i := 0; i < validTasks; i++ {
+		select {
+		case result := <-wp.resultChan:
+			if result.Error != nil {
+				errors = append(errors, result.Error)
+			}
+		case <-wp.ctx.Done():
+			return fmt.Errorf("result collection cancelled: %w", wp.ctx.Err())
+		}
+	}
+
+	if len(errors) > 0 {
+		return errors[0]
+	}
+
+	return nil
 }
 
 // ExecutionInfo represents basic execution information for API responses
@@ -34,31 +165,26 @@ type ExecutionInfo struct {
 	CompletedAt *time.Time
 }
 
-// StartWorkflow begins execution of a workflow by name
+// StartWorkflow starts executing a workflow by name asynchronously.
 func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
-	// Load workflow metadata
 	_, err := e.db.GetWorkflowMetadata(workflowName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load workflow metadata: %w", err)
 	}
 
-	// Load workflow YAML content
 	yamlContent, err := e.db.LoadWorkflowYAML(workflowName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load workflow YAML: %w", err)
 	}
 
-	// Parse workflow
 	var workflow engine.Workflow
 	if err := yaml.Unmarshal(yamlContent, &workflow); err != nil {
 		return nil, fmt.Errorf("failed to parse workflow YAML: %w", err)
 	}
 
-	// Create execution record
 	executionID := uuid.New().String()
 	nodeStates := make(map[string]engine.NodeState)
 
-	// Initialize all nodes as pending
 	for _, node := range workflow.Nodes {
 		nodeStates[node.ID] = engine.NodeState{
 			Status: "pending",
@@ -78,7 +204,6 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 		StartedAt:  time.Now(),
 	}
 
-	// Persist execution to database
 	dbExecution := &storage.Execution{
 		ID:           executionID,
 		WorkflowName: workflowName,
@@ -92,7 +217,6 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 		return nil, fmt.Errorf("failed to create execution record: %w", err)
 	}
 
-	// Start workflow execution in background
 	go e.executeWorkflow(execution, &workflow)
 
 	return &ExecutionInfo{
@@ -104,24 +228,36 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 	}, nil
 }
 
-// executeWorkflow runs the complete workflow execution
+// executeWorkflow runs complete workflow execution using dependency levels and worker pool.
 func (e *Executor) executeWorkflow(execution *engine.Execution, workflow *engine.Workflow) error {
-	ctx := context.Background()
+	levels, err := engine.TopologicalSort(workflow.Nodes)
+	if err != nil {
+		execution.Status = "failed"
+		completedAt := time.Now()
+		execution.CompletedAt = &completedAt
+		e.updateExecutionInDB(execution, fmt.Sprintf("Workflow validation failed: %v", err))
+		return fmt.Errorf("workflow validation failed: %w", err)
+	}
 
-	// For MVP: Execute nodes sequentially regardless of dependencies
-	for _, node := range workflow.Nodes {
-		if err := e.executeNode(ctx, execution, &node); err != nil {
-			// Mark execution as failed
+	pool := NewWorkerPool(5, e)
+	pool.Start()
+	defer pool.Shutdown()
+
+	nodeMap := make(map[string]*engine.Node)
+	for i := range workflow.Nodes {
+		nodeMap[workflow.Nodes[i].ID] = &workflow.Nodes[i]
+	}
+
+	for levelIndex, level := range levels {
+		if err := pool.executeLevelWithNodeMap(execution, nodeMap, level); err != nil {
 			execution.Status = "failed"
 			completedAt := time.Now()
 			execution.CompletedAt = &completedAt
-
-			e.updateExecutionInDB(execution, fmt.Sprintf("Execution failed at node %s: %v", node.ID, err))
-			return err
+			e.updateExecutionInDB(execution, fmt.Sprintf("Execution failed at level %d: %v", levelIndex, err))
+			return fmt.Errorf("execution failed at level %d: %w", levelIndex, err)
 		}
 	}
 
-	// Mark execution as completed
 	execution.Status = "completed"
 	completedAt := time.Now()
 	execution.CompletedAt = &completedAt
@@ -130,35 +266,35 @@ func (e *Executor) executeWorkflow(execution *engine.Execution, workflow *engine
 	return nil
 }
 
-// executeNode runs a single workflow node
+// executeNode runs a single workflow node with dedicated agent process.
 func (e *Executor) executeNode(ctx context.Context, execution *engine.Execution, node *engine.Node) error {
-	// Create agent for this specific node
 	agent, err := e.createAgentForNode(node)
 	if err != nil {
 		return fmt.Errorf("failed to create agent for node %s: %w", node.ID, err)
 	}
-	defer agent.Close() // Ensure process cleanup after node completes
+	defer agent.Close()
 
-	// Update node state to running
+	e.mutex.Lock()
 	nodeState := execution.NodeStates[node.ID]
 	nodeState.Status = "running"
 	nodeState.StartedAt = time.Now()
 	execution.NodeStates[node.ID] = nodeState
+	e.mutex.Unlock()
 
-	// Persist state change
 	e.updateExecutionInDB(execution, fmt.Sprintf("Started executing node: %s", node.ID))
 
-	// Execute the node using the node-specific agent
 	result, err := agent.Execute(ctx, node.Prompt)
 
-	// Update node state with result
 	endedAt := time.Now()
+	e.mutex.Lock()
+	nodeState = execution.NodeStates[node.ID]
 	nodeState.EndedAt = &endedAt
 
 	if err != nil {
 		nodeState.Status = "failed"
 		nodeState.Error = err.Error()
 		execution.NodeStates[node.ID] = nodeState
+		e.mutex.Unlock()
 
 		e.updateExecutionInDB(execution, fmt.Sprintf("Node %s failed: %v", node.ID, err))
 		return fmt.Errorf("node %s execution failed: %w", node.ID, err)
@@ -167,28 +303,27 @@ func (e *Executor) executeNode(ctx context.Context, execution *engine.Execution,
 	nodeState.Status = "completed"
 	nodeState.Output = result
 	execution.NodeStates[node.ID] = nodeState
+	e.mutex.Unlock()
 
-	// Persist successful completion
 	e.updateExecutionInDB(execution, fmt.Sprintf("Node %s completed successfully", node.ID))
 	return nil
 }
 
-// updateExecutionInDB persists execution state changes to database
+// updateExecutionInDB persists execution state. DB errors don't fail workflow execution.
 func (e *Executor) updateExecutionInDB(execution *engine.Execution, logMessage string) {
-	// Serialize node states
+	e.mutex.RLock()
 	nodeStatesJSON, err := json.Marshal(execution.NodeStates)
+	e.mutex.RUnlock()
+
 	if err != nil {
-		// Log error but don't fail execution
 		return
 	}
 
-	// Get current execution from database to append logs
 	currentExecution, err := e.db.GetExecution(execution.ID)
 	if err != nil {
 		return
 	}
 
-	// Update execution record
 	dbExecution := &storage.Execution{
 		ID:           execution.ID,
 		WorkflowName: execution.WorkflowID,
@@ -199,20 +334,15 @@ func (e *Executor) updateExecutionInDB(execution *engine.Execution, logMessage s
 		CompletedAt:  execution.CompletedAt,
 	}
 
-	// Persist to database
 	e.db.UpdateExecution(dbExecution)
 }
 
-// createAgentForNode creates an appropriate agent for the given node
+// createAgentForNode creates an agent for the node. MVP uses mock-agent for all types.
 func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
-	// For MVP, support existing test agents and treat unknowns as mock-agent
-	// This allows existing tests to pass while providing correct per-node spawning
 	switch node.Agent {
 	case "mock-agent", "demo-agent", "test-agent-2":
 		return NewProcessAgent("../../../bin/mock-agent")
 	default:
-		// For MVP, treat any unknown agent as mock-agent
-		// Later tasks will add support for claude-code, gemini-cli, etc.
 		return NewProcessAgent("../../../bin/mock-agent")
 	}
 }
