@@ -87,7 +87,6 @@ func TestWorkflowUpdateIntegration(t *testing.T) {
 description: "Original description"
 config:
   api_keys: "development"
-on_error: "stop_all"
 nodes:
   - id: original_node
     agent: demo-agent
@@ -110,7 +109,6 @@ nodes:
 description: "Updated description with more details"
 config:
   api_keys: "development"
-on_error: "continue_branches"
 nodes:
   - id: updated_node
     agent: test-agent-2
@@ -162,9 +160,7 @@ nodes:
 		t.Errorf("Expected updated description, got %q", finalWorkflow.Description)
 	}
 
-	if finalWorkflow.OnError != "continue_branches" {
-		t.Errorf("Expected updated on_error, got %q", finalWorkflow.OnError)
-	}
+	// Note: OnError field removed - now uses hardcoded stop-all behavior
 
 	if len(finalWorkflow.Nodes) != 1 {
 		t.Errorf("Expected 1 node, got %d", len(finalWorkflow.Nodes))

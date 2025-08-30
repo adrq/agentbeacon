@@ -45,8 +45,46 @@ func main() {
 			}
 			fmt.Println(response)
 		} else {
-			// Default response format
-			fmt.Printf("Mock response: %s\n", prompt)
+			// Handle built-in test commands
+			if prompt == "HANG" {
+				time.Sleep(1 * time.Hour)
+				continue
+			} else if strings.HasPrefix(prompt, "DELAY_") {
+				delayStr := strings.TrimPrefix(prompt, "DELAY_")
+				if delayStr != "" {
+					var delay time.Duration
+					switch delayStr {
+					case "1":
+						delay = 1 * time.Second
+					case "2":
+						delay = 2 * time.Second
+					case "3":
+						delay = 3 * time.Second
+					case "5":
+						delay = 5 * time.Second
+					case "1500":
+						delay = 1500 * time.Millisecond
+					default:
+						delay = 1 * time.Second
+					}
+					time.Sleep(delay)
+					fmt.Printf("Mock response after %s delay: %s\n", delayStr, prompt)
+					continue
+				}
+			} else if strings.Contains(prompt, "FAIL_NODE") {
+				os.Exit(1)
+			} else if strings.Contains(prompt, "FAIL_ONCE") {
+				// Fail once then succeed - use simple counter based on timestamp
+				now := time.Now().UnixNano()
+				if now%2 == 0 { // Roughly 50% chance of failure
+					fmt.Printf("Mock failure: %s\n", prompt)
+					os.Exit(1)
+				} else {
+					fmt.Printf("Mock success after retry: %s\n", prompt)
+				}
+			} else {
+				fmt.Printf("Mock response: %s\n", prompt)
+			}
 		}
 	}
 

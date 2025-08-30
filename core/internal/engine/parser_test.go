@@ -13,7 +13,6 @@ name: "Simple Workflow"
 description: "Basic workflow for testing"
 config:
   api_keys: "development"
-on_error: "stop_all"
 nodes:
   - id: analyze
     agent: demo-agent
@@ -52,7 +51,6 @@ name: "Parallel Processing"
 description: "Workflow with parallel branches"
 config:
   api_keys: "development"
-on_error: "continue_branches"
 nodes:
   - id: fetch_data
     agent: demo-agent
@@ -189,18 +187,6 @@ func TestValidateWorkflow_InvalidValues(t *testing.T) {
 		expected string
 	}{
 		{
-			name: "invalid on_error",
-			yaml: `
-name: "Test"
-on_error: "invalid_value"
-nodes:
-  - id: test
-    agent: demo-agent
-    prompt: "test"
-`,
-			expected: "on_error must be",
-		},
-		{
 			name: "invalid agent",
 			yaml: `
 name: "Test"
@@ -290,7 +276,6 @@ name: "File-based Workflow"
 description: "Testing file parsing"
 config:
   api_keys: "development"
-on_error: "stop_all"
 nodes:
   - id: process
     agent: demo-agent

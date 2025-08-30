@@ -21,7 +21,7 @@ type DB struct {
 }
 
 func Open(driver, dsn string) (*DB, error) {
-	if driver == "sqlite3" {
+	if driver == "sqlite3" && dsn != ":memory:" {
 		dir := filepath.Dir(dsn)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create database directory: %w", err)
@@ -126,6 +126,9 @@ func (db *DB) getWorkflowsDir() string {
 }
 
 func (db *DB) initWorkflowsDir() error {
+	if db.driver == "sqlite3" && db.dsn == ":memory:" {
+		return nil
+	}
 	return os.MkdirAll(db.getWorkflowsDir(), 0755)
 }
 

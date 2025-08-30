@@ -190,3 +190,9 @@ func (db *DB) ListExecutions(workflowName string) ([]Execution, error) {
 	err := db.Select(&executions, query, workflowName)
 	return executions, err
 }
+
+func (db *DB) ListAllExecutions() ([]Execution, error) {
+	var executions []Execution
+	err := db.Select(&executions, "SELECT * FROM execution ORDER BY started_at DESC")
+	return executions, err
+}

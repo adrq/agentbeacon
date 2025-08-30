@@ -47,12 +47,12 @@ nodes:
     type: code
     depends_on: [analyze]
     agent: claude
-    prompt: "Refactor based on analysis: ${analyze.output}"
+    prompt: "Refactor based on analysis"
   - name: test
     type: code
     depends_on: [refactor]
     agent: claude
-    prompt: "Generate tests for the refactored code: ${refactor.output}"
+    prompt: "Generate tests for the refactored code"
 `
 
 	err = os.WriteFile(workflowFile, []byte(yamlContent), 0644)

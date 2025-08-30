@@ -112,6 +112,12 @@ func (p *ProcessAgent) Execute(ctx context.Context, prompt string) (string, erro
 	case err := <-errorChan:
 		return "", err
 	case <-ctx.Done():
+		// Kill the process when context is cancelled to interrupt any long-running operations
+		if p.cmd != nil && p.cmd.Process != nil {
+			_ = p.cmd.Process.Kill()
+			// Wait for process to fully exit to avoid zombie processes
+			go func() { _ = p.cmd.Wait() }()
+		}
 		return "", ctx.Err()
 	}
 }

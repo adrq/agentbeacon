@@ -8,7 +8,6 @@ type Workflow struct {
 	Name        string         `json:"name" yaml:"name"`
 	Description string         `json:"description" yaml:"description"`
 	Config      WorkflowConfig `json:"config" yaml:"config"`
-	OnError     string         `json:"on_error" yaml:"on_error"`
 	Nodes       []Node         `json:"nodes" yaml:"nodes"`
 	CreatedAt   time.Time      `json:"created_at" yaml:"-"`
 	UpdatedAt   time.Time      `json:"updated_at" yaml:"-"`
@@ -32,7 +31,7 @@ type WorkflowConfig struct {
 // RetryConfig defines retry behavior for nodes
 type RetryConfig struct {
 	Attempts int    `json:"attempts" yaml:"attempts"`
-	Backoff  string `json:"backoff" yaml:"backoff"`
+	Backoff  string `json:"backoff,omitempty" yaml:"backoff,omitempty"`
 }
 
 // Execution represents a workflow execution instance
@@ -47,11 +46,14 @@ type Execution struct {
 
 // NodeState represents the execution state of a single node
 type NodeState struct {
-	Status    string     `json:"status"`
-	Output    string     `json:"output"`
-	Error     string     `json:"error"`
-	StartedAt time.Time  `json:"started_at"`
-	EndedAt   *time.Time `json:"ended_at"`
+	Status       string     `json:"status"`
+	Output       string     `json:"output"`
+	Error        string     `json:"error"`
+	StartedAt    time.Time  `json:"started_at"`
+	EndedAt      *time.Time `json:"ended_at"`
+	AttemptCount int        `json:"attempt_count"`
+	ErrorHistory []string   `json:"error_history,omitempty"`
+	LastRetryAt  *time.Time `json:"last_retry_at,omitempty"`
 }
 
 // Config represents system-wide configuration

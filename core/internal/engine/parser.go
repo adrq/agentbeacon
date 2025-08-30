@@ -40,10 +40,7 @@ func ValidateWorkflow(w *Workflow) error {
 		return ValidationError{Field: "nodes", Message: "at least one node is required"}
 	}
 
-	// Validate on_error if specified
-	if w.OnError != "" && w.OnError != "stop_all" && w.OnError != "continue_branches" {
-		return ValidationError{Field: "on_error", Message: "on_error must be 'stop_all' or 'continue_branches'"}
-	}
+	// Note: on_error field removed in favor of hardcoded stop-all behavior
 
 	// Track node IDs for uniqueness check
 	nodeIDs := make(map[string]bool)
@@ -110,11 +107,10 @@ func ValidateNode(node *Node) error {
 
 	// Validate retry configuration if present
 	if node.Retry != nil {
-		if node.Retry.Attempts < 1 || node.Retry.Attempts > 10 {
-			return ValidationError{Field: "retry.attempts", Message: "retry attempts must be between 1 and 10"}
+		if node.Retry.Attempts < 1 || node.Retry.Attempts > 3 {
+			return ValidationError{Field: "retry.attempts", Message: "retry attempts must be between 1 and 3"}
 		}
-
-		if node.Retry.Backoff != "linear" && node.Retry.Backoff != "exponential" {
+		if node.Retry.Backoff != "" && node.Retry.Backoff != "linear" && node.Retry.Backoff != "exponential" {
 			return ValidationError{Field: "retry.backoff", Message: "retry backoff must be 'linear' or 'exponential'"}
 		}
 	}
