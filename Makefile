@@ -1,11 +1,25 @@
-.PHONY: build test test-nocache clean deps lint fmt build-all dev-tools pre-commit dev
+.PHONY: build test test-nocache clean deps lint fmt build-all dev-tools pre-commit dev npm-install test-deps
 
 # Default target
 all: build
 
+# Ensure npm dependencies are installed
+npm-install:
+	@echo "Installing npm dependencies..."
+	cd web && npm install
+
 # Build frontend first, then backend
-build-frontend:
+build-frontend: npm-install
 	@echo "Building frontend..."
+	cd web && npm run build
+
+# Build only test dependencies (mock-agent and embedded files)
+test-deps: npm-install
+	@echo "Building test dependencies..."
+	@mkdir -p bin
+	@echo "Building mock-agent for testing..."
+	go build -o bin/mock-agent ./core/cmd/mock-agent
+	@echo "Building frontend for embedded files..."
 	cd web && npm run build
 
 # Build target (includes frontend)
@@ -17,12 +31,12 @@ build: build-frontend
 	go build -o bin/mock-agent ./core/cmd/mock-agent
 
 # Run tests
-test:
+test: test-deps
 	@echo "Running tests..."
 	go test ./...
 
 # Run tests without cache
-test-nocache:
+test-nocache: test-deps
 	@echo "Running tests without cache..."
 	go test -count=1 ./...
 
