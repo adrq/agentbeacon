@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens */
+:root {
+  --background: 222 20% 7%;
+  --foreground: 210 25% 97%;
+  --muted: 222 18% 15%;
+  --muted-foreground: 222 12% 62%;
+  --popover: 222 20% 9%;
+  --popover-foreground: 210 25% 97%;
+  --card: 222 20% 9%;
+  --card-foreground: 210 25% 97%;
+  --border: 222 18% 20%;
+  --input: 222 18% 20%;
+  --primary: 217 90% 56%; /* blue-500 */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 222 18% 16%;
+  --secondary-foreground: 210 25% 92%;
+  --accent: 217 92% 60%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 98%;
+  --ring: 217 90% 56%;
+  --radius: 0.5rem;
+}
+
+.light {
+  --background: 0 0% 100%;
+  --foreground: 222 32% 6%;
+  --muted: 210 40% 96%;
+  --muted-foreground: 220 15% 42%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 32% 6%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 32% 6%;
+  --border: 214 32% 90%;
+  --input: 214 32% 90%;
+  --primary: 217 90% 56%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 214 32% 96%;
+  --secondary-foreground: 222 32% 6%;
+  --accent: 217 92% 60%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 72% 45%;
+  --destructive-foreground: 0 0% 100%;
+  --ring: 217 90% 56%;
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground font-sans antialiased min-h-screen selection:bg-primary/30 selection:text-primary-foreground; }
+  h1,h2,h3 { @apply tracking-tight; }
+}
+
+/* Utility overrides */
+.app-shell { @apply flex flex-col h-screen w-full; }
+.app-header { @apply flex items-center justify-between px-6 py-3 border-b bg-gradient-to-r from-background/90 to-background/70 backdrop-blur supports-[backdrop-filter]:bg-background/60; }
+.card-elevated { @apply shadow-sm hover:shadow-md transition-shadow; }
+.code-surface { @apply font-mono text-[13px] leading-relaxed rounded-md border bg-neutral-900/70 text-neutral-100 outline-none focus:ring-2 focus:ring-ring focus:border-ring; }
+.editor-stats { @apply text-[11px] font-medium text-muted-foreground px-2 py-0.5 rounded bg-secondary/50; }
+.scroll-thin { scrollbar-width: thin; }
+.scroll-thin::-webkit-scrollbar { width: 8px; }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+.scroll-thin::-webkit-scrollbar-thumb { background: hsl(var(--muted)); border-radius: 4px; }
+.scroll-thin::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
+
+/* Utility groupings */
+.section-heading { @apply text-sm font-semibold text-foreground/90; }

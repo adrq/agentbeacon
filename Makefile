@@ -3,8 +3,13 @@
 # Default target
 all: build
 
-# Build target
-build:
+# Build frontend first, then backend
+build-frontend:
+	@echo "Building frontend..."
+	cd web && npm run build
+
+# Build target (includes frontend)
+build: build-frontend
 	@echo "Building agentmaestro..."
 	@mkdir -p bin
 	go build -o bin/agentmaestro ./core/cmd/agentmaestro
@@ -37,6 +42,8 @@ clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf bin/
 	rm -rf dist/
+	rm -rf core/cmd/agentmaestro/web/dist/
+	cd web && rm -rf dist/
 	go clean
 
 # Lint code (if staticcheck is installed)
@@ -70,10 +77,20 @@ pre-commit:
 	@echo "Running pre-commit hooks..."
 	uv run pre-commit run --all-files
 
-# Development mode
+# Development mode - run backend in dev mode
+dev-backend:
+	@echo "Starting backend in development mode..."
+	DEV_MODE=1 go run ./core/cmd/agentmaestro
+
+# Development mode - run frontend dev server
+dev-frontend:
+	@echo "Starting Vite dev server..."
+	cd web && npm run dev
+
+# Development mode - run both backend and frontend (in separate terminals)
 dev:
-	@echo "Development mode not implemented yet"
-	@echo "Available commands:"
-	@echo "  make test      - Run tests"
-	@echo "  make lint      - Run linters"
-	@echo "  make fmt       - Format code"
+	@echo "To run in development mode, use two terminals:"
+	@echo "Terminal 1: make dev-backend"
+	@echo "Terminal 2: make dev-frontend"
+	@echo "Then open http://localhost:5173 for development with HMR"
+	@echo "Or run them in background with: make dev-backend & make dev-frontend"

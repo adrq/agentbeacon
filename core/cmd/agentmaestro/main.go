@@ -85,21 +85,37 @@ func startServer(ctx context.Context, addr, driver, dsn string, ready chan<- str
 	// Create HTTP server
 	mux := http.NewServeMux()
 
-	// Serve static files from embedded filesystem at root
-	staticFS, err := fs.Sub(staticFiles, "web/dist")
-	if err != nil {
-		// If embedded files don't exist, create a fallback handler
+	// Check if we're in development mode
+	devMode := os.Getenv("DEV_MODE") == "1"
+
+	if devMode {
+		// In dev mode, redirect to Vite dev server
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/" {
-				w.WriteHeader(http.StatusNotFound)
-				w.Write([]byte("Static files not found"))
+			if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+				http.Redirect(w, r, "http://localhost:5173", http.StatusTemporaryRedirect)
 				return
 			}
-			w.WriteHeader(http.StatusNotFound)
+			// For other paths, also redirect to Vite dev server
+			viteURL := "http://localhost:5173" + r.URL.Path
+			http.Redirect(w, r, viteURL, http.StatusTemporaryRedirect)
 		})
 	} else {
-		fileServer := http.FileServer(http.FS(staticFS))
-		mux.Handle("/", fileServer)
+		// Production mode - serve embedded static files
+		staticFS, err := fs.Sub(staticFiles, "web/dist")
+		if err != nil {
+			// If embedded files don't exist, create a fallback handler
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/" {
+					w.WriteHeader(http.StatusNotFound)
+					w.Write([]byte("Static files not found - run 'make build' to build frontend"))
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			})
+		} else {
+			fileServer := http.FileServer(http.FS(staticFS))
+			mux.Handle("/", fileServer)
+		}
 	}
 
 	// Add REST API endpoints
@@ -114,7 +130,11 @@ func startServer(ctx context.Context, addr, driver, dsn string, ready chan<- str
 	// Start server in goroutine
 	serverError := make(chan error, 1)
 	go func() {
-		log.Printf("Starting server on %s", addr)
+		if devMode {
+			log.Printf("Starting server on %s (DEV_MODE: redirecting to Vite dev server at localhost:5173)", addr)
+		} else {
+			log.Printf("Starting server on %s (PRODUCTION: serving embedded static files)", addr)
+		}
 		err := server.ListenAndServe()
 		if err != nil {
 			serverError <- err
