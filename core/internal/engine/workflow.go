@@ -17,6 +17,7 @@ type Workflow struct {
 type Node struct {
 	ID        string       `json:"id" yaml:"id"`
 	Agent     string       `json:"agent" yaml:"agent"`
+	AgentURL  string       `json:"agent_url,omitempty" yaml:"agent_url,omitempty"`
 	Prompt    string       `json:"prompt" yaml:"prompt"`
 	DependsOn []string     `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
 	Timeout   int          `json:"timeout,omitempty" yaml:"timeout,omitempty"`

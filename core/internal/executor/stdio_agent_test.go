@@ -10,15 +10,15 @@ import (
 	"time"
 )
 
-// Test basic communication with process agent
-func TestProcessAgentBasicCommunication(t *testing.T) {
+// Test basic communication with stdio agent
+func TestStdioAgentBasicCommunication(t *testing.T) {
 	if !mockAgentExists() {
 		t.Skip("mock-agent binary not found, run 'make build' first")
 	}
 
-	agent, err := NewProcessAgent("../../../bin/mock-agent")
+	agent, err := NewStdioAgent("../../../bin/mock-agent")
 	if err != nil {
-		t.Fatalf("Failed to create ProcessAgent: %v", err)
+		t.Fatalf("Failed to create StdioAgent: %v", err)
 	}
 	defer agent.Close()
 
@@ -39,7 +39,7 @@ func TestProcessAgentBasicCommunication(t *testing.T) {
 // Removed crash handling test - complex edge case not essential for MVP
 
 // Test context timeout handling
-func TestProcessAgentTimeout(t *testing.T) {
+func TestStdioAgentTimeout(t *testing.T) {
 	if !mockAgentExists() {
 		t.Skip("mock-agent binary not found, run 'make build' first")
 	}
@@ -62,9 +62,9 @@ func TestProcessAgentTimeout(t *testing.T) {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	agent, err := NewProcessAgent("../../../bin/mock-agent", "--config", configFile)
+	agent, err := NewStdioAgent("../../../bin/mock-agent", "--config", configFile)
 	if err != nil {
-		t.Fatalf("Failed to create ProcessAgent: %v", err)
+		t.Fatalf("Failed to create StdioAgent: %v", err)
 	}
 	defer agent.Close()
 
@@ -105,12 +105,12 @@ func mockAgentExists() bool {
 	return err == nil
 }
 
-func TestProcessAgentFailNode(t *testing.T) {
+func TestStdioAgentFailNode(t *testing.T) {
 	if !mockAgentExists() {
 		t.Skip("mock-agent binary not found, run 'make build' first")
 	}
 
-	agent, err := NewProcessAgent("../../../bin/mock-agent")
+	agent, err := NewStdioAgent("../../../bin/mock-agent")
 	if err != nil {
 		t.Fatalf("Failed to create agent: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestProcessAgentFailNode(t *testing.T) {
 	}
 
 	// Create new agent for normal prompt test since first one terminated
-	agent2, err := NewProcessAgent("../../../bin/mock-agent")
+	agent2, err := NewStdioAgent("../../../bin/mock-agent")
 	if err != nil {
 		t.Fatalf("Failed to create second agent: %v", err)
 	}

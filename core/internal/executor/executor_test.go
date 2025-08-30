@@ -17,7 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func setupProcessAgent(t *testing.T, responses map[string]string) *ProcessAgent {
+func setupStdioAgent(t *testing.T, responses map[string]string) *StdioAgent {
 	if !mockAgentExists() {
 		t.Skip("mock-agent binary not found, run 'make build' first")
 	}
@@ -30,9 +30,9 @@ func setupProcessAgent(t *testing.T, responses map[string]string) *ProcessAgent 
 		args = []string{"--config", configFile}
 	}
 
-	agent, err := NewProcessAgent(mockAgentPath, args...)
+	agent, err := NewStdioAgent(mockAgentPath, args...)
 	if err != nil {
-		t.Fatalf("Failed to create ProcessAgent: %v", err)
+		t.Fatalf("Failed to create StdioAgent: %v", err)
 	}
 
 	t.Cleanup(func() {
@@ -58,8 +58,8 @@ func createTempConfig(t *testing.T, responses map[string]string) string {
 	return configFile
 }
 
-func TestProcessAgentPredefinedResponses(t *testing.T) {
-	agent := setupProcessAgent(t, map[string]string{
+func TestStdioAgentPredefinedResponses(t *testing.T) {
+	agent := setupStdioAgent(t, map[string]string{
 		"analyze code":    "Code analysis complete",
 		"transform data":  "Data transformation complete",
 		"validate result": "Validation passed",
@@ -74,8 +74,8 @@ func TestProcessAgentPredefinedResponses(t *testing.T) {
 	}
 }
 
-func TestProcessAgentUnknownPrompt(t *testing.T) {
-	agent := setupProcessAgent(t, map[string]string{
+func TestStdioAgentUnknownPrompt(t *testing.T) {
+	agent := setupStdioAgent(t, map[string]string{
 		"known prompt": "known response",
 	})
 

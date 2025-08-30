@@ -16,8 +16,8 @@ type Agent interface {
 	Close() error
 }
 
-// ProcessAgent implements Agent interface by spawning external processes
-type ProcessAgent struct {
+// StdioAgent implements Agent interface by spawning external processes and communicating via stdin/stdout
+type StdioAgent struct {
 	path   string
 	args   []string
 	cmd    *exec.Cmd
@@ -25,14 +25,14 @@ type ProcessAgent struct {
 	stdout *bufio.Reader
 }
 
-// NewProcessAgent creates a new process-based agent
-func NewProcessAgent(path string, args ...string) (*ProcessAgent, error) {
+// NewStdioAgent creates a new stdio-based agent
+func NewStdioAgent(path string, args ...string) (*StdioAgent, error) {
 	// Verify executable exists
 	if _, err := exec.LookPath(path); err != nil {
 		return nil, fmt.Errorf("executable not found: %s", path)
 	}
 
-	agent := &ProcessAgent{
+	agent := &StdioAgent{
 		path: path,
 		args: args,
 	}
@@ -45,7 +45,7 @@ func NewProcessAgent(path string, args ...string) (*ProcessAgent, error) {
 }
 
 // start initializes the external process
-func (p *ProcessAgent) start() error {
+func (p *StdioAgent) start() error {
 	p.cmd = exec.Command(p.path, p.args...)
 
 	// Set up stdin pipe
@@ -74,7 +74,7 @@ func (p *ProcessAgent) start() error {
 }
 
 // Execute sends a prompt to the external process and returns the response
-func (p *ProcessAgent) Execute(ctx context.Context, prompt string) (string, error) {
+func (p *StdioAgent) Execute(ctx context.Context, prompt string) (string, error) {
 	if p.cmd == nil || p.stdin == nil || p.stdout == nil {
 		return "", fmt.Errorf("process not initialized or already closed")
 	}
@@ -123,7 +123,7 @@ func (p *ProcessAgent) Execute(ctx context.Context, prompt string) (string, erro
 }
 
 // Close terminates the external process and cleans up resources
-func (p *ProcessAgent) Close() error {
+func (p *StdioAgent) Close() error {
 	var lastErr error
 
 	// Close stdin to signal process to exit gracefully

@@ -806,8 +806,14 @@ func (e *Executor) updateExecutionInDB(execution *engine.Execution, logMessage s
 	_ = e.db.UpdateExecution(dbExecution) // DB errors don't fail workflow execution
 }
 
-// createAgentForNode creates an agent for the node. MVP uses mock-agent for all types
+// createAgentForNode creates an agent for the node based on its configuration
 func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
+	// Future: Check node.AgentURL for A2A agents
+	// if node.AgentURL != "" {
+	//     return NewA2AAgent(node.AgentURL)
+	// }
+
+	// For now, always use stdio agent with mock-agent
 	agentPaths := []string{
 		"../../../bin/mock-agent",
 		"./bin/mock-agent",
@@ -830,7 +836,7 @@ func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
 		return nil, fmt.Errorf("mock-agent binary not found in any of the expected paths: %v", agentPaths)
 	}
 
-	return NewProcessAgent(agentPath)
+	return NewStdioAgent(agentPath)
 }
 
 // determineExecutionStatus determines final execution status with hardcoded stop-all behavior
