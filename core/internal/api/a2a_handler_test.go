@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -885,4 +888,239 @@ nodes:
 		finalState := states[len(states)-1]
 		assert.Contains(t, []string{TaskStateCompleted, TaskStateFailed}, finalState)
 	})
+}
+
+// TestMockA2AAgentIntegration tests the mock A2A agent in server mode
+func TestMockA2AAgentIntegration(t *testing.T) {
+	// Skip in short mode
+	if testing.Short() {
+		t.Skip("Skipping mock A2A agent integration test in short mode")
+	}
+
+	// Find an available port
+	port := findAvailablePort(t, 9460, 9470)
+
+	// Start mock A2A agent in server mode
+	// Path is relative to project root
+	cmd := exec.Command("../../../bin/mock-agent", "--mode", "a2a", "--port", strconv.Itoa(port))
+	err := cmd.Start()
+	require.NoError(t, err, "Failed to start mock A2A agent")
+
+	// Ensure we clean up the process
+	defer func() {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	}()
+
+	// Wait for server to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Test agent card endpoint
+	t.Run("AgentCard", func(t *testing.T) {
+		url := fmt.Sprintf("http://localhost:%d/.well-known/agent-card.json", port)
+		resp, err := http.Get(url)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+
+		var card AgentCard
+		err = json.NewDecoder(resp.Body).Decode(&card)
+		require.NoError(t, err)
+
+		assert.Equal(t, "0.3.0", card.ProtocolVersion)
+		assert.Equal(t, "Mock A2A Agent", card.Name)
+		assert.Equal(t, "JSONRPC", card.PreferredTransport)
+		assert.Len(t, card.Skills, 1)
+		assert.Equal(t, "execute-workflow", card.Skills[0].ID)
+	})
+
+	// Test message/send and tasks/get flow
+	t.Run("MessageSendAndTasksGet", func(t *testing.T) {
+		url := fmt.Sprintf("http://localhost:%d/rpc", port)
+
+		// Submit a task
+		request := JSONRPCRequest{
+			JSONRPC: "2.0",
+			Method:  "message/send",
+			ID:      1,
+		}
+
+		params := map[string]interface{}{
+			"contextId": "test-context",
+			"messages": []map[string]interface{}{
+				{
+					"role": "user",
+					"parts": []map[string]interface{}{
+						{
+							"kind": "text",
+							"text": "Test message",
+						},
+					},
+				},
+			},
+		}
+
+		paramsJSON, err := json.Marshal(params)
+		require.NoError(t, err)
+		request.Params = json.RawMessage(paramsJSON)
+
+		reqBody, err := json.Marshal(request)
+		require.NoError(t, err)
+
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var rpcResp JSONRPCResponse
+		err = json.NewDecoder(resp.Body).Decode(&rpcResp)
+		require.NoError(t, err)
+		require.Nil(t, rpcResp.Error)
+
+		// Extract task from response
+		resultJSON, err := json.Marshal(rpcResp.Result)
+		require.NoError(t, err)
+
+		var task Task
+		err = json.Unmarshal(resultJSON, &task)
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, task.ID)
+		assert.Equal(t, "test-context", task.ContextID)
+		// Task might transition quickly from submitted to working
+		assert.Contains(t, []string{TaskStateSubmitted, TaskStateWorking}, task.Status.State)
+
+		// Poll for completion
+		taskID := task.ID
+		deadline := time.Now().Add(5 * time.Second)
+		var finalTask Task
+
+		for time.Now().Before(deadline) {
+			// Query task status
+			getRequest := JSONRPCRequest{
+				JSONRPC: "2.0",
+				Method:  "tasks/get",
+				ID:      2,
+			}
+
+			getParams := map[string]interface{}{
+				"taskId": taskID,
+			}
+
+			getParamsJSON, err := json.Marshal(getParams)
+			require.NoError(t, err)
+			getRequest.Params = json.RawMessage(getParamsJSON)
+
+			getReqBody, err := json.Marshal(getRequest)
+			require.NoError(t, err)
+
+			getResp, err := http.Post(url, "application/json", bytes.NewBuffer(getReqBody))
+			require.NoError(t, err)
+
+			var getRpcResp JSONRPCResponse
+			err = json.NewDecoder(getResp.Body).Decode(&getRpcResp)
+			getResp.Body.Close()
+			require.NoError(t, err)
+
+			if getRpcResp.Error != nil {
+				break
+			}
+
+			resultJSON, err := json.Marshal(getRpcResp.Result)
+			require.NoError(t, err)
+
+			err = json.Unmarshal(resultJSON, &finalTask)
+			require.NoError(t, err)
+
+			if finalTask.Status.State == TaskStateCompleted || finalTask.Status.State == TaskStateFailed {
+				break
+			}
+
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// Verify task completion
+		assert.Equal(t, taskID, finalTask.ID)
+		assert.Contains(t, []string{TaskStateCompleted}, finalTask.Status.State)
+		assert.NotEmpty(t, finalTask.History)
+		assert.NotEmpty(t, finalTask.Artifacts)
+	})
+
+	// Test special patterns
+	t.Run("DelayPattern", func(t *testing.T) {
+		url := fmt.Sprintf("http://localhost:%d/rpc", port)
+
+		request := JSONRPCRequest{
+			JSONRPC: "2.0",
+			Method:  "message/send",
+			ID:      3,
+		}
+
+		params := map[string]interface{}{
+			"contextId": "delay-context",
+			"messages": []map[string]interface{}{
+				{
+					"role": "user",
+					"parts": []map[string]interface{}{
+						{
+							"kind": "text",
+							"text": "DELAY_2", // 2 second delay
+						},
+					},
+				},
+			},
+		}
+
+		paramsJSON, err := json.Marshal(params)
+		require.NoError(t, err)
+		request.Params = json.RawMessage(paramsJSON)
+
+		reqBody, err := json.Marshal(request)
+		require.NoError(t, err)
+
+		start := time.Now()
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		var rpcResp JSONRPCResponse
+		err = json.NewDecoder(resp.Body).Decode(&rpcResp)
+		require.NoError(t, err)
+		require.Nil(t, rpcResp.Error)
+
+		// Task should be submitted immediately
+		elapsed := time.Since(start)
+		assert.Less(t, elapsed, 500*time.Millisecond, "Task submission should be fast")
+
+		// Extract and verify task
+		resultJSON, err := json.Marshal(rpcResp.Result)
+		require.NoError(t, err)
+
+		var task Task
+		err = json.Unmarshal(resultJSON, &task)
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, task.ID)
+		assert.Equal(t, TaskStateSubmitted, task.Status.State)
+	})
+}
+
+// findAvailablePort finds an available port in the given range
+func findAvailablePort(t *testing.T, start, end int) int {
+	for port := start; port <= end; port++ {
+		// Try to bind to the port to see if it's available
+		addr := fmt.Sprintf(":%d", port)
+		listener, err := net.Listen("tcp", addr)
+		if err == nil {
+			listener.Close()
+			return port
+		}
+	}
+	t.Fatalf("No available port found in range %d-%d", start, end)
+	return 0
 }
