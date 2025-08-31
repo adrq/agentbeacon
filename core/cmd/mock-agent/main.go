@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentmaestro/agentmaestro/core/internal/api"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
 	"github.com/google/uuid"
 )
 
@@ -125,7 +125,7 @@ func processPrompt(prompt string, responses map[string]string) string {
 
 // MockA2AServer implements A2A protocol server for testing
 type MockA2AServer struct {
-	tasks     map[string]*api.Task
+	tasks     map[string]*protocol.Task
 	responses map[string]string
 	mu        sync.RWMutex
 }
@@ -133,7 +133,7 @@ type MockA2AServer struct {
 // runA2AServer starts the mock A2A server
 func runA2AServer(port string, responses map[string]string) {
 	server := &MockA2AServer{
-		tasks:     make(map[string]*api.Task),
+		tasks:     make(map[string]*protocol.Task),
 		responses: responses,
 	}
 
@@ -151,9 +151,9 @@ func (s *MockA2AServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req api.JSONRPCRequest
+	var req protocol.JSONRPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, &api.JSONRPCError{
+		s.writeError(w, &protocol.JSONRPCError{
 			Code:    -32700,
 			Message: "Parse error",
 		}, req.ID)
@@ -171,7 +171,7 @@ func (s *MockA2AServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 	case "tasks/cancel":
 		result, err = s.handleTasksCancel(req.Params)
 	default:
-		s.writeError(w, &api.JSONRPCError{
+		s.writeError(w, &protocol.JSONRPCError{
 			Code:    -32601,
 			Message: "Method not found",
 		}, req.ID)
@@ -179,7 +179,7 @@ func (s *MockA2AServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		s.writeError(w, &api.JSONRPCError{
+		s.writeError(w, &protocol.JSONRPCError{
 			Code:    -32603,
 			Message: "Internal error",
 			Data:    err.Error(),
@@ -187,7 +187,7 @@ func (s *MockA2AServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := api.JSONRPCResponse{
+	response := protocol.JSONRPCResponse{
 		JSONRPC: "2.0",
 		Result:  result,
 		ID:      req.ID,
@@ -198,8 +198,8 @@ func (s *MockA2AServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeError writes a JSON-RPC error response
-func (s *MockA2AServer) writeError(w http.ResponseWriter, err *api.JSONRPCError, id interface{}) {
-	response := api.JSONRPCResponse{
+func (s *MockA2AServer) writeError(w http.ResponseWriter, err *protocol.JSONRPCError, id interface{}) {
+	response := protocol.JSONRPCResponse{
 		JSONRPC: "2.0",
 		Error:   err,
 		ID:      id,
@@ -209,10 +209,10 @@ func (s *MockA2AServer) writeError(w http.ResponseWriter, err *api.JSONRPCError,
 }
 
 // handleMessageSend handles message/send requests
-func (s *MockA2AServer) handleMessageSend(params json.RawMessage) (*api.Task, error) {
+func (s *MockA2AServer) handleMessageSend(params json.RawMessage) (*protocol.Task, error) {
 	var p struct {
-		ContextID string        `json:"contextId"`
-		Messages  []api.Message `json:"messages"`
+		ContextID string             `json:"contextId"`
+		Messages  []protocol.Message `json:"messages"`
 	}
 
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -229,12 +229,12 @@ func (s *MockA2AServer) handleMessageSend(params json.RawMessage) (*api.Task, er
 	}
 
 	taskID := uuid.New().String()
-	task := &api.Task{
+	task := &protocol.Task{
 		ID:        taskID,
 		ContextID: p.ContextID,
-		Status:    api.TaskStatus{State: api.TaskStateSubmitted},
+		Status:    protocol.TaskStatus{State: protocol.TaskStateSubmitted},
 		History:   p.Messages,
-		Artifacts: []api.Artifact{},
+		Artifacts: []protocol.Artifact{},
 	}
 
 	s.mu.Lock()
@@ -255,7 +255,7 @@ func (s *MockA2AServer) executeTask(taskID, prompt string) {
 		s.mu.Unlock()
 		return
 	}
-	task.Status.State = api.TaskStateWorking
+	task.Status.State = protocol.TaskStateWorking
 	s.mu.Unlock()
 
 	// Handle special test patterns
@@ -266,10 +266,10 @@ func (s *MockA2AServer) executeTask(taskID, prompt string) {
 
 	if strings.Contains(prompt, "FAIL_NODE") {
 		s.mu.Lock()
-		task.Status.State = api.TaskStateFailed
-		task.History = append(task.History, api.Message{
+		task.Status.State = protocol.TaskStateFailed
+		task.History = append(task.History, protocol.Message{
 			Role: "assistant",
-			Parts: []api.Part{
+			Parts: []protocol.Part{
 				{
 					Kind: "text",
 					Text: "Mock agent failure: " + prompt,
@@ -304,20 +304,20 @@ func (s *MockA2AServer) executeTask(taskID, prompt string) {
 	response := processPrompt(prompt, s.responses)
 
 	s.mu.Lock()
-	task.Status.State = api.TaskStateCompleted
-	task.History = append(task.History, api.Message{
+	task.Status.State = protocol.TaskStateCompleted
+	task.History = append(task.History, protocol.Message{
 		Role: "assistant",
-		Parts: []api.Part{
+		Parts: []protocol.Part{
 			{
 				Kind: "text",
 				Text: response,
 			},
 		},
 	})
-	task.Artifacts = append(task.Artifacts, api.Artifact{
+	task.Artifacts = append(task.Artifacts, protocol.Artifact{
 		ArtifactID: uuid.New().String(),
 		Name:       "Mock Response",
-		Parts: []api.Part{
+		Parts: []protocol.Part{
 			{
 				Kind: "text",
 				Text: response,
@@ -328,7 +328,7 @@ func (s *MockA2AServer) executeTask(taskID, prompt string) {
 }
 
 // handleTasksGet handles tasks/get requests
-func (s *MockA2AServer) handleTasksGet(params json.RawMessage) (*api.Task, error) {
+func (s *MockA2AServer) handleTasksGet(params json.RawMessage) (*protocol.Task, error) {
 	var p struct {
 		TaskID string `json:"taskId"`
 	}
@@ -349,7 +349,7 @@ func (s *MockA2AServer) handleTasksGet(params json.RawMessage) (*api.Task, error
 }
 
 // handleTasksCancel handles tasks/cancel requests
-func (s *MockA2AServer) handleTasksCancel(params json.RawMessage) (*api.Task, error) {
+func (s *MockA2AServer) handleTasksCancel(params json.RawMessage) (*protocol.Task, error) {
 	var p struct {
 		TaskID string `json:"taskId"`
 	}
@@ -366,8 +366,8 @@ func (s *MockA2AServer) handleTasksCancel(params json.RawMessage) (*api.Task, er
 		return nil, fmt.Errorf("task not found: %s", p.TaskID)
 	}
 
-	if task.Status.State == api.TaskStateSubmitted || task.Status.State == api.TaskStateWorking {
-		task.Status.State = api.TaskStateCanceled
+	if task.Status.State == protocol.TaskStateSubmitted || task.Status.State == protocol.TaskStateWorking {
+		task.Status.State = protocol.TaskStateCanceled
 	}
 
 	return task, nil
@@ -375,20 +375,20 @@ func (s *MockA2AServer) handleTasksCancel(params json.RawMessage) (*api.Task, er
 
 // handleAgentCard serves the agent card
 func (s *MockA2AServer) handleAgentCard(w http.ResponseWriter, r *http.Request) {
-	card := &api.AgentCard{
+	card := &protocol.AgentCard{
 		ProtocolVersion: "0.3.0",
 		Name:            "Mock A2A Agent",
 		Description:     "Mock A2A agent for testing",
 		URL:             "http://localhost:9457/rpc",
 		Version:         "1.0.0",
-		Capabilities: api.AgentCapabilities{
+		Capabilities: protocol.AgentCapabilities{
 			Streaming:         false,
 			PushNotifications: false,
 		},
 		DefaultInputModes:  []string{"application/json"},
 		DefaultOutputModes: []string{"application/json"},
 		PreferredTransport: "JSONRPC",
-		Skills: []api.AgentSkill{
+		Skills: []protocol.AgentSkill{
 			{
 				ID:          "execute-workflow",
 				Name:        "Execute Workflow",

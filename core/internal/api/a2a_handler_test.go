@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,7 +15,9 @@ import (
 	"time"
 
 	"github.com/agentmaestro/agentmaestro/core/internal/executor"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
+	"github.com/agentmaestro/agentmaestro/core/internal/testutil"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -115,7 +116,7 @@ func parseJSONRPCResponse(t *testing.T, resp *http.Response) map[string]interfac
 }
 
 // pollTaskStatus polls task status until completion or timeout
-func pollTaskStatus(t *testing.T, server *httptest.Server, taskID string, timeout time.Duration) *Task {
+func pollTaskStatus(t *testing.T, server *httptest.Server, taskID string, timeout time.Duration) *protocol.Task {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
@@ -137,20 +138,20 @@ func pollTaskStatus(t *testing.T, server *httptest.Server, taskID string, timeou
 		resultData, err := json.Marshal(response["result"])
 		require.NoError(t, err)
 
-		var task Task
+		var task protocol.Task
 		err = json.Unmarshal(resultData, &task)
 		require.NoError(t, err)
 
 		// Check if task is in a terminal state
 		switch task.Status.State {
-		case TaskStateCompleted, TaskStateFailed, TaskStateCanceled:
+		case protocol.TaskStateCompleted, protocol.TaskStateFailed, protocol.TaskStateCanceled:
 			return &task
 		}
 
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	t.Fatalf("Task %s did not reach terminal state within %v", taskID, timeout)
+	t.Fatalf("protocol.Task %s did not reach terminal state within %v", taskID, timeout)
 	return nil
 }
 
@@ -222,14 +223,14 @@ func TestA2AWorkflowExecution(t *testing.T) {
 		resultData, err := json.Marshal(response["result"])
 		require.NoError(t, err)
 
-		var task Task
+		var task protocol.Task
 		err = json.Unmarshal(resultData, &task)
 		require.NoError(t, err)
 
 		// Verify task structure
-		assert.NotEmpty(t, task.ID, "Task should have ID")
+		assert.NotEmpty(t, task.ID, "protocol.Task should have ID")
 		assert.Equal(t, contextID, task.ContextID)
-		assert.Equal(t, TaskStateSubmitted, task.Status.State)
+		assert.Equal(t, protocol.TaskStateSubmitted, task.Status.State)
 
 		// Verify A2A task mapping is stored in database
 		executions, err := db.ListAllExecutions()
@@ -253,9 +254,9 @@ func TestA2AWorkflowExecution(t *testing.T) {
 		finalTask := pollTaskStatus(t, server, task.ID, 10*time.Second)
 
 		// Verify workflow executed correctly
-		assert.Contains(t, []string{TaskStateCompleted, TaskStateFailed}, finalTask.Status.State)
-		assert.NotEmpty(t, finalTask.History, "Task should have execution history")
-		assert.NotEmpty(t, finalTask.Artifacts, "Task should have artifacts")
+		assert.Contains(t, []string{protocol.TaskStateCompleted, protocol.TaskStateFailed}, finalTask.Status.State)
+		assert.NotEmpty(t, finalTask.History, "protocol.Task should have execution history")
+		assert.NotEmpty(t, finalTask.Artifacts, "protocol.Task should have artifacts")
 
 	})
 
@@ -314,7 +315,7 @@ nodes:
 		resultData, err := json.Marshal(response["result"])
 		require.NoError(t, err)
 
-		var task Task
+		var task protocol.Task
 		err = json.Unmarshal(resultData, &task)
 		require.NoError(t, err)
 
@@ -323,7 +324,7 @@ nodes:
 
 		// Poll until completion
 		finalTask := pollTaskStatus(t, server, task.ID, 10*time.Second)
-		assert.Contains(t, []string{TaskStateCompleted, TaskStateFailed}, finalTask.Status.State)
+		assert.Contains(t, []string{protocol.TaskStateCompleted, protocol.TaskStateFailed}, finalTask.Status.State)
 	})
 
 	t.Run("DataPartWithWorkflowYaml", func(t *testing.T) {
@@ -365,7 +366,7 @@ nodes:
 		resultData, err := json.Marshal(response["result"])
 		require.NoError(t, err)
 
-		var task Task
+		var task protocol.Task
 		err = json.Unmarshal(resultData, &task)
 		require.NoError(t, err)
 
@@ -585,7 +586,7 @@ nodes:
 				return
 			}
 
-			var task Task
+			var task protocol.Task
 			err = json.Unmarshal(resultData, &task)
 			if err != nil {
 				t.Errorf("Failed to unmarshal task for workflow %d: %v", index, err)
@@ -599,7 +600,7 @@ nodes:
 			// Poll for completion
 			finalTask := pollTaskStatus(t, server, task.ID, 15*time.Second)
 
-			if !assert.Contains(t, []string{TaskStateCompleted, TaskStateFailed}, finalTask.Status.State) {
+			if !assert.Contains(t, []string{protocol.TaskStateCompleted, protocol.TaskStateFailed}, finalTask.Status.State) {
 				t.Errorf("Workflow %d did not complete properly: %s", index, finalTask.Status.State)
 			}
 		}(i)
@@ -656,7 +657,7 @@ func TestA2AAgentCard(t *testing.T) {
 	assert.NotEmpty(t, skill.Examples)
 }
 
-// Task operations
+// protocol.Task operations
 func TestA2ATaskOperations(t *testing.T) {
 	// Note: Individual subtests create their own servers for isolation
 
@@ -695,7 +696,7 @@ func TestA2ATaskOperations(t *testing.T) {
 		resultData, err := json.Marshal(response["result"])
 		require.NoError(t, err)
 
-		var task Task
+		var task protocol.Task
 		err = json.Unmarshal(resultData, &task)
 		require.NoError(t, err)
 
@@ -713,7 +714,7 @@ func TestA2ATaskOperations(t *testing.T) {
 		resultData, err = json.Marshal(getResponse["result"])
 		require.NoError(t, err)
 
-		var fetchedTask Task
+		var fetchedTask protocol.Task
 		err = json.Unmarshal(resultData, &fetchedTask)
 		require.NoError(t, err)
 
@@ -769,7 +770,7 @@ nodes:
 		resultData, err := json.Marshal(response["result"])
 		require.NoError(t, err)
 
-		var task Task
+		var task protocol.Task
 		err = json.Unmarshal(resultData, &task)
 		require.NoError(t, err)
 
@@ -792,7 +793,7 @@ nodes:
 			resultData, err = json.Marshal(cancelResponse["result"])
 			require.NoError(t, err)
 
-			var cancelledTask Task
+			var cancelledTask protocol.Task
 			err = json.Unmarshal(resultData, &cancelledTask)
 			require.NoError(t, err)
 
@@ -835,7 +836,7 @@ nodes:
 		resultData, err := json.Marshal(response["result"])
 		require.NoError(t, err)
 
-		var task Task
+		var task protocol.Task
 		err = json.Unmarshal(resultData, &task)
 		require.NoError(t, err)
 
@@ -859,7 +860,7 @@ nodes:
 			resultData, err = json.Marshal(getResponse["result"])
 			require.NoError(t, err)
 
-			var currentTask Task
+			var currentTask protocol.Task
 			err = json.Unmarshal(resultData, &currentTask)
 			require.NoError(t, err)
 
@@ -869,7 +870,7 @@ nodes:
 			}
 
 			// Check for terminal state
-			if currentTask.Status.State == TaskStateCompleted || currentTask.Status.State == TaskStateFailed {
+			if currentTask.Status.State == protocol.TaskStateCompleted || currentTask.Status.State == protocol.TaskStateFailed {
 				break
 			}
 
@@ -877,7 +878,7 @@ nodes:
 		}
 
 		// Verify we saw reasonable state progression
-		// Note: Task might transition from submitted to working very quickly
+		// Note: protocol.Task might transition from submitted to working very quickly
 		if len(states) == 0 {
 			t.Skip("No state transitions captured - workflow may have completed too quickly")
 		}
@@ -886,7 +887,7 @@ nodes:
 
 		// Final state should be terminal
 		finalState := states[len(states)-1]
-		assert.Contains(t, []string{TaskStateCompleted, TaskStateFailed}, finalState)
+		assert.Contains(t, []string{protocol.TaskStateCompleted, protocol.TaskStateFailed}, finalState)
 	})
 }
 
@@ -898,7 +899,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 	}
 
 	// Find an available port
-	port := findAvailablePort(t, 9460, 9470)
+	port := testutil.FindAvailablePort(t, 9460, 9470)
 
 	// Start mock A2A agent in server mode
 	// Path is relative to project root
@@ -927,7 +928,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 
-		var card AgentCard
+		var card protocol.AgentCard
 		err = json.NewDecoder(resp.Body).Decode(&card)
 		require.NoError(t, err)
 
@@ -943,7 +944,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 		url := fmt.Sprintf("http://localhost:%d/rpc", port)
 
 		// Submit a task
-		request := JSONRPCRequest{
+		request := protocol.JSONRPCRequest{
 			JSONRPC: "2.0",
 			Method:  "message/send",
 			ID:      1,
@@ -977,7 +978,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var rpcResp JSONRPCResponse
+		var rpcResp protocol.JSONRPCResponse
 		err = json.NewDecoder(resp.Body).Decode(&rpcResp)
 		require.NoError(t, err)
 		require.Nil(t, rpcResp.Error)
@@ -986,23 +987,23 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 		resultJSON, err := json.Marshal(rpcResp.Result)
 		require.NoError(t, err)
 
-		var task Task
+		var task protocol.Task
 		err = json.Unmarshal(resultJSON, &task)
 		require.NoError(t, err)
 
 		assert.NotEmpty(t, task.ID)
 		assert.Equal(t, "test-context", task.ContextID)
-		// Task might transition quickly from submitted to working
-		assert.Contains(t, []string{TaskStateSubmitted, TaskStateWorking}, task.Status.State)
+		// protocol.Task might transition quickly from submitted to working
+		assert.Contains(t, []string{protocol.TaskStateSubmitted, protocol.TaskStateWorking}, task.Status.State)
 
 		// Poll for completion
 		taskID := task.ID
 		deadline := time.Now().Add(5 * time.Second)
-		var finalTask Task
+		var finalTask protocol.Task
 
 		for time.Now().Before(deadline) {
 			// Query task status
-			getRequest := JSONRPCRequest{
+			getRequest := protocol.JSONRPCRequest{
 				JSONRPC: "2.0",
 				Method:  "tasks/get",
 				ID:      2,
@@ -1022,7 +1023,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 			getResp, err := http.Post(url, "application/json", bytes.NewBuffer(getReqBody))
 			require.NoError(t, err)
 
-			var getRpcResp JSONRPCResponse
+			var getRpcResp protocol.JSONRPCResponse
 			err = json.NewDecoder(getResp.Body).Decode(&getRpcResp)
 			getResp.Body.Close()
 			require.NoError(t, err)
@@ -1037,7 +1038,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 			err = json.Unmarshal(resultJSON, &finalTask)
 			require.NoError(t, err)
 
-			if finalTask.Status.State == TaskStateCompleted || finalTask.Status.State == TaskStateFailed {
+			if finalTask.Status.State == protocol.TaskStateCompleted || finalTask.Status.State == protocol.TaskStateFailed {
 				break
 			}
 
@@ -1046,7 +1047,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 
 		// Verify task completion
 		assert.Equal(t, taskID, finalTask.ID)
-		assert.Contains(t, []string{TaskStateCompleted}, finalTask.Status.State)
+		assert.Contains(t, []string{protocol.TaskStateCompleted}, finalTask.Status.State)
 		assert.NotEmpty(t, finalTask.History)
 		assert.NotEmpty(t, finalTask.Artifacts)
 	})
@@ -1055,7 +1056,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 	t.Run("DelayPattern", func(t *testing.T) {
 		url := fmt.Sprintf("http://localhost:%d/rpc", port)
 
-		request := JSONRPCRequest{
+		request := protocol.JSONRPCRequest{
 			JSONRPC: "2.0",
 			Method:  "message/send",
 			ID:      3,
@@ -1088,39 +1089,24 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
-		var rpcResp JSONRPCResponse
+		var rpcResp protocol.JSONRPCResponse
 		err = json.NewDecoder(resp.Body).Decode(&rpcResp)
 		require.NoError(t, err)
 		require.Nil(t, rpcResp.Error)
 
-		// Task should be submitted immediately
+		// protocol.Task should be submitted immediately
 		elapsed := time.Since(start)
-		assert.Less(t, elapsed, 500*time.Millisecond, "Task submission should be fast")
+		assert.Less(t, elapsed, 500*time.Millisecond, "protocol.Task submission should be fast")
 
 		// Extract and verify task
 		resultJSON, err := json.Marshal(rpcResp.Result)
 		require.NoError(t, err)
 
-		var task Task
+		var task protocol.Task
 		err = json.Unmarshal(resultJSON, &task)
 		require.NoError(t, err)
 
 		assert.NotEmpty(t, task.ID)
-		assert.Equal(t, TaskStateSubmitted, task.Status.State)
+		assert.Equal(t, protocol.TaskStateSubmitted, task.Status.State)
 	})
-}
-
-// findAvailablePort finds an available port in the given range
-func findAvailablePort(t *testing.T, start, end int) int {
-	for port := start; port <= end; port++ {
-		// Try to bind to the port to see if it's available
-		addr := fmt.Sprintf(":%d", port)
-		listener, err := net.Listen("tcp", addr)
-		if err == nil {
-			listener.Close()
-			return port
-		}
-	}
-	t.Fatalf("No available port found in range %d-%d", start, end)
-	return 0
 }

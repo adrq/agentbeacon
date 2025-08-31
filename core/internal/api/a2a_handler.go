@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentmaestro/agentmaestro/core/internal/executor"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -37,16 +38,16 @@ func NewA2AHandler(db *storage.DB, executor *executor.Executor) *A2AHandler {
 // ServeHTTP handles A2A JSON-RPC requests
 func (h *A2AHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		h.writeError(w, &JSONRPCError{
+		h.writeError(w, &protocol.JSONRPCError{
 			Code:    -32601,
 			Message: "Method not allowed",
 		}, nil)
 		return
 	}
 
-	var req JSONRPCRequest
+	var req protocol.JSONRPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.writeError(w, &JSONRPCError{
+		h.writeError(w, &protocol.JSONRPCError{
 			Code:    -32700,
 			Message: "Parse error",
 		}, req.ID)
@@ -64,7 +65,7 @@ func (h *A2AHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "tasks/cancel":
 		result, err = h.handleTasksCancel(req.Params)
 	default:
-		h.writeError(w, &JSONRPCError{
+		h.writeError(w, &protocol.JSONRPCError{
 			Code:    -32601,
 			Message: "Method not found",
 		}, req.ID)
@@ -72,7 +73,7 @@ func (h *A2AHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		h.writeError(w, &JSONRPCError{
+		h.writeError(w, &protocol.JSONRPCError{
 			Code:    -32603,
 			Message: "Internal error",
 			Data:    err.Error(),
@@ -80,7 +81,7 @@ func (h *A2AHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := JSONRPCResponse{
+	response := protocol.JSONRPCResponse{
 		JSONRPC: "2.0",
 		Result:  result,
 		ID:      req.ID,
@@ -91,8 +92,8 @@ func (h *A2AHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeError writes a JSON-RPC error response
-func (h *A2AHandler) writeError(w http.ResponseWriter, err *JSONRPCError, id interface{}) {
-	response := JSONRPCResponse{
+func (h *A2AHandler) writeError(w http.ResponseWriter, err *protocol.JSONRPCError, id interface{}) {
+	response := protocol.JSONRPCResponse{
 		JSONRPC: "2.0",
 		Error:   err,
 		ID:      id,
@@ -105,12 +106,12 @@ func (h *A2AHandler) writeError(w http.ResponseWriter, err *JSONRPCError, id int
 
 // A2AMessageSendParams represents parameters for message/send method (renamed to avoid conflict)
 type A2AMessageSendParams struct {
-	ContextID string    `json:"contextId"`
-	Messages  []Message `json:"messages"`
+	ContextID string             `json:"contextId"`
+	Messages  []protocol.Message `json:"messages"`
 }
 
 // handleMessageSend implements the message/send A2A method
-func (h *A2AHandler) handleMessageSend(params json.RawMessage) (*Task, error) {
+func (h *A2AHandler) handleMessageSend(params json.RawMessage) (*protocol.Task, error) {
 	var p A2AMessageSendParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid parameters: %w", err)
@@ -152,12 +153,12 @@ func (h *A2AHandler) handleMessageSend(params json.RawMessage) (*Task, error) {
 	h.mu.Unlock()
 
 	// Return A2A Task
-	task := &Task{
+	task := &protocol.Task{
 		ID:        taskID,
 		ContextID: p.ContextID,
-		Status:    TaskStatus{State: TaskStateSubmitted},
-		History:   []Message{},
-		Artifacts: []Artifact{},
+		Status:    protocol.TaskStatus{State: protocol.TaskStateSubmitted},
+		History:   []protocol.Message{},
+		Artifacts: []protocol.Artifact{},
 	}
 
 	return task, nil
@@ -169,7 +170,7 @@ type TasksGetParams struct {
 }
 
 // handleTasksGet implements the tasks/get A2A method
-func (h *A2AHandler) handleTasksGet(params json.RawMessage) (*Task, error) {
+func (h *A2AHandler) handleTasksGet(params json.RawMessage) (*protocol.Task, error) {
 	var p TasksGetParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid parameters: %w", err)
@@ -202,10 +203,10 @@ func (h *A2AHandler) handleTasksGet(params json.RawMessage) (*Task, error) {
 	}
 
 	// Convert execution status to A2A task
-	task := &Task{
+	task := &protocol.Task{
 		ID:        p.TaskID,
 		ContextID: contextID,
-		Status:    TaskStatus{State: execution.Status},
+		Status:    protocol.TaskStatus{State: execution.Status},
 		History:   h.buildTaskHistory(execution),
 		Artifacts: h.buildTaskArtifacts(execution),
 	}
@@ -219,7 +220,7 @@ type TasksCancelParams struct {
 }
 
 // handleTasksCancel implements the tasks/cancel A2A method
-func (h *A2AHandler) handleTasksCancel(params json.RawMessage) (*Task, error) {
+func (h *A2AHandler) handleTasksCancel(params json.RawMessage) (*protocol.Task, error) {
 	var p TasksCancelParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid parameters: %w", err)
@@ -245,7 +246,7 @@ func (h *A2AHandler) handleTasksCancel(params json.RawMessage) (*Task, error) {
 }
 
 // extractWorkflowFromMessages extracts workflow content from A2A messages
-func (h *A2AHandler) extractWorkflowFromMessages(messages []Message) (string, error) {
+func (h *A2AHandler) extractWorkflowFromMessages(messages []protocol.Message) (string, error) {
 	for _, message := range messages {
 		for _, part := range message.Parts {
 			switch part.Kind {
@@ -307,14 +308,14 @@ func (h *A2AHandler) loadWorkflowByRef(workflowRef string) (string, error) {
 }
 
 // buildTaskHistory creates A2A task history from execution logs
-func (h *A2AHandler) buildTaskHistory(execution *storage.Execution) []Message {
-	history := []Message{}
+func (h *A2AHandler) buildTaskHistory(execution *storage.Execution) []protocol.Message {
+	history := []protocol.Message{}
 
 	if execution.Logs != "" {
 		// Convert logs to A2A message format
-		history = append(history, Message{
+		history = append(history, protocol.Message{
 			Role: "assistant",
-			Parts: []Part{{
+			Parts: []protocol.Part{{
 				Kind: "text",
 				Text: execution.Logs,
 			}},
@@ -327,15 +328,15 @@ func (h *A2AHandler) buildTaskHistory(execution *storage.Execution) []Message {
 }
 
 // buildTaskArtifacts creates A2A task artifacts from execution results
-func (h *A2AHandler) buildTaskArtifacts(execution *storage.Execution) []Artifact {
-	artifacts := []Artifact{}
+func (h *A2AHandler) buildTaskArtifacts(execution *storage.Execution) []protocol.Artifact {
+	artifacts := []protocol.Artifact{}
 
 	// For MVP, create a simple status artifact
-	artifacts = append(artifacts, Artifact{
+	artifacts = append(artifacts, protocol.Artifact{
 		ArtifactID:  "execution-status",
 		Name:        "Execution Status",
 		Description: "Current status of workflow execution",
-		Parts: []Part{{
+		Parts: []protocol.Part{{
 			Kind: "text",
 			Text: fmt.Sprintf("Status: %s\nStarted: %s", execution.Status, execution.StartedAt.Format("2006-01-02 15:04:05")),
 		}},
@@ -345,21 +346,21 @@ func (h *A2AHandler) buildTaskArtifacts(execution *storage.Execution) []Artifact
 }
 
 // GetAgentCard returns the A2A Agent Card for AgentMaestro
-func GetAgentCard() *AgentCard {
-	return &AgentCard{
+func GetAgentCard() *protocol.AgentCard {
+	return &protocol.AgentCard{
 		ProtocolVersion: "0.3.0",
 		Name:            "AgentMaestro Orchestrator",
 		Description:     "AI agent workflow orchestrator",
 		URL:             "http://localhost:9456/rpc",
 		Version:         "1.0.0",
-		Capabilities: AgentCapabilities{
+		Capabilities: protocol.AgentCapabilities{
 			Streaming:         false,
 			PushNotifications: false,
 		},
 		DefaultInputModes:  []string{"application/json"},
 		DefaultOutputModes: []string{"application/json"},
 		PreferredTransport: "JSONRPC",
-		Skills: []AgentSkill{{
+		Skills: []protocol.AgentSkill{{
 			ID:          "execute-workflow",
 			Name:        "Execute Workflow",
 			Description: "Execute a predefined workflow or inline workflow definition",

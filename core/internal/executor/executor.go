@@ -811,12 +811,12 @@ func (e *Executor) updateExecutionInDB(execution *engine.Execution, logMessage s
 
 // createAgentForNode creates an agent for the node based on its configuration
 func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
-	// Future: Check node.AgentURL for A2A agents
-	// if node.AgentURL != "" {
-	//     return NewA2AAgent(node.AgentURL)
-	// }
+	// Check node.AgentURL for A2A agents
+	if node.AgentURL != "" {
+		return NewA2AAgent(node.AgentURL), nil
+	}
 
-	// For now, always use stdio agent with mock-agent
+	// Fallback to stdio agent with mock-agent
 	agentPaths := []string{
 		"../../../bin/mock-agent",
 		"./bin/mock-agent",

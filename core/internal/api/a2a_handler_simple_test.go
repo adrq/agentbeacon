@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -140,10 +141,10 @@ nodes:
     prompt: "Test task"
 `
 
-		messages := []Message{
+		messages := []protocol.Message{
 			{
 				Role: "user",
-				Parts: []Part{
+				Parts: []protocol.Part{
 					{
 						Kind: "text",
 						Text: workflowYAML,
@@ -168,13 +169,13 @@ nodes:
     prompt: "Data task"
 `
 
-		messages := []Message{
+		messages := []protocol.Message{
 			{
 				Role: "user",
-				Parts: []Part{
+				Parts: []protocol.Part{
 					{
 						Kind: "data",
-						Data: &DataPart{
+						Data: &protocol.DataPart{
 							Data: map[string]interface{}{
 								"workflowYaml": workflowYAML,
 								"description":  "Test workflow",
@@ -193,10 +194,10 @@ nodes:
 	})
 
 	t.Run("NoWorkflowFound", func(t *testing.T) {
-		messages := []Message{
+		messages := []protocol.Message{
 			{
 				Role: "user",
-				Parts: []Part{
+				Parts: []protocol.Part{
 					{
 						Kind: "text",
 						Text: "This is just regular text, not a workflow",
@@ -216,10 +217,10 @@ nodes:
 		invalidYAML := `name: invalid-workflow
 nodes: [[[malformed yaml`
 
-		messages := []Message{
+		messages := []protocol.Message{
 			{
 				Role: "user",
-				Parts: []Part{
+				Parts: []protocol.Part{
 					{
 						Kind: "text",
 						Text: invalidYAML,
@@ -244,10 +245,10 @@ nodes:
     prompt: "Found task"
 `
 
-		messages := []Message{
+		messages := []protocol.Message{
 			{
 				Role: "user",
-				Parts: []Part{
+				Parts: []protocol.Part{
 					{
 						Kind: "text",
 						Text: "This is just a regular message",
@@ -258,7 +259,7 @@ nodes:
 			},
 			{
 				Role: "user",
-				Parts: []Part{
+				Parts: []protocol.Part{
 					{
 						Kind: "text",
 						Text: workflowYAML,
