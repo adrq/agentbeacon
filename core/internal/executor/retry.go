@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
 )
 
@@ -24,7 +25,7 @@ func (re *RetryableExecutor) executeNodeWithRetry(ctx context.Context, execution
 	status := nodeState.Status
 	re.executor.mutex.RUnlock()
 
-	if status != "pending" {
+	if status != constants.TaskStateSubmitted {
 		return nil
 	}
 
@@ -116,7 +117,7 @@ func (re *RetryableExecutor) updateNodeStateForAttempt(execution *engine.Executi
 
 	nodeState := execution.NodeStates[nodeID]
 
-	if nodeState.Status == "cancelled" || nodeState.Status == "failed" || nodeState.Status == "completed" {
+	if nodeState.Status == constants.TaskStateCanceled || nodeState.Status == constants.TaskStateFailed || nodeState.Status == constants.TaskStateCompleted {
 		return
 	}
 
@@ -126,7 +127,7 @@ func (re *RetryableExecutor) updateNodeStateForAttempt(execution *engine.Executi
 
 	if attempt == 1 {
 		nodeState.StartedAt = time.Now()
-		nodeState.Status = "running"
+		nodeState.Status = constants.TaskStateWorking
 	}
 
 	execution.NodeStates[nodeID] = nodeState
@@ -136,11 +137,11 @@ func (re *RetryableExecutor) finalizeSuccessfulNode(execution *engine.Execution,
 	re.executor.mutex.Lock()
 	nodeState := execution.NodeStates[nodeID]
 
-	if execution.Status == "cancelled" {
-		nodeState.Status = "cancelled"
+	if execution.Status == constants.TaskStateCanceled {
+		nodeState.Status = constants.TaskStateCanceled
 		nodeState.Error = "execution was cancelled"
 	} else {
-		nodeState.Status = "completed"
+		nodeState.Status = constants.TaskStateCompleted
 	}
 
 	nodeState.AttemptCount = attempt
@@ -161,11 +162,11 @@ func (re *RetryableExecutor) finalizeFailedNode(execution *engine.Execution, nod
 	nodeState.ErrorHistory = make([]string, len(errorHistory))
 	copy(nodeState.ErrorHistory, errorHistory)
 
-	if execution.Status == "cancelled" {
-		nodeState.Status = "cancelled"
+	if execution.Status == constants.TaskStateCanceled {
+		nodeState.Status = constants.TaskStateCanceled
 		nodeState.Error = "execution was cancelled"
 	} else {
-		nodeState.Status = "failed"
+		nodeState.Status = constants.TaskStateFailed
 		nodeState.Error = finalError.Error()
 	}
 	endedAt := time.Now()
@@ -182,7 +183,7 @@ func (re *RetryableExecutor) finalizeCancelledNode(execution *engine.Execution, 
 	nodeState.AttemptCount = attempt
 	nodeState.ErrorHistory = make([]string, len(errorHistory))
 	copy(nodeState.ErrorHistory, errorHistory)
-	nodeState.Status = "cancelled"
+	nodeState.Status = constants.TaskStateCanceled
 	nodeState.Error = finalError.Error()
 	endedAt := time.Now()
 	nodeState.EndedAt = &endedAt

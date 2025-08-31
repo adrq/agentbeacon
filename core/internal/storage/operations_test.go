@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"gorm.io/datatypes"
@@ -329,8 +330,8 @@ description: Test workflow for execution tests`
 		execution := &Execution{
 			ID:           "exec-001",
 			WorkflowName: "test-workflow",
-			Status:       "running",
-			NodeStates:   datatypes.JSON([]byte(`{"node1": "completed", "node2": "running"}`)),
+			Status:       constants.TaskStateWorking,
+			NodeStates:   datatypes.JSON([]byte(`{"node1": "` + constants.TaskStateCompleted + `", "node2": "` + constants.TaskStateWorking + `"}`)),
 			Logs:         "Starting execution\nNode1 completed",
 		}
 
@@ -344,8 +345,8 @@ description: Test workflow for execution tests`
 			t.Fatalf("Failed to get execution: %v", err)
 		}
 
-		if retrieved.Status != "running" {
-			t.Errorf("Expected status 'running', got %s", retrieved.Status)
+		if retrieved.Status != constants.TaskStateWorking {
+			t.Errorf("Expected status '%s', got %s", constants.TaskStateWorking, retrieved.Status)
 		}
 		if retrieved.WorkflowName != "test-workflow" {
 			t.Errorf("Expected workflow name 'test-workflow', got %s", retrieved.WorkflowName)
@@ -354,9 +355,9 @@ description: Test workflow for execution tests`
 			t.Error("Expected CompletedAt to be nil for running execution")
 		}
 
-		execution.Status = "completed"
+		execution.Status = constants.TaskStateCompleted
 		execution.Logs += "\nNode2 completed\nExecution finished successfully"
-		execution.NodeStates = datatypes.JSON([]byte(`{"node1": "completed", "node2": "completed"}`))
+		execution.NodeStates = datatypes.JSON([]byte(`{"node1": "` + constants.TaskStateCompleted + `", "node2": "` + constants.TaskStateCompleted + `"}`))
 		completedAt := time.Now()
 		execution.CompletedAt = &completedAt
 
@@ -370,8 +371,8 @@ description: Test workflow for execution tests`
 			t.Fatalf("Failed to get updated execution: %v", err)
 		}
 
-		if updated.Status != "completed" {
-			t.Errorf("Expected status 'completed', got %s", updated.Status)
+		if updated.Status != constants.TaskStateCompleted {
+			t.Errorf("Expected status '%s', got %s", constants.TaskStateCompleted, updated.Status)
 		}
 		if updated.CompletedAt == nil {
 			t.Error("Expected CompletedAt to be set after completion")

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"gorm.io/datatypes"
@@ -109,7 +110,7 @@ func testConcurrentLogUpdates(t *testing.T, driver, dsn string) {
 	execution := &engine.Execution{
 		ID:         "concurrent-log-test",
 		WorkflowID: "test-workflow",
-		Status:     "running",
+		Status:     constants.TaskStateWorking,
 		NodeStates: make(map[string]engine.NodeState),
 		StartedAt:  time.Now(),
 	}
@@ -214,17 +215,17 @@ func testProgressCalculationWithTerminalStates(t *testing.T, driver, dsn string)
 	execution := &engine.Execution{
 		ID:         "progress-test-execution",
 		WorkflowID: "test-workflow",
-		Status:     "running",
+		Status:     constants.TaskStateWorking,
 		StartedAt:  time.Now(),
 		NodeStates: map[string]engine.NodeState{
-			"completed_node1": {Status: "completed", EndedAt: &endedAt},
-			"completed_node2": {Status: "completed", EndedAt: &endedAt},
-			"failed_node":     {Status: "failed", EndedAt: &endedAt},
-			"cancelled_node":  {Status: "cancelled", EndedAt: &endedAt},
-			"skipped_node":    {Status: "skipped", EndedAt: &endedAt},
-			"pending_node1":   {Status: "pending"},
-			"pending_node2":   {Status: "pending"},
-			"running_node":    {Status: "running", StartedAt: startedAt},
+			"completed_node1": {Status: constants.TaskStateCompleted, EndedAt: &endedAt},
+			"completed_node2": {Status: constants.TaskStateCompleted, EndedAt: &endedAt},
+			"failed_node":     {Status: constants.TaskStateFailed, EndedAt: &endedAt},
+			"cancelled_node":  {Status: constants.TaskStateCanceled, EndedAt: &endedAt},
+			"skipped_node":    {Status: constants.TaskStateRejected, EndedAt: &endedAt},
+			"pending_node1":   {Status: constants.TaskStateSubmitted},
+			"pending_node2":   {Status: constants.TaskStateSubmitted},
+			"running_node":    {Status: constants.TaskStateWorking, StartedAt: startedAt},
 		},
 	}
 
@@ -303,7 +304,7 @@ func testStopExecutionAlreadyCompleted(t *testing.T, driver, dsn string) {
 		t.Fatalf("Failed to get completed execution: %v", err)
 	}
 
-	if completedExecution.Status != "completed" {
+	if completedExecution.Status != constants.TaskStateCompleted {
 		t.Fatalf("Expected execution to be completed, got: %s", completedExecution.Status)
 	}
 
@@ -333,8 +334,8 @@ func testStopExecutionAlreadyCompleted(t *testing.T, driver, dsn string) {
 	}
 
 	// Status should remain completed
-	if afterStopExecution.Status != "completed" {
-		t.Errorf("Expected status to remain 'completed', got: %s", afterStopExecution.Status)
+	if afterStopExecution.Status != constants.TaskStateCompleted {
+		t.Errorf("Expected status to remain '%s', got: %s", constants.TaskStateCompleted, afterStopExecution.Status)
 	}
 }
 

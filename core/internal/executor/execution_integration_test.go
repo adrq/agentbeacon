@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 )
@@ -57,8 +58,8 @@ func testExecutionLifecycle(t *testing.T, driver, dsn string) {
 	if execution.WorkflowID != "lifecycle-workflow" {
 		t.Errorf("Expected workflow ID 'lifecycle-workflow', got: %s", execution.WorkflowID)
 	}
-	if execution.Status != "running" {
-		t.Errorf("Expected initial status 'running', got: %s", execution.Status)
+	if execution.Status != constants.TaskStateWorking {
+		t.Errorf("Expected initial status '%s', got: %s", constants.TaskStateWorking, execution.Status)
 	}
 	if execution.StartedAt.IsZero() {
 		t.Error("Expected StartedAt to be set")
@@ -76,13 +77,13 @@ func testExecutionLifecycle(t *testing.T, driver, dsn string) {
 			t.Fatalf("Failed to poll execution status: %v", err)
 		}
 
-		if retrieved.Status == "completed" || retrieved.Status == "failed" {
+		if retrieved.Status == constants.TaskStateCompleted || retrieved.Status == constants.TaskStateFailed {
 			finalExecution = retrieved
 			break
 		}
 
 		// Verify intermediate state
-		if retrieved.Status != "running" {
+		if retrieved.Status != constants.TaskStateWorking {
 			t.Errorf("Unexpected status during execution: %s", retrieved.Status)
 		}
 
@@ -94,8 +95,8 @@ func testExecutionLifecycle(t *testing.T, driver, dsn string) {
 	}
 
 	// Verify final state
-	if finalExecution.Status != "completed" {
-		t.Errorf("Expected final status 'completed', got: %s", finalExecution.Status)
+	if finalExecution.Status != constants.TaskStateCompleted {
+		t.Errorf("Expected final status '%s', got: %s", constants.TaskStateCompleted, finalExecution.Status)
 		if finalExecution.Logs != "" {
 			t.Logf("Execution logs: %s", finalExecution.Logs)
 		}
@@ -135,8 +136,8 @@ func testExecutionLifecycle(t *testing.T, driver, dsn string) {
 			continue
 		}
 
-		if nodeState.Status != "completed" {
-			t.Errorf("Expected node %s status 'completed', got: %s", nodeID, nodeState.Status)
+		if nodeState.Status != constants.TaskStateCompleted {
+			t.Errorf("Expected node %s status '%s', got: %s", nodeID, constants.TaskStateCompleted, nodeState.Status)
 		}
 
 		if nodeState.Output == "" {
@@ -216,7 +217,7 @@ func testParallelExecutionWithConvergence(t *testing.T, driver, dsn string) {
 		t.Fatalf("Failed to get completed execution: %v", err)
 	}
 
-	if completed.Status != "completed" {
+	if completed.Status != constants.TaskStateCompleted {
 		t.Errorf("Expected execution to complete successfully, got status: %s", completed.Status)
 		if completed.Logs != "" {
 			t.Logf("Execution logs: %s", completed.Logs)
@@ -237,8 +238,8 @@ func testParallelExecutionWithConvergence(t *testing.T, driver, dsn string) {
 			continue
 		}
 
-		if nodeState.Status != "completed" {
-			t.Errorf("Expected node %s status 'completed', got: %s", nodeID, nodeState.Status)
+		if nodeState.Status != constants.TaskStateCompleted {
+			t.Errorf("Expected node %s status '%s', got: %s", nodeID, constants.TaskStateCompleted, nodeState.Status)
 		}
 
 		if nodeState.Output == "" {
@@ -383,7 +384,7 @@ func testConcurrentWorkflowExecutions(t *testing.T, driver, dsn string) {
 			continue
 		}
 
-		if final.Status != "completed" {
+		if final.Status != constants.TaskStateCompleted {
 			t.Errorf("Execution %s did not complete successfully, got status: %s", workflowName, final.Status)
 			if final.Logs != "" {
 				t.Logf("Execution %s logs: %s", workflowName, final.Logs)

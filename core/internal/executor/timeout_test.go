@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +26,7 @@ func TestExecuteNode_WithTimeout_Success(t *testing.T) {
 	execution := &engine.Execution{
 		ID:         "test-exec",
 		WorkflowID: "test-workflow",
-		Status:     "running",
+		Status:     constants.TaskStateWorking,
 		NodeStates: make(map[string]engine.NodeState),
 		StartedAt:  time.Now(),
 	}
@@ -40,14 +41,14 @@ func TestExecuteNode_WithTimeout_Success(t *testing.T) {
 
 	// Initialize node state
 	execution.NodeStates[node.ID] = engine.NodeState{
-		Status: "pending",
+		Status: constants.TaskStateSubmitted,
 	}
 
 	ctx := context.Background()
 	err := executor.executeNode(ctx, execution, node)
 
 	assert.NoError(t, err)
-	assert.Equal(t, "completed", execution.NodeStates[node.ID].Status)
+	assert.Equal(t, constants.TaskStateCompleted, execution.NodeStates[node.ID].Status)
 	assert.Contains(t, execution.NodeStates[node.ID].Output, "Mock response: quick task")
 }
 
@@ -62,7 +63,7 @@ func TestExecuteNode_WithTimeout_Exceeded(t *testing.T) {
 	execution := &engine.Execution{
 		ID:         "test-exec",
 		WorkflowID: "test-workflow",
-		Status:     "running",
+		Status:     constants.TaskStateWorking,
 		NodeStates: make(map[string]engine.NodeState),
 		StartedAt:  time.Now(),
 	}
@@ -77,7 +78,7 @@ func TestExecuteNode_WithTimeout_Exceeded(t *testing.T) {
 
 	// Initialize node state
 	execution.NodeStates[node.ID] = engine.NodeState{
-		Status: "pending",
+		Status: constants.TaskStateSubmitted,
 	}
 
 	ctx := context.Background()
@@ -97,7 +98,7 @@ func TestExecuteNode_WithTimeout_Exceeded(t *testing.T) {
 	}
 
 	assert.Contains(t, err.Error(), "context deadline exceeded")
-	assert.Equal(t, "failed", execution.NodeStates[node.ID].Status)
+	assert.Equal(t, constants.TaskStateFailed, execution.NodeStates[node.ID].Status)
 	assert.Contains(t, execution.NodeStates[node.ID].Error, "context deadline exceeded")
 }
 
@@ -140,9 +141,9 @@ func TestWorkflowExecution_WithTimeouts(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should fail due to timeout in slow-node
-	assert.Equal(t, "failed", finalExecution.Status)
-	assert.Equal(t, "completed", nodeStates["quick-node"].Status)
-	assert.Equal(t, "failed", nodeStates["slow-node"].Status)
+	assert.Equal(t, constants.TaskStateFailed, finalExecution.Status)
+	assert.Equal(t, constants.TaskStateCompleted, nodeStates["quick-node"].Status)
+	assert.Equal(t, constants.TaskStateFailed, nodeStates["slow-node"].Status)
 	assert.Contains(t, nodeStates["slow-node"].Error, "context deadline exceeded")
 }
 

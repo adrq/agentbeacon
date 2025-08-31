@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/jmoiron/sqlx"
@@ -127,8 +128,8 @@ func testExecutorStartWorkflow(t *testing.T, driver, dsn string) {
 	if execution.WorkflowID != "simple-workflow" {
 		t.Errorf("Expected workflow ID 'simple-workflow', got: %s", execution.WorkflowID)
 	}
-	if execution.Status != "running" {
-		t.Errorf("Expected status 'running', got: %s", execution.Status)
+	if execution.Status != constants.TaskStateWorking {
+		t.Errorf("Expected status '%s', got: %s", constants.TaskStateWorking, execution.Status)
 	}
 	if execution.StartedAt.IsZero() {
 		t.Error("Expected StartedAt to be set")
@@ -138,8 +139,8 @@ func testExecutorStartWorkflow(t *testing.T, driver, dsn string) {
 	if err != nil {
 		t.Fatalf("Failed to retrieve execution from database: %v", err)
 	}
-	if retrieved.Status != "running" {
-		t.Errorf("Expected persisted status 'running', got: %s", retrieved.Status)
+	if retrieved.Status != constants.TaskStateWorking {
+		t.Errorf("Expected persisted status '%s', got: %s", constants.TaskStateWorking, retrieved.Status)
 	}
 }
 
@@ -201,8 +202,8 @@ func testExecutorSequentialExecution(t *testing.T, driver, dsn string) {
 	if err != nil {
 		t.Fatalf("Failed to get completed execution: %v", err)
 	}
-	if completed.Status != "completed" {
-		t.Errorf("Expected final status 'completed', got: %s", completed.Status)
+	if completed.Status != constants.TaskStateCompleted {
+		t.Errorf("Expected final status '%s', got: %s", constants.TaskStateCompleted, completed.Status)
 	}
 	if completed.CompletedAt == nil {
 		t.Error("Expected CompletedAt to be set")
@@ -291,10 +292,10 @@ func testWorkerPoolTaskSubmissionAndCollection(t *testing.T, driver, dsn string)
 	execution := &engine.Execution{
 		ID:         "test-execution-id",
 		WorkflowID: "task-test-workflow",
-		Status:     "running",
+		Status:     constants.TaskStateWorking,
 		NodeStates: map[string]engine.NodeState{
-			"task1": {Status: "pending"},
-			"task2": {Status: "pending"},
+			"task1": {Status: constants.TaskStateSubmitted},
+			"task2": {Status: constants.TaskStateSubmitted},
 		},
 		StartedAt: time.Now(),
 	}
@@ -364,7 +365,7 @@ func testWorkerPoolParallelExecution(t *testing.T, driver, dsn string) {
 	execution := &engine.Execution{
 		ID:         "parallel-execution",
 		WorkflowID: "parallel-workflow",
-		Status:     "running",
+		Status:     constants.TaskStateWorking,
 		NodeStates: make(map[string]engine.NodeState),
 		StartedAt:  time.Now(),
 	}
@@ -372,7 +373,7 @@ func testWorkerPoolParallelExecution(t *testing.T, driver, dsn string) {
 	var workflowNodes []engine.Node
 	for i := 0; i < numTasks; i++ {
 		nodeID := fmt.Sprintf("parallel-task-%d", i+1)
-		execution.NodeStates[nodeID] = engine.NodeState{Status: "pending"}
+		execution.NodeStates[nodeID] = engine.NodeState{Status: constants.TaskStateSubmitted}
 		workflowNodes = append(workflowNodes, engine.Node{
 			ID:     nodeID,
 			Agent:  "mock-agent",
@@ -478,13 +479,13 @@ func testWorkerPoolTopologicalSort(t *testing.T, driver, dsn string) {
 	execution := &engine.Execution{
 		ID:         "topological-execution",
 		WorkflowID: "topological-workflow",
-		Status:     "running",
+		Status:     constants.TaskStateWorking,
 		NodeStates: make(map[string]engine.NodeState),
 		StartedAt:  time.Now(),
 	}
 
 	for _, node := range workflow.Nodes {
-		execution.NodeStates[node.ID] = engine.NodeState{Status: "pending"}
+		execution.NodeStates[node.ID] = engine.NodeState{Status: constants.TaskStateSubmitted}
 	}
 
 	executor := NewExecutor(db)
@@ -564,7 +565,7 @@ func waitForCompletion(t *testing.T, db *storage.DB, executionID string, timeout
 		if err != nil {
 			t.Fatalf("Failed to get execution status: %v", err)
 		}
-		if execution.Status == "completed" || execution.Status == "failed" {
+		if execution.Status == constants.TaskStateCompleted || execution.Status == constants.TaskStateFailed {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)

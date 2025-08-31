@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/google/uuid"
@@ -114,7 +115,7 @@ func (wp *WorkerPool) worker() {
 
 						// Mark execution as failed and send terminal update
 						wp.executor.mutex.Lock()
-						task.Execution.Status = "failed"
+						task.Execution.Status = constants.TaskStateFailed
 						if task.Execution.CompletedAt == nil {
 							completedAt := time.Now()
 							task.Execution.CompletedAt = &completedAt
@@ -122,7 +123,7 @@ func (wp *WorkerPool) worker() {
 
 						// Mark the node as failed
 						nodeState := task.Execution.NodeStates[task.NodeID]
-						nodeState.Status = "failed"
+						nodeState.Status = constants.TaskStateFailed
 						nodeState.Output = fmt.Sprintf("Node execution panicked: %v", r)
 						if nodeState.EndedAt == nil {
 							endedAt := time.Now()
@@ -230,7 +231,7 @@ func (wp *WorkerPool) markRunningNodesAsCancelled(execution *engine.Execution, n
 // handleNodeFailure handles node failure with hardcoded stop-all behavior
 func (wp *WorkerPool) handleNodeFailure(execution *engine.Execution, failedNode *engine.Node, nodeErr error) error {
 	wp.executor.mutex.Lock()
-	execution.Status = "failed"
+	execution.Status = constants.TaskStateFailed
 	if execution.CompletedAt == nil {
 		completedAt := time.Now()
 		execution.CompletedAt = &completedAt
@@ -239,8 +240,8 @@ func (wp *WorkerPool) handleNodeFailure(execution *engine.Execution, failedNode 
 	now := time.Now()
 	for nodeID, nodeState := range execution.NodeStates {
 		// Only cancel pending nodes, let running nodes complete naturally
-		if nodeState.Status == "pending" {
-			nodeState.Status = "cancelled"
+		if nodeState.Status == constants.TaskStateSubmitted {
+			nodeState.Status = constants.TaskStateCanceled
 			nodeState.EndedAt = &now
 			execution.NodeStates[nodeID] = nodeState
 		}
@@ -257,7 +258,7 @@ func (wp *WorkerPool) shouldExecuteNode(execution *engine.Execution, node *engin
 	wp.executor.mutex.RLock()
 	defer wp.executor.mutex.RUnlock()
 
-	if execution.Status != "running" {
+	if execution.Status != constants.TaskStateWorking {
 		return false
 	}
 
@@ -266,7 +267,7 @@ func (wp *WorkerPool) shouldExecuteNode(execution *engine.Execution, node *engin
 		return false
 	}
 
-	return nodeState.Status == "pending"
+	return nodeState.Status == constants.TaskStateSubmitted
 }
 
 type ExecutionInfo struct {
@@ -306,7 +307,7 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 
 	for _, node := range workflow.Nodes {
 		nodeStates[node.ID] = engine.NodeState{
-			Status: "pending",
+			Status: constants.TaskStateSubmitted,
 		}
 	}
 
@@ -318,7 +319,7 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 	execution := &engine.Execution{
 		ID:         executionID,
 		WorkflowID: workflowName,
-		Status:     "running",
+		Status:     constants.TaskStateWorking,
 		NodeStates: nodeStates,
 		StartedAt:  time.Now(),
 	}
@@ -326,7 +327,7 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 	dbExecution := &storage.Execution{
 		ID:           executionID,
 		WorkflowName: workflowName,
-		Status:       "running",
+		Status:       constants.TaskStateWorking,
 		NodeStates:   datatypes.JSON(nodeStatesJSON),
 		Logs:         fmt.Sprintf("Started workflow execution at %s\n", time.Now().Format(time.RFC3339)),
 		StartedAt:    execution.StartedAt,
@@ -371,7 +372,7 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 
 			// Mark execution as failed and send terminal update
 			e.mutex.Lock()
-			execution.Status = "failed"
+			execution.Status = constants.TaskStateFailed
 			if execution.CompletedAt == nil {
 				completedAt := time.Now()
 				execution.CompletedAt = &completedAt
@@ -380,8 +381,8 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 			// Mark all non-terminal nodes as failed
 			now := time.Now()
 			for nodeID, nodeState := range execution.NodeStates {
-				if nodeState.Status == "pending" || nodeState.Status == "running" {
-					nodeState.Status = "failed"
+				if nodeState.Status == constants.TaskStateSubmitted || nodeState.Status == constants.TaskStateWorking {
+					nodeState.Status = constants.TaskStateFailed
 					nodeState.Error = fmt.Sprintf("Workflow execution panicked: %v", r)
 					if nodeState.EndedAt == nil {
 						nodeState.EndedAt = &now
@@ -399,7 +400,7 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 	levels, err := engine.TopologicalSort(workflow.Nodes)
 	if err != nil {
 		e.mutex.Lock()
-		execution.Status = "failed"
+		execution.Status = constants.TaskStateFailed
 		completedAt := time.Now()
 		execution.CompletedAt = &completedAt
 		e.mutex.Unlock()
@@ -423,15 +424,15 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 		select {
 		case <-ctx.Done():
 			e.mutex.Lock()
-			execution.Status = "cancelled"
+			execution.Status = constants.TaskStateCanceled
 			if execution.CompletedAt == nil {
 				completedAt := time.Now()
 				execution.CompletedAt = &completedAt
 			}
 			// Update only pending nodes to cancelled - let running nodes converge naturally
 			for nodeID, nodeState := range execution.NodeStates {
-				if nodeState.Status == "pending" {
-					nodeState.Status = "cancelled"
+				if nodeState.Status == constants.TaskStateSubmitted {
+					nodeState.Status = constants.TaskStateCanceled
 					if nodeState.EndedAt == nil {
 						endedAt := time.Now()
 						nodeState.EndedAt = &endedAt
@@ -453,11 +454,11 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 			}
 			// Set proper status based on the type of error
 			if errors.Is(err, context.Canceled) {
-				execution.Status = "cancelled"
+				execution.Status = constants.TaskStateCanceled
 				// Mark all remaining pending and running nodes as cancelled when execution is cancelled
 				for nodeID, nodeState := range execution.NodeStates {
-					if nodeState.Status == "pending" || nodeState.Status == "running" {
-						nodeState.Status = "cancelled"
+					if nodeState.Status == constants.TaskStateSubmitted || nodeState.Status == constants.TaskStateWorking {
+						nodeState.Status = constants.TaskStateCanceled
 						nodeState.Error = "execution was cancelled"
 						if nodeState.EndedAt == nil {
 							endedAt := time.Now()
@@ -467,12 +468,12 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 					}
 				}
 			} else {
-				execution.Status = "failed"
+				execution.Status = constants.TaskStateFailed
 				// Mark all remaining pending nodes as cancelled for StopAll behavior
 				now := time.Now()
 				for nodeID, nodeState := range execution.NodeStates {
-					if nodeState.Status == "pending" {
-						nodeState.Status = "cancelled"
+					if nodeState.Status == constants.TaskStateSubmitted {
+						nodeState.Status = constants.TaskStateCanceled
 						nodeState.Error = "execution failed - node cancelled"
 						if nodeState.EndedAt == nil {
 							nodeState.EndedAt = &now
@@ -490,7 +491,7 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 		status := execution.Status
 		e.mutex.RUnlock()
 
-		if status != "running" {
+		if status != constants.TaskStateWorking {
 			e.mutex.Lock()
 			if execution.CompletedAt == nil {
 				completedAt := time.Now()
@@ -504,7 +505,7 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 		select {
 		case <-ctx.Done():
 			e.mutex.Lock()
-			execution.Status = "cancelled"
+			execution.Status = constants.TaskStateCanceled
 			if execution.CompletedAt == nil {
 				completedAt := time.Now()
 				execution.CompletedAt = &completedAt
@@ -522,9 +523,9 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 	now := time.Now()
 	hasOrphanNodes := false
 	for nodeID, nodeState := range execution.NodeStates {
-		if nodeState.Status == "pending" || nodeState.Status == "running" {
+		if nodeState.Status == constants.TaskStateSubmitted || nodeState.Status == constants.TaskStateWorking {
 			hasOrphanNodes = true
-			nodeState.Status = "cancelled"
+			nodeState.Status = constants.TaskStateCanceled
 			nodeState.Error = "execution completed - orphaned node cancelled"
 			if nodeState.EndedAt == nil {
 				nodeState.EndedAt = &now
@@ -573,7 +574,7 @@ func (e *Executor) StopExecution(executionID string) error {
 	}
 
 	// If already in terminal state, return success (idempotent)
-	if execution.Status == "completed" || execution.Status == "failed" || execution.Status == "cancelled" {
+	if execution.Status == constants.TaskStateCompleted || execution.Status == constants.TaskStateFailed || execution.Status == constants.TaskStateCanceled {
 		return nil
 	}
 
@@ -586,7 +587,7 @@ func (e *Executor) StopExecution(executionID string) error {
 	}
 
 	// Check again if now in terminal state
-	if execution.Status == "completed" || execution.Status == "failed" || execution.Status == "cancelled" {
+	if execution.Status == constants.TaskStateCompleted || execution.Status == constants.TaskStateFailed || execution.Status == constants.TaskStateCanceled {
 		return nil
 	}
 
@@ -622,7 +623,7 @@ func (e *Executor) GetExecutionStatus(executionID string) (*ExecutionStatus, err
 		totalNodes = len(nodeStates)
 		for _, state := range nodeStates {
 			// Count all terminal states for progress (completed, failed, cancelled, skipped)
-			if state.Status == "completed" || state.Status == "failed" || state.Status == "cancelled" || state.Status == "skipped" {
+			if state.Status == constants.TaskStateCompleted || state.Status == constants.TaskStateFailed || state.Status == constants.TaskStateCanceled || state.Status == constants.TaskStateRejected {
 				completedNodes++
 			}
 		}
@@ -704,7 +705,7 @@ func (e *Executor) executeNode(ctx context.Context, execution *engine.Execution,
 
 	e.mutex.Lock()
 	nodeState := execution.NodeStates[node.ID]
-	nodeState.Status = "running"
+	nodeState.Status = constants.TaskStateWorking
 	nodeState.StartedAt = time.Now()
 	execution.NodeStates[node.ID] = nodeState
 	e.mutex.Unlock()
@@ -720,14 +721,14 @@ func (e *Executor) executeNode(ctx context.Context, execution *engine.Execution,
 
 	if err != nil {
 		// Check if execution is cancelled or failed before setting failed state
-		if execution.Status == "cancelled" {
-			nodeState.Status = "cancelled"
+		if execution.Status == constants.TaskStateCanceled {
+			nodeState.Status = constants.TaskStateCanceled
 			nodeState.Error = "execution was cancelled"
-		} else if execution.Status == "failed" {
-			nodeState.Status = "cancelled"
+		} else if execution.Status == constants.TaskStateFailed {
+			nodeState.Status = constants.TaskStateCanceled
 			nodeState.Error = "execution failed - node cancelled"
 		} else {
-			nodeState.Status = "failed"
+			nodeState.Status = constants.TaskStateFailed
 			nodeState.Error = err.Error()
 		}
 		execution.NodeStates[node.ID] = nodeState
@@ -738,14 +739,14 @@ func (e *Executor) executeNode(ctx context.Context, execution *engine.Execution,
 	}
 
 	// Check if execution is cancelled or failed before setting completed state
-	if execution.Status == "cancelled" {
-		nodeState.Status = "cancelled"
+	if execution.Status == constants.TaskStateCanceled {
+		nodeState.Status = constants.TaskStateCanceled
 		nodeState.Error = "execution was cancelled"
-	} else if execution.Status == "failed" {
-		nodeState.Status = "cancelled"
+	} else if execution.Status == constants.TaskStateFailed {
+		nodeState.Status = constants.TaskStateCanceled
 		nodeState.Error = "execution failed - node cancelled"
 	} else {
-		nodeState.Status = "completed"
+		nodeState.Status = constants.TaskStateCompleted
 		nodeState.Output = result
 	}
 	execution.NodeStates[node.ID] = nodeState
@@ -845,7 +846,7 @@ func (e *Executor) determineExecutionStatus(execution *engine.Execution) string 
 	defer e.mutex.RUnlock()
 
 	if len(execution.NodeStates) == 0 {
-		return "completed"
+		return constants.TaskStateCompleted
 	}
 
 	hasRunning := false
@@ -854,24 +855,24 @@ func (e *Executor) determineExecutionStatus(execution *engine.Execution) string 
 
 	for _, nodeState := range execution.NodeStates {
 		switch nodeState.Status {
-		case "pending", "running":
+		case constants.TaskStateSubmitted, constants.TaskStateWorking:
 			hasRunning = true
-		case "failed":
+		case constants.TaskStateFailed:
 			hasFailed = true
-		case "cancelled":
+		case constants.TaskStateCanceled:
 			hasCancelled = true
 		}
 	}
 
 	if hasRunning {
-		return "running"
+		return constants.TaskStateWorking
 	}
 	if hasFailed {
-		return "failed"
+		return constants.TaskStateFailed
 	}
 	if hasCancelled {
-		return "cancelled"
+		return constants.TaskStateCanceled
 	}
 
-	return "completed"
+	return constants.TaskStateCompleted
 }
