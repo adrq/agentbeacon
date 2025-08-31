@@ -33,6 +33,7 @@ type Execution struct {
 	WorkflowName string         `gorm:"type:varchar(255);not null;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" db:"workflow_name"`
 	Status       string         `gorm:"type:varchar(100);not null" db:"status"`
 	NodeStates   datatypes.JSON `gorm:"type:jsonb;not null;serializer:json" db:"node_states"`
+	A2ATasks     datatypes.JSON `gorm:"type:jsonb;serializer:json" db:"a2_a_tasks"`
 	Logs         string         `gorm:"type:text" db:"logs"`
 	StartedAt    time.Time      `gorm:"autoCreateTime" db:"started_at"`
 	CompletedAt  *time.Time     `gorm:"" db:"completed_at"`

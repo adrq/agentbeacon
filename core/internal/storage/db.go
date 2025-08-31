@@ -99,6 +99,11 @@ func (db *DB) placeholder(query string) string {
 	return query
 }
 
+// Placeholder is the exported version of placeholder for external packages
+func (db *DB) Placeholder(query string) string {
+	return db.placeholder(query)
+}
+
 func (db *DB) Close() error {
 	if db.DB == nil {
 		return nil
@@ -142,7 +147,12 @@ func (db *DB) migrate() error {
 		},
 	}
 
-	if db.driver == "postgres" {
+	// For in-memory databases, we must reuse the existing connection
+	// because each new connection gets its own separate database instance
+	if db.driver == "sqlite3" && db.dsn == ":memory:" {
+		// Use the existing connection for GORM
+		gormDB, err = gorm.Open(sqlite.Dialector{Conn: db.DB.DB}, config)
+	} else if db.driver == "postgres" {
 		gormDB, err = gorm.Open(postgres.Open(db.dsn), config)
 	} else {
 		gormDB, err = gorm.Open(sqlite.Open(db.dsn), config)

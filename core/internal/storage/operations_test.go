@@ -332,6 +332,7 @@ description: Test workflow for execution tests`
 			WorkflowName: "test-workflow",
 			Status:       constants.TaskStateWorking,
 			NodeStates:   datatypes.JSON([]byte(`{"node1": "` + constants.TaskStateCompleted + `", "node2": "` + constants.TaskStateWorking + `"}`)),
+			A2ATasks:     datatypes.JSON("{}"),
 			Logs:         "Starting execution\nNode1 completed",
 		}
 

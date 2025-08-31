@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agentmaestro/agentmaestro/core/internal/api"
+	"github.com/agentmaestro/agentmaestro/core/internal/executor"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 )
 
@@ -121,6 +123,20 @@ func startServer(ctx context.Context, addr, driver, dsn string, ready chan<- str
 	// Add REST API endpoints
 	restHandler := api.NewRestHandler(db)
 	mux.Handle("/api/", restHandler)
+
+	// Add A2A Protocol endpoints
+	executor := executor.NewExecutor(db)
+	a2aHandler := api.NewA2AHandler(db, executor)
+	mux.Handle("/rpc", a2aHandler)
+	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		card := api.GetAgentCard()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(card)
+	})
 
 	server := &http.Server{
 		Addr:    addr,

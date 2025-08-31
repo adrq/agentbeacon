@@ -25,6 +25,7 @@ func NewRestHandler(db *storage.DB) http.Handler {
 	}
 	mux := http.NewServeMux()
 
+	// REST API endpoints
 	mux.HandleFunc("/api/health", api.healthHandler)
 	mux.HandleFunc("/api/configs", api.configsHandler)
 	mux.HandleFunc("/api/configs/", api.configByNameHandler)

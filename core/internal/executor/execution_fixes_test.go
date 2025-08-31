@@ -121,6 +121,7 @@ func testConcurrentLogUpdates(t *testing.T, driver, dsn string) {
 		WorkflowName: execution.WorkflowID,
 		Status:       execution.Status,
 		NodeStates:   datatypes.JSON("{}"),
+		A2ATasks:     datatypes.JSON("{}"),
 		Logs:         "",
 		StartedAt:    execution.StartedAt,
 	}
@@ -240,6 +241,7 @@ func testProgressCalculationWithTerminalStates(t *testing.T, driver, dsn string)
 		WorkflowName: execution.WorkflowID,
 		Status:       execution.Status,
 		NodeStates:   datatypes.JSON(nodeStatesJSON),
+		A2ATasks:     datatypes.JSON("{}"),
 		Logs:         "",
 		StartedAt:    execution.StartedAt,
 	}
@@ -338,18 +340,3 @@ func testStopExecutionAlreadyCompleted(t *testing.T, driver, dsn string) {
 		t.Errorf("Expected status to remain '%s', got: %s", constants.TaskStateCompleted, afterStopExecution.Status)
 	}
 }
-
-// Additional helper test to verify cancellation works with complex dependency chains
-// Removed complex dependency cancellation test - overly detailed for MVP
-
-// Removed tasks not executed after cancellation test - detailed cancellation behavior testing beyond MVP
-
-// Removed status set after error test - complex error state testing not essential
-
-// Removed cancelled vs failed classification test - complex state classification beyond MVP
-
-// Removed state corruption during retry test - complex retry edge case testing beyond MVP
-
-// Removed stop execution race test - complex race condition testing beyond MVP
-
-// Removed active execution tracking test - internal implementation details not essential for MVP

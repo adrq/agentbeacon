@@ -33,12 +33,12 @@ build: build-frontend
 # Run tests
 test: test-deps
 	@echo "Running tests..."
-	go test ./...
+	go test ./... -v
 
 # Run tests without cache
 test-nocache: test-deps
 	@echo "Running tests without cache..."
-	go test -count=1 ./...
+	go test -count=1 ./... -v
 
 # Run target
 run: build

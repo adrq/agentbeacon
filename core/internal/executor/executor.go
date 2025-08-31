@@ -329,6 +329,7 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 		WorkflowName: workflowName,
 		Status:       constants.TaskStateWorking,
 		NodeStates:   datatypes.JSON(nodeStatesJSON),
+		A2ATasks:     datatypes.JSON("{}"),
 		Logs:         fmt.Sprintf("Started workflow execution at %s\n", time.Now().Format(time.RFC3339)),
 		StartedAt:    execution.StartedAt,
 	}
@@ -799,6 +800,7 @@ func (e *Executor) updateExecutionInDB(execution *engine.Execution, logMessage s
 		WorkflowName: executionCopy.WorkflowID,
 		Status:       executionCopy.Status,
 		NodeStates:   datatypes.JSON(nodeStatesJSON),
+		A2ATasks:     currentExecution.A2ATasks, // Preserve A2A task mapping
 		Logs:         currentExecution.Logs + logMessage + "\n",
 		StartedAt:    executionCopy.StartedAt,
 		CompletedAt:  executionCopy.CompletedAt,

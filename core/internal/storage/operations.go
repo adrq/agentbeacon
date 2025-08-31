@@ -159,8 +159,8 @@ func (db *DB) CreateExecution(execution *Execution) error {
 	execution.StartedAt = time.Now()
 
 	_, err := db.NamedExec(`
-		INSERT INTO execution (id, workflow_name, status, node_states, logs, started_at, completed_at)
-		VALUES (:id, :workflow_name, :status, :node_states, :logs, :started_at, :completed_at)
+		INSERT INTO execution (id, workflow_name, status, node_states, a2_a_tasks, logs, started_at, completed_at)
+		VALUES (:id, :workflow_name, :status, :node_states, :a2_a_tasks, :logs, :started_at, :completed_at)
 	`, execution)
 	return err
 }
@@ -168,7 +168,7 @@ func (db *DB) CreateExecution(execution *Execution) error {
 func (db *DB) UpdateExecution(execution *Execution) error {
 	_, err := db.NamedExec(`
 		UPDATE execution
-		SET status = :status, node_states = :node_states, logs = :logs, completed_at = :completed_at
+		SET status = :status, node_states = :node_states, a2_a_tasks = :a2_a_tasks, logs = :logs, completed_at = :completed_at
 		WHERE id = :id
 	`, execution)
 	return err
