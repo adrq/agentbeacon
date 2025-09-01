@@ -17,6 +17,8 @@ build-frontend: npm-install
 test-deps: npm-install
 	@echo "Building test dependencies..."
 	@mkdir -p bin
+	@echo "Building agentmaestro binary for tests..."
+	go build -o bin/agentmaestro ./core/cmd/agentmaestro
 	@echo "Building mock-agent for testing..."
 	go build -o bin/mock-agent ./core/cmd/mock-agent
 	@echo "Building frontend for embedded files..."
@@ -39,6 +41,11 @@ test: test-deps
 test-nocache: test-deps
 	@echo "Running tests without cache..."
 	go test -count=1 ./... -v
+
+# Run A2A integration tests
+test-e2e: test-deps
+	@echo "Running E2E (A2A) tests with real binaries..."
+	go test -tags e2e -v ./core/internal/api -run TestE2E
 
 # Run target
 run: build
