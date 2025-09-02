@@ -846,7 +846,12 @@ func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
 		}
 		return NewA2AAgent(url), nil
 	case "acp":
-		return nil, fmt.Errorf("ACP agents not yet implemented")
+		command, ok := agentConfig.Config["command"].(string)
+		if !ok {
+			return nil, fmt.Errorf("acp agent '%s' missing 'command' in config", node.Agent)
+		}
+		args, _ := agentConfig.Config["args"].([]string)
+		return NewACPAgent(command, args)
 	default:
 		return nil, fmt.Errorf("unknown agent type: %s", agentConfig.Type)
 	}
