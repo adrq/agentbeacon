@@ -17,6 +17,7 @@ import (
 	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/executor"
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol/jsonrpc"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/agentmaestro/agentmaestro/core/internal/testutil"
 	"github.com/google/uuid"
@@ -946,7 +947,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 		url := fmt.Sprintf("http://localhost:%d/rpc", port)
 
 		// Submit a task
-		request := protocol.JSONRPCRequest{
+		request := jsonrpc.Request{
 			JSONRPC: "2.0",
 			Method:  "message/send",
 			ID:      1,
@@ -980,7 +981,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var rpcResp protocol.JSONRPCResponse
+		var rpcResp jsonrpc.Response
 		err = json.NewDecoder(resp.Body).Decode(&rpcResp)
 		require.NoError(t, err)
 		require.Nil(t, rpcResp.Error)
@@ -1005,7 +1006,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 
 		for time.Now().Before(deadline) {
 			// Query task status
-			getRequest := protocol.JSONRPCRequest{
+			getRequest := jsonrpc.Request{
 				JSONRPC: "2.0",
 				Method:  "tasks/get",
 				ID:      2,
@@ -1025,7 +1026,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 			getResp, err := http.Post(url, "application/json", bytes.NewBuffer(getReqBody))
 			require.NoError(t, err)
 
-			var getRpcResp protocol.JSONRPCResponse
+			var getRpcResp jsonrpc.Response
 			err = json.NewDecoder(getResp.Body).Decode(&getRpcResp)
 			getResp.Body.Close()
 			require.NoError(t, err)
@@ -1058,7 +1059,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 	t.Run("DelayPattern", func(t *testing.T) {
 		url := fmt.Sprintf("http://localhost:%d/rpc", port)
 
-		request := protocol.JSONRPCRequest{
+		request := jsonrpc.Request{
 			JSONRPC: "2.0",
 			Method:  "message/send",
 			ID:      3,
@@ -1091,7 +1092,7 @@ func TestMockA2AAgentIntegration(t *testing.T) {
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
-		var rpcResp protocol.JSONRPCResponse
+		var rpcResp jsonrpc.Response
 		err = json.NewDecoder(resp.Body).Decode(&rpcResp)
 		require.NoError(t, err)
 		require.Nil(t, rpcResp.Error)

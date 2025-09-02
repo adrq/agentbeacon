@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol/jsonrpc"
 	"github.com/google/uuid"
 )
 
@@ -151,10 +152,10 @@ func (s *MockA2AServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req protocol.JSONRPCRequest
+	var req jsonrpc.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, &protocol.JSONRPCError{
-			Code:    -32700,
+		s.writeError(w, &jsonrpc.Error{
+			Code:    jsonrpc.ErrorCodeParseError,
 			Message: "Parse error",
 		}, req.ID)
 		return
@@ -171,23 +172,23 @@ func (s *MockA2AServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 	case "tasks/cancel":
 		result, err = s.handleTasksCancel(req.Params)
 	default:
-		s.writeError(w, &protocol.JSONRPCError{
-			Code:    -32601,
+		s.writeError(w, &jsonrpc.Error{
+			Code:    jsonrpc.ErrorCodeMethodNotFound,
 			Message: "Method not found",
 		}, req.ID)
 		return
 	}
 
 	if err != nil {
-		s.writeError(w, &protocol.JSONRPCError{
-			Code:    -32603,
+		s.writeError(w, &jsonrpc.Error{
+			Code:    jsonrpc.ErrorCodeInternalError,
 			Message: "Internal error",
 			Data:    err.Error(),
 		}, req.ID)
 		return
 	}
 
-	response := protocol.JSONRPCResponse{
+	response := jsonrpc.Response{
 		JSONRPC: "2.0",
 		Result:  result,
 		ID:      req.ID,
@@ -198,8 +199,8 @@ func (s *MockA2AServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeError writes a JSON-RPC error response
-func (s *MockA2AServer) writeError(w http.ResponseWriter, err *protocol.JSONRPCError, id interface{}) {
-	response := protocol.JSONRPCResponse{
+func (s *MockA2AServer) writeError(w http.ResponseWriter, err *jsonrpc.Error, id interface{}) {
+	response := jsonrpc.Response{
 		JSONRPC: "2.0",
 		Error:   err,
 		ID:      id,

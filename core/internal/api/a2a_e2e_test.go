@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol/jsonrpc"
 	"github.com/agentmaestro/agentmaestro/core/internal/testutil"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -25,8 +26,8 @@ import (
 // NOTE: This E2E file now spawns real binaries (agentmaestro + mock-agent) built by `make test-deps`.
 // Helper processes are in testutil/proc_helpers_test.go (build-tagged e2e).
 
-func sendA2AE2ERequest(t *testing.T, serverURL, method string, params interface{}) (*protocol.JSONRPCResponse, error) {
-	request := protocol.NewJSONRPCRequest(method, params, uuid.New().String())
+func sendA2AE2ERequest(t *testing.T, serverURL, method string, params interface{}) (*jsonrpc.Response, error) {
+	request := jsonrpc.NewRequest(method, params, uuid.New().String())
 
 	body, err := json.Marshal(request)
 	require.NoError(t, err)
@@ -42,7 +43,7 @@ func sendA2AE2ERequest(t *testing.T, serverURL, method string, params interface{
 		return nil, err
 	}
 
-	var rpcResponse protocol.JSONRPCResponse
+	var rpcResponse jsonrpc.Response
 	err = json.Unmarshal(responseBody, &rpcResponse)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w, body: %s", err, string(responseBody))

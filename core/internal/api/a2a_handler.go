@@ -10,6 +10,7 @@ import (
 
 	"github.com/agentmaestro/agentmaestro/core/internal/executor"
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol/jsonrpc"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -38,17 +39,17 @@ func NewA2AHandler(db *storage.DB, executor *executor.Executor) *A2AHandler {
 // ServeHTTP handles A2A JSON-RPC requests
 func (h *A2AHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		h.writeError(w, &protocol.JSONRPCError{
-			Code:    -32601,
+		h.writeError(w, &jsonrpc.Error{
+			Code:    jsonrpc.ErrorCodeMethodNotFound,
 			Message: "Method not allowed",
 		}, nil)
 		return
 	}
 
-	var req protocol.JSONRPCRequest
+	var req jsonrpc.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.writeError(w, &protocol.JSONRPCError{
-			Code:    -32700,
+		h.writeError(w, &jsonrpc.Error{
+			Code:    jsonrpc.ErrorCodeParseError,
 			Message: "Parse error",
 		}, req.ID)
 		return
@@ -65,23 +66,23 @@ func (h *A2AHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "tasks/cancel":
 		result, err = h.handleTasksCancel(req.Params)
 	default:
-		h.writeError(w, &protocol.JSONRPCError{
-			Code:    -32601,
+		h.writeError(w, &jsonrpc.Error{
+			Code:    jsonrpc.ErrorCodeMethodNotFound,
 			Message: "Method not found",
 		}, req.ID)
 		return
 	}
 
 	if err != nil {
-		h.writeError(w, &protocol.JSONRPCError{
-			Code:    -32603,
+		h.writeError(w, &jsonrpc.Error{
+			Code:    jsonrpc.ErrorCodeInternalError,
 			Message: "Internal error",
 			Data:    err.Error(),
 		}, req.ID)
 		return
 	}
 
-	response := protocol.JSONRPCResponse{
+	response := jsonrpc.Response{
 		JSONRPC: "2.0",
 		Result:  result,
 		ID:      req.ID,
@@ -92,8 +93,8 @@ func (h *A2AHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeError writes a JSON-RPC error response
-func (h *A2AHandler) writeError(w http.ResponseWriter, err *protocol.JSONRPCError, id interface{}) {
-	response := protocol.JSONRPCResponse{
+func (h *A2AHandler) writeError(w http.ResponseWriter, err *jsonrpc.Error, id interface{}) {
+	response := jsonrpc.Response{
 		JSONRPC: "2.0",
 		Error:   err,
 		ID:      id,

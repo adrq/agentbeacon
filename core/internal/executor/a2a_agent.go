@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol/jsonrpc"
 )
 
 type A2AAgent struct {
@@ -75,7 +76,7 @@ func (a *A2AAgent) Close() error {
 }
 
 func (a *A2AAgent) submitTask(prompt string) (string, error) {
-	request := protocol.JSONRPCRequest{
+	request := jsonrpc.Request{
 		JSONRPC: "2.0",
 		Method:  "message/send",
 		ID:      1,
@@ -107,7 +108,7 @@ func (a *A2AAgent) submitTask(prompt string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	var rpcResp protocol.JSONRPCResponse
+	var rpcResp jsonrpc.Response
 	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
 		return "", err
 	}
@@ -130,7 +131,7 @@ func (a *A2AAgent) submitTask(prompt string) (string, error) {
 }
 
 func (a *A2AAgent) pollTaskStatus(taskID string) (*protocol.Task, error) {
-	request := protocol.JSONRPCRequest{
+	request := jsonrpc.Request{
 		JSONRPC: "2.0",
 		Method:  "tasks/get",
 		ID:      2,
@@ -155,7 +156,7 @@ func (a *A2AAgent) pollTaskStatus(taskID string) (*protocol.Task, error) {
 	}
 	defer resp.Body.Close()
 
-	var rpcResp protocol.JSONRPCResponse
+	var rpcResp jsonrpc.Response
 	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
 		return nil, err
 	}
@@ -178,7 +179,7 @@ func (a *A2AAgent) pollTaskStatus(taskID string) (*protocol.Task, error) {
 }
 
 func (a *A2AAgent) cancelTask(taskID string) error {
-	request := protocol.JSONRPCRequest{
+	request := jsonrpc.Request{
 		JSONRPC: "2.0",
 		Method:  "tasks/cancel",
 		ID:      3,

@@ -1,31 +1,8 @@
 package protocol
 
 import (
-	"encoding/json"
 	"time"
 )
-
-// JSON-RPC 2.0 Protocol Types
-
-type JSONRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	ID      interface{}     `json:"id"`
-}
-
-type JSONRPCResponse struct {
-	JSONRPC string        `json:"jsonrpc"`
-	Result  interface{}   `json:"result,omitempty"`
-	Error   *JSONRPCError `json:"error,omitempty"`
-	ID      interface{}   `json:"id"`
-}
-
-type JSONRPCError struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
-}
 
 // A2A Protocol Core Types
 
@@ -234,38 +211,6 @@ type ListTaskPushNotificationConfigParams struct {
 
 // Helper functions for creating common structures
 
-func NewJSONRPCRequest(method string, params interface{}, id interface{}) *JSONRPCRequest {
-	var rawParams json.RawMessage
-	if params != nil {
-		rawParams, _ = json.Marshal(params)
-	}
-	return &JSONRPCRequest{
-		JSONRPC: "2.0",
-		Method:  method,
-		Params:  rawParams,
-		ID:      id,
-	}
-}
-
-func NewJSONRPCResponse(result interface{}, id interface{}) *JSONRPCResponse {
-	return &JSONRPCResponse{
-		JSONRPC: "2.0",
-		Result:  result,
-		ID:      id,
-	}
-}
-
-func NewJSONRPCError(code int, message string, id interface{}) *JSONRPCResponse {
-	return &JSONRPCResponse{
-		JSONRPC: "2.0",
-		Error: &JSONRPCError{
-			Code:    code,
-			Message: message,
-		},
-		ID: id,
-	}
-}
-
 func NewTextPart(text string) Part {
 	return Part{
 		Kind: "text",
@@ -330,13 +275,8 @@ const (
 	TaskStateUnknown       = "unknown"
 )
 
-// Standard A2A error codes
+// A2A-specific error codes (standard JSON-RPC codes are in jsonrpc package)
 const (
-	ErrorCodeParseError           = -32700
-	ErrorCodeInvalidRequest       = -32600
-	ErrorCodeMethodNotFound       = -32601
-	ErrorCodeInvalidParams        = -32602
-	ErrorCodeInternalError        = -32603
 	ErrorCodeTaskNotFound         = -32001
 	ErrorCodeTaskNotCancelable    = -32002
 	ErrorCodeUnsupportedOperation = -32004
