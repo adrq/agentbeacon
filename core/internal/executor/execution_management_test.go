@@ -22,7 +22,8 @@ func TestExecutionManagement(t *testing.T) {
 		t.Fatalf("Failed to register workflow: %v", err)
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	t.Run("ExecutionStatus", func(t *testing.T) {
 		// Start workflow

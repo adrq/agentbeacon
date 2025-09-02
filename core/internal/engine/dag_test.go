@@ -7,9 +7,9 @@ import (
 
 func TestValidateDAGLinearChain(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "test-agent", Prompt: "Task A", DependsOn: []string{}},
-		{ID: "B", Agent: "test-agent", Prompt: "Task B", DependsOn: []string{"A"}},
-		{ID: "C", Agent: "test-agent", Prompt: "Task C", DependsOn: []string{"B"}},
+		{ID: "A", Agent: "test-agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{}},
+		{ID: "B", Agent: "test-agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"A"}},
+		{ID: "C", Agent: "test-agent", Request: map[string]interface{}{"prompt": "Task C"}, DependsOn: []string{"B"}},
 	}
 
 	err := ValidateDAG(nodes)
@@ -20,10 +20,10 @@ func TestValidateDAGLinearChain(t *testing.T) {
 
 func TestValidateDAGParallelBranches(t *testing.T) {
 	nodes := []Node{
-		{ID: "fetch_data", Agent: "demo-agent", Prompt: "Fetch data", DependsOn: []string{}},
-		{ID: "analyze_code", Agent: "demo-agent", Prompt: "Analyze code", DependsOn: []string{"fetch_data"}},
-		{ID: "analyze_docs", Agent: "test-agent-2", Prompt: "Analyze docs", DependsOn: []string{"fetch_data"}},
-		{ID: "generate_report", Agent: "demo-agent", Prompt: "Generate report", DependsOn: []string{"analyze_code", "analyze_docs"}},
+		{ID: "fetch_data", Agent: "demo-agent", Request: map[string]interface{}{"prompt": "Fetch data"}, DependsOn: []string{}},
+		{ID: "analyze_code", Agent: "demo-agent", Request: map[string]interface{}{"prompt": "Analyze code"}, DependsOn: []string{"fetch_data"}},
+		{ID: "analyze_docs", Agent: "test-agent-2", Request: map[string]interface{}{"prompt": "Analyze docs"}, DependsOn: []string{"fetch_data"}},
+		{ID: "generate_report", Agent: "demo-agent", Request: map[string]interface{}{"prompt": "Generate report"}, DependsOn: []string{"analyze_code", "analyze_docs"}},
 	}
 
 	err := ValidateDAG(nodes)
@@ -33,10 +33,10 @@ func TestValidateDAGParallelBranches(t *testing.T) {
 }
 func TestValidateDAGDiamondPattern(t *testing.T) {
 	nodes := []Node{
-		{ID: "start", Agent: "agent", Prompt: "Start", DependsOn: []string{}},
-		{ID: "branch1", Agent: "agent", Prompt: "Branch 1", DependsOn: []string{"start"}},
-		{ID: "branch2", Agent: "agent", Prompt: "Branch 2", DependsOn: []string{"start"}},
-		{ID: "merge", Agent: "agent", Prompt: "Merge", DependsOn: []string{"branch1", "branch2"}},
+		{ID: "start", Agent: "agent", Request: map[string]interface{}{"prompt": "Start"}, DependsOn: []string{}},
+		{ID: "branch1", Agent: "agent", Request: map[string]interface{}{"prompt": "Branch 1"}, DependsOn: []string{"start"}},
+		{ID: "branch2", Agent: "agent", Request: map[string]interface{}{"prompt": "Branch 2"}, DependsOn: []string{"start"}},
+		{ID: "merge", Agent: "agent", Request: map[string]interface{}{"prompt": "Merge"}, DependsOn: []string{"branch1", "branch2"}},
 	}
 
 	err := ValidateDAG(nodes)
@@ -47,7 +47,7 @@ func TestValidateDAGDiamondPattern(t *testing.T) {
 
 func TestValidateDAGSingleNode(t *testing.T) {
 	nodes := []Node{
-		{ID: "solo", Agent: "agent", Prompt: "Solo task", DependsOn: []string{}},
+		{ID: "solo", Agent: "agent", Request: map[string]interface{}{"prompt": "Solo task"}, DependsOn: []string{}},
 	}
 
 	err := ValidateDAG(nodes)
@@ -67,10 +67,10 @@ func TestValidateDAGEmptyNodes(t *testing.T) {
 
 func TestValidateDAGMultipleDisconnectedComponents(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{"A"}},
-		{ID: "X", Agent: "agent", Prompt: "Task X", DependsOn: []string{}},
-		{ID: "Y", Agent: "agent", Prompt: "Task Y", DependsOn: []string{"X"}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"A"}},
+		{ID: "X", Agent: "agent", Request: map[string]interface{}{"prompt": "Task X"}, DependsOn: []string{}},
+		{ID: "Y", Agent: "agent", Request: map[string]interface{}{"prompt": "Task Y"}, DependsOn: []string{"X"}},
 	}
 
 	err := ValidateDAG(nodes)
@@ -81,8 +81,8 @@ func TestValidateDAGMultipleDisconnectedComponents(t *testing.T) {
 
 func TestValidateDAGSimpleCycle(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{"B"}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{"A"}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{"B"}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"A"}},
 	}
 
 	err := ValidateDAG(nodes)
@@ -98,10 +98,10 @@ func TestValidateDAGSimpleCycle(t *testing.T) {
 
 func TestValidateDAGComplexCycle(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{"B"}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{"C"}},
-		{ID: "C", Agent: "agent", Prompt: "Task C", DependsOn: []string{"D"}},
-		{ID: "D", Agent: "agent", Prompt: "Task D", DependsOn: []string{"B"}}, // Creates cycle
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{"B"}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"C"}},
+		{ID: "C", Agent: "agent", Request: map[string]interface{}{"prompt": "Task C"}, DependsOn: []string{"D"}},
+		{ID: "D", Agent: "agent", Request: map[string]interface{}{"prompt": "Task D"}, DependsOn: []string{"B"}}, // Creates cycle
 	}
 
 	err := ValidateDAG(nodes)
@@ -116,8 +116,8 @@ func TestValidateDAGComplexCycle(t *testing.T) {
 
 func TestValidateDAGSelfDependency(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{"A"}}, // Self-dependency
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{"A"}}, // Self-dependency
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{}},
 	}
 
 	err := ValidateDAG(nodes)
@@ -132,8 +132,8 @@ func TestValidateDAGSelfDependency(t *testing.T) {
 
 func TestValidateDAGMissingDependency(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{"nonexistent"}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{"nonexistent"}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{}},
 	}
 
 	err := ValidateDAG(nodes)
@@ -148,9 +148,9 @@ func TestValidateDAGMissingDependency(t *testing.T) {
 
 func TestValidateDAGDuplicateNodeIDs(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{}},
-		{ID: "A", Agent: "agent", Prompt: "Task A duplicate", DependsOn: []string{}}, // Duplicate ID
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A duplicate"}, DependsOn: []string{}}, // Duplicate ID
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{}},
 	}
 
 	err := ValidateDAG(nodes)
@@ -165,9 +165,9 @@ func TestValidateDAGDuplicateNodeIDs(t *testing.T) {
 
 func TestTopologicalSortLinearChain(t *testing.T) {
 	nodes := []Node{
-		{ID: "C", Agent: "agent", Prompt: "Task C", DependsOn: []string{"B"}}, // Order doesn't matter
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{"A"}},
+		{ID: "C", Agent: "agent", Request: map[string]interface{}{"prompt": "Task C"}, DependsOn: []string{"B"}}, // Order doesn't matter
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"A"}},
 	}
 
 	result, err := TopologicalSort(nodes)
@@ -183,10 +183,10 @@ func TestTopologicalSortLinearChain(t *testing.T) {
 
 func TestTopologicalSortParallelBranches(t *testing.T) {
 	nodes := []Node{
-		{ID: "fetch_data", Agent: "demo-agent", Prompt: "Fetch data", DependsOn: []string{}},
-		{ID: "analyze_code", Agent: "demo-agent", Prompt: "Analyze code", DependsOn: []string{"fetch_data"}},
-		{ID: "analyze_docs", Agent: "test-agent-2", Prompt: "Analyze docs", DependsOn: []string{"fetch_data"}},
-		{ID: "generate_report", Agent: "demo-agent", Prompt: "Generate report", DependsOn: []string{"analyze_code", "analyze_docs"}},
+		{ID: "fetch_data", Agent: "demo-agent", Request: map[string]interface{}{"prompt": "Fetch data"}, DependsOn: []string{}},
+		{ID: "analyze_code", Agent: "demo-agent", Request: map[string]interface{}{"prompt": "Analyze code"}, DependsOn: []string{"fetch_data"}},
+		{ID: "analyze_docs", Agent: "test-agent-2", Request: map[string]interface{}{"prompt": "Analyze docs"}, DependsOn: []string{"fetch_data"}},
+		{ID: "generate_report", Agent: "demo-agent", Request: map[string]interface{}{"prompt": "Generate report"}, DependsOn: []string{"analyze_code", "analyze_docs"}},
 	}
 
 	result, err := TopologicalSort(nodes)
@@ -224,10 +224,10 @@ func TestTopologicalSortParallelBranches(t *testing.T) {
 
 func TestTopologicalSortDiamondPattern(t *testing.T) {
 	nodes := []Node{
-		{ID: "start", Agent: "agent", Prompt: "Start", DependsOn: []string{}},
-		{ID: "branch1", Agent: "agent", Prompt: "Branch 1", DependsOn: []string{"start"}},
-		{ID: "branch2", Agent: "agent", Prompt: "Branch 2", DependsOn: []string{"start"}},
-		{ID: "merge", Agent: "agent", Prompt: "Merge", DependsOn: []string{"branch1", "branch2"}},
+		{ID: "start", Agent: "agent", Request: map[string]interface{}{"prompt": "Start"}, DependsOn: []string{}},
+		{ID: "branch1", Agent: "agent", Request: map[string]interface{}{"prompt": "Branch 1"}, DependsOn: []string{"start"}},
+		{ID: "branch2", Agent: "agent", Request: map[string]interface{}{"prompt": "Branch 2"}, DependsOn: []string{"start"}},
+		{ID: "merge", Agent: "agent", Request: map[string]interface{}{"prompt": "Merge"}, DependsOn: []string{"branch1", "branch2"}},
 	}
 
 	result, err := TopologicalSort(nodes)
@@ -256,7 +256,7 @@ func TestTopologicalSortDiamondPattern(t *testing.T) {
 
 func TestTopologicalSortSingleNode(t *testing.T) {
 	nodes := []Node{
-		{ID: "solo", Agent: "agent", Prompt: "Solo task", DependsOn: []string{}},
+		{ID: "solo", Agent: "agent", Request: map[string]interface{}{"prompt": "Solo task"}, DependsOn: []string{}},
 	}
 
 	result, err := TopologicalSort(nodes)
@@ -275,11 +275,11 @@ func TestTopologicalSortDeepDAGWithBranch(t *testing.T) {
 	//                                    ↘
 	//                                      E
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{"A"}},
-		{ID: "C", Agent: "agent", Prompt: "Task C", DependsOn: []string{"B"}},
-		{ID: "D", Agent: "agent", Prompt: "Task D", DependsOn: []string{"C"}},
-		{ID: "E", Agent: "agent", Prompt: "Task E", DependsOn: []string{"B"}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"A"}},
+		{ID: "C", Agent: "agent", Request: map[string]interface{}{"prompt": "Task C"}, DependsOn: []string{"B"}},
+		{ID: "D", Agent: "agent", Request: map[string]interface{}{"prompt": "Task D"}, DependsOn: []string{"C"}},
+		{ID: "E", Agent: "agent", Request: map[string]interface{}{"prompt": "Task E"}, DependsOn: []string{"B"}},
 	}
 
 	result, err := TopologicalSort(nodes)
@@ -322,9 +322,9 @@ func TestTopologicalSortDeepDAGWithBranch(t *testing.T) {
 
 func TestTopologicalSortNoDependencies(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{}},
-		{ID: "C", Agent: "agent", Prompt: "Task C", DependsOn: []string{}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{}},
+		{ID: "C", Agent: "agent", Request: map[string]interface{}{"prompt": "Task C"}, DependsOn: []string{}},
 	}
 
 	result, err := TopologicalSort(nodes)
@@ -366,9 +366,9 @@ func TestTopologicalSortEmptyNodes(t *testing.T) {
 
 func TestTopologicalSortWithCycle(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{"B"}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{"C"}},
-		{ID: "C", Agent: "agent", Prompt: "Task C", DependsOn: []string{"A"}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{"B"}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"C"}},
+		{ID: "C", Agent: "agent", Request: map[string]interface{}{"prompt": "Task C"}, DependsOn: []string{"A"}},
 	}
 
 	_, err := TopologicalSort(nodes)
@@ -383,10 +383,10 @@ func TestTopologicalSortWithCycle(t *testing.T) {
 
 func TestTopologicalSortDisconnectedComponents(t *testing.T) {
 	nodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{"A"}},
-		{ID: "X", Agent: "agent", Prompt: "Task X", DependsOn: []string{}},
-		{ID: "Y", Agent: "agent", Prompt: "Task Y", DependsOn: []string{"X"}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"A"}},
+		{ID: "X", Agent: "agent", Request: map[string]interface{}{"prompt": "Task X"}, DependsOn: []string{}},
+		{ID: "Y", Agent: "agent", Request: map[string]interface{}{"prompt": "Task Y"}, DependsOn: []string{"X"}},
 	}
 
 	result, err := TopologicalSort(nodes)
@@ -431,8 +431,8 @@ func TestTopologicalSortDisconnectedComponents(t *testing.T) {
 func TestValidateDAGErrorTypes(t *testing.T) {
 	// Test ValidationError is returned for cycles
 	cycleNodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{"B"}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{"A"}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{"B"}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"A"}},
 	}
 
 	err := ValidateDAG(cycleNodes)
@@ -450,8 +450,8 @@ func TestValidateDAGErrorTypes(t *testing.T) {
 func TestTopologicalSortErrorTypes(t *testing.T) {
 	// Test with cycle
 	cycleNodes := []Node{
-		{ID: "A", Agent: "agent", Prompt: "Task A", DependsOn: []string{"B"}},
-		{ID: "B", Agent: "agent", Prompt: "Task B", DependsOn: []string{"A"}},
+		{ID: "A", Agent: "agent", Request: map[string]interface{}{"prompt": "Task A"}, DependsOn: []string{"B"}},
+		{ID: "B", Agent: "agent", Request: map[string]interface{}{"prompt": "Task B"}, DependsOn: []string{"A"}},
 	}
 
 	_, err := TopologicalSort(cycleNodes)

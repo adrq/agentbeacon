@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agentmaestro/agentmaestro/core/internal/api"
+	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/executor"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 )
@@ -84,6 +85,9 @@ func startServer(ctx context.Context, addr, driver, dsn string, ready chan<- str
 	}
 	defer db.Close()
 
+	// Initialize config loader
+	configLoader := config.NewConfigLoader("examples/agents.yaml")
+
 	// Create HTTP server
 	mux := http.NewServeMux()
 
@@ -121,11 +125,11 @@ func startServer(ctx context.Context, addr, driver, dsn string, ready chan<- str
 	}
 
 	// Add REST API endpoints
-	restHandler := api.NewRestHandler(db)
+	restHandler := api.NewRestHandler(db, configLoader)
 	mux.Handle("/api/", restHandler)
 
 	// Add A2A Protocol endpoints
-	executor := executor.NewExecutor(db)
+	executor := executor.NewExecutor(db, configLoader)
 	a2aHandler := api.NewA2AHandler(db, executor)
 	mux.Handle("/rpc", a2aHandler)
 	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {

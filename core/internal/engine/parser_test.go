@@ -154,16 +154,6 @@ nodes:
 `,
 			expected: "agent is required",
 		},
-		{
-			name: "node missing prompt",
-			yaml: `
-name: "Test"
-nodes:
-  - id: test
-    agent: demo-agent
-`,
-			expected: "prompt is required",
-		},
 	}
 
 	for _, tt := range tests {
@@ -186,17 +176,6 @@ func TestValidateWorkflow_InvalidValues(t *testing.T) {
 		yaml     string
 		expected string
 	}{
-		{
-			name: "invalid agent",
-			yaml: `
-name: "Test"
-nodes:
-  - id: test
-    agent: invalid-agent
-    prompt: "test"
-`,
-			expected: "invalid agent",
-		},
 		{
 			name: "duplicate node IDs",
 			yaml: `

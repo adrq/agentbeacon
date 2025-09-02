@@ -43,7 +43,8 @@ func testSharedExecutorCancellation(t *testing.T, driver, dsn string) {
 	}
 
 	// Create a SHARED executor instance (this simulates the real usage pattern)
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	// Start workflow execution using the same executor instance
 	execution, err := executor.StartWorkflow("cancellation-test-workflow")
@@ -104,7 +105,8 @@ func testConcurrentLogUpdates(t *testing.T, driver, dsn string) {
 	db := setupTestDB(t, driver, dsn)
 	defer db.Close()
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	// Create a test execution in the database
 	execution := &engine.Execution{
@@ -208,7 +210,8 @@ func testProgressCalculationWithTerminalStates(t *testing.T, driver, dsn string)
 	db := setupTestDB(t, driver, dsn)
 	defer db.Close()
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	// Create test execution with mixed node states
 	endedAt := time.Now()
@@ -289,7 +292,8 @@ func testStopExecutionAlreadyCompleted(t *testing.T, driver, dsn string) {
 		t.Fatalf("Failed to register workflow: %v", err)
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	// Start and wait for completion
 	execution, err := executor.StartWorkflow("quick-completion-workflow")

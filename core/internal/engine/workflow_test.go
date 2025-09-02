@@ -81,9 +81,11 @@ func TestWorkflowYAMLExclusion(t *testing.T) {
 func TestJSONOmitemptyBehavior(t *testing.T) {
 	// Node with minimal required fields only
 	node := Node{
-		ID:     "node-1",
-		Agent:  "test-agent",
-		Prompt: "Generate code",
+		ID:    "node-1",
+		Agent: "test-agent",
+		Request: map[string]interface{}{
+			"prompt": "Generate code",
+		},
 		// DependsOn, Timeout, Retry should be omitted when empty/nil
 	}
 
@@ -118,10 +120,12 @@ func TestJSONOmitemptyBehavior(t *testing.T) {
 func TestNilPointerHandling(t *testing.T) {
 	// Test with nil retry config
 	node := Node{
-		ID:     "test-node",
-		Agent:  "test-agent",
-		Prompt: "test",
-		Retry:  nil, // Important: nil pointer
+		ID:    "test-node",
+		Agent: "test-agent",
+		Request: map[string]interface{}{
+			"prompt": "test",
+		},
+		Retry: nil, // Important: nil pointer
 	}
 
 	// Serialize and deserialize

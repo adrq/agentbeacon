@@ -42,7 +42,8 @@ func testExecutionLifecycle(t *testing.T, driver, dsn string) {
 		t.Fatalf("Failed to register workflow: %v", err)
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	// Start workflow execution
 	startTime := time.Now()
@@ -199,7 +200,8 @@ func testParallelExecutionWithConvergence(t *testing.T, driver, dsn string) {
 		t.Fatalf("Failed to register workflow: %v", err)
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	startTime := time.Now()
 	execution, err := executor.StartWorkflow("diamond-workflow")
@@ -324,7 +326,8 @@ func testConcurrentWorkflowExecutions(t *testing.T, driver, dsn string) {
 		}
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	// Start all executions concurrently
 	executions := make(map[string]*ExecutionInfo)

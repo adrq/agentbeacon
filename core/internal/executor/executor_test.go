@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
@@ -41,6 +42,29 @@ func setupStdioAgent(t *testing.T, responses map[string]string) *StdioAgent {
 	})
 
 	return agent
+}
+
+func setupTestConfigLoader(t *testing.T) *config.ConfigLoader {
+	// Create a temporary agents.yaml file for testing
+	tempDir := t.TempDir()
+	agentsFile := filepath.Join(tempDir, "agents.yaml")
+
+	agentsConfig := `agents:
+  mock-agent:
+    type: stdio
+    config:
+      command: "../../../bin/mock-agent"
+  claude:
+    type: stdio
+    config:
+      command: "../../../bin/mock-agent"
+`
+
+	if err := os.WriteFile(agentsFile, []byte(agentsConfig), 0644); err != nil {
+		t.Fatalf("Failed to create test agents config: %v", err)
+	}
+
+	return config.NewConfigLoader(agentsFile)
 }
 
 func createTempConfig(t *testing.T, responses map[string]string) string {
@@ -116,7 +140,8 @@ func testExecutorStartWorkflow(t *testing.T, driver, dsn string) {
 		t.Fatalf("Failed to register workflow: %v", err)
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 	execution, err := executor.StartWorkflow("simple-workflow")
 	if err != nil {
 		t.Fatalf("Failed to start workflow: %v", err)
@@ -154,7 +179,8 @@ func testExecutorStartWorkflowNonexistent(t *testing.T, driver, dsn string) {
 	db := setupTestDB(t, driver, dsn)
 	defer db.Close()
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	_, err := executor.StartWorkflow("nonexistent-workflow")
 	if err == nil {
@@ -180,7 +206,7 @@ func testExecutorSequentialExecution(t *testing.T, driver, dsn string) {
 	defer db.Close()
 
 	workflowFile := createTestWorkflow(t, "sequential-workflow", []testNode{
-		{ID: "step1", Agent: "claude", Prompt: "Execute step 1"},
+		{ID: "step1", Agent: "mock-agent", Prompt: "Execute step 1"},
 		{ID: "step2", Agent: "claude", Prompt: "Execute step 2", DependsOn: []string{"step1"}},
 		{ID: "step3", Agent: "claude", Prompt: "Execute step 3", DependsOn: []string{"step2"}},
 	})
@@ -189,7 +215,8 @@ func testExecutorSequentialExecution(t *testing.T, driver, dsn string) {
 		t.Fatalf("Failed to register workflow: %v", err)
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 	execution, err := executor.StartWorkflow("sequential-workflow")
 	if err != nil {
 		t.Fatalf("Failed to start workflow: %v", err)
@@ -221,7 +248,7 @@ func testExecutorStatePersistence(t *testing.T, driver, dsn string) {
 	defer db.Close()
 
 	workflowFile := createTestWorkflow(t, "state-test-workflow", []testNode{
-		{ID: "node1", Agent: "claude", Prompt: "First task"},
+		{ID: "node1", Agent: "mock-agent", Prompt: "First task"},
 		{ID: "node2", Agent: "claude", Prompt: "Second task", DependsOn: []string{"node1"}},
 	})
 
@@ -229,7 +256,8 @@ func testExecutorStatePersistence(t *testing.T, driver, dsn string) {
 		t.Fatalf("Failed to register workflow: %v", err)
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 	execution, err := executor.StartWorkflow("state-test-workflow")
 	if err != nil {
 		t.Fatalf("Failed to start workflow: %v", err)
@@ -304,12 +332,13 @@ func testWorkerPoolTaskSubmissionAndCollection(t *testing.T, driver, dsn string)
 		Name:        "task-test-workflow",
 		Description: "Test workflow for task submission",
 		Nodes: []engine.Node{
-			{ID: "task1", Agent: "mock-agent", Prompt: "Execute task 1"},
-			{ID: "task2", Agent: "mock-agent", Prompt: "Execute task 2"},
+			{ID: "task1", Agent: "mock-agent", Request: map[string]interface{}{"prompt": "Execute task 1"}},
+			{ID: "task2", Agent: "mock-agent", Request: map[string]interface{}{"prompt": "Execute task 2"}},
 		},
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 	pool := NewWorkerPool(context.Background(), 2, executor)
 
 	pool.Start()
@@ -375,9 +404,11 @@ func testWorkerPoolParallelExecution(t *testing.T, driver, dsn string) {
 		nodeID := fmt.Sprintf("parallel-task-%d", i+1)
 		execution.NodeStates[nodeID] = engine.NodeState{Status: constants.TaskStateSubmitted}
 		workflowNodes = append(workflowNodes, engine.Node{
-			ID:     nodeID,
-			Agent:  "mock-agent",
-			Prompt: fmt.Sprintf("Parallel task %d", i+1),
+			ID:    nodeID,
+			Agent: "mock-agent",
+			Request: map[string]interface{}{
+				"prompt": fmt.Sprintf("Parallel task %d", i+1),
+			},
 		})
 	}
 
@@ -386,7 +417,8 @@ func testWorkerPoolParallelExecution(t *testing.T, driver, dsn string) {
 		Nodes: workflowNodes,
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 	pool := NewWorkerPool(context.Background(), 3, executor) // Use fewer workers than tasks to test queuing
 
 	pool.Start()
@@ -488,7 +520,8 @@ func testWorkerPoolTopologicalSort(t *testing.T, driver, dsn string) {
 		execution.NodeStates[node.ID] = engine.NodeState{Status: constants.TaskStateSubmitted}
 	}
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 	pool := NewWorkerPool(context.Background(), 2, executor)
 
 	pool.Start()
@@ -538,7 +571,8 @@ func createTestWorkflow(t *testing.T, name string, nodes []testNode) string {
 	for _, node := range nodes {
 		yamlContent += "  - id: " + node.ID + "\n"
 		yamlContent += "    agent: " + node.Agent + "\n"
-		yamlContent += "    prompt: \"" + node.Prompt + "\"\n"
+		yamlContent += "    request:\n"
+		yamlContent += "      prompt: \"" + node.Prompt + "\"\n"
 		if len(node.DependsOn) > 0 {
 			yamlContent += "    depends_on: ["
 			for i, dep := range node.DependsOn {

@@ -6,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"os/exec"
 	"sync"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
@@ -47,14 +46,16 @@ type WorkerPool struct {
 
 type Executor struct {
 	db               *storage.DB
+	configLoader     *config.ConfigLoader
 	mutex            sync.RWMutex
 	activeExecutions map[string]context.CancelFunc
 	dbMutex          sync.Mutex // Serialize database updates
 }
 
-func NewExecutor(db *storage.DB) *Executor {
+func NewExecutor(db *storage.DB, configLoader *config.ConfigLoader) *Executor {
 	return &Executor{
 		db:               db,
+		configLoader:     configLoader,
 		activeExecutions: make(map[string]context.CancelFunc),
 	}
 }
@@ -713,7 +714,17 @@ func (e *Executor) executeNode(ctx context.Context, execution *engine.Execution,
 
 	e.updateExecutionInDB(execution, fmt.Sprintf("Started executing node: %s", node.ID))
 
-	result, err := agent.Execute(nodeCtx, node.Prompt)
+	// Extract prompt from request based on agent type
+	var prompt string
+	if promptValue, exists := node.Request["prompt"]; exists {
+		prompt = promptValue.(string)
+	} else if taskValue, exists := node.Request["task"]; exists {
+		prompt = taskValue.(string)
+	} else {
+		return fmt.Errorf("node %s missing prompt or task in request", node.ID)
+	}
+
+	result, err := agent.Execute(nodeCtx, prompt)
 
 	endedAt := time.Now()
 	e.mutex.Lock()
@@ -811,35 +822,56 @@ func (e *Executor) updateExecutionInDB(execution *engine.Execution, logMessage s
 
 // createAgentForNode creates an agent for the node based on its configuration
 func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
-	// Check node.AgentURL for A2A agents
-	if node.AgentURL != "" {
-		return NewA2AAgent(node.AgentURL), nil
+	agentConfig, err := e.configLoader.GetAgentConfig(node.Agent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get agent config for '%s': %w", node.Agent, err)
 	}
 
-	// Fallback to stdio agent with mock-agent
-	agentPaths := []string{
-		"../../../bin/mock-agent",
-		"./bin/mock-agent",
-		"bin/mock-agent",
+	// Validate request fields based on agent type
+	if err := e.validateNodeRequest(node, agentConfig); err != nil {
+		return nil, err
 	}
 
-	var agentPath string
-	for _, path := range agentPaths {
-		if _, err := exec.LookPath(path); err == nil {
-			agentPath = path
-			break
+	switch agentConfig.Type {
+	case "stdio":
+		command, ok := agentConfig.Config["command"].(string)
+		if !ok {
+			return nil, fmt.Errorf("stdio agent '%s' missing 'command' in config", node.Agent)
 		}
-		if _, err := os.Stat(path); err == nil {
-			agentPath = path
-			break
+		return NewStdioAgent(command)
+	case "a2a":
+		url, ok := agentConfig.Config["url"].(string)
+		if !ok {
+			return nil, fmt.Errorf("a2a agent '%s' missing 'url' in config", node.Agent)
 		}
+		return NewA2AAgent(url), nil
+	case "acp":
+		return nil, fmt.Errorf("ACP agents not yet implemented")
+	default:
+		return nil, fmt.Errorf("unknown agent type: %s", agentConfig.Type)
 	}
+}
 
-	if agentPath == "" {
-		return nil, fmt.Errorf("mock-agent binary not found in any of the expected paths: %v", agentPaths)
+// validateNodeRequest validates request fields based on agent type
+func (e *Executor) validateNodeRequest(node *engine.Node, agentConfig *config.AgentConfig) error {
+	switch agentConfig.Type {
+	case "stdio":
+		if node.Request["prompt"] == nil {
+			return fmt.Errorf("stdio agent '%s' requires 'prompt' in request", node.Agent)
+		}
+	case "a2a":
+		if node.Request["task"] == nil && node.Request["prompt"] == nil {
+			return fmt.Errorf("a2a agent '%s' requires 'task' or 'prompt' in request", node.Agent)
+		}
+	case "acp":
+		if node.Request["prompt"] == nil {
+			return fmt.Errorf("acp agent '%s' requires 'prompt' in request", node.Agent)
+		}
+		// working_dir is optional
+	default:
+		return fmt.Errorf("unknown agent type: %s", agentConfig.Type)
 	}
-
-	return NewStdioAgent(agentPath)
+	return nil
 }
 
 // determineExecutionStatus determines final execution status with hardcoded stop-all behavior

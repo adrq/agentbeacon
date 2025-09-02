@@ -97,7 +97,17 @@ func (re *RetryableExecutor) executeNodeAttempt(ctx context.Context, execution *
 	}
 	defer agent.Close()
 
-	result, err := agent.Execute(nodeCtx, node.Prompt)
+	// Extract prompt from request based on agent type
+	var prompt string
+	if promptValue, exists := node.Request["prompt"]; exists {
+		prompt = promptValue.(string)
+	} else if taskValue, exists := node.Request["task"]; exists {
+		prompt = taskValue.(string)
+	} else {
+		return fmt.Errorf("node %s missing prompt or task in request", node.ID)
+	}
+
+	result, err := agent.Execute(nodeCtx, prompt)
 	if err != nil {
 		return err
 	}

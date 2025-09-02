@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/executor"
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
@@ -69,8 +70,9 @@ func createTestDB(t *testing.T) *storage.DB {
 func createA2AServer(t *testing.T) (*httptest.Server, *storage.DB) {
 	db := createTestDB(t)
 
-	// Create executor
-	exec := executor.NewExecutor(db)
+	// Create executor with config loader
+	configLoader := config.NewConfigLoader("examples/agents.yaml")
+	exec := executor.NewExecutor(db, configLoader)
 
 	handler := NewA2AHandler(db, exec)
 	server := httptest.NewServer(handler)

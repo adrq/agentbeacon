@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/agentmaestro/agentmaestro/core/internal/api"
+	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +31,8 @@ func TestWorkflowRegistrationIntegrity(t *testing.T) {
 	defer db.Close()
 
 	// Create test server with real HTTP layer
-	server := httptest.NewServer(api.NewRestHandler(db))
+	configLoader := config.NewConfigLoader("examples/agents.yaml")
+	server := httptest.NewServer(api.NewRestHandler(db, configLoader))
 	defer server.Close()
 
 	// Create a real workflow YAML file
@@ -123,7 +125,8 @@ func TestConfigPersistenceAcrossRequests(t *testing.T) {
 	defer db.Close()
 
 	// Create test server
-	server := httptest.NewServer(api.NewRestHandler(db))
+	configLoader := config.NewConfigLoader("examples/agents.yaml")
+	server := httptest.NewServer(api.NewRestHandler(db, configLoader))
 	defer server.Close()
 
 	// Test core business logic: Config lifecycle with realistic data
@@ -285,7 +288,8 @@ func TestInvalidWorkflowHandling(t *testing.T) {
 	defer db.Close()
 
 	// Create test server
-	server := httptest.NewServer(api.NewRestHandler(db))
+	configLoader := config.NewConfigLoader("examples/agents.yaml")
+	server := httptest.NewServer(api.NewRestHandler(db, configLoader))
 	defer server.Close()
 
 	t.Run("InvalidYAMLFile", func(t *testing.T) {

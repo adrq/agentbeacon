@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/executor"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/google/uuid"
@@ -18,10 +19,10 @@ type RestAPI struct {
 	executor *executor.Executor
 }
 
-func NewRestHandler(db *storage.DB) http.Handler {
+func NewRestHandler(db *storage.DB, configLoader *config.ConfigLoader) http.Handler {
 	api := &RestAPI{
 		db:       db,
-		executor: executor.NewExecutor(db),
+		executor: executor.NewExecutor(db, configLoader),
 	}
 	mux := http.NewServeMux()
 

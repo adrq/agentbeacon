@@ -91,15 +91,6 @@ func ValidateNode(node *Node) error {
 		return ValidationError{Field: "agent", Message: "agent is required"}
 	}
 
-	// Validate agent type
-	if node.Agent != "demo-agent" && node.Agent != "test-agent-2" {
-		return ValidationError{Field: "agent", Message: fmt.Sprintf("invalid agent: %s (must be 'demo-agent' or 'test-agent-2')", node.Agent)}
-	}
-
-	if strings.TrimSpace(node.Prompt) == "" {
-		return ValidationError{Field: "prompt", Message: "prompt is required"}
-	}
-
 	// Validate timeout range (0-3600 seconds)
 	if node.Timeout < 0 || node.Timeout > 3600 {
 		return ValidationError{Field: "timeout", Message: "timeout must be between 0 and 3600 seconds"}

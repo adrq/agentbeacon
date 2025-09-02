@@ -20,7 +20,8 @@ func TestExecuteNode_WithTimeout_Success(t *testing.T) {
 	db := setupTestDB(t, "sqlite3", ":memory:")
 	defer db.Close()
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	// Create execution
 	execution := &engine.Execution{
@@ -33,9 +34,11 @@ func TestExecuteNode_WithTimeout_Success(t *testing.T) {
 
 	// Node with 5 second timeout - should succeed quickly
 	node := &engine.Node{
-		ID:      "test-node",
-		Agent:   "mock-agent",
-		Prompt:  "quick task",
+		ID:    "test-node",
+		Agent: "mock-agent",
+		Request: map[string]interface{}{
+			"prompt": "quick task",
+		},
 		Timeout: 5, // 5 seconds
 	}
 
@@ -56,7 +59,8 @@ func TestExecuteNode_WithTimeout_Exceeded(t *testing.T) {
 	db := setupTestDB(t, "sqlite3", ":memory:")
 	defer db.Close()
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 	retryExecutor := NewRetryableExecutor(executor)
 
 	// Create execution
@@ -70,10 +74,12 @@ func TestExecuteNode_WithTimeout_Exceeded(t *testing.T) {
 
 	// Node with very short timeout that will be exceeded
 	node := &engine.Node{
-		ID:      "test-node",
-		Agent:   "mock-agent",
-		Prompt:  "DELAY_3", // Delay 3 seconds
-		Timeout: 1,         // 1 second timeout - will be exceeded
+		ID:    "test-node",
+		Agent: "mock-agent",
+		Request: map[string]interface{}{
+			"prompt": "DELAY_3", // Delay 3 seconds
+		},
+		Timeout: 1, // 1 second timeout - will be exceeded
 	}
 
 	// Initialize node state
@@ -122,7 +128,8 @@ func TestWorkflowExecution_WithTimeouts(t *testing.T) {
 	err := db.RegisterWorkflow(workflowFile)
 	require.NoError(t, err)
 
-	executor := NewExecutor(db)
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
 
 	// Start execution
 	execInfo, err := executor.StartWorkflow("timeout-test")
@@ -170,7 +177,8 @@ func createTimeoutTestWorkflow(t *testing.T, name string, nodes []timeoutNode) s
 	for _, node := range nodes {
 		yamlContent += "  - id: " + node.ID + "\n"
 		yamlContent += "    agent: " + node.Agent + "\n"
-		yamlContent += "    prompt: \"" + node.Prompt + "\"\n"
+		yamlContent += "    request:\n"
+		yamlContent += "      prompt: \"" + node.Prompt + "\"\n"
 		if node.Timeout > 0 {
 			yamlContent += fmt.Sprintf("    timeout: %d\n", node.Timeout)
 		}
