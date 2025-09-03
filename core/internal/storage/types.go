@@ -37,4 +37,26 @@ type Execution struct {
 	Logs         string         `gorm:"type:text" db:"logs"`
 	StartedAt    time.Time      `gorm:"autoCreateTime" db:"started_at"`
 	CompletedAt  *time.Time     `gorm:"" db:"completed_at"`
+	// New versioned workflow linkage (MVP registry). Nullable until old workflow path removed.
+	WorkflowNamespace *string `gorm:"type:varchar(64)" db:"workflow_namespace"`
+	WorkflowVersion   *string `gorm:"type:varchar(64)" db:"workflow_version"`
 }
+
+// WorkflowVersion represents an immutable workflow definition version.
+// Kept alongside legacy WorkflowMeta during incremental migration.
+type WorkflowVersion struct {
+	Namespace    string    `gorm:"primaryKey;type:varchar(64)" db:"namespace"`
+	Name         string    `gorm:"primaryKey;type:varchar(64)" db:"name"`
+	Version      string    `gorm:"primaryKey;type:varchar(64)" db:"version"`
+	IsLatest     bool      `gorm:"type:boolean;not null;default:false" db:"is_latest"`
+	Description  string    `gorm:"type:text" db:"description"`
+	ContentHash  string    `gorm:"type:char(64);not null" db:"content_hash"`
+	YAMLSnapshot string    `gorm:"type:text;not null" db:"yaml_snapshot"`
+	GitRepo      *string   `gorm:"type:text" db:"git_repo"`
+	GitPath      *string   `gorm:"type:text" db:"git_path"`
+	GitCommit    *string   `gorm:"type:char(40)" db:"git_commit"`
+	GitBranch    *string   `gorm:"type:varchar(64)" db:"git_branch"`
+	CreatedAt    time.Time `gorm:"autoCreateTime" db:"created_at"`
+}
+
+func (WorkflowVersion) TableName() string { return "workflow_version" }

@@ -2,11 +2,9 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +14,6 @@ import (
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
-	"gopkg.in/yaml.v3"
 )
 
 func setupStdioAgent(t *testing.T, responses map[string]string) *StdioAgent {
@@ -71,12 +68,22 @@ func createTempConfig(t *testing.T, responses map[string]string) string {
 	tempDir := t.TempDir()
 	configFile := filepath.Join(tempDir, "responses.json")
 
-	configData, err := json.Marshal(responses)
-	if err != nil {
-		t.Fatalf("Failed to marshal config: %v", err)
+	// Simple JSON construction (keys are safe test prompts)
+	first := true
+	content := "{"
+	for k, v := range responses {
+		if !first {
+			content += ","
+		} else {
+			first = false
+		}
+		content += fmt.Sprintf("\n  \"%s\": \"%s\"", k, v)
 	}
-
-	if err := os.WriteFile(configFile, configData, 0644); err != nil {
+	if !first {
+		content += "\n"
+	}
+	content += "}"
+	if err := os.WriteFile(configFile, []byte(content), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
@@ -114,178 +121,7 @@ func TestStdioAgentUnknownPrompt(t *testing.T) {
 	}
 }
 
-func TestExecutorStartWorkflow(t *testing.T) {
-	t.Run("SQLite", func(t *testing.T) {
-		testExecutorStartWorkflow(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
-	})
-
-	t.Run("PostgreSQL", func(t *testing.T) {
-		if !isPostgreSQLAvailable() {
-			t.Skip("PostgreSQL not available")
-		}
-		testExecutorStartWorkflow(t, "postgres", createPostgreSQLTestDB(t, "executor_start_test"))
-	})
-}
-
-func testExecutorStartWorkflow(t *testing.T, driver, dsn string) {
-	db := setupTestDB(t, driver, dsn)
-	defer db.Close()
-
-	workflowFile := createTestWorkflow(t, "simple-workflow", []testNode{
-		{ID: "analyze", Agent: "claude", Prompt: "Analyze the input"},
-		{ID: "transform", Agent: "claude", Prompt: "Transform based on analysis", DependsOn: []string{"analyze"}},
-	})
-
-	if err := db.RegisterWorkflow(workflowFile); err != nil {
-		t.Fatalf("Failed to register workflow: %v", err)
-	}
-
-	configLoader := setupTestConfigLoader(t)
-	executor := NewExecutor(db, configLoader)
-	execution, err := executor.StartWorkflow("simple-workflow")
-	if err != nil {
-		t.Fatalf("Failed to start workflow: %v", err)
-	}
-
-	if execution.ID == "" {
-		t.Error("Expected execution ID to be set")
-	}
-	if execution.WorkflowID != "simple-workflow" {
-		t.Errorf("Expected workflow ID 'simple-workflow', got: %s", execution.WorkflowID)
-	}
-	if execution.Status != constants.TaskStateWorking {
-		t.Errorf("Expected status '%s', got: %s", constants.TaskStateWorking, execution.Status)
-	}
-	if execution.StartedAt.IsZero() {
-		t.Error("Expected StartedAt to be set")
-	}
-
-	retrieved, err := db.GetExecution(execution.ID)
-	if err != nil {
-		t.Fatalf("Failed to retrieve execution from database: %v", err)
-	}
-	if retrieved.Status != constants.TaskStateWorking {
-		t.Errorf("Expected persisted status '%s', got: %s", constants.TaskStateWorking, retrieved.Status)
-	}
-}
-
-func TestExecutorStartWorkflowNonexistent(t *testing.T) {
-	t.Run("SQLite", func(t *testing.T) {
-		testExecutorStartWorkflowNonexistent(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
-	})
-}
-
-func testExecutorStartWorkflowNonexistent(t *testing.T, driver, dsn string) {
-	db := setupTestDB(t, driver, dsn)
-	defer db.Close()
-
-	configLoader := setupTestConfigLoader(t)
-	executor := NewExecutor(db, configLoader)
-
-	_, err := executor.StartWorkflow("nonexistent-workflow")
-	if err == nil {
-		t.Error("Expected error when starting nonexistent workflow")
-	}
-}
-
-func TestExecutorSequentialExecution(t *testing.T) {
-	t.Run("SQLite", func(t *testing.T) {
-		testExecutorSequentialExecution(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
-	})
-
-	t.Run("PostgreSQL", func(t *testing.T) {
-		if !isPostgreSQLAvailable() {
-			t.Skip("PostgreSQL not available")
-		}
-		testExecutorSequentialExecution(t, "postgres", createPostgreSQLTestDB(t, "executor_seq_test"))
-	})
-}
-
-func testExecutorSequentialExecution(t *testing.T, driver, dsn string) {
-	db := setupTestDB(t, driver, dsn)
-	defer db.Close()
-
-	workflowFile := createTestWorkflow(t, "sequential-workflow", []testNode{
-		{ID: "step1", Agent: "mock-agent", Prompt: "Execute step 1"},
-		{ID: "step2", Agent: "claude", Prompt: "Execute step 2", DependsOn: []string{"step1"}},
-		{ID: "step3", Agent: "claude", Prompt: "Execute step 3", DependsOn: []string{"step2"}},
-	})
-
-	if err := db.RegisterWorkflow(workflowFile); err != nil {
-		t.Fatalf("Failed to register workflow: %v", err)
-	}
-
-	configLoader := setupTestConfigLoader(t)
-	executor := NewExecutor(db, configLoader)
-	execution, err := executor.StartWorkflow("sequential-workflow")
-	if err != nil {
-		t.Fatalf("Failed to start workflow: %v", err)
-	}
-
-	waitForCompletion(t, db, execution.ID, 5*time.Second)
-
-	// Dependencies ensure execution order: step1 → step2 → step3
-	completed, err := db.GetExecution(execution.ID)
-	if err != nil {
-		t.Fatalf("Failed to get completed execution: %v", err)
-	}
-	if completed.Status != constants.TaskStateCompleted {
-		t.Errorf("Expected final status '%s', got: %s", constants.TaskStateCompleted, completed.Status)
-	}
-	if completed.CompletedAt == nil {
-		t.Error("Expected CompletedAt to be set")
-	}
-}
-
-func TestExecutorStatePersistence(t *testing.T) {
-	t.Run("SQLite", func(t *testing.T) {
-		testExecutorStatePersistence(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
-	})
-}
-
-func testExecutorStatePersistence(t *testing.T, driver, dsn string) {
-	db := setupTestDB(t, driver, dsn)
-	defer db.Close()
-
-	workflowFile := createTestWorkflow(t, "state-test-workflow", []testNode{
-		{ID: "node1", Agent: "mock-agent", Prompt: "First task"},
-		{ID: "node2", Agent: "claude", Prompt: "Second task", DependsOn: []string{"node1"}},
-	})
-
-	if err := db.RegisterWorkflow(workflowFile); err != nil {
-		t.Fatalf("Failed to register workflow: %v", err)
-	}
-
-	configLoader := setupTestConfigLoader(t)
-	executor := NewExecutor(db, configLoader)
-	execution, err := executor.StartWorkflow("state-test-workflow")
-	if err != nil {
-		t.Fatalf("Failed to start workflow: %v", err)
-	}
-
-	waitForCompletion(t, db, execution.ID, 5*time.Second)
-
-	final, err := db.GetExecution(execution.ID)
-	if err != nil {
-		t.Fatalf("Failed to get final execution: %v", err)
-	}
-
-	if final.NodeStates == nil {
-		t.Fatal("Expected node states to be persisted")
-	}
-
-	nodeStatesStr := string(final.NodeStates)
-	if !contains(nodeStatesStr, "node1") {
-		t.Error("Expected node1 state to be persisted")
-	}
-	if !contains(nodeStatesStr, "node2") {
-		t.Error("Expected node2 state to be persisted")
-	}
-}
-
-// Removed failure handling test - not essential for MVP core functionality
-
-// Removed multiple workflows test - not essential for MVP
+// Legacy StartWorkflow tests removed; coverage moved to StartWorkflowRef tests in start_workflow_ref_test.go
 
 func TestWorkerPoolTaskSubmissionAndCollection(t *testing.T) {
 	t.Run("SQLite", func(t *testing.T) {
@@ -308,18 +144,10 @@ func testWorkerPoolTaskSubmissionAndCollection(t *testing.T, driver, dsn string)
 	db := setupTestDB(t, driver, dsn)
 	defer db.Close()
 
-	workflowFile := createTestWorkflow(t, "task-test-workflow", []testNode{
-		{ID: "task1", Agent: "mock-agent", Prompt: "Execute task 1"},
-		{ID: "task2", Agent: "mock-agent", Prompt: "Execute task 2"},
-	})
-
-	if err := db.RegisterWorkflow(workflowFile); err != nil {
-		t.Fatalf("Failed to register workflow: %v", err)
-	}
-
+	// Build execution & workflow directly (registry path covered elsewhere)
 	execution := &engine.Execution{
 		ID:         "test-execution-id",
-		WorkflowID: "task-test-workflow",
+		WorkflowID: "inline-test-workflow",
 		Status:     constants.TaskStateWorking,
 		NodeStates: map[string]engine.NodeState{
 			"task1": {Status: constants.TaskStateSubmitted},
@@ -329,7 +157,7 @@ func testWorkerPoolTaskSubmissionAndCollection(t *testing.T, driver, dsn string)
 	}
 
 	workflow := &engine.Workflow{
-		Name:        "task-test-workflow",
+		Name:        "inline-test-workflow",
 		Description: "Test workflow for task submission",
 		Nodes: []engine.Node{
 			{ID: "task1", Agent: "mock-agent", Request: map[string]interface{}{"prompt": "Execute task 1"}},
@@ -384,11 +212,6 @@ func testWorkerPoolParallelExecution(t *testing.T, driver, dsn string) {
 			Agent:  "mock-agent",
 			Prompt: fmt.Sprintf("Parallel task %d", i+1),
 		})
-	}
-
-	workflowFile := createTestWorkflow(t, "parallel-workflow", nodes)
-	if err := db.RegisterWorkflow(workflowFile); err != nil {
-		t.Fatalf("Failed to register workflow: %v", err)
 	}
 
 	execution := &engine.Execution{
@@ -465,26 +288,15 @@ func testWorkerPoolTopologicalSort(t *testing.T, driver, dsn string) {
 	db := setupTestDB(t, driver, dsn)
 	defer db.Close()
 
-	workflowFile := createTestWorkflow(t, "topological-workflow", []testNode{
-		{ID: "level1-a", Agent: "mock-agent", Prompt: "Level 1 task A"},
-		{ID: "level1-b", Agent: "mock-agent", Prompt: "Level 1 task B"},
-		{ID: "level2-a", Agent: "mock-agent", Prompt: "Level 2 task A", DependsOn: []string{"level1-a", "level1-b"}},
-		{ID: "level2-b", Agent: "mock-agent", Prompt: "Level 2 task B", DependsOn: []string{"level1-a"}},
-		{ID: "level3-a", Agent: "mock-agent", Prompt: "Level 3 task A", DependsOn: []string{"level2-a", "level2-b"}},
-	})
-
-	if err := db.RegisterWorkflow(workflowFile); err != nil {
-		t.Fatalf("Failed to register workflow: %v", err)
-	}
-
-	yamlContent, err := db.LoadWorkflowYAML("topological-workflow")
-	if err != nil {
-		t.Fatalf("Failed to load workflow YAML: %v", err)
-	}
-
-	var workflow engine.Workflow
-	if err := yaml.Unmarshal(yamlContent, &workflow); err != nil {
-		t.Fatalf("Failed to parse workflow YAML: %v", err)
+	workflow := engine.Workflow{
+		Name: "topological-workflow",
+		Nodes: []engine.Node{
+			{ID: "level1-a", Agent: "mock-agent", Request: map[string]interface{}{"prompt": "Level 1 task A"}},
+			{ID: "level1-b", Agent: "mock-agent", Request: map[string]interface{}{"prompt": "Level 1 task B"}},
+			{ID: "level2-a", Agent: "mock-agent", Request: map[string]interface{}{"prompt": "Level 2 task A"}, DependsOn: []string{"level1-a", "level1-b"}},
+			{ID: "level2-b", Agent: "mock-agent", Request: map[string]interface{}{"prompt": "Level 2 task B"}, DependsOn: []string{"level1-a"}},
+			{ID: "level3-a", Agent: "mock-agent", Request: map[string]interface{}{"prompt": "Level 3 task A"}, DependsOn: []string{"level2-a", "level2-b"}},
+		},
 	}
 
 	levels, err := engine.TopologicalSort(workflow.Nodes)
@@ -644,10 +456,6 @@ func createPostgreSQLTestDB(t *testing.T, testName string) string {
 // Removed many tasks test - covered by TestWorkerPoolParallelExecution
 
 // Removed race condition test - complex concurrency testing beyond MVP needs
-
-func contains(s, substr string) bool {
-	return strings.Contains(s, substr)
-}
 
 func writeFile(filename, content string) error {
 	return os.WriteFile(filename, []byte(content), 0644)

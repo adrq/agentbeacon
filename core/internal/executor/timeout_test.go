@@ -3,10 +3,6 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -114,40 +110,38 @@ func TestWorkflowExecution_WithTimeouts(t *testing.T) {
 	if !mockAgentExists() {
 		t.Skip("mock-agent binary not found, run 'make build' first")
 	}
-
-	db := setupTestDB(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
+	db := setupTestDB(t, "sqlite3", ":memory:")
 	defer db.Close()
 
-	// Create workflow file with mixed timeouts
-	workflowFile := createTimeoutTestWorkflow(t, "timeout-test", []timeoutNode{
-		{ID: "quick-node", Agent: "mock-agent", Prompt: "quick task", Timeout: 5},
-		{ID: "slow-node", Agent: "mock-agent", Prompt: "DELAY_3", Timeout: 2, DependsOn: []string{"quick-node"}},
-	})
-
-	// Register workflow
-	err := db.RegisterWorkflow(workflowFile)
+	// Inline register workflow (registry model)
+	yaml := "name: timeout-test\n" +
+		"namespace: test\n" +
+		"description: timeout test\n" +
+		"nodes:\n" +
+		"  - id: quick-node\n" +
+		"    agent: mock-agent\n" +
+		"    request:\n" +
+		"      prompt: quick task\n" +
+		"    timeout: 5\n" +
+		"  - id: slow-node\n" +
+		"    agent: mock-agent\n" +
+		"    request:\n" +
+		"      prompt: DELAY_3\n" +
+		"    timeout: 2\n" +
+		"    depends_on: [quick-node]\n"
+	_, err := db.RegisterInlineWorkflow("test", "timeout-test", "", yaml)
 	require.NoError(t, err)
 
 	configLoader := setupTestConfigLoader(t)
 	executor := NewExecutor(db, configLoader)
-
-	// Start execution
-	execInfo, err := executor.StartWorkflow("timeout-test")
+	execInfo, err := executor.StartWorkflowRef("test/timeout-test:latest")
 	require.NoError(t, err)
-
-	// Wait for execution to complete/fail
 	waitForCompletion(t, db, execInfo.ID, 10*time.Second)
-
-	// Get final execution state
 	finalExecution, err := db.GetExecution(execInfo.ID)
 	require.NoError(t, err)
-
-	// Parse node states
 	var nodeStates map[string]engine.NodeState
 	err = json.Unmarshal(finalExecution.NodeStates, &nodeStates)
 	require.NoError(t, err)
-
-	// Should fail due to timeout in slow-node
 	assert.Equal(t, constants.TaskStateFailed, finalExecution.Status)
 	assert.Equal(t, constants.TaskStateCompleted, nodeStates["quick-node"].Status)
 	assert.Equal(t, constants.TaskStateFailed, nodeStates["slow-node"].Status)
@@ -158,40 +152,6 @@ func TestWorkflowExecution_WithTimeouts(t *testing.T) {
 
 // Helper types and functions for timeout tests
 
-type timeoutNode struct {
-	ID        string
-	Agent     string
-	Prompt    string
-	Timeout   int
-	DependsOn []string
-}
-
-func createTimeoutTestWorkflow(t *testing.T, name string, nodes []timeoutNode) string {
-	tempDir := t.TempDir()
-	workflowFile := filepath.Join(tempDir, name+".yaml")
-
-	yamlContent := "name: " + name + "\n"
-	yamlContent += "description: Test workflow for " + name + "\n"
-	yamlContent += "nodes:\n"
-
-	for _, node := range nodes {
-		yamlContent += "  - id: " + node.ID + "\n"
-		yamlContent += "    agent: " + node.Agent + "\n"
-		yamlContent += "    request:\n"
-		yamlContent += "      prompt: \"" + node.Prompt + "\"\n"
-		if node.Timeout > 0 {
-			yamlContent += fmt.Sprintf("    timeout: %d\n", node.Timeout)
-		}
-		if len(node.DependsOn) > 0 {
-			yamlContent += "    depends_on: [" + strings.Join(node.DependsOn, ", ") + "]\n"
-		}
-	}
-
-	if err := os.WriteFile(workflowFile, []byte(yamlContent), 0644); err != nil {
-		t.Fatalf("Failed to write workflow file: %v", err)
-	}
-
-	return workflowFile
-}
+// Legacy file-based helpers removed (registry inline registration used instead).
 
 // These helper functions are defined in error_strategy_integration_test.go

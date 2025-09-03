@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/agentmaestro/agentmaestro/core/internal/executor"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
 )
 
 // RestAPI encapsulates the REST API with a shared executor instance
@@ -31,9 +33,10 @@ func NewRestHandler(db *storage.DB, configLoader *config.ConfigLoader) http.Hand
 	mux.HandleFunc("/api/configs", api.configsHandler)
 	mux.HandleFunc("/api/configs/", api.configByNameHandler)
 	mux.HandleFunc("/api/workflows/register", api.registerWorkflowHandler)
-	mux.HandleFunc("/api/workflows", api.workflowsHandler)
-	mux.HandleFunc("/api/workflows/", api.workflowRelatedHandler)
-	mux.HandleFunc("/api/executions/start", api.startExecutionHandler)
+	mux.HandleFunc("/api/workflows", api.workflowsLatestHandler)
+	mux.HandleFunc("/api/workflows/", api.workflowRegistryHandler)
+	mux.HandleFunc("/api/git/sync", api.gitSyncHandler)
+	// Removed legacy /api/executions/start (execution now via A2A & registry refs)
 	mux.HandleFunc("/api/executions", api.listExecutionsHandler)
 	mux.HandleFunc("/api/executions/", api.executionHandler)
 
@@ -119,76 +122,170 @@ func (api *RestAPI) configByNameHandler(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(config)
 }
 
+// registerWorkflowHandler supports inline YAML registration only for the immutable registry.
 func (api *RestAPI) registerWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	var req struct {
-		FilePath string `json:"file_path"`
+	// Read body once so we can attempt YAML fallback if JSON decode into legacy struct fails.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read body")
+		return
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Attempt to decode into a generic map to inspect available keys.
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(body, &generic); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
-	if req.FilePath == "" {
-		writeError(w, http.StatusBadRequest, "file_path is required")
+	// Inline YAML path
+	if _, ok := generic["workflow_yaml"]; ok {
+		var yamlHolder struct {
+			WorkflowYAML string `json:"workflow_yaml"`
+		}
+		if err := json.Unmarshal(body, &yamlHolder); err != nil || yamlHolder.WorkflowYAML == "" {
+			writeError(w, http.StatusBadRequest, "workflow_yaml is required")
+			return
+		}
+		// Parse YAML to extract required fields
+		var parsed struct {
+			Name        string `yaml:"name"`
+			Namespace   string `yaml:"namespace"`
+			Description string `yaml:"description"`
+		}
+		if err := yaml.Unmarshal([]byte(yamlHolder.WorkflowYAML), &parsed); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid workflow YAML")
+			return
+		}
+		if parsed.Name == "" || parsed.Namespace == "" {
+			writeError(w, http.StatusBadRequest, "workflow YAML must include name and namespace")
+			return
+		}
+		wf, regErr := api.db.RegisterInlineWorkflow(parsed.Namespace, parsed.Name, parsed.Description, yamlHolder.WorkflowYAML)
+		if regErr != nil {
+			if regErr == storage.ErrDuplicateContent {
+				// Need existing latest to construct ref in response per spec.
+				latest, lerr := api.db.GetLatestWorkflowVersion(parsed.Namespace, parsed.Name)
+				if lerr != nil { // fallback if somehow not accessible
+					writeError(w, http.StatusConflict, regErr.Error())
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": regErr.Error(),
+					"ref":   fmt.Sprintf("%s/%s:%s", latest.Namespace, latest.Name, latest.Version),
+				})
+				return
+			}
+			writeError(w, http.StatusBadRequest, regErr.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ref":       fmt.Sprintf("%s/%s:%s", wf.Namespace, wf.Name, wf.Version),
+			"namespace": wf.Namespace,
+			"name":      wf.Name,
+			"version":   wf.Version,
+			"latest":    wf.IsLatest,
+		})
 		return
 	}
 
-	if err := api.db.RegisterWorkflow(req.FilePath); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to register workflow: %v", err))
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"message": "workflow registered successfully"})
+	writeError(w, http.StatusBadRequest, "workflow_yaml is required for registration")
 }
 
-func (api *RestAPI) workflowsHandler(w http.ResponseWriter, r *http.Request) {
+// workflowsLatestHandler returns latest registry versions only (one per workflow) per MVP registry spec.
+func (api *RestAPI) workflowsLatestHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	workflows, err := api.db.ListWorkflows()
+	rows, err := api.db.ListLatestWorkflowVersions()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to list workflows: %v", err))
 		return
 	}
-
+	dtos := make([]map[string]interface{}, 0, len(rows))
+	for _, wf := range rows {
+		dtos = append(dtos, map[string]interface{}{
+			"namespace":   wf.Namespace,
+			"name":        wf.Name,
+			"version":     wf.Version,
+			"latest":      wf.IsLatest,
+			"description": wf.Description,
+		})
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(workflows)
+	json.NewEncoder(w).Encode(dtos)
 }
 
-func (api *RestAPI) workflowByNameHandler(w http.ResponseWriter, r *http.Request) {
+// workflowRegistryHandler handles:
+// GET /api/workflows/{ns}/{name} -> latest version
+// GET /api/workflows/{ns}/{name}/versions -> all versions newest->oldest
+func (api *RestAPI) workflowRegistryHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	name := extractPathParam(r.URL.Path, "/api/workflows/")
-	if name == "" {
-		writeError(w, http.StatusBadRequest, "workflow name is required")
+	suffix := strings.TrimPrefix(r.URL.Path, "/api/workflows/")
+	suffix = strings.TrimSuffix(suffix, "/")
+	if suffix == "" { // should have been caught by exact /api/workflows route
+		writeError(w, http.StatusBadRequest, "missing workflow reference")
 		return
 	}
 
-	workflow, err := api.db.GetWorkflowMetadata(name)
-	if err != nil {
-		if err == sql.ErrNoRows || strings.Contains(err.Error(), "not found") {
+	parts := strings.Split(suffix, "/")
+	if len(parts) < 2 {
+		writeError(w, http.StatusBadRequest, "expected /api/workflows/{namespace}/{name}")
+		return
+	}
+	ns := parts[0]
+	name := parts[1]
+	if len(parts) == 2 { // latest
+		wf, err := api.db.GetLatestWorkflowVersion(ns, name)
+		if err != nil {
 			writeError(w, http.StatusNotFound, "workflow not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get workflow: %v", err))
+		dto := map[string]interface{}{
+			"namespace":   wf.Namespace,
+			"name":        wf.Name,
+			"version":     wf.Version,
+			"latest":      wf.IsLatest,
+			"description": wf.Description,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(dto)
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(workflow)
+	if len(parts) == 3 && parts[2] == "versions" { // versions list
+		rows, err := api.db.ListWorkflowVersions(ns, name)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "workflow not found")
+			return
+		}
+		dtos := make([]map[string]interface{}, 0, len(rows))
+		for _, wf := range rows {
+			dtos = append(dtos, map[string]interface{}{
+				"namespace":   wf.Namespace,
+				"name":        wf.Name,
+				"version":     wf.Version,
+				"latest":      wf.IsLatest,
+				"description": wf.Description,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(dtos)
+		return
+	}
+	writeError(w, http.StatusBadRequest, "unrecognized workflow path")
 }
 
 func extractPathParam(path, prefix string) string {
@@ -200,54 +297,38 @@ func extractPathParam(path, prefix string) string {
 	return strings.TrimRight(param, "/")
 }
 
-func (api *RestAPI) startExecutionHandler(w http.ResponseWriter, r *http.Request) {
+// gitSyncHandler triggers a manual git repository scan for workflow YAML files.
+// Request body: {"repo_path": "/path/to/repo"}
+// Response per spec section 9: {"scanned": n, "inserted": n, ...}
+func (api *RestAPI) gitSyncHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
 	var req struct {
-		WorkflowName string `json:"workflow_name"`
+		RepoPath string `json:"repo_path"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-
-	if req.WorkflowName == "" {
-		writeError(w, http.StatusBadRequest, "workflow_name is required")
+	if req.RepoPath == "" {
+		writeError(w, http.StatusBadRequest, "repo_path is required")
 		return
 	}
-
-	execution, err := api.executor.StartWorkflow(req.WorkflowName)
+	result, err := api.db.GitSync(req.RepoPath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start workflow: %v", err))
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("git sync failed: %v", err))
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(execution)
+	json.NewEncoder(w).Encode(result)
 }
 
 func writeError(w http.ResponseWriter, statusCode int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
-}
-
-func (api *RestAPI) workflowRelatedHandler(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-
-	// Check if this is a request for workflow executions (ends with /executions)
-	if strings.HasSuffix(path, "/executions") {
-		api.workflowExecutionsHandler(w, r)
-		return
-	}
-
-	// Otherwise, handle as workflow by name
-	api.workflowByNameHandler(w, r)
 }
 
 func (api *RestAPI) listExecutionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -286,8 +367,18 @@ func (api *RestAPI) executionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Otherwise, handle as get full execution details
-	api.getExecutionHandler(w, r, executionID)
+	// Otherwise, fetch full execution details directly
+	execution, err := api.executor.GetExecution(executionID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "execution not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get execution: %v", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(execution)
 }
 
 func (api *RestAPI) stopExecutionHandler(w http.ResponseWriter, r *http.Request, executionID string) {
@@ -327,50 +418,4 @@ func (api *RestAPI) executionStatusHandler(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
-}
-
-func (api *RestAPI) getExecutionHandler(w http.ResponseWriter, r *http.Request, executionID string) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	execution, err := api.executor.GetExecution(executionID)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			writeError(w, http.StatusNotFound, "execution not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get execution: %v", err))
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(execution)
-}
-
-func (api *RestAPI) workflowExecutionsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	// Extract workflow name from path like /api/workflows/{name}/executions
-	path := r.URL.Path
-	workflowName := extractPathParam(path, "/api/workflows/")
-	workflowName = strings.TrimSuffix(workflowName, "/executions")
-
-	if workflowName == "" {
-		writeError(w, http.StatusBadRequest, "workflow name is required")
-		return
-	}
-
-	executions, err := api.executor.GetWorkflowExecutions(workflowName)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get workflow executions: %v", err))
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(executions)
 }

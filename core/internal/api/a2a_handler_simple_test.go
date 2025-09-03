@@ -127,152 +127,60 @@ func TestA2AJSONRPCProtocol(t *testing.T) {
 
 // TestA2AMessageParsing tests message parsing logic
 func TestA2AMessageParsing(t *testing.T) {
-	handler := &A2AHandler{
-		taskMap:    make(map[string]string),
-		contextMap: make(map[string]string),
-	}
+	handler := &A2AHandler{taskMap: map[string]string{}, contextMap: map[string]string{}}
 
-	t.Run("ExtractTextWorkflow", func(t *testing.T) {
-		workflowYAML := `name: test-workflow
-description: Test workflow
-nodes:
-  - id: test-node
-    agent: mock-agent
-    prompt: "Test task"
-`
-
-		messages := []protocol.Message{
-			{
-				Role: "user",
-				Parts: []protocol.Part{
-					{
-						Kind: "text",
-						Text: workflowYAML,
-					},
-				},
-				MessageID: uuid.New().String(),
-				Kind:      "message",
-			},
-		}
-
-		extractedYAML, err := handler.extractWorkflowFromMessages(messages)
-		assert.NoError(t, err)
-		assert.Equal(t, workflowYAML, extractedYAML)
-	})
-
-	t.Run("ExtractDataWorkflowYAML", func(t *testing.T) {
-		workflowYAML := `name: data-workflow
-description: Workflow from data part
-nodes:
-  - id: data-node
-    agent: mock-agent
-    prompt: "Data task"
-`
-
-		messages := []protocol.Message{
-			{
-				Role: "user",
-				Parts: []protocol.Part{
-					{
-						Kind: "data",
-						Data: &protocol.DataPart{
-							Data: map[string]interface{}{
-								"workflowYaml": workflowYAML,
-								"description":  "Test workflow",
-							},
-						},
-					},
-				},
-				MessageID: uuid.New().String(),
-				Kind:      "message",
-			},
-		}
-
-		extractedYAML, err := handler.extractWorkflowFromMessages(messages)
-		assert.NoError(t, err)
-		assert.Equal(t, workflowYAML, extractedYAML)
-	})
-
-	t.Run("NoWorkflowFound", func(t *testing.T) {
-		messages := []protocol.Message{
-			{
-				Role: "user",
-				Parts: []protocol.Part{
-					{
-						Kind: "text",
-						Text: "This is just regular text, not a workflow",
-					},
-				},
-				MessageID: uuid.New().String(),
-				Kind:      "message",
-			},
-		}
-
-		_, err := handler.extractWorkflowFromMessages(messages)
+	t.Run("RejectInlineTextYAML", func(t *testing.T) {
+		messages := []protocol.Message{{
+			Role:      "user",
+			Parts:     []protocol.Part{{Kind: "text", Text: "name: wf\nnodes:\n - id: n1"}},
+			MessageID: uuid.New().String(), Kind: "message",
+		}}
+		_, err := handler.extractWorkflowRef(messages)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "no workflow found")
+		assert.Contains(t, err.Error(), "inline workflow YAML disabled")
 	})
 
-	t.Run("InvalidYAMLIgnored", func(t *testing.T) {
-		invalidYAML := `name: invalid-workflow
-nodes: [[[malformed yaml`
-
-		messages := []protocol.Message{
-			{
-				Role: "user",
-				Parts: []protocol.Part{
-					{
-						Kind: "text",
-						Text: invalidYAML,
-					},
-				},
-				MessageID: uuid.New().String(),
-				Kind:      "message",
-			},
-		}
-
-		_, err := handler.extractWorkflowFromMessages(messages)
+	t.Run("RejectInlineDataWorkflowYaml", func(t *testing.T) {
+		messages := []protocol.Message{{
+			Role:      "user",
+			Parts:     []protocol.Part{{Kind: "data", Data: &protocol.DataPart{Data: map[string]interface{}{"workflowYaml": "name: wf\nnodes: []"}}}},
+			MessageID: uuid.New().String(), Kind: "message",
+		}}
+		_, err := handler.extractWorkflowRef(messages)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "no workflow found")
+		assert.Contains(t, err.Error(), "inline workflow YAML disabled")
 	})
 
-	t.Run("MultipleMessages", func(t *testing.T) {
-		workflowYAML := `name: multi-message-workflow
-description: Found in second message
-nodes:
-  - id: found-node
-    agent: mock-agent
-    prompt: "Found task"
-`
+	t.Run("RequireWorkflowRef", func(t *testing.T) {
+		messages := []protocol.Message{{
+			Role:      "user",
+			Parts:     []protocol.Part{{Kind: "text", Text: "Just a note"}},
+			MessageID: uuid.New().String(), Kind: "message",
+		}}
+		_, err := handler.extractWorkflowRef(messages)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "workflowRef is required")
+	})
 
-		messages := []protocol.Message{
-			{
-				Role: "user",
-				Parts: []protocol.Part{
-					{
-						Kind: "text",
-						Text: "This is just a regular message",
-					},
-				},
-				MessageID: uuid.New().String(),
-				Kind:      "message",
-			},
-			{
-				Role: "user",
-				Parts: []protocol.Part{
-					{
-						Kind: "text",
-						Text: workflowYAML,
-					},
-				},
-				MessageID: uuid.New().String(),
-				Kind:      "message",
-			},
-		}
-
-		extractedYAML, err := handler.extractWorkflowFromMessages(messages)
+	t.Run("AcceptWorkflowRef", func(t *testing.T) {
+		messages := []protocol.Message{{
+			Role:      "user",
+			Parts:     []protocol.Part{{Kind: "data", Data: &protocol.DataPart{Data: map[string]interface{}{"workflowRef": "ns/demo:latest"}}}},
+			MessageID: uuid.New().String(), Kind: "message",
+		}}
+		ref, err := handler.extractWorkflowRef(messages)
 		assert.NoError(t, err)
-		assert.Equal(t, workflowYAML, extractedYAML)
+		assert.Equal(t, "ns/demo:latest", ref)
+	})
+
+	t.Run("MultipleDifferingRefs", func(t *testing.T) {
+		messages := []protocol.Message{
+			{Role: "user", Parts: []protocol.Part{{Kind: "data", Data: &protocol.DataPart{Data: map[string]interface{}{"workflowRef": "ns/one:latest"}}}}, MessageID: uuid.New().String(), Kind: "message"},
+			{Role: "user", Parts: []protocol.Part{{Kind: "data", Data: &protocol.DataPart{Data: map[string]interface{}{"workflowRef": "ns/two:latest"}}}}, MessageID: uuid.New().String(), Kind: "message"},
+		}
+		_, err := handler.extractWorkflowRef(messages)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "exactly one message required")
 	})
 }
 

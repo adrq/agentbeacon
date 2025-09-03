@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -73,6 +74,8 @@ func (cl *ConfigLoader) GetAgentConfig(name string) (*AgentConfig, error) {
 		for agentName := range agents.Agents {
 			availableAgents = append(availableAgents, agentName)
 		}
+		// Ensure deterministic ordering for error message
+		sort.Strings(availableAgents)
 
 		if len(availableAgents) == 0 {
 			return nil, fmt.Errorf("agent '%s' not found and no agents are configured", name)

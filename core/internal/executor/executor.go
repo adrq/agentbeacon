@@ -279,20 +279,20 @@ type ExecutionInfo struct {
 	CompletedAt *time.Time
 }
 
-func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
-	_, err := e.db.GetWorkflowMetadata(workflowName)
+// StartWorkflowRef starts execution of a versioned workflow referenced via the registry
+// using canonical form namespace/name[:version|latest]. It resolves the reference to a
+// concrete stored version, parses its YAML snapshot directly (no legacy file lookup),
+// and launches execution identical to StartWorkflow. The execution row records
+// workflow_namespace & workflow_version for downstream introspection.
+func (e *Executor) StartWorkflowRef(rawRef string) (*ExecutionInfo, error) {
+	ref, wf, err := e.db.ResolveWorkflowRef(rawRef)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load workflow metadata: %w", err)
-	}
-
-	yamlContent, err := e.db.LoadWorkflowYAML(workflowName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load workflow YAML: %w", err)
+		return nil, fmt.Errorf("failed to resolve workflow ref: %w", err)
 	}
 
 	var workflow engine.Workflow
-	if err := yaml.Unmarshal(yamlContent, &workflow); err != nil {
-		return nil, fmt.Errorf("failed to parse workflow YAML: %w", err)
+	if err := yaml.Unmarshal([]byte(wf.YAMLSnapshot), &workflow); err != nil {
+		return nil, fmt.Errorf("failed to parse stored workflow YAML: %w", err)
 	}
 
 	nodeIDMap := make(map[string]bool)
@@ -305,13 +305,9 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 
 	executionID := uuid.New().String()
 	nodeStates := make(map[string]engine.NodeState)
-
 	for _, node := range workflow.Nodes {
-		nodeStates[node.ID] = engine.NodeState{
-			Status: constants.TaskStateSubmitted,
-		}
+		nodeStates[node.ID] = engine.NodeState{Status: constants.TaskStateSubmitted}
 	}
-
 	nodeStatesJSON, err := json.Marshal(nodeStates)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize node states: %w", err)
@@ -319,22 +315,27 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 
 	execution := &engine.Execution{
 		ID:         executionID,
-		WorkflowID: workflowName,
+		WorkflowID: ref.Canonical,
 		Status:     constants.TaskStateWorking,
 		NodeStates: nodeStates,
 		StartedAt:  time.Now(),
 	}
 
-	dbExecution := &storage.Execution{
-		ID:           executionID,
-		WorkflowName: workflowName,
-		Status:       constants.TaskStateWorking,
-		NodeStates:   datatypes.JSON(nodeStatesJSON),
-		A2ATasks:     datatypes.JSON("{}"),
-		Logs:         fmt.Sprintf("Started workflow execution at %s\n", time.Now().Format(time.RFC3339)),
-		StartedAt:    execution.StartedAt,
-	}
+	// Store namespace & version linkage.
+	ns := wf.Namespace
+	ver := wf.Version
 
+	dbExecution := &storage.Execution{
+		ID:                executionID,
+		WorkflowName:      ref.Canonical,
+		Status:            constants.TaskStateWorking,
+		NodeStates:        datatypes.JSON(nodeStatesJSON),
+		A2ATasks:          datatypes.JSON("{}"),
+		Logs:              fmt.Sprintf("Started workflow %s at %s\n", ref.Canonical, time.Now().Format(time.RFC3339)),
+		StartedAt:         execution.StartedAt,
+		WorkflowNamespace: &ns,
+		WorkflowVersion:   &ver,
+	}
 	if err := e.db.CreateExecution(dbExecution); err != nil {
 		return nil, fmt.Errorf("failed to create execution record: %w", err)
 	}
@@ -354,15 +355,8 @@ func (e *Executor) StartWorkflow(workflowName string) (*ExecutionInfo, error) {
 	}()
 
 	e.mutex.RLock()
-	info := &ExecutionInfo{
-		ID:          execution.ID,
-		WorkflowID:  execution.WorkflowID,
-		Status:      execution.Status,
-		StartedAt:   execution.StartedAt,
-		CompletedAt: execution.CompletedAt,
-	}
+	info := &ExecutionInfo{ID: execution.ID, WorkflowID: execution.WorkflowID, Status: execution.Status, StartedAt: execution.StartedAt}
 	e.mutex.RUnlock()
-
 	return info, nil
 }
 

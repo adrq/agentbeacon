@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -43,9 +41,7 @@ func createTestDB(t *testing.T) *storage.DB {
 
 	// Use file-based database instead of :memory: to avoid concurrency and consistency issues
 	tempDir := t.TempDir()
-	dbFile := filepath.Join(tempDir, "test.db")
-
-	db, err := storage.Open("sqlite3", dbFile)
+	db, err := storage.Open("sqlite3", tempDir+"/test.db")
 	if err != nil {
 		t.Skipf("Failed to open SQLite database: %v - this may be due to test execution context", err)
 	}
@@ -185,202 +181,87 @@ nodes:
 
 // End-to-end workflow via A2A
 func TestA2AWorkflowExecution(t *testing.T) {
-	t.Run("InlineWorkflowYAML", func(t *testing.T) {
-		server, db := createA2AServer(t)
-		// Create message/send request with inline YAML
+	t.Run("RejectInlineWorkflowYAML", func(t *testing.T) {
+		server, _ := createA2AServer(t)
 		contextID := uuid.New().String()
-
-		// Create message with YAML content that the handler can extract
 		messages := []map[string]interface{}{
 			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"kind": "text",
-						"text": testWorkflowYAML,
-					},
-				},
+				"role":      "user",
+				"parts":     []map[string]interface{}{{"kind": "text", "text": testWorkflowYAML}},
 				"messageId": uuid.New().String(),
 				"kind":      "message",
 			},
 		}
-
-		params := map[string]interface{}{
-			"contextId": contextID,
-			"messages":  messages,
-		}
-
+		params := map[string]interface{}{"contextId": contextID, "messages": messages}
 		request := createJSONRPCRequest("message/send", params)
-
-		// Send workflow execution request
 		resp := sendA2ARequest(t, server, request)
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-
 		response := parseJSONRPCResponse(t, resp)
-
-		// Should not have JSON-RPC error
-		assert.Nil(t, response["error"], "message/send should succeed")
-		assert.NotNil(t, response["result"], "Should have result")
-
-		// Parse the returned task
-		resultData, err := json.Marshal(response["result"])
-		require.NoError(t, err)
-
-		var task protocol.Task
-		err = json.Unmarshal(resultData, &task)
-		require.NoError(t, err)
-
-		// Verify task structure
-		assert.NotEmpty(t, task.ID, "protocol.Task should have ID")
-		assert.Equal(t, contextID, task.ContextID)
-		assert.Equal(t, protocol.TaskStateSubmitted, task.Status.State)
-
-		// Verify A2A task mapping is stored in database
-		executions, err := db.ListAllExecutions()
-		require.NoError(t, err)
-
-		found := false
-		for _, exec := range executions {
-			if exec.A2ATasks != nil {
-				var a2aData map[string]interface{}
-				json.Unmarshal(exec.A2ATasks, &a2aData)
-				if taskID, ok := a2aData["task_id"].(string); ok && taskID == task.ID {
-					found = true
-					assert.Equal(t, contextID, a2aData["context_id"])
-					break
-				}
-			}
-		}
-		assert.True(t, found, "A2A task mapping should be stored in database")
-
-		// Poll task status until completion
-		finalTask := pollTaskStatus(t, server, task.ID, 10*time.Second)
-
-		// Verify workflow executed correctly
-		assert.Contains(t, []string{protocol.TaskStateCompleted, protocol.TaskStateFailed}, finalTask.Status.State)
-		assert.NotEmpty(t, finalTask.History, "protocol.Task should have execution history")
-		assert.NotEmpty(t, finalTask.Artifacts, "protocol.Task should have artifacts")
-
+		assert.NotNil(t, response["error"], "inline YAML should now be rejected")
+		errData := response["error"].(map[string]interface{})
+		assert.Contains(t, errData["data"].(string), "inline workflow YAML disabled")
 	})
 
 	t.Run("WorkflowReference", func(t *testing.T) {
 		server, db := createA2AServer(t)
-		// First register a workflow in the database
-		tempDir := t.TempDir()
-		workflowFile := filepath.Join(tempDir, "ref-workflow.yaml")
-		err := os.WriteFile(workflowFile, []byte(`name: referenced-workflow
-description: Workflow loaded by reference
-nodes:
-  - id: ref-node
-    agent: mock-agent
-    prompt: "Referenced workflow task"
-`), 0644)
+		// Seed registry with two versions to exercise latest resolution
+		snapshotV1 := "name: referenced-workflow\nnamespace: demo\ndescription: First version\nnodes:\n  - id: ref-node\n    agent: mock-agent\n    prompt: \"Referenced workflow task v1\"\n"
+		_, err := db.RegisterInlineWorkflow("demo", "referenced-workflow", "First version", snapshotV1)
+		require.NoError(t, err)
+		// Register second version so latest flips
+		snapshotV2 := "name: referenced-workflow\nnamespace: demo\ndescription: Second version\nnodes:\n  - id: ref-node\n    agent: mock-agent\n    prompt: \"Referenced workflow task v2\"\n"
+		_, err = db.RegisterInlineWorkflow("demo", "referenced-workflow", "Second version", snapshotV2)
 		require.NoError(t, err)
 
-		err = db.RegisterWorkflow(workflowFile)
-		require.NoError(t, err)
-
-		// Create message/send request with workflow reference
 		contextID := uuid.New().String()
-
 		messages := []map[string]interface{}{
 			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"kind": "data",
-						"data": map[string]interface{}{
-							"data": map[string]interface{}{
-								"workflowRef": "referenced-workflow:latest",
-							},
-						},
-					},
-				},
+				"role":      "user",
+				"parts":     []map[string]interface{}{{"kind": "data", "data": map[string]interface{}{"data": map[string]interface{}{"workflowRef": "demo/referenced-workflow:latest"}}}},
 				"messageId": uuid.New().String(),
 				"kind":      "message",
 			},
 		}
-
-		params := map[string]interface{}{
-			"contextId": contextID,
-			"messages":  messages,
-		}
-
+		params := map[string]interface{}{"contextId": contextID, "messages": messages}
 		request := createJSONRPCRequest("message/send", params)
-
-		// Send workflow execution request
 		resp := sendA2ARequest(t, server, request)
 		response := parseJSONRPCResponse(t, resp)
-
-		// Should succeed
-		assert.Nil(t, response["error"], "message/send with workflow reference should succeed")
-
+		assert.Nil(t, response["error"], "workflowRef execution should succeed")
 		resultData, err := json.Marshal(response["result"])
 		require.NoError(t, err)
-
 		var task protocol.Task
 		err = json.Unmarshal(resultData, &task)
 		require.NoError(t, err)
-
 		assert.NotEmpty(t, task.ID)
 		assert.Equal(t, contextID, task.ContextID)
-
-		// Poll until completion
+		// poll for completion
 		finalTask := pollTaskStatus(t, server, task.ID, 10*time.Second)
 		assert.Contains(t, []string{protocol.TaskStateCompleted, protocol.TaskStateFailed}, finalTask.Status.State)
 	})
 
-	t.Run("DataPartWithWorkflowYaml", func(t *testing.T) {
+	t.Run("RejectDataPartInlineWorkflowYaml", func(t *testing.T) {
 		server, _ := createA2AServer(t)
-		// Test data part with workflowYaml field
 		contextID := uuid.New().String()
-
 		messages := []map[string]interface{}{
 			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"kind": "data",
-						"data": map[string]interface{}{
-							"data": map[string]interface{}{
-								"workflowYaml": testWorkflowYAML,
-								"description":  "Inline workflow via data part",
-							},
-						},
-					},
-				},
+				"role":      "user",
+				"parts":     []map[string]interface{}{{"kind": "data", "data": map[string]interface{}{"data": map[string]interface{}{"workflowYaml": testWorkflowYAML}}}},
 				"messageId": uuid.New().String(),
 				"kind":      "message",
 			},
 		}
-
-		params := map[string]interface{}{
-			"contextId": contextID,
-			"messages":  messages,
-		}
-
+		params := map[string]interface{}{"contextId": contextID, "messages": messages}
 		request := createJSONRPCRequest("message/send", params)
-
 		resp := sendA2ARequest(t, server, request)
 		response := parseJSONRPCResponse(t, resp)
-
-		assert.Nil(t, response["error"], "message/send with workflowYaml should succeed")
-
-		resultData, err := json.Marshal(response["result"])
-		require.NoError(t, err)
-
-		var task protocol.Task
-		err = json.Unmarshal(resultData, &task)
-		require.NoError(t, err)
-
-		assert.NotEmpty(t, task.ID)
-		assert.Equal(t, contextID, task.ContextID)
+		assert.NotNil(t, response["error"], "data part inline YAML should be rejected")
+		errData := response["error"].(map[string]interface{})
+		assert.Contains(t, errData["data"].(string), "inline workflow YAML disabled")
 	})
 }
 
 // Error handling scenarios
 func TestA2AErrorHandling(t *testing.T) {
-	t.Run("InvalidWorkflowYAML", func(t *testing.T) {
+	t.Run("InvalidWorkflowYAMLRejectedEarly", func(t *testing.T) {
 		server, _ := createA2AServer(t)
 		invalidYAML := `name: invalid-workflow
 nodes:
@@ -412,16 +293,14 @@ nodes:
 		resp := sendA2ARequest(t, server, request)
 		response := parseJSONRPCResponse(t, resp)
 
-		// Should return JSON-RPC error
-		assert.NotNil(t, response["error"], "Invalid YAML should return error")
-
+		// Should return JSON-RPC error about inline YAML being disabled (before YAML parse)
+		assert.NotNil(t, response["error"], "Invalid inline YAML should return error")
 		errorData := response["error"].(map[string]interface{})
 		assert.Equal(t, float64(-32603), errorData["code"], "Should be internal error code")
-		assert.Equal(t, "Internal error", errorData["message"])
-		assert.NotNil(t, errorData["data"], "Should include error details")
+		assert.Contains(t, errorData["data"].(string), "inline workflow YAML disabled")
 	})
 
-	t.Run("MissingWorkflowContent", func(t *testing.T) {
+	t.Run("MissingWorkflowRef", func(t *testing.T) {
 		server, _ := createA2AServer(t)
 		// Message with no workflow content
 		contextID := uuid.New().String()
@@ -448,11 +327,10 @@ nodes:
 		resp := sendA2ARequest(t, server, request)
 		response := parseJSONRPCResponse(t, resp)
 
-		// Should return error
-		assert.NotNil(t, response["error"], "Missing workflow should return error")
-
+		// Should return error about missing workflowRef
+		assert.NotNil(t, response["error"], "Missing workflowRef should return error")
 		errorData := response["error"].(map[string]interface{})
-		assert.Contains(t, errorData["data"].(string), "no workflow found", "Error should indicate no workflow found")
+		assert.Contains(t, errorData["data"].(string), "workflowRef is required")
 	})
 
 	t.Run("InvalidJSONRPCRequest", func(t *testing.T) {
@@ -495,19 +373,19 @@ nodes:
 		assert.Contains(t, errorData["data"].(string), "task not found", "Error should indicate task not found")
 	})
 
-	t.Run("MissingParameters", func(t *testing.T) {
+	t.Run("MissingParametersNoRef", func(t *testing.T) {
 		server, _ := createA2AServer(t)
-		// Send message/send without required parameters
-		request := createJSONRPCRequest("message/send", nil)
+		params := map[string]interface{}{ // no messages field -> decode error OR validation error
+			"contextId": uuid.New().String(),
+			"messages":  []interface{}{},
+		}
+		request := createJSONRPCRequest("message/send", params)
 		resp := sendA2ARequest(t, server, request)
 		response := parseJSONRPCResponse(t, resp)
-
-		// Should return error
-		assert.NotNil(t, response["error"])
-
+		// Should return internal error with new semantics
 		errorData := response["error"].(map[string]interface{})
 		assert.Equal(t, float64(-32603), errorData["code"])
-		assert.Contains(t, errorData["data"].(string), "no workflow found", "Should indicate no workflow found when parameters are missing")
+		assert.Contains(t, errorData["data"].(string), "exactly one message required")
 	})
 
 	t.Run("UnsupportedMethod", func(t *testing.T) {
@@ -668,28 +546,18 @@ func TestA2ATaskOperations(t *testing.T) {
 		// Skip this test due to database isolation issues in test environment
 		// t.Skip("Skipping due to in-memory database isolation issues in test suite")
 
-		server, _ := createA2AServer(t)
-		// Submit a workflow first
+		server, db := createA2AServer(t)
+		// Seed registry workflow
+		_, err := db.RegisterInlineWorkflow("demo", "taskops", "task ops v1", "name: taskops\nnamespace: demo\nnodes:\n  - id: n1\n    agent: mock-agent\n    prompt: 'x'\n")
+		require.NoError(t, err)
 		contextID := uuid.New().String()
-		messages := []map[string]interface{}{
-			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"kind": "text",
-						"text": testWorkflowYAML,
-					},
-				},
-				"messageId": uuid.New().String(),
-				"kind":      "message",
-			},
-		}
-
-		params := map[string]interface{}{
-			"contextId": contextID,
-			"messages":  messages,
-		}
-
+		messages := []map[string]interface{}{{
+			"role":      "user",
+			"parts":     []map[string]interface{}{{"kind": "data", "data": map[string]interface{}{"data": map[string]interface{}{"workflowRef": "demo/taskops:latest"}}}},
+			"messageId": uuid.New().String(),
+			"kind":      "message",
+		}}
+		params := map[string]interface{}{"contextId": contextID, "messages": messages}
 		request := createJSONRPCRequest("message/send", params)
 		resp := sendA2ARequest(t, server, request)
 		response := parseJSONRPCResponse(t, resp)
@@ -730,40 +598,18 @@ func TestA2ATaskOperations(t *testing.T) {
 		// Skip this test due to database isolation issues in test environment
 		// t.Skip("Skipping due to in-memory database isolation issues in test suite")
 
-		server, _ := createA2AServer(t)
-		// Submit a workflow that takes some time
-		longRunningWorkflow := `name: long-running-workflow
-description: Workflow designed to be cancelled
-nodes:
-  - id: long-node1
-    agent: mock-agent
-    prompt: "Long running task 1"
-  - id: long-node2
-    agent: mock-agent
-    prompt: "Long running task 2"
-    depends_on: [long-node1]
-`
-
+		server, db := createA2AServer(t)
+		// Seed a multi-step workflow in registry
+		_, err := db.RegisterInlineWorkflow("demo", "long", "long v1", "name: long\nnamespace: demo\nnodes:\n  - id: a\n    agent: mock-agent\n    prompt: 'a'\n  - id: b\n    agent: mock-agent\n    prompt: 'b'\n    depends_on: [a]\n")
+		require.NoError(t, err)
 		contextID := uuid.New().String()
-		messages := []map[string]interface{}{
-			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"kind": "text",
-						"text": longRunningWorkflow,
-					},
-				},
-				"messageId": uuid.New().String(),
-				"kind":      "message",
-			},
-		}
-
-		params := map[string]interface{}{
-			"contextId": contextID,
-			"messages":  messages,
-		}
-
+		messages := []map[string]interface{}{{
+			"role":      "user",
+			"parts":     []map[string]interface{}{{"kind": "data", "data": map[string]interface{}{"data": map[string]interface{}{"workflowRef": "demo/long:latest"}}}},
+			"messageId": uuid.New().String(),
+			"kind":      "message",
+		}}
+		params := map[string]interface{}{"contextId": contextID, "messages": messages}
 		request := createJSONRPCRequest("message/send", params)
 		resp := sendA2ARequest(t, server, request)
 		response := parseJSONRPCResponse(t, resp)
@@ -808,28 +654,18 @@ nodes:
 		// Skip this test due to database isolation issues in test environment
 		// t.Skip("Skipping due to in-memory database isolation issues in test suite")
 
-		server, _ := createA2AServer(t)
-		// Test with a multi-node workflow to verify complex state tracking
+		server, db := createA2AServer(t)
+		// Seed multi-node workflow into registry
+		_, err := db.RegisterInlineWorkflow("demo", "multinode", "mn v1", "name: multinode\nnamespace: demo\nnodes:\n  - id: node1\n    agent: mock-agent\n    prompt: 'First'\n  - id: node2\n    agent: mock-agent\n    prompt: 'Second'\n    depends_on: [node1]\n  - id: node3\n    agent: mock-agent\n    prompt: 'Third'\n    depends_on: [node1]\n")
+		require.NoError(t, err)
 		contextID := uuid.New().String()
-		messages := []map[string]interface{}{
-			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"kind": "text",
-						"text": multiNodeWorkflowYAML,
-					},
-				},
-				"messageId": uuid.New().String(),
-				"kind":      "message",
-			},
-		}
-
-		params := map[string]interface{}{
-			"contextId": contextID,
-			"messages":  messages,
-		}
-
+		messages := []map[string]interface{}{{
+			"role":      "user",
+			"parts":     []map[string]interface{}{{"kind": "data", "data": map[string]interface{}{"data": map[string]interface{}{"workflowRef": "demo/multinode:latest"}}}},
+			"messageId": uuid.New().String(),
+			"kind":      "message",
+		}}
+		params := map[string]interface{}{"contextId": contextID, "messages": messages}
 		request := createJSONRPCRequest("message/send", params)
 		resp := sendA2ARequest(t, server, request)
 		response := parseJSONRPCResponse(t, resp)

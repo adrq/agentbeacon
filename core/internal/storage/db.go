@@ -162,7 +162,7 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("failed to create GORM instance: %w", err)
 	}
 
-	if err := gormDB.AutoMigrate(&Config{}, &WorkflowMeta{}, &Execution{}); err != nil {
+	if err := gormDB.AutoMigrate(&Config{}, &WorkflowMeta{}, &Execution{}, &WorkflowVersion{}); err != nil {
 		return fmt.Errorf("failed to auto-migrate: %w", err)
 	}
 
@@ -174,6 +174,24 @@ func (db *DB) migrate() error {
 	_, err = sqlDB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_config_name ON config (name)")
 	if err != nil {
 		return fmt.Errorf("failed to create unique index: %w", err)
+	}
+
+	// Partial unique index enforcing single latest per namespace/name
+	if db.driver == "postgres" {
+		_, err = sqlDB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_version_latest ON workflow_version (namespace, name) WHERE is_latest`)
+		if err != nil {
+			return fmt.Errorf("failed to create latest partial unique index: %w", err)
+		}
+	}
+
+	// For sqlite, enforce via trigger (best-effort). Skip if already exists.
+	if db.driver == "sqlite3" {
+		_, _ = sqlDB.Exec(`CREATE TRIGGER IF NOT EXISTS trg_single_latest
+		BEFORE INSERT ON workflow_version
+		WHEN NEW.is_latest = 1
+		BEGIN
+			UPDATE workflow_version SET is_latest = 0 WHERE namespace = NEW.namespace AND name = NEW.name AND is_latest = 1;
+		END;`)
 	}
 
 	return nil

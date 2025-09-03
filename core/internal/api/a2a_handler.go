@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,7 +13,6 @@ import (
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol/jsonrpc"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/google/uuid"
-	"gopkg.in/yaml.v3"
 	"gorm.io/datatypes"
 )
 
@@ -117,15 +116,12 @@ func (h *A2AHandler) handleMessageSend(params json.RawMessage) (*protocol.Task, 
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
-
-	// Extract workflow from message content
-	workflowData, err := h.extractWorkflowFromMessages(p.Messages)
+	// Enforce workflowRef only (reject inline YAML)
+	ref, err := h.extractWorkflowRef(p.Messages)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract workflow: %w", err)
+		return nil, fmt.Errorf("invalid workflow reference: %w", err)
 	}
-
-	// Start execution using existing executor
-	execution, err := h.startWorkflowExecution(workflowData)
+	execution, err := h.executor.StartWorkflowRef(ref)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start execution: %w", err)
 	}
@@ -247,66 +243,43 @@ func (h *A2AHandler) handleTasksCancel(params json.RawMessage) (*protocol.Task, 
 }
 
 // extractWorkflowFromMessages extracts workflow content from A2A messages
-func (h *A2AHandler) extractWorkflowFromMessages(messages []protocol.Message) (string, error) {
-	for _, message := range messages {
-		for _, part := range message.Parts {
-			switch part.Kind {
-			case "data":
-				// Check for JSON data with workflowRef or workflowYaml
-				var data map[string]interface{}
-				if part.Data != nil {
-					data = part.Data.Data
+// Registry-only extraction: returns workflowRef or error if inline YAML supplied.
+func (h *A2AHandler) extractWorkflowRef(messages []protocol.Message) (string, error) {
+	if len(messages) != 1 {
+		return "", fmt.Errorf("exactly one message required (got %d)", len(messages))
+	}
+	m := messages[0]
+	var ref string
+	for _, part := range m.Parts {
+		switch part.Kind {
+		case "data":
+			if part.Data != nil {
+				data := part.Data.Data
+				if inline, ok := data["workflowYaml"].(string); ok && inline != "" {
+					return "", fmt.Errorf("inline workflow YAML disabled; supply workflowRef")
 				}
-
-				if workflowRef, ok := data["workflowRef"].(string); ok {
-					// Load workflow by reference
-					return h.loadWorkflowByRef(workflowRef)
-				}
-
-				if workflowYaml, ok := data["workflowYaml"].(string); ok {
-					// Return inline workflow YAML
-					return workflowYaml, nil
-				}
-
-			case "text":
-				// Check if text content is YAML
-				content := part.Text
-
-				// Try to parse as YAML to validate
-				var workflow map[string]interface{}
-				if err := yaml.Unmarshal([]byte(content), &workflow); err == nil {
-					if _, hasName := workflow["name"]; hasName {
-						return content, nil
+				if r, ok := data["workflowRef"].(string); ok && r != "" {
+					if ref != "" && ref != r {
+						return "", fmt.Errorf("multiple workflowRef values in single message not allowed")
 					}
+					ref = r
 				}
+			}
+		case "text":
+			if strings.Contains(part.Text, "name:") && strings.Contains(part.Text, "nodes:") {
+				return "", fmt.Errorf("inline workflow YAML disabled; supply workflowRef")
 			}
 		}
 	}
-
-	return "", fmt.Errorf("no workflow found in messages")
+	if ref == "" {
+		return "", fmt.Errorf("workflowRef is required")
+	}
+	return ref, nil
 }
 
 // loadWorkflowByRef loads a workflow by reference
-func (h *A2AHandler) loadWorkflowByRef(workflowRef string) (string, error) {
-	// For MVP, just extract workflow name (ignore version for now)
-	workflowName := workflowRef
-	if colonIdx := len(workflowRef) - 1; colonIdx >= 0 {
-		for i := colonIdx; i >= 0; i-- {
-			if workflowRef[i] == ':' {
-				workflowName = workflowRef[:i]
-				break
-			}
-		}
-	}
-
-	// Load workflow YAML from database
-	yamlData, err := h.db.LoadWorkflowYAML(workflowName)
-	if err != nil {
-		return "", fmt.Errorf("workflow not found: %s", workflowName)
-	}
-
-	return string(yamlData), nil
-}
+// resolveAndShim resolves reference and registers a temporary legacy workflow for executor use.
+// resolveAndShim removed – A2A now invokes executor.StartWorkflowRef directly.
 
 // buildTaskHistory creates A2A task history from execution logs
 func (h *A2AHandler) buildTaskHistory(execution *storage.Execution) []protocol.Message {
@@ -385,49 +358,3 @@ type ExecutionInfo struct {
 }
 
 // startWorkflowExecution starts execution with inline YAML or workflow reference
-func (h *A2AHandler) startWorkflowExecution(workflowData string) (*ExecutionInfo, error) {
-	// For inline YAML, we need to parse the workflow name and register it temporarily
-	var workflow map[string]interface{}
-	if err := yaml.Unmarshal([]byte(workflowData), &workflow); err != nil {
-		return nil, fmt.Errorf("invalid workflow YAML: %w", err)
-	}
-
-	workflowName, ok := workflow["name"].(string)
-	if !ok {
-		return nil, fmt.Errorf("workflow must have a name field")
-	}
-
-	// Check if workflow is already registered
-	_, err := h.db.GetWorkflowMetadata(workflowName)
-	if err != nil {
-		// Workflow doesn't exist, create it temporarily
-		// For MVP, we'll create a temporary YAML file
-		tempFile := fmt.Sprintf("/tmp/a2a-workflow-%s.yaml", uuid.New().String())
-		if err := os.WriteFile(tempFile, []byte(workflowData), 0644); err != nil {
-			return nil, fmt.Errorf("failed to create temporary workflow file: %w", err)
-		}
-
-		// Register the workflow
-		if err := h.db.RegisterWorkflow(tempFile); err != nil {
-			os.Remove(tempFile) // Cleanup on error
-			return nil, fmt.Errorf("failed to register workflow: %w", err)
-		}
-
-		// Note: Don't remove temp file yet - executor might need it
-		// TODO: Implement proper workflow storage that doesn't require temp files
-	}
-
-	// Start the workflow execution
-	execInfo, err := h.executor.StartWorkflow(workflowName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start workflow: %w", err)
-	}
-
-	return &ExecutionInfo{
-		ID:          execInfo.ID,
-		WorkflowID:  execInfo.WorkflowID,
-		Status:      execInfo.Status,
-		StartedAt:   execInfo.StartedAt,
-		CompletedAt: execInfo.CompletedAt,
-	}, nil
-}

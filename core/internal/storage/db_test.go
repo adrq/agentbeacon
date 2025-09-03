@@ -108,8 +108,8 @@ func TestOpen_IdempotentMigrations(t *testing.T) {
 	if err != nil {
 		t.Errorf("Failed to count tables: %v", err)
 	}
-	if tableCount != 3 {
-		t.Errorf("Expected exactly 3 tables after idempotent migration, got %d", tableCount)
+	if tableCount != 4 { // config, workflow, execution, workflow_version
+		t.Errorf("Expected exactly 4 tables after idempotent migration, got %d", tableCount)
 	}
 }
 

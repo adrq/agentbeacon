@@ -158,9 +158,11 @@ func (db *DB) DeleteWorkflow(name string) error {
 func (db *DB) CreateExecution(execution *Execution) error {
 	execution.StartedAt = time.Now()
 
+	// Extended insert to include optional versioned workflow linkage columns when present.
+	// We use explicit column list for portability; NULLs inserted if pointers are nil.
 	_, err := db.NamedExec(`
-		INSERT INTO execution (id, workflow_name, status, node_states, a2_a_tasks, logs, started_at, completed_at)
-		VALUES (:id, :workflow_name, :status, :node_states, :a2_a_tasks, :logs, :started_at, :completed_at)
+		INSERT INTO execution (id, workflow_name, status, node_states, a2_a_tasks, logs, started_at, completed_at, workflow_namespace, workflow_version)
+		VALUES (:id, :workflow_name, :status, :node_states, :a2_a_tasks, :logs, :started_at, :completed_at, :workflow_namespace, :workflow_version)
 	`, execution)
 	return err
 }
