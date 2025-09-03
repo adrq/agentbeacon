@@ -845,7 +845,8 @@ func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
 			return nil, fmt.Errorf("acp agent '%s' missing 'command' in config", node.Agent)
 		}
 		args, _ := agentConfig.Config["args"].([]string)
-		return NewACPAgent(command, args)
+		workingDir, _ := node.Request["working_dir"].(string)
+		return NewACPAgent(command, args, workingDir)
 	default:
 		return nil, fmt.Errorf("unknown agent type: %s", agentConfig.Type)
 	}
@@ -866,7 +867,9 @@ func (e *Executor) validateNodeRequest(node *engine.Node, agentConfig *config.Ag
 		if node.Request["prompt"] == nil {
 			return fmt.Errorf("acp agent '%s' requires 'prompt' in request", node.Agent)
 		}
-		// working_dir is optional
+		if node.Request["working_dir"] == nil {
+			return fmt.Errorf("acp agent '%s' requires 'working_dir' in request", node.Agent)
+		}
 	default:
 		return fmt.Errorf("unknown agent type: %s", agentConfig.Type)
 	}

@@ -17,16 +17,17 @@ import (
 
 // ACPAgent implements the Agent interface using ACP (Agent Client Protocol) over subprocess stdio
 type ACPAgent struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    *bufio.Scanner
-	sessionID string
-	mu        sync.Mutex
-	requestID int64
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     *bufio.Scanner
+	sessionID  string
+	workingDir string
+	mu         sync.Mutex
+	requestID  int64
 }
 
 // NewACPAgent creates a new ACP agent that communicates via JSON-RPC over subprocess stdio
-func NewACPAgent(command string, args []string) (*ACPAgent, error) {
+func NewACPAgent(command string, args []string, workingDir string) (*ACPAgent, error) {
 	// Create subprocess
 	cmd := exec.Command(command, args...)
 
@@ -44,13 +45,19 @@ func NewACPAgent(command string, args []string) (*ACPAgent, error) {
 	if err := cmd.Start(); err != nil {
 		stdin.Close()
 		stdout.Close()
-		return nil, fmt.Errorf("failed to start ACP agent process: %w", err)
+		return nil, fmt.Errorf("failed to start ACP agent process (command=%s): %w", command, err)
+	}
+
+	// Working directory is required for ACP agents
+	if workingDir == "" {
+		return nil, fmt.Errorf("working directory is required for ACP agent")
 	}
 
 	agent := &ACPAgent{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewScanner(stdout),
+		cmd:        cmd,
+		stdin:      stdin,
+		stdout:     bufio.NewScanner(stdout),
+		workingDir: workingDir,
 	}
 
 	// Initialize ACP connection
@@ -93,16 +100,16 @@ func (a *ACPAgent) initialize() error {
 	}
 
 	if err := a.sendRequest(initReq); err != nil {
-		return fmt.Errorf("failed to send initialize request: %w", err)
+		return fmt.Errorf("ACP initialize: failed to send request: %w", err)
 	}
 
 	response, err := a.readResponse()
 	if err != nil {
-		return fmt.Errorf("failed to read initialize response: %w", err)
+		return fmt.Errorf("ACP initialize: failed to read response: %w", err)
 	}
 
 	if response.Error != nil {
-		return fmt.Errorf("initialize failed: %s", response.Error.Message)
+		return fmt.Errorf("ACP initialize: agent rejected request (code %d): %s", response.Error.Code, response.Error.Message)
 	}
 
 	return nil
@@ -116,7 +123,7 @@ func (a *ACPAgent) createSession() error {
 	reqID := atomic.AddInt64(&a.requestID, 1)
 
 	params, _ := json.Marshal(protocol.NewSessionRequest{
-		Cwd:        "/tmp", // Simple working directory for MVP
+		Cwd:        a.workingDir,
 		McpServers: []protocol.McpServer{},
 	})
 
@@ -128,16 +135,16 @@ func (a *ACPAgent) createSession() error {
 	}
 
 	if err := a.sendRequest(sessionReq); err != nil {
-		return fmt.Errorf("failed to send session/new request: %w", err)
+		return fmt.Errorf("ACP session/new: failed to send request (cwd=%s): %w", a.workingDir, err)
 	}
 
 	response, err := a.readResponse()
 	if err != nil {
-		return fmt.Errorf("failed to read session/new response: %w", err)
+		return fmt.Errorf("ACP session/new: failed to read response: %w", err)
 	}
 
 	if response.Error != nil {
-		return fmt.Errorf("session creation failed: %s", response.Error.Message)
+		return fmt.Errorf("ACP session/new: agent rejected request (code %d, cwd=%s): %s", response.Error.Code, a.workingDir, response.Error.Message)
 	}
 
 	// Parse session ID from response
@@ -174,7 +181,7 @@ func (a *ACPAgent) Execute(ctx context.Context, prompt string) (string, error) {
 	}
 
 	if err := a.sendRequest(promptReq); err != nil {
-		return "", fmt.Errorf("failed to send prompt request: %w", err)
+		return "", fmt.Errorf("ACP session/prompt: failed to send request (session=%s): %w", a.sessionID, err)
 	}
 
 	// Read response and any updates
@@ -189,13 +196,13 @@ func (a *ACPAgent) Execute(ctx context.Context, prompt string) (string, error) {
 
 		response, err := a.readResponse()
 		if err != nil {
-			return "", fmt.Errorf("failed to read response: %w", err)
+			return "", fmt.Errorf("ACP session/prompt: failed to read response (session=%s): %w", a.sessionID, err)
 		}
 
 		// Check if this is the final prompt response
 		if response.ID != nil && *response.ID == reqID {
 			if response.Error != nil {
-				return "", fmt.Errorf("prompt execution failed: %s", response.Error.Message)
+				return "", fmt.Errorf("ACP session/prompt: execution failed (session=%s, code=%d): %s", a.sessionID, response.Error.Code, response.Error.Message)
 			}
 
 			// Parse stop reason to ensure completion
@@ -215,7 +222,7 @@ func (a *ACPAgent) Execute(ctx context.Context, prompt string) (string, error) {
 		// Handle session/update notifications
 		if response.Method == "session/update" {
 			if err := a.handleSessionUpdate(response.Params, &textResponse); err != nil {
-				return "", fmt.Errorf("failed to handle session update: %w", err)
+				return "", fmt.Errorf("ACP session/update: failed to handle notification (session=%s): %w", a.sessionID, err)
 			}
 		}
 	}

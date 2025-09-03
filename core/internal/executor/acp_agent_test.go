@@ -15,7 +15,7 @@ func TestACPAgentLifecycle(t *testing.T) {
 	}
 
 	// Create ACP agent using mock-agent
-	agent, err := NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"})
+	agent, err := NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"}, "/tmp")
 	require.NoError(t, err, "Failed to create ACP agent")
 	defer agent.Close()
 
@@ -30,7 +30,7 @@ func TestACPAgentPromptExecution(t *testing.T) {
 		t.Skip("mock-agent binary not found, run 'make build' first")
 	}
 
-	agent, err := NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"})
+	agent, err := NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"}, "/tmp")
 	require.NoError(t, err)
 	defer agent.Close()
 
@@ -49,7 +49,7 @@ func TestACPAgentErrorScenarios(t *testing.T) {
 	}
 
 	// Test process that doesn't exist (should fail at creation)
-	_, err := NewACPAgent("/nonexistent/command", []string{"--mode", "acp"})
+	_, err := NewACPAgent("/nonexistent/command", []string{"--mode", "acp"}, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to start ACP agent process")
 }
@@ -60,7 +60,7 @@ func TestACPAgentIntegrationWithExecutor(t *testing.T) {
 	}
 
 	// Test direct agent creation and execution
-	agent, err := NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"})
+	agent, err := NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"}, "/tmp")
 	require.NoError(t, err)
 	defer agent.Close()
 
@@ -74,4 +74,24 @@ func TestACPAgentIntegrationWithExecutor(t *testing.T) {
 	response, err := agent.Execute(ctx, "test integration prompt")
 	require.NoError(t, err)
 	assert.Contains(t, response, "Mock response: test integration prompt")
+}
+
+func TestACPAgentWorkingDirectory(t *testing.T) {
+	if !mockAgentExists() {
+		t.Skip("mock-agent binary not found, run 'make build' first")
+	}
+
+	// Test with custom working directory
+	customWorkingDir := "/home/user/project"
+	agent, err := NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"}, customWorkingDir)
+	require.NoError(t, err)
+	defer agent.Close()
+
+	// Verify working directory is stored
+	assert.Equal(t, customWorkingDir, agent.workingDir, "Working directory should be set to custom value")
+
+	// Test with empty working directory (should return error)
+	_, err = NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"}, "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "working directory is required")
 }

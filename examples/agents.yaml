@@ -12,11 +12,16 @@ agents:
   #     url: "http://remote:9456/"
   #     timeout: 300
 
-  # Example ACP agent configuration (future implementation)
-  # gemini-prod:
+  # Example ACP agent configuration
+  # gemini-cli:
   #   type: acp
   #   config:
-  #     command: "gemini"
-  #     args: ["--model", "gemini-2.5-pro"]
-  #     env:
-  #       GEMINI_API_KEY: ${GEMINI_API_KEY}
+  #     command: "gemini-cli"
+  #     args: ["--api-key", "${GEMINI_API_KEY}", "--model", "gemini-2.0-flash-exp"]
+
+  # Example ACP agent with mock-agent for testing
+  # acp-mock:
+  #   type: acp
+  #   config:
+  #     command: "./bin/mock-agent"
+  #     args: ["--mode", "acp"]
