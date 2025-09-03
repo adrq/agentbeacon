@@ -97,6 +97,11 @@ func (re *RetryableExecutor) executeNodeAttempt(ctx context.Context, execution *
 	}
 	defer agent.Close()
 
+	// Set execution context for agents that support it
+	if contextSetter, ok := agent.(ContextSetter); ok {
+		contextSetter.SetContext(execution.ID, node.ID)
+	}
+
 	// Extract prompt from request based on agent type
 	var prompt string
 	if promptValue, exists := node.Request["prompt"]; exists {

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentmaestro/agentmaestro/core/internal/storage"
+	"github.com/stretchr/testify/require"
 )
 
 // Test basic communication with stdio agent
@@ -97,6 +100,114 @@ func TestStdioAgentTimeout(t *testing.T) {
 // Removed edge case validation tests - not essential for MVP
 
 // Removed integration test - covered by other integration tests in executor_test.go
+
+// Test EventStreamer interface implementation
+func TestStdioAgentEventStreaming(t *testing.T) {
+	if !mockAgentExists() {
+		t.Skip("mock-agent binary not found, run 'make build' first")
+	}
+
+	// Create event channel
+	eventChan := make(chan *storage.ExecutionEvent, 100)
+
+	agent, err := NewStdioAgent("../../../bin/mock-agent")
+	if err != nil {
+		t.Fatalf("Failed to create StdioAgent: %v", err)
+	}
+	defer agent.Close()
+
+	// Test EventStreamer interface (type assert to access EventStreamer interface)
+	streamer, ok := agent.(EventStreamer)
+	require.True(t, ok, "Agent should implement EventStreamer interface")
+
+	// Set event channel
+	streamer.SetEventChannel(eventChan)
+
+	// Set execution context (type assert to access SetContext method)
+	stdioAgent, ok := agent.(*StdioAgent)
+	require.True(t, ok, "Agent should be of type *StdioAgent")
+	stdioAgent.SetContext("test-exec-123", "test-node-456")
+
+	// Execute a task and verify events are emitted
+	ctx := context.Background()
+	response, err := agent.Execute(ctx, "test prompt")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if response != "Mock response: test prompt" {
+		t.Errorf("Expected 'Mock response: test prompt', got '%s'", response)
+	}
+
+	// Verify events were emitted
+	close(eventChan)
+	events := []storage.ExecutionEvent{}
+	for event := range eventChan {
+		events = append(events, *event)
+	}
+
+	if len(events) < 2 {
+		t.Errorf("Expected at least 2 events (start and complete), got %d", len(events))
+	}
+
+	// Verify event structure
+	for _, event := range events {
+		if event.ExecutionID != "test-exec-123" {
+			t.Errorf("Expected ExecutionID 'test-exec-123', got '%s'", event.ExecutionID)
+		}
+		if event.NodeID != "test-node-456" {
+			t.Errorf("Expected NodeID 'test-node-456', got '%s'", event.NodeID)
+		}
+		if event.Source != storage.EventSourceSystem {
+			t.Errorf("Expected Source '%s', got '%s'", storage.EventSourceSystem, event.Source)
+		}
+	}
+}
+
+// Test non-blocking event emission
+func TestStdioAgentNonBlockingEvents(t *testing.T) {
+	if !mockAgentExists() {
+		t.Skip("mock-agent binary not found, run 'make build' first")
+	}
+
+	// Create small event channel to test non-blocking behavior
+	eventChan := make(chan *storage.ExecutionEvent, 1)
+	// Fill the channel to capacity
+	eventChan <- &storage.ExecutionEvent{}
+
+	agent, err := NewStdioAgent("../../../bin/mock-agent")
+	if err != nil {
+		t.Fatalf("Failed to create StdioAgent: %v", err)
+	}
+	defer agent.Close()
+
+	// Set event channel (type assert to access EventStreamer interface)
+	streamer, ok := agent.(EventStreamer)
+	require.True(t, ok, "Agent should implement EventStreamer interface")
+	streamer.SetEventChannel(eventChan)
+
+	// Type assert to access SetContext method (StdioAgent specific)
+	stdioAgent, ok := agent.(*StdioAgent)
+	require.True(t, ok, "Agent should be of type *StdioAgent")
+	stdioAgent.SetContext("test-exec-123", "test-node-456")
+
+	// Execution should not block even if event channel is full
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err = agent.Execute(ctx, "test prompt")
+	duration := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Should complete quickly (not block on full channel)
+	if duration > 1*time.Second {
+		t.Errorf("Execute took too long: %v, might be blocking on event channel", duration)
+	}
+}
 
 // Helper function to check if mock-agent binary exists
 func mockAgentExists() bool {

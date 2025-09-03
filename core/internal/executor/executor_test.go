@@ -16,7 +16,7 @@ import (
 	_ "github.com/lib/pq"
 )
 
-func setupStdioAgent(t *testing.T, responses map[string]string) *StdioAgent {
+func setupStdioAgent(t *testing.T, responses map[string]string) Agent {
 	if !mockAgentExists() {
 		t.Skip("mock-agent binary not found, run 'make build' first")
 	}

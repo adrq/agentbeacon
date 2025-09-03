@@ -19,10 +19,12 @@ func TestACPAgentLifecycle(t *testing.T) {
 	require.NoError(t, err, "Failed to create ACP agent")
 	defer agent.Close()
 
-	// Verify agent is running and initialized
-	assert.NotNil(t, agent.cmd, "Agent process should be running")
-	assert.NotNil(t, agent.stdin, "Agent stdin should be available")
-	assert.NotNil(t, agent.stdout, "Agent stdout should be available")
+	// Verify agent is running and initialized (type assert to access internal fields)
+	acpAgent, ok := agent.(*ACPAgent)
+	require.True(t, ok, "Agent should be of type *ACPAgent")
+	assert.NotNil(t, acpAgent.cmd, "Agent process should be running")
+	assert.NotNil(t, acpAgent.stdin, "Agent stdin should be available")
+	assert.NotNil(t, acpAgent.stdout, "Agent stdout should be available")
 }
 
 func TestACPAgentPromptExecution(t *testing.T) {
@@ -64,8 +66,10 @@ func TestACPAgentIntegrationWithExecutor(t *testing.T) {
 	require.NoError(t, err)
 	defer agent.Close()
 
-	// Verify it's an ACP agent by checking session ID is set
-	assert.NotEmpty(t, agent.sessionID, "Session ID should be set")
+	// Verify it's an ACP agent by checking session ID is set (type assert to access internal fields)
+	acpAgent, ok := agent.(*ACPAgent)
+	require.True(t, ok, "Agent should be of type *ACPAgent")
+	assert.NotEmpty(t, acpAgent.sessionID, "Session ID should be set")
 
 	// Test execution
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -87,8 +91,10 @@ func TestACPAgentWorkingDirectory(t *testing.T) {
 	require.NoError(t, err)
 	defer agent.Close()
 
-	// Verify working directory is stored
-	assert.Equal(t, customWorkingDir, agent.workingDir, "Working directory should be set to custom value")
+	// Verify working directory is stored (type assert to access internal fields)
+	acpAgent, ok := agent.(*ACPAgent)
+	require.True(t, ok, "Agent should be of type *ACPAgent")
+	assert.Equal(t, customWorkingDir, acpAgent.workingDir, "Working directory should be set to custom value")
 
 	// Test with empty working directory (should return error)
 	_, err = NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"}, "")

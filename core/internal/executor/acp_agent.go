@@ -27,7 +27,7 @@ type ACPAgent struct {
 }
 
 // NewACPAgent creates a new ACP agent that communicates via JSON-RPC over subprocess stdio
-func NewACPAgent(command string, args []string, workingDir string) (*ACPAgent, error) {
+func NewACPAgent(command string, args []string, workingDir string) (Agent, error) {
 	// Create subprocess
 	cmd := exec.Command(command, args...)
 

@@ -50,18 +50,35 @@ type Executor struct {
 	mutex            sync.RWMutex
 	activeExecutions map[string]context.CancelFunc
 	dbMutex          sync.Mutex // Serialize database updates
+	// Event streaming
+	eventChan       chan *storage.ExecutionEvent
+	eventWriterDone chan struct{}
+	eventWriterWG   sync.WaitGroup
 }
 
 func NewExecutor(db *storage.DB, configLoader *config.ConfigLoader) *Executor {
-	return &Executor{
+	e := &Executor{
 		db:               db,
 		configLoader:     configLoader,
 		activeExecutions: make(map[string]context.CancelFunc),
+		eventChan:        make(chan *storage.ExecutionEvent, 1000),
+		eventWriterDone:  make(chan struct{}),
 	}
+
+	// Start event writer goroutine
+	e.eventWriterWG.Add(1)
+	go e.eventWriter()
+
+	return e
 }
 
 func (e *Executor) Close() {
-	// No cleanup needed in simplified MVP
+	// Signal event writer to stop
+	close(e.eventWriterDone)
+	// Wait for event writer to finish
+	e.eventWriterWG.Wait()
+	// Close event channel
+	close(e.eventChan)
 }
 
 func NewWorkerPool(ctx context.Context, workers int, executor *Executor) *WorkerPool {
@@ -699,6 +716,11 @@ func (e *Executor) executeNode(ctx context.Context, execution *engine.Execution,
 	}
 	defer agent.Close()
 
+	// Set execution context for agents that support it
+	if contextSetter, ok := agent.(ContextSetter); ok {
+		contextSetter.SetContext(execution.ID, node.ID)
+	}
+
 	e.mutex.Lock()
 	nodeState := execution.NodeStates[node.ID]
 	nodeState.Status = constants.TaskStateWorking
@@ -814,6 +836,43 @@ func (e *Executor) updateExecutionInDB(execution *engine.Execution, logMessage s
 	_ = e.db.UpdateExecution(dbExecution) // DB errors don't fail workflow execution
 }
 
+// eventWriter processes events from the event channel and writes them to database
+func (e *Executor) eventWriter() {
+	defer e.eventWriterWG.Done()
+
+	for {
+		select {
+		case event, ok := <-e.eventChan:
+			if !ok {
+				// Channel closed, exit
+				return
+			}
+
+			// Set timestamp if not already set
+			if event.Timestamp.IsZero() {
+				event.Timestamp = time.Now()
+			}
+
+			// Write to database (ignore errors to avoid blocking)
+			_ = e.db.CreateExecutionEvent(event)
+
+		case <-e.eventWriterDone:
+			// Drain remaining events before exiting
+			for {
+				select {
+				case event := <-e.eventChan:
+					if event.Timestamp.IsZero() {
+						event.Timestamp = time.Now()
+					}
+					_ = e.db.CreateExecutionEvent(event)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
 // createAgentForNode creates an agent for the node based on its configuration
 func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
 	agentConfig, err := e.configLoader.GetAgentConfig(node.Agent)
@@ -826,19 +885,21 @@ func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
 		return nil, err
 	}
 
+	var agent Agent
+
 	switch agentConfig.Type {
 	case "stdio":
 		command, ok := agentConfig.Config["command"].(string)
 		if !ok {
 			return nil, fmt.Errorf("stdio agent '%s' missing 'command' in config", node.Agent)
 		}
-		return NewStdioAgent(command)
+		agent, err = NewStdioAgent(command)
 	case "a2a":
 		url, ok := agentConfig.Config["url"].(string)
 		if !ok {
 			return nil, fmt.Errorf("a2a agent '%s' missing 'url' in config", node.Agent)
 		}
-		return NewA2AAgent(url), nil
+		agent = NewA2AAgent(url)
 	case "acp":
 		command, ok := agentConfig.Config["command"].(string)
 		if !ok {
@@ -846,10 +907,21 @@ func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
 		}
 		args, _ := agentConfig.Config["args"].([]string)
 		workingDir, _ := node.Request["working_dir"].(string)
-		return NewACPAgent(command, args, workingDir)
+		agent, err = NewACPAgent(command, args, workingDir)
 	default:
 		return nil, fmt.Errorf("unknown agent type: %s", agentConfig.Type)
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Wire up event channel for agents that support event streaming
+	if streamer, ok := agent.(EventStreamer); ok {
+		streamer.SetEventChannel(e.eventChan)
+	}
+
+	return agent, nil
 }
 
 // validateNodeRequest validates request fields based on agent type

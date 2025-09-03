@@ -7,14 +7,12 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
-)
 
-// Agent defines the interface for workflow execution agents
-type Agent interface {
-	Execute(ctx context.Context, prompt string) (string, error)
-	Close() error
-}
+	"github.com/agentmaestro/agentmaestro/core/internal/constants"
+	"github.com/agentmaestro/agentmaestro/core/internal/storage"
+)
 
 // StdioAgent implements Agent interface by spawning external processes and communicating via stdin/stdout
 type StdioAgent struct {
@@ -23,10 +21,15 @@ type StdioAgent struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
+	// Event streaming support
+	eventChan   chan<- *storage.ExecutionEvent
+	executionID string
+	nodeID      string
+	mutex       sync.RWMutex
 }
 
 // NewStdioAgent creates a new stdio-based agent
-func NewStdioAgent(path string, args ...string) (*StdioAgent, error) {
+func NewStdioAgent(path string, args ...string) (Agent, error) {
 	// Verify executable exists
 	if _, err := exec.LookPath(path); err != nil {
 		return nil, fmt.Errorf("executable not found: %s", path)
@@ -73,15 +76,59 @@ func (p *StdioAgent) start() error {
 	return nil
 }
 
+// SetEventChannel implements EventStreamer interface
+func (p *StdioAgent) SetEventChannel(events chan<- *storage.ExecutionEvent) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.eventChan = events
+}
+
+// SetContext sets the execution context for event emission
+func (p *StdioAgent) SetContext(executionID, nodeID string) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.executionID = executionID
+	p.nodeID = nodeID
+}
+
+// emitEvent sends an event to the event channel in a non-blocking way
+func (p *StdioAgent) emitEvent(event *storage.ExecutionEvent) {
+	p.mutex.RLock()
+	eventChan := p.eventChan
+	executionID := p.executionID
+	nodeID := p.nodeID
+	p.mutex.RUnlock()
+
+	if eventChan == nil || executionID == "" || nodeID == "" {
+		return // No event channel or context set
+	}
+
+	// Fill in execution context
+	event.ExecutionID = executionID
+	event.NodeID = nodeID
+
+	// Non-blocking send
+	select {
+	case eventChan <- event:
+		// Event sent successfully
+	default:
+		// Channel full, drop event to avoid blocking
+	}
+}
+
 // Execute sends a prompt to the external process and returns the response
 func (p *StdioAgent) Execute(ctx context.Context, prompt string) (string, error) {
 	if p.cmd == nil || p.stdin == nil || p.stdout == nil {
 		return "", fmt.Errorf("process not initialized or already closed")
 	}
 
+	// Emit start event
+	p.emitEvent(CreateStateChangeEvent("", "", storage.EventSourceSystem, constants.TaskStateWorking, constants.TaskStateSubmitted))
+
 	// Check if process is still alive
 	select {
 	case <-ctx.Done():
+		p.emitEvent(CreateStateChangeEvent("", "", storage.EventSourceSystem, constants.TaskStateCanceled, constants.TaskStateWorking))
 		return "", ctx.Err()
 	default:
 	}
@@ -89,6 +136,7 @@ func (p *StdioAgent) Execute(ctx context.Context, prompt string) (string, error)
 	// Send prompt to stdin
 	_, err := fmt.Fprintln(p.stdin, prompt)
 	if err != nil {
+		p.emitEvent(CreateErrorEvent("", "", fmt.Errorf("failed to send prompt to process: %w", err)))
 		return "", fmt.Errorf("failed to send prompt to process: %w", err)
 	}
 
@@ -108,8 +156,14 @@ func (p *StdioAgent) Execute(ctx context.Context, prompt string) (string, error)
 	// Wait for response or timeout
 	select {
 	case response := <-responseChan:
+		// Emit output event
+		p.emitEvent(CreateOutputEvent("", "", storage.EventSourceSystem, response))
+		// Emit completion event
+		p.emitEvent(CreateStateChangeEvent("", "", storage.EventSourceSystem, constants.TaskStateCompleted, constants.TaskStateWorking))
 		return strings.TrimSpace(response), nil
 	case err := <-errorChan:
+		p.emitEvent(CreateErrorEvent("", "", err))
+		p.emitEvent(CreateStateChangeEvent("", "", storage.EventSourceSystem, constants.TaskStateFailed, constants.TaskStateWorking))
 		return "", err
 	case <-ctx.Done():
 		// Kill the process when context is cancelled to interrupt any long-running operations
@@ -118,6 +172,7 @@ func (p *StdioAgent) Execute(ctx context.Context, prompt string) (string, error)
 			// Wait for process to fully exit to avoid zombie processes
 			go func() { _ = p.cmd.Wait() }()
 		}
+		p.emitEvent(CreateStateChangeEvent("", "", storage.EventSourceSystem, constants.TaskStateCanceled, constants.TaskStateWorking))
 		return "", ctx.Err()
 	}
 }
