@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -46,7 +47,7 @@ func TestParseRawWorkflowRef(t *testing.T) {
 
 // TestResolveWorkflowRef exercises DB-backed resolution for latest and explicit versions.
 func TestResolveWorkflowRef(t *testing.T) {
-	db, err := Open("sqlite3", ":memory:")
+	db, err := Open("sqlite3", filepath.Join(t.TempDir(), "ref.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

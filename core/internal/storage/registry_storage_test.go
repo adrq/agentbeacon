@@ -17,7 +17,7 @@ import (
 // TestRegistryStorageOperations covers SQLite and PostgreSQL variants ensuring constraints work on both.
 func TestRegistryStorageOperations(t *testing.T) {
 	t.Run("SQLite", func(t *testing.T) {
-		db, err := Open("sqlite3", ":memory:")
+		db, err := Open("sqlite3", filepath.Join(t.TempDir(), "registry_storage.db"))
 		if err != nil {
 			t.Fatalf("open db: %v", err)
 		}

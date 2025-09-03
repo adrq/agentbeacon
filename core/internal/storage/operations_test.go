@@ -410,7 +410,7 @@ func testDatabaseSchema(t *testing.T, driver, dsn string) {
 		var query string
 
 		if driver == "postgres" {
-			query = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = $1"
+			query = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1"
 		} else {
 			query = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?"
 		}
@@ -420,8 +420,8 @@ func testDatabaseSchema(t *testing.T, driver, dsn string) {
 			t.Fatalf("Failed to check table %s existence: %v", table, err)
 		}
 
-		if count != 1 {
-			t.Errorf("Expected table %s to exist, found %d instances", table, count)
+		if count < 1 {
+			t.Errorf("Expected table %s to exist in current schema, found %d instances", table, count)
 		}
 	}
 

@@ -158,7 +158,7 @@ func TestA2AAgentIntegrationWithExecutor(t *testing.T) {
 
 	// Create executor with config loader
 	configLoader := config.NewConfigLoader(agentsFile)
-	db := setupTestDB(t, "sqlite3", ":memory:")
+	db := setupTestDB(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
 	defer db.Close()
 	executor := NewExecutor(db, configLoader)
 
@@ -210,7 +210,7 @@ func TestA2AAgentFallbackToStdio(t *testing.T) {
 
 	// Create executor with config loader
 	configLoader := config.NewConfigLoader(agentsFile)
-	db := setupTestDB(t, "sqlite3", ":memory:")
+	db := setupTestDB(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
 	defer db.Close()
 	executor := NewExecutor(db, configLoader)
 

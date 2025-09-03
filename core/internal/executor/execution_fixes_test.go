@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 // Minimal regression test ensuring concurrent log update path (protected by logMutex) appends logs.
 func TestConcurrentLogUpdates(t *testing.T) {
-	db := setupTestDB(t, "sqlite3", ":memory:")
+	db := setupTestDB(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
 	defer db.Close()
 
 	configLoader := setupTestConfigLoader(t)

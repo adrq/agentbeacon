@@ -1,5 +1,3 @@
-//go:build e2e
-
 package testutil
 
 import (
@@ -50,6 +48,35 @@ func StartAgentMaestroBinary(t *testing.T, port int, dbFile string) *TestProcess
 	t.Helper()
 	bin := resolveBinaryPath(t, "agentmaestro")
 	cmd := exec.Command(bin, "-port", strconv.Itoa(port), "-driver", "sqlite3", "-db", dbFile)
+	// Run from repo root so relative paths like examples/agents.yaml and ./bin/mock-agent resolve
+	cmd.Dir = filepath.Dir(filepath.Dir(bin))
+
+	proc := &TestProcess{Cmd: cmd, Port: port, BaseURL: fmt.Sprintf("http://localhost:%d", port)}
+	cmd.Stdout = &proc.stdout
+	cmd.Stderr = &proc.stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start agentmaestro: %v", err)
+	}
+	t.Cleanup(proc.Stop)
+
+	waitForHTTP(t, proc.BaseURL+"/api/health", 20*time.Second, func(resp *http.Response, err error) bool {
+		if err != nil {
+			return false
+		}
+		return resp.StatusCode == http.StatusOK
+	}, func() string { return proc.Logs() })
+
+	return proc
+}
+
+// StartAgentMaestroBinaryWith launches the agentmaestro binary with specified driver and dsn.
+func StartAgentMaestroBinaryWith(t *testing.T, port int, driver, dsn string) *TestProcess {
+	t.Helper()
+	bin := resolveBinaryPath(t, "agentmaestro")
+	cmd := exec.Command(bin, "-port", strconv.Itoa(port), "-driver", driver, "-db", dsn)
+	// Run from repo root so relative paths resolve
+	cmd.Dir = filepath.Dir(filepath.Dir(bin))
 
 	proc := &TestProcess{Cmd: cmd, Port: port, BaseURL: fmt.Sprintf("http://localhost:%d", port)}
 	cmd.Stdout = &proc.stdout

@@ -201,7 +201,7 @@ func TestA2AWorkflowExecution(t *testing.T) {
 		assert.Contains(t, errData["data"].(string), "inline workflow YAML disabled")
 	})
 
-	t.Run("WorkflowReference", func(t *testing.T) {
+	t.Run("HappyPath_WorkflowRef", func(t *testing.T) {
 		server, db := createA2AServer(t)
 		// Seed registry with two versions to exercise latest resolution
 		snapshotV1 := "name: referenced-workflow\nnamespace: demo\ndescription: First version\nnodes:\n  - id: ref-node\n    agent: mock-agent\n    prompt: \"Referenced workflow task v1\"\n"

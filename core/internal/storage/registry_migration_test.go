@@ -1,12 +1,13 @@
 package storage
 
 import (
+	"path/filepath"
 	"testing"
 )
 
 // TestWorkflowVersionsMigration verifies schema presence and latest flip behavior at DB level.
 func TestWorkflowVersionsMigration(t *testing.T) {
-	db, err := Open("sqlite3", ":memory:")
+	db, err := Open("sqlite3", filepath.Join(t.TempDir(), "registry_migration.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

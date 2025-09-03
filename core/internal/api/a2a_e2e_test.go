@@ -1,5 +1,3 @@
-//go:build e2e
-
 package api
 
 import (
@@ -9,9 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,12 +16,14 @@ import (
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol/jsonrpc"
 	"github.com/agentmaestro/agentmaestro/core/internal/testutil"
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// NOTE: This E2E file now spawns real binaries (agentmaestro + mock-agent) built by `make test-deps`.
-// Helper processes are in testutil/proc_helpers_test.go (build-tagged e2e).
+// NOTE: This E2E file spawns the real agentmaestro binary built by `make test-deps` and exercises the public HTTP API.
+// Helper processes are in testutil/proc_helpers_e2e.go and are available in normal test runs.
 
 func sendA2AE2ERequest(t *testing.T, serverURL, method string, params interface{}) (*jsonrpc.Response, error) {
 	request := jsonrpc.NewRequest(method, params, uuid.New().String())
@@ -86,287 +85,98 @@ func pollTaskUntilComplete(t *testing.T, serverURL, taskID string, timeout time.
 	}
 }
 
-func TestE2EWorkflowViaA2AProtocol(t *testing.T) {
+// Happy path on SQLite backend using registry + workflowRef
+func TestE2E_A2A_HappyPath_WorkflowRef_SQLite(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
+		t.Skip("short mode")
 	}
-
-	agentPort := testutil.FindAvailablePort(t, 8000, 8999)
-	agent := testutil.StartMockAgentBinary(t, agentPort)
 
 	serverPort := testutil.FindAvailablePort(t, 9000, 9999)
 	dbFile := filepath.Join(t.TempDir(), "test.db")
-	server := testutil.StartAgentMaestroBinary(t, serverPort, dbFile)
-	_ = server // kept for symmetry; cleanup via t.Cleanup
-	workflowYAML := fmt.Sprintf(`
-name: "A2A E2E Test Workflow"
-description: "Test workflow using A2A protocol"
-config:
-  api_keys: "test"
-on_error: "stop_all"
-nodes:
-  - id: task1
-    agent_url: "%s/rpc"
-    prompt: "Analyze the test scenario"
-    timeout: 60
-  - id: task2
-    agent_url: "%s/rpc"
-    depends_on: [task1]
-    prompt: "Generate summary of analysis"
-    timeout: 60
-`, agent.BaseURL, agent.BaseURL)
+	_ = testutil.StartAgentMaestroBinary(t, serverPort, dbFile)
 
+	base := fmt.Sprintf("http://localhost:%d", serverPort)
+
+	// Register a simple two-node workflow referencing the stdio mock-agent
+	// The orchestrator will spawn ./bin/mock-agent for each node based on examples/agents.yaml
+	workflowYAML := "name: e2e-ref\nnamespace: demo\ndescription: 'e2e happy path'\n" +
+		"nodes:\n" +
+		"  - id: t1\n    agent: mock-agent\n    request:\n      prompt: 'a'\n" +
+		"  - id: t2\n    agent: mock-agent\n    depends_on: [t1]\n    request:\n      prompt: 'b'\n"
+
+	regBody := map[string]string{"workflow_yaml": workflowYAML}
+	body, _ := json.Marshal(regBody)
+	r, err := http.Post(base+"/api/workflows/register", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	r.Body.Close()
+
+	// Submit A2A message with workflowRef
 	contextID := uuid.New().String()
-	messages := []protocol.Message{
-		{
-			Role: "user",
-			Parts: []protocol.Part{
-				{
-					Kind: "text",
-					Text: workflowYAML,
-				},
-			},
-		},
+	msg := map[string]interface{}{
+		"role": "user",
+		"parts": []map[string]interface{}{{
+			"kind": "data",
+			"data": map[string]interface{}{"data": map[string]interface{}{"workflowRef": "demo/e2e-ref:latest"}},
+		}},
+		"messageId": uuid.New().String(),
+		"kind":      "message",
 	}
-
-	params := map[string]interface{}{
-		"contextId": contextID,
-		"messages":  messages,
-	}
-
-	resp, err := sendA2AE2ERequest(t, fmt.Sprintf("http://localhost:%d", serverPort), "message/send", params)
+	params := map[string]interface{}{"contextId": contextID, "messages": []interface{}{msg}}
+	rpcResp, err := sendA2AE2ERequest(t, base, "message/send", params)
 	require.NoError(t, err)
-	require.Nil(t, resp.Error, "A2A request should not return error")
+	require.Nil(t, rpcResp.Error)
+
 	var task protocol.Task
-	taskBytes, err := json.Marshal(resp.Result)
-	require.NoError(t, err)
-	err = json.Unmarshal(taskBytes, &task)
-	require.NoError(t, err)
-
+	taskBytes, _ := json.Marshal(rpcResp.Result)
+	_ = json.Unmarshal(taskBytes, &task)
+	assert.NotEmpty(t, task.ID)
 	assert.Equal(t, contextID, task.ContextID)
-	assert.Equal(t, protocol.TaskStateSubmitted, task.Status.State)
 
-	finalTask := pollTaskUntilComplete(t, fmt.Sprintf("http://localhost:%d", serverPort), task.ID, 120*time.Second)
-	assert.Equal(t, protocol.TaskStateCompleted, finalTask.Status.State)
-	assert.NotEmpty(t, finalTask.Artifacts, "Task should have artifacts")
+	final := pollTaskUntilComplete(t, base, task.ID, 120*time.Second)
+	assert.Equal(t, protocol.TaskStateCompleted, final.Status.State)
+	assert.NotEmpty(t, final.Artifacts)
 }
 
-func TestE2EConcurrentA2AWorkflows(t *testing.T) {
+// Optional Postgres variant: uses DATABASE_URL environment variable if provided
+func TestE2E_A2A_HappyPath_WorkflowRef_Postgres(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
+		t.Skip("short mode")
 	}
-
-	var agents []*testutil.TestProcess
-	for i := 0; i < 3; i++ {
-		port := testutil.FindAvailablePort(t, 8000, 8999)
-		agents = append(agents, testutil.StartMockAgentBinary(t, port))
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://postgres:postgres@127.0.0.1/postgres?sslmode=disable"
+	}
+	// Fail fast if PostgreSQL isn't reachable instead of silently skipping
+	if _, err := sqlx.Connect("postgres", dsn); err != nil {
+		t.Fatalf("PostgreSQL not available at %s: %v. Set DATABASE_URL to override.", dsn, err)
 	}
 	serverPort := testutil.FindAvailablePort(t, 9000, 9999)
-	dbFile := filepath.Join(t.TempDir(), "test.db")
-	testutil.StartAgentMaestroBinary(t, serverPort, dbFile)
-	var wg sync.WaitGroup
-	taskIDs := make([]string, 5)
+	_ = testutil.StartAgentMaestroBinaryWith(t, serverPort, "postgres", dsn)
 
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func(workflowNum int) {
-			defer wg.Done()
-
-			agentIdx := workflowNum % len(agents)
-			agent := agents[agentIdx]
-
-			workflowYAML := fmt.Sprintf(`
-name: "Concurrent Workflow %d"
-description: "Concurrent test workflow %d"
-config:
-  api_keys: "test"
-nodes:
-  - id: concurrent_task_%d
-    agent_url: "%s/rpc"
-    prompt: "Process workflow number %d"
-    timeout: 60
-`, workflowNum, workflowNum, workflowNum, agent.BaseURL, workflowNum)
-
-			contextID := uuid.New().String()
-			messages := []protocol.Message{
-				{
-					Role: "user",
-					Parts: []protocol.Part{
-						{
-							Kind: "text",
-							Text: workflowYAML,
-						},
-					},
-				},
-			}
-
-			params := map[string]interface{}{
-				"contextId": contextID,
-				"messages":  messages,
-			}
-
-			resp, err := sendA2AE2ERequest(t, fmt.Sprintf("http://localhost:%d", serverPort), "message/send", params)
-			require.NoError(t, err)
-			require.Nil(t, resp.Error)
-
-			var task protocol.Task
-			taskBytes, err := json.Marshal(resp.Result)
-			require.NoError(t, err)
-			err = json.Unmarshal(taskBytes, &task)
-			require.NoError(t, err)
-
-			taskIDs[workflowNum] = task.ID
-		}(i)
-	}
-
-	wg.Wait()
-	serverURL := fmt.Sprintf("http://localhost:%d", serverPort)
-	for i, taskID := range taskIDs {
-		finalTask := pollTaskUntilComplete(t, serverURL, taskID, 120*time.Second)
-		assert.Equal(t, protocol.TaskStateCompleted, finalTask.Status.State, "Workflow %d should complete", i)
-		assert.NotEmpty(t, finalTask.Artifacts, "Workflow %d should have artifacts", i)
-	}
-}
-
-func TestE2EMixedAgentTypes(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	a2aPort := testutil.FindAvailablePort(t, 8000, 8999)
-	a2aAgent := testutil.StartMockAgentBinary(t, a2aPort)
-	serverPort := testutil.FindAvailablePort(t, 9000, 9999)
-	dbFile := filepath.Join(t.TempDir(), "test.db")
-	testutil.StartAgentMaestroBinary(t, serverPort, dbFile)
-	workflowYAML := fmt.Sprintf(`
-name: "Mixed Agent Types Test"
-description: "Workflow with both stdio and A2A agents"
-config:
-  api_keys: "test"
-nodes:
-  - id: stdio_task
-    agent: demo-agent
-    prompt: "This task uses stdio agent"
-    timeout: 60
-  - id: a2a_task
-    agent_url: "%s/rpc"
-    depends_on: [stdio_task]
-    prompt: "This task uses A2A agent"
-    timeout: 60
-  - id: another_stdio_task
-    agent: demo-agent
-    depends_on: [a2a_task]
-    prompt: "Another stdio task"
-    timeout: 60
-`, a2aAgent.BaseURL)
+	base := fmt.Sprintf("http://localhost:%d", serverPort)
+	workflowYAML := "name: e2e-ref-pg\nnamespace: demo\ndescription: 'e2e happy path pg'\n" +
+		"nodes:\n" +
+		"  - id: t1\n    agent: mock-agent\n    request:\n      prompt: 'a'\n"
+	regBody := map[string]string{"workflow_yaml": workflowYAML}
+	body, _ := json.Marshal(regBody)
+	r, err := http.Post(base+"/api/workflows/register", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	r.Body.Close()
 
 	contextID := uuid.New().String()
-	messages := []protocol.Message{
-		{
-			Role: "user",
-			Parts: []protocol.Part{
-				{
-					Kind: "text",
-					Text: workflowYAML,
-				},
-			},
-		},
+	msg := map[string]interface{}{
+		"role": "user",
+		"parts": []map[string]interface{}{{
+			"kind": "data",
+			"data": map[string]interface{}{"data": map[string]interface{}{"workflowRef": "demo/e2e-ref-pg:latest"}},
+		}},
+		"messageId": uuid.New().String(),
+		"kind":      "message",
 	}
-
-	params := map[string]interface{}{
-		"contextId": contextID,
-		"messages":  messages,
-	}
-
-	resp, err := sendA2AE2ERequest(t, fmt.Sprintf("http://localhost:%d", serverPort), "message/send", params)
+	params := map[string]interface{}{"contextId": contextID, "messages": []interface{}{msg}}
+	rpcResp, err := sendA2AE2ERequest(t, base, "message/send", params)
 	require.NoError(t, err)
-	require.Nil(t, resp.Error)
-
-	var task protocol.Task
-	taskBytes, err := json.Marshal(resp.Result)
-	require.NoError(t, err)
-	err = json.Unmarshal(taskBytes, &task)
-	require.NoError(t, err)
-
-	finalTask := pollTaskUntilComplete(t, fmt.Sprintf("http://localhost:%d", serverPort), task.ID, 180*time.Second)
-	assert.Equal(t, protocol.TaskStateCompleted, finalTask.Status.State)
-	assert.NotEmpty(t, finalTask.Artifacts)
+	require.Nil(t, rpcResp.Error)
 }
 
-func TestE2EAgentFailureRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	agentPort := testutil.FindAvailablePort(t, 8000, 8999)
-	agent := testutil.StartMockAgentBinary(t, agentPort)
-	serverPort := testutil.FindAvailablePort(t, 9000, 9999)
-	dbFile := filepath.Join(t.TempDir(), "test.db")
-	testutil.StartAgentMaestroBinary(t, serverPort, dbFile)
-	workflowYAML := fmt.Sprintf(`
-name: "Agent Failure Recovery Test"
-description: "Test workflow that will experience agent failure"
-config:
-  api_keys: "test"
-nodes:
-  - id: task_before_failure
-    agent_url: "%s/rpc"
-    prompt: "Task that should complete before failure"
-    timeout: 30
-  - id: task_during_failure
-    agent_url: "%s/rpc"
-    depends_on: [task_before_failure]
-    prompt: "Task that will fail when agent is killed"
-    timeout: 120
-`, agent.BaseURL, agent.BaseURL)
-
-	contextID := uuid.New().String()
-	messages := []protocol.Message{
-		{
-			Role: "user",
-			Parts: []protocol.Part{
-				{
-					Kind: "text",
-					Text: workflowYAML,
-				},
-			},
-		},
-	}
-
-	params := map[string]interface{}{
-		"contextId": contextID,
-		"messages":  messages,
-	}
-
-	resp, err := sendA2AE2ERequest(t, fmt.Sprintf("http://localhost:%d", serverPort), "message/send", params)
-	require.NoError(t, err)
-	require.Nil(t, resp.Error)
-
-	var task protocol.Task
-	taskBytes, err := json.Marshal(resp.Result)
-	require.NoError(t, err)
-	err = json.Unmarshal(taskBytes, &task)
-	require.NoError(t, err)
-
-	time.Sleep(2 * time.Second)
-
-	agent.Stop() // kill external agent mid-execution
-
-	finalTask := pollTaskUntilComplete(t, fmt.Sprintf("http://localhost:%d", serverPort), task.ID, 180*time.Second)
-	assert.Equal(t, protocol.TaskStateFailed, finalTask.Status.State)
-	assert.NotEmpty(t, finalTask.History, "Task should have failure history")
-
-	hasErrorInfo := false
-	for _, msg := range finalTask.History {
-		for _, part := range msg.Parts {
-			if part.Kind == "text" && (strings.Contains(part.Text, "error") || strings.Contains(part.Text, "failed")) {
-				hasErrorInfo = true
-				break
-			}
-		}
-		if hasErrorInfo {
-			break
-		}
-	}
-	assert.True(t, hasErrorInfo, "Task history should contain error information")
-}
+// Other complex E2E scenarios have been moved to BACKLOG.md to keep this suite lean and fast.

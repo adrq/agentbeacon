@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 )
 
 func TestExecuteNode_WithTimeout_Success(t *testing.T) {
-	db := setupTestDB(t, "sqlite3", ":memory:")
+	db := setupTestDB(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
 	defer db.Close()
 
 	configLoader := setupTestConfigLoader(t)
@@ -52,7 +53,7 @@ func TestExecuteNode_WithTimeout_Success(t *testing.T) {
 }
 
 func TestExecuteNode_WithTimeout_Exceeded(t *testing.T) {
-	db := setupTestDB(t, "sqlite3", ":memory:")
+	db := setupTestDB(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
 	defer db.Close()
 
 	configLoader := setupTestConfigLoader(t)
@@ -110,7 +111,7 @@ func TestWorkflowExecution_WithTimeouts(t *testing.T) {
 	if !mockAgentExists() {
 		t.Skip("mock-agent binary not found, run 'make build' first")
 	}
-	db := setupTestDB(t, "sqlite3", ":memory:")
+	db := setupTestDB(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
 	defer db.Close()
 
 	// Inline register workflow (registry model)
