@@ -13,16 +13,29 @@ import (
 	"gorm.io/datatypes"
 )
 
+// buildTestDSN creates a test database DSN from base DSN and test DB name
+func buildTestDSN(testDBName string) string {
+	if baseDSN := os.Getenv("DATABASE_URL"); baseDSN != "" {
+		// For custom DATABASE_URL, replace database name
+		testDSN := baseDSN[:strings.LastIndex(baseDSN, "/")+1] + testDBName
+		if strings.Contains(baseDSN, "?") {
+			testDSN += "?" + baseDSN[strings.Index(baseDSN, "?")+1:]
+		}
+		return testDSN
+	}
+	return "postgres://postgres:postgres@127.0.0.1/" + testDBName + "?sslmode=disable"
+}
+
 func TestDatabaseSchema(t *testing.T) {
 	t.Run("SQLite", func(t *testing.T) {
 		testDatabaseSchema(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
 	})
 
 	t.Run("PostgreSQL", func(t *testing.T) {
-		pgDSN := "postgres://postgres:postgres@127.0.0.1/postgres?sslmode=disable"
+		pgDSN := getPostgreSQLDSN()
 		mainDB, err := sqlx.Connect("postgres", pgDSN)
 		if err != nil {
-			t.Skip("PostgreSQL not available")
+			t.Fatalf("PostgreSQL not available: %v", err)
 		}
 		defer mainDB.Close()
 
@@ -30,11 +43,11 @@ func TestDatabaseSchema(t *testing.T) {
 		mainDB.Exec("DROP DATABASE IF EXISTS " + testDBName)
 		_, err = mainDB.Exec("CREATE DATABASE " + testDBName)
 		if err != nil {
-			t.Skip("Cannot create test database")
+			t.Fatalf("Cannot create test database: %v", err)
 		}
 		defer mainDB.Exec("DROP DATABASE " + testDBName)
 
-		testDSN := "postgres://postgres:postgres@127.0.0.1/" + testDBName + "?sslmode=disable"
+		testDSN := buildTestDSN(testDBName)
 		testDatabaseSchema(t, "postgres", testDSN)
 	})
 }
@@ -45,10 +58,10 @@ func TestConfigOperations(t *testing.T) {
 	})
 
 	t.Run("PostgreSQL", func(t *testing.T) {
-		pgDSN := "postgres://postgres:postgres@127.0.0.1/postgres?sslmode=disable"
+		pgDSN := getPostgreSQLDSN()
 		mainDB, err := sqlx.Connect("postgres", pgDSN)
 		if err != nil {
-			t.Skip("PostgreSQL not available")
+			t.Fatalf("PostgreSQL not available: %v", err)
 		}
 		defer mainDB.Close()
 
@@ -56,11 +69,11 @@ func TestConfigOperations(t *testing.T) {
 		mainDB.Exec("DROP DATABASE IF EXISTS " + testDBName)
 		_, err = mainDB.Exec("CREATE DATABASE " + testDBName)
 		if err != nil {
-			t.Skip("Cannot create test database")
+			t.Fatalf("Cannot create test database: %v", err)
 		}
 		defer mainDB.Exec("DROP DATABASE " + testDBName)
 
-		testDSN := "postgres://postgres:postgres@127.0.0.1/" + testDBName + "?sslmode=disable"
+		testDSN := buildTestDSN(testDBName)
 		testConfigOperations(t, "postgres", testDSN)
 	})
 }
@@ -71,10 +84,10 @@ func TestWorkflowOperations(t *testing.T) {
 	})
 
 	t.Run("PostgreSQL", func(t *testing.T) {
-		pgDSN := "postgres://postgres:postgres@127.0.0.1/postgres?sslmode=disable"
+		pgDSN := getPostgreSQLDSN()
 		mainDB, err := sqlx.Connect("postgres", pgDSN)
 		if err != nil {
-			t.Skip("PostgreSQL not available")
+			t.Fatalf("PostgreSQL not available: %v", err)
 		}
 		defer mainDB.Close()
 
@@ -82,11 +95,11 @@ func TestWorkflowOperations(t *testing.T) {
 		mainDB.Exec("DROP DATABASE IF EXISTS " + testDBName)
 		_, err = mainDB.Exec("CREATE DATABASE " + testDBName)
 		if err != nil {
-			t.Skip("Cannot create test database")
+			t.Fatalf("Cannot create test database: %v", err)
 		}
 		defer mainDB.Exec("DROP DATABASE " + testDBName)
 
-		testDSN := "postgres://postgres:postgres@127.0.0.1/" + testDBName + "?sslmode=disable"
+		testDSN := buildTestDSN(testDBName)
 		testWorkflowOperations(t, "postgres", testDSN)
 	})
 }
@@ -97,10 +110,10 @@ func TestExecutionOperations(t *testing.T) {
 	})
 
 	t.Run("PostgreSQL", func(t *testing.T) {
-		pgDSN := "postgres://postgres:postgres@127.0.0.1/postgres?sslmode=disable"
+		pgDSN := getPostgreSQLDSN()
 		mainDB, err := sqlx.Connect("postgres", pgDSN)
 		if err != nil {
-			t.Skip("PostgreSQL not available")
+			t.Fatalf("PostgreSQL not available: %v", err)
 		}
 		defer mainDB.Close()
 
@@ -108,11 +121,11 @@ func TestExecutionOperations(t *testing.T) {
 		mainDB.Exec("DROP DATABASE IF EXISTS " + testDBName)
 		_, err = mainDB.Exec("CREATE DATABASE " + testDBName)
 		if err != nil {
-			t.Skip("Cannot create test database")
+			t.Fatalf("Cannot create test database: %v", err)
 		}
 		defer mainDB.Exec("DROP DATABASE " + testDBName)
 
-		testDSN := "postgres://postgres:postgres@127.0.0.1/" + testDBName + "?sslmode=disable"
+		testDSN := buildTestDSN(testDBName)
 		testExecutionOperations(t, "postgres", testDSN)
 	})
 }
@@ -120,11 +133,7 @@ func TestExecutionOperations(t *testing.T) {
 func testConfigOperations(t *testing.T, driver, dsn string) {
 	db, err := Open(driver, dsn)
 	if err != nil {
-		if driver == "postgres" {
-			t.Skipf("PostgreSQL not available: %v", err)
-		} else {
-			t.Fatalf("Failed to open database: %v", err)
-		}
+		t.Fatalf("Failed to open %s database: %v", driver, err)
 	}
 	defer db.Close()
 
@@ -179,11 +188,7 @@ func testConfigOperations(t *testing.T, driver, dsn string) {
 func testWorkflowOperations(t *testing.T, driver, dsn string) {
 	db, err := Open(driver, dsn)
 	if err != nil {
-		if driver == "postgres" {
-			t.Skipf("PostgreSQL not available: %v", err)
-		} else {
-			t.Fatalf("Failed to open database: %v", err)
-		}
+		t.Fatalf("Failed to open %s database: %v", driver, err)
 	}
 	defer db.Close()
 
@@ -303,11 +308,7 @@ description: Wrong name for update`
 func testExecutionOperations(t *testing.T, driver, dsn string) {
 	db, err := Open(driver, dsn)
 	if err != nil {
-		if driver == "postgres" {
-			t.Skipf("PostgreSQL not available: %v", err)
-		} else {
-			t.Fatalf("Failed to open database: %v", err)
-		}
+		t.Fatalf("Failed to open %s database: %v", driver, err)
 	}
 	defer db.Close()
 
@@ -397,11 +398,7 @@ description: Test workflow for execution tests`
 func testDatabaseSchema(t *testing.T, driver, dsn string) {
 	db, err := Open(driver, dsn)
 	if err != nil {
-		if driver == "postgres" {
-			t.Skipf("PostgreSQL not available: %v", err)
-		} else {
-			t.Fatalf("Failed to open database: %v", err)
-		}
+		t.Fatalf("Failed to open %s database: %v", driver, err)
 	}
 	defer db.Close()
 

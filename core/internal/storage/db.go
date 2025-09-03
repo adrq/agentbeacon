@@ -162,7 +162,7 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("failed to create GORM instance: %w", err)
 	}
 
-	if err := gormDB.AutoMigrate(&Config{}, &WorkflowMeta{}, &Execution{}, &WorkflowVersion{}); err != nil {
+	if err := gormDB.AutoMigrate(&Config{}, &WorkflowMeta{}, &Execution{}, &WorkflowVersion{}, &ExecutionEvent{}); err != nil {
 		return fmt.Errorf("failed to auto-migrate: %w", err)
 	}
 

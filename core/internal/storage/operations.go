@@ -170,7 +170,7 @@ func (db *DB) CreateExecution(execution *Execution) error {
 func (db *DB) UpdateExecution(execution *Execution) error {
 	_, err := db.NamedExec(`
 		UPDATE execution
-		SET status = :status, node_states = :node_states, a2_a_tasks = :a2_a_tasks, logs = :logs, completed_at = :completed_at
+		SET status = :status, node_states = :node_states, a2_a_tasks = :a2_a_tasks, acp_sessions = :acp_sessions, logs = :logs, completed_at = :completed_at
 		WHERE id = :id
 	`, execution)
 	return err
@@ -197,4 +197,48 @@ func (db *DB) ListAllExecutions() ([]Execution, error) {
 	var executions []Execution
 	err := db.Select(&executions, "SELECT * FROM execution ORDER BY started_at DESC")
 	return executions, err
+}
+
+// Event operations
+
+// CreateExecutionEvent inserts a single event
+func (db *DB) CreateExecutionEvent(event *ExecutionEvent) error {
+	event.Timestamp = time.Now()
+
+	_, err := db.NamedExec(`
+		INSERT INTO execution_events
+		(execution_id, node_id, timestamp, type, source,
+		 state, prev_state, message, data, raw)
+		VALUES
+		(:execution_id, :node_id, :timestamp, :type, :source,
+		 :state, :prev_state, :message, :data, :raw)
+	`, event)
+	return err
+}
+
+// GetExecutionEvents retrieves recent events for an execution
+func (db *DB) GetExecutionEvents(executionID string, limit int) ([]ExecutionEvent, error) {
+	var events []ExecutionEvent
+	query := db.placeholder(
+		"SELECT * FROM execution_events WHERE execution_id = ? ORDER BY id DESC LIMIT ?")
+	err := db.Select(&events, query, executionID, limit)
+	return events, err
+}
+
+// GetExecutionEventsAfter retrieves events after a given ID (for streaming/pagination)
+func (db *DB) GetExecutionEventsAfter(executionID string, afterID int64, limit int) ([]ExecutionEvent, error) {
+	var events []ExecutionEvent
+	query := db.placeholder(
+		"SELECT * FROM execution_events WHERE execution_id = ? AND id > ? ORDER BY id LIMIT ?")
+	err := db.Select(&events, query, executionID, afterID, limit)
+	return events, err
+}
+
+// GetNodeEvents retrieves events for a specific node
+func (db *DB) GetNodeEvents(executionID string, nodeID string) ([]ExecutionEvent, error) {
+	var events []ExecutionEvent
+	query := db.placeholder(
+		"SELECT * FROM execution_events WHERE execution_id = ? AND node_id = ? ORDER BY id")
+	err := db.Select(&events, query, executionID, nodeID)
+	return events, err
 }

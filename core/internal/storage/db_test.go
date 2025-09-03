@@ -12,6 +12,14 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// getPostgreSQLDSN returns PostgreSQL DSN from DATABASE_URL env var or default
+func getPostgreSQLDSN() string {
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		return dsn
+	}
+	return "postgres://postgres:postgres@127.0.0.1/postgres?sslmode=disable"
+}
+
 func TestOpen_CreatesDirectoryIfNotExists(t *testing.T) {
 	tempDir := t.TempDir()
 	nonExistentDir := filepath.Join(tempDir, "new", "nested", "path")
@@ -104,12 +112,12 @@ func TestOpen_IdempotentMigrations(t *testing.T) {
 	}
 
 	var tableCount int
-	err = db2.Get(&tableCount, `SELECT COUNT(*) FROM sqlite_master WHERE type='table'`)
+	err = db2.Get(&tableCount, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
 	if err != nil {
 		t.Errorf("Failed to count tables: %v", err)
 	}
-	if tableCount != 4 { // config, workflow, execution, workflow_version
-		t.Errorf("Expected exactly 4 tables after idempotent migration, got %d", tableCount)
+	if tableCount != 5 { // config, workflow, execution, workflow_version, execution_events
+		t.Errorf("Expected exactly 5 tables after idempotent migration, got %d", tableCount)
 	}
 }
 
@@ -165,10 +173,10 @@ func TestDatabaseConstraints(t *testing.T) {
 	})
 
 	t.Run("PostgreSQL", func(t *testing.T) {
-		pgDSN := "postgres://postgres:postgres@127.0.0.1/postgres?sslmode=disable"
+		pgDSN := getPostgreSQLDSN()
 		testDB, err := sqlx.Connect("postgres", pgDSN)
 		if err != nil {
-			t.Skipf("PostgreSQL not available: %v", err)
+			t.Fatalf("PostgreSQL not available: %v", err)
 		}
 		defer testDB.Close()
 
@@ -176,7 +184,7 @@ func TestDatabaseConstraints(t *testing.T) {
 		testDB.Exec("DROP SCHEMA IF EXISTS " + schemaName + " CASCADE")
 		_, err = testDB.Exec("CREATE SCHEMA " + schemaName)
 		if err != nil {
-			t.Skipf("Cannot create test schema: %v", err)
+			t.Fatalf("Cannot create test schema: %v", err)
 		}
 		defer testDB.Exec("DROP SCHEMA IF EXISTS " + schemaName + " CASCADE")
 
@@ -213,11 +221,7 @@ func TestWorkflowsDirectory(t *testing.T) {
 func testDatabaseConstraints(t *testing.T, driver, dsn string) {
 	db, err := Open(driver, dsn)
 	if err != nil {
-		if driver == "postgres" {
-			t.Skipf("PostgreSQL not available: %v", err)
-		} else {
-			t.Fatalf("Failed to open database: %v", err)
-		}
+		t.Fatalf("Failed to open %s database: %v", driver, err)
 	}
 	defer db.Close()
 
@@ -227,7 +231,7 @@ func testDatabaseConstraints(t *testing.T, driver, dsn string) {
 		var query string
 
 		if db.driver == "postgres" {
-			query = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = $1"
+			query = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = $1 AND table_schema = current_schema()"
 		} else {
 			query = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?"
 		}

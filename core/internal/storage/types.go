@@ -34,6 +34,7 @@ type Execution struct {
 	Status       string         `gorm:"type:varchar(100);not null" db:"status"`
 	NodeStates   datatypes.JSON `gorm:"type:jsonb;not null;serializer:json" db:"node_states"`
 	A2ATasks     datatypes.JSON `gorm:"type:jsonb;serializer:json" db:"a2_a_tasks"`
+	ACPSessions  datatypes.JSON `gorm:"type:jsonb;serializer:json" db:"acp_sessions"`
 	Logs         string         `gorm:"type:text" db:"logs"`
 	StartedAt    time.Time      `gorm:"autoCreateTime" db:"started_at"`
 	CompletedAt  *time.Time     `gorm:"" db:"completed_at"`
@@ -60,3 +61,62 @@ type WorkflowVersion struct {
 }
 
 func (WorkflowVersion) TableName() string { return "workflow_version" }
+
+// Event types - Using A2A states as canonical model
+const (
+	// State transitions (maps directly to A2A task states)
+	EventTypeStateChange   = "state_change"
+	EventTypeSubmitted     = "submitted"
+	EventTypeWorking       = "working"
+	EventTypeInputRequired = "input_required"
+	EventTypeCompleted     = "completed"
+	EventTypeFailed        = "failed"
+	EventTypeCanceled      = "canceled"
+
+	// Progress events
+	EventTypeProgress   = "progress"
+	EventTypeOutput     = "output"
+	EventTypePlanUpdate = "plan_update" // ACP plans
+	EventTypeArtifact   = "artifact"
+
+	// System events
+	EventTypeRetry   = "retry"
+	EventTypeTimeout = "timeout"
+	EventTypeError   = "error"
+)
+
+// Event sources
+const (
+	EventSourceA2A    = "a2a"
+	EventSourceACP    = "acp"
+	EventSourceSystem = "system"
+)
+
+// ExecutionEvent represents a single event in workflow execution
+// Auto-increment ID provides ordering - no sequence field needed
+type ExecutionEvent struct {
+	// Primary key provides natural ordering
+	ID int64 `gorm:"primaryKey;autoIncrement" db:"id"`
+
+	// Event identification
+	ExecutionID string    `gorm:"type:varchar(255);not null;index:idx_exec_id" db:"execution_id"`
+	NodeID      string    `gorm:"type:varchar(255);not null" db:"node_id"`
+	Timestamp   time.Time `gorm:"not null" db:"timestamp"`
+
+	// Event classification
+	Type   string `gorm:"type:varchar(50);not null;index" db:"type"`
+	Source string `gorm:"type:varchar(20);not null" db:"source"` // "a2a", "acp", "system"
+
+	// State tracking (nullable - not all events are state changes)
+	State     *string `gorm:"type:varchar(50)" db:"state"`      // Current A2A state
+	PrevState *string `gorm:"type:varchar(50)" db:"prev_state"` // Previous state
+
+	// Event content
+	Message string         `gorm:"type:text" db:"message"` // Human-readable
+	Data    datatypes.JSON `gorm:"type:jsonb" db:"data"`   // Structured data
+	Raw     datatypes.JSON `gorm:"type:jsonb" db:"raw"`    // Original protocol payload
+}
+
+func (ExecutionEvent) TableName() string {
+	return "execution_events"
+}

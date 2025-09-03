@@ -26,17 +26,17 @@ func TestRegistryStorageOperations(t *testing.T) {
 	})
 
 	t.Run("PostgreSQL", func(t *testing.T) {
-		baseDSN := "postgres://postgres:postgres@127.0.0.1/postgres?sslmode=disable"
+		baseDSN := getPostgreSQLDSN()
 		baseConn, err := sqlx.Connect("postgres", baseDSN)
 		if err != nil {
-			t.Skipf("PostgreSQL not available: %v", err)
+			t.Fatalf("PostgreSQL not available: %v", err)
 		}
 		defer baseConn.Close()
 
 		schemaName := "test_registry_" + strings.ReplaceAll(strings.ToLower(t.Name()), "/", "_")
 		baseConn.Exec("DROP SCHEMA IF EXISTS " + schemaName + " CASCADE")
 		if _, err := baseConn.Exec("CREATE SCHEMA " + schemaName); err != nil {
-			t.Skipf("cannot create schema: %v", err)
+			t.Fatalf("cannot create schema: %v", err)
 		}
 		defer baseConn.Exec("DROP SCHEMA IF EXISTS " + schemaName + " CASCADE")
 
