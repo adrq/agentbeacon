@@ -22,3 +22,12 @@ type Agent interface {
 type ContextSetter interface {
 	SetContext(executionID, nodeID string)
 }
+
+// ProtocolTracker is an optional interface for agents that track protocol-specific identifiers
+type ProtocolTracker interface {
+	// GetProtocolID returns the protocol type and the current protocol-specific ID
+	// For A2A agents: ("a2a", taskID)
+	// For ACP agents: ("acp", sessionID)
+	// Returns empty strings if no ID is available
+	GetProtocolID() (protocolType string, id string)
+}

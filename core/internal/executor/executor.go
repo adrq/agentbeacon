@@ -721,6 +721,20 @@ func (e *Executor) executeNode(ctx context.Context, execution *engine.Execution,
 		contextSetter.SetContext(execution.ID, node.ID)
 	}
 
+	// Capture protocol ID for agents that support protocol tracking
+	if tracker, ok := agent.(ProtocolTracker); ok {
+		go func() {
+			// Wait briefly for agent to establish connection and get protocol ID
+			time.Sleep(100 * time.Millisecond)
+
+			protocolType, protocolID := tracker.GetProtocolID()
+			if protocolType != "" && protocolID != "" {
+				// Store protocol mapping in execution record
+				e.storeProtocolMapping(execution.ID, node.ID, protocolType, protocolID)
+			}
+		}()
+	}
+
 	e.mutex.Lock()
 	nodeState := execution.NodeStates[node.ID]
 	nodeState.Status = constants.TaskStateWorking
@@ -853,6 +867,9 @@ func (e *Executor) eventWriter() {
 				event.Timestamp = time.Now()
 			}
 
+			// Handle state synchronization for critical events
+			e.handleEventStateSync(event)
+
 			// Write to database (ignore errors to avoid blocking)
 			_ = e.db.CreateExecutionEvent(event)
 
@@ -871,6 +888,246 @@ func (e *Executor) eventWriter() {
 			}
 		}
 	}
+}
+
+// storeProtocolMapping stores protocol ID mapping in execution record
+func (e *Executor) storeProtocolMapping(executionID, nodeID, protocolType, protocolID string) {
+	e.dbMutex.Lock()
+	defer e.dbMutex.Unlock()
+
+	// Get current execution from database
+	currentExecution, err := e.db.GetExecution(executionID)
+	if err != nil {
+		log.Printf("Failed to get execution %s for protocol mapping: %v", executionID, err)
+		return
+	}
+
+	// Parse existing mappings
+	var a2aTasks map[string]string
+	var acpSessions map[string]string
+
+	if currentExecution.A2ATasks != nil {
+		if err := json.Unmarshal(currentExecution.A2ATasks, &a2aTasks); err != nil {
+			a2aTasks = make(map[string]string)
+		}
+	} else {
+		a2aTasks = make(map[string]string)
+	}
+
+	if currentExecution.ACPSessions != nil {
+		if err := json.Unmarshal(currentExecution.ACPSessions, &acpSessions); err != nil {
+			acpSessions = make(map[string]string)
+		}
+	} else {
+		acpSessions = make(map[string]string)
+	}
+
+	// Store mapping based on protocol type
+	switch protocolType {
+	case "a2a":
+		a2aTasks[nodeID] = protocolID
+	case "acp":
+		acpSessions[nodeID] = protocolID
+	default:
+		log.Printf("Unknown protocol type: %s", protocolType)
+		return
+	}
+
+	// Marshal mappings back to JSON
+	a2aTasksJSON, err := json.Marshal(a2aTasks)
+	if err != nil {
+		log.Printf("Failed to marshal A2A tasks: %v", err)
+		return
+	}
+
+	acpSessionsJSON, err := json.Marshal(acpSessions)
+	if err != nil {
+		log.Printf("Failed to marshal ACP sessions: %v", err)
+		return
+	}
+
+	// Update execution with new mappings
+	currentExecution.A2ATasks = datatypes.JSON(a2aTasksJSON)
+	currentExecution.ACPSessions = datatypes.JSON(acpSessionsJSON)
+
+	if err := e.db.UpdateExecution(currentExecution); err != nil {
+		log.Printf("Failed to update execution %s with protocol mapping: %v", executionID, err)
+	} else {
+		log.Printf("Stored %s protocol mapping: node %s -> %s", protocolType, nodeID, protocolID)
+	}
+}
+
+// handleEventStateSync processes events that require state synchronization
+func (e *Executor) handleEventStateSync(event *storage.ExecutionEvent) {
+	// Handle input required events separately
+	if event.Type == storage.EventTypeInputRequired {
+		e.handleInputRequiredEvent(event)
+		return
+	}
+
+	// Handle state change events by syncing to node state
+	stateChangeEvents := map[string]bool{
+		storage.EventTypeStateChange: true,
+		storage.EventTypeSubmitted:   true,
+		storage.EventTypeWorking:     true,
+		storage.EventTypeCompleted:   true,
+		storage.EventTypeFailed:      true,
+		storage.EventTypeCanceled:    true,
+	}
+
+	if stateChangeEvents[event.Type] {
+		e.syncNodeStateFromEvent(event)
+	}
+}
+
+// syncNodeStateFromEvent updates execution node state based on event
+func (e *Executor) syncNodeStateFromEvent(event *storage.ExecutionEvent) {
+	if event.State == nil {
+		return // No state to sync
+	}
+
+	// Check if this is an active execution
+	e.mutex.RLock()
+	_, isActive := e.activeExecutions[event.ExecutionID]
+	e.mutex.RUnlock()
+
+	if !isActive {
+		// Not an active execution, skip sync to avoid complexity
+		return
+	}
+
+	// Get current execution state from database
+	currentExecution, err := e.db.GetExecution(event.ExecutionID)
+	if err != nil {
+		log.Printf("Failed to get execution %s for state sync: %v", event.ExecutionID, err)
+		return
+	}
+
+	// Parse current node states
+	var nodeStates map[string]*engine.NodeState
+	if currentExecution.NodeStates != nil {
+		if err := json.Unmarshal(currentExecution.NodeStates, &nodeStates); err != nil {
+			log.Printf("Failed to unmarshal node states for execution %s: %v", event.ExecutionID, err)
+			return
+		}
+	} else {
+		nodeStates = make(map[string]*engine.NodeState)
+	}
+
+	// Get or create node state
+	nodeState, exists := nodeStates[event.NodeID]
+	if !exists {
+		nodeState = &engine.NodeState{
+			Status: constants.TaskStateSubmitted,
+		}
+	}
+
+	// Update state based on event
+	nodeState.Status = *event.State
+
+	// Set timestamps based on state transitions
+	now := time.Now()
+	if *event.State == constants.TaskStateWorking && nodeState.StartedAt.IsZero() {
+		nodeState.StartedAt = now
+	}
+	if (*event.State == constants.TaskStateCompleted || *event.State == constants.TaskStateFailed ||
+		*event.State == constants.TaskStateCanceled) && nodeState.EndedAt == nil {
+		nodeState.EndedAt = &now
+	}
+
+	// Store updated state
+	nodeStates[event.NodeID] = nodeState
+
+	// Update database with new state
+	nodeStatesJSON, err := json.Marshal(nodeStates)
+	if err != nil {
+		log.Printf("Failed to marshal node states for execution %s: %v", event.ExecutionID, err)
+		return
+	}
+
+	// Update execution in database
+	currentExecution.NodeStates = datatypes.JSON(nodeStatesJSON)
+	currentExecution.Logs += fmt.Sprintf("Node %s state updated to %s via event at %s\n", event.NodeID, *event.State, time.Now().Format(time.RFC3339))
+
+	if err := e.db.UpdateExecution(currentExecution); err != nil {
+		log.Printf("Failed to update execution %s with state sync: %v", event.ExecutionID, err)
+	}
+}
+
+// handleInputRequiredEvent processes input_required events to pause execution
+func (e *Executor) handleInputRequiredEvent(event *storage.ExecutionEvent) {
+	log.Printf("Input required for execution %s, node %s: %s",
+		event.ExecutionID, event.NodeID, event.Message)
+
+	// Check if this is an active execution
+	e.mutex.RLock()
+	_, isActive := e.activeExecutions[event.ExecutionID]
+	e.mutex.RUnlock()
+
+	if !isActive {
+		// Not an active execution, skip
+		return
+	}
+
+	// Get current execution state from database
+	currentExecution, err := e.db.GetExecution(event.ExecutionID)
+	if err != nil {
+		log.Printf("Failed to get execution %s for input required handling: %v", event.ExecutionID, err)
+		return
+	}
+
+	// Parse current node states
+	var nodeStates map[string]*engine.NodeState
+	if currentExecution.NodeStates != nil {
+		if err := json.Unmarshal(currentExecution.NodeStates, &nodeStates); err != nil {
+			log.Printf("Failed to unmarshal node states for execution %s: %v", event.ExecutionID, err)
+			return
+		}
+	} else {
+		nodeStates = make(map[string]*engine.NodeState)
+	}
+
+	// Get or create node state
+	nodeState, exists := nodeStates[event.NodeID]
+	if !exists {
+		nodeState = &engine.NodeState{
+			Status: constants.TaskStateSubmitted,
+		}
+	}
+
+	// Mark node as requiring input
+	nodeState.Status = constants.TaskStateInputRequired
+	if nodeState.StartedAt.IsZero() {
+		nodeState.StartedAt = time.Now()
+	}
+
+	// Store input request details in the error field for now (simple MVP approach)
+	if event.Message != "" {
+		nodeState.Error = fmt.Sprintf("Input required: %s", event.Message)
+	} else {
+		nodeState.Error = "Input required"
+	}
+
+	// Store updated state
+	nodeStates[event.NodeID] = nodeState
+
+	// Update database with new state
+	nodeStatesJSON, err := json.Marshal(nodeStates)
+	if err != nil {
+		log.Printf("Failed to marshal node states for execution %s: %v", event.ExecutionID, err)
+		return
+	}
+
+	// Update execution in database
+	currentExecution.NodeStates = datatypes.JSON(nodeStatesJSON)
+	currentExecution.Logs += fmt.Sprintf("Node %s requires input: %s at %s\n", event.NodeID, event.Message, time.Now().Format(time.RFC3339))
+
+	if err := e.db.UpdateExecution(currentExecution); err != nil {
+		log.Printf("Failed to update execution %s with input required state: %v", event.ExecutionID, err)
+	}
+
+	// Note: Cannot actually pause agent.Execute() as it's blocking
+	// The input_required state will be visible in the database/API for external systems
 }
 
 // createAgentForNode creates an agent for the node based on its configuration

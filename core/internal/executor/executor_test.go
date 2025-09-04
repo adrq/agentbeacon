@@ -457,6 +457,85 @@ func createPostgreSQLTestDB(t *testing.T, testName string) string {
 
 // Removed race condition test - complex concurrency testing beyond MVP needs
 
+func TestProtocolTracker(t *testing.T) {
+	// Test that A2AAgent implements ProtocolTracker
+	a2aAgent := NewA2AAgent("http://example.com")
+	if tracker, ok := a2aAgent.(ProtocolTracker); ok {
+		protocolType, protocolID := tracker.GetProtocolID()
+		if protocolType != "a2a" {
+			t.Errorf("Expected protocol type 'a2a', got '%s'", protocolType)
+		}
+		// Initially empty since no task has been submitted
+		if protocolID != "" {
+			t.Errorf("Expected empty protocol ID initially, got '%s'", protocolID)
+		}
+	} else {
+		t.Error("A2AAgent should implement ProtocolTracker interface")
+	}
+
+	// Test that ACPAgent implements ProtocolTracker
+	if !mockAgentExists() {
+		t.Skip("mock-agent binary not found, run 'make build' first")
+	}
+
+	acpAgent, err := NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"}, "/tmp")
+	if err != nil {
+		t.Fatalf("Failed to create ACPAgent: %v", err)
+	}
+	defer acpAgent.Close()
+
+	if tracker, ok := acpAgent.(ProtocolTracker); ok {
+		protocolType, protocolID := tracker.GetProtocolID()
+		if protocolType != "acp" {
+			t.Errorf("Expected protocol type 'acp', got '%s'", protocolType)
+		}
+		// ACPAgent creates session on initialization, so should have protocol ID
+		if protocolID == "" {
+			t.Error("Expected non-empty protocol ID after ACP agent initialization")
+		}
+	} else {
+		t.Error("ACPAgent should implement ProtocolTracker interface")
+	}
+}
+
+func TestEventStateSync(t *testing.T) {
+	db := setupTestDB(t, "sqlite3", filepath.Join(t.TempDir(), "test.db"))
+	defer db.Close()
+	configLoader := setupTestConfigLoader(t)
+	executor := NewExecutor(db, configLoader)
+	defer executor.Close()
+
+	// Create a test execution event
+	event := &storage.ExecutionEvent{
+		ExecutionID: "test-execution",
+		NodeID:      "test-node",
+		Type:        storage.EventTypeInputRequired,
+		Source:      storage.EventSourceACP,
+		Message:     "Test input required message",
+	}
+
+	// Test that handleEventStateSync doesn't crash
+	executor.handleEventStateSync(event)
+
+	// Test with state change event
+	workingState := constants.TaskStateWorking
+	submittedState := constants.TaskStateSubmitted
+	stateChangeEvent := &storage.ExecutionEvent{
+		ExecutionID: "test-execution",
+		NodeID:      "test-node",
+		Type:        storage.EventTypeStateChange,
+		Source:      storage.EventSourceA2A,
+		State:       &workingState,
+		PrevState:   &submittedState,
+		Message:     "Task state changed",
+	}
+
+	executor.handleEventStateSync(stateChangeEvent)
+
+	// For MVP, we mainly verify these don't crash
+	// Future implementations would verify actual state synchronization
+}
+
 func writeFile(filename, content string) error {
 	return os.WriteFile(filename, []byte(content), 0644)
 }

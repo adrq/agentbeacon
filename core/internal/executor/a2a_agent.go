@@ -75,6 +75,11 @@ func (a *A2AAgent) Close() error {
 	return nil
 }
 
+// GetProtocolID implements ProtocolTracker interface
+func (a *A2AAgent) GetProtocolID() (string, string) {
+	return "a2a", a.taskID
+}
+
 func (a *A2AAgent) submitTask(prompt string) (string, error) {
 	request := jsonrpc.Request{
 		JSONRPC: "2.0",

@@ -518,3 +518,10 @@ func (a *ACPAgent) emitEventUnsafe(event *storage.ExecutionEvent) {
 		// Channel full, drop event
 	}
 }
+
+// GetProtocolID implements ProtocolTracker interface
+func (a *ACPAgent) GetProtocolID() (string, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return "acp", a.sessionID
+}
