@@ -15,6 +15,7 @@ import (
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol/jsonrpc"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
+	"gorm.io/datatypes"
 )
 
 // ACPAgent implements the Agent interface using ACP (Agent Client Protocol) over subprocess stdio
@@ -288,14 +289,17 @@ func (a *ACPAgent) Execute(ctx context.Context, prompt string) (string, error) {
 
 // handleSessionUpdate processes session update notifications
 func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *strings.Builder) error {
-	var notification protocol.SessionNotification
-	if err := json.Unmarshal(params, &notification); err != nil {
+	// Unmarshal into a helper struct that treats update as raw JSON to support union decoding
+	var raw struct {
+		SessionId protocol.SessionId `json:"sessionId"`
+		Update    json.RawMessage    `json:"update"`
+	}
+	if err := json.Unmarshal(params, &raw); err != nil {
 		return fmt.Errorf("failed to unmarshal session notification: %w", err)
 	}
 
 	// Extract text from agent message chunks
-	updateBytes, _ := json.Marshal(notification.Update)
-	update, err := protocol.UnmarshalSessionUpdate(updateBytes)
+	update, err := protocol.UnmarshalSessionUpdate(raw.Update)
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal session update: %w", err)
 	}
@@ -305,7 +309,7 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *str
 
 	switch updateType {
 	case protocol.SessionUpdateAgentMessageChunk:
-		if chunk, ok := update.(*protocol.AgentMessageChunk); ok {
+		if chunk, ok := update.(protocol.AgentMessageChunk); ok {
 			if chunk.Content.GetType() == protocol.ContentBlockTypeText {
 				if textContent, ok := chunk.Content.(protocol.TextContent); ok {
 					textResponse.WriteString(textContent.Text)
@@ -315,7 +319,7 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *str
 		}
 
 	case protocol.SessionUpdateUserMessageChunk:
-		rawJSON, _ := json.Marshal(updateBytes)
+		rawJSON := datatypes.JSON(raw.Update)
 		a.emitEventUnsafe(&storage.ExecutionEvent{
 			Type:    storage.EventTypeProgress,
 			Message: "User message chunk received",
@@ -323,10 +327,10 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *str
 		})
 
 	case protocol.SessionUpdateAgentThoughtChunk:
-		if chunk, ok := update.(*protocol.AgentThoughtChunk); ok {
+		if chunk, ok := update.(protocol.AgentThoughtChunk); ok {
 			if chunk.Content.GetType() == protocol.ContentBlockTypeText {
 				if textContent, ok := chunk.Content.(protocol.TextContent); ok {
-					rawJSON, _ := json.Marshal(updateBytes)
+					rawJSON := datatypes.JSON(raw.Update)
 					a.emitEventUnsafe(&storage.ExecutionEvent{
 						Type:    storage.EventTypeProgress,
 						Message: fmt.Sprintf("Agent thought: %s", textContent.Text),
@@ -337,9 +341,9 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *str
 		}
 
 	case protocol.SessionUpdatePlan:
-		if plan, ok := update.(*protocol.Plan); ok {
+		if plan, ok := update.(protocol.Plan); ok {
 			message := fmt.Sprintf("Plan update - Entries: %d", len(plan.Entries))
-			rawJSON, _ := json.Marshal(updateBytes)
+			rawJSON := datatypes.JSON(raw.Update)
 			a.emitEventUnsafe(&storage.ExecutionEvent{
 				Type:    storage.EventTypePlanUpdate,
 				Message: message,
@@ -348,9 +352,9 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *str
 		}
 
 	case protocol.SessionUpdateToolCall:
-		if toolCall, ok := update.(*protocol.ToolCall); ok {
+		if toolCall, ok := update.(protocol.ToolCall); ok {
 			message := fmt.Sprintf("Tool call: %s", toolCall.Title)
-			rawJSON, _ := json.Marshal(updateBytes)
+			rawJSON := datatypes.JSON(raw.Update)
 			a.emitEventUnsafe(&storage.ExecutionEvent{
 				Type:    storage.EventTypeProgress,
 				Message: message,
@@ -359,9 +363,9 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *str
 		}
 
 	case protocol.SessionUpdateToolCallUpdate:
-		if toolUpdate, ok := update.(*protocol.ToolCallUpdate); ok {
+		if toolUpdate, ok := update.(protocol.ToolCallUpdate); ok {
 			message := fmt.Sprintf("Tool update: %s", toolUpdate.ToolCallId)
-			rawJSON, _ := json.Marshal(updateBytes)
+			rawJSON := datatypes.JSON(raw.Update)
 			a.emitEventUnsafe(&storage.ExecutionEvent{
 				Type:    storage.EventTypeProgress,
 				Message: message,
@@ -370,7 +374,7 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *str
 		}
 
 	case protocol.SessionUpdateAvailableCommands:
-		rawJSON, _ := json.Marshal(updateBytes)
+		rawJSON := datatypes.JSON(raw.Update)
 		a.emitEventUnsafe(&storage.ExecutionEvent{
 			Type:    storage.EventTypeProgress,
 			Message: "Available commands updated",
@@ -378,9 +382,9 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *str
 		})
 
 	case protocol.SessionUpdateCurrentMode:
-		if modeUpdate, ok := update.(*protocol.CurrentModeUpdate); ok {
+		if modeUpdate, ok := update.(protocol.CurrentModeUpdate); ok {
 			message := fmt.Sprintf("Mode changed to: %s", modeUpdate.CurrentModeId)
-			rawJSON, _ := json.Marshal(updateBytes)
+			rawJSON := datatypes.JSON(raw.Update)
 			a.emitEventUnsafe(&storage.ExecutionEvent{
 				Type:    storage.EventTypeProgress,
 				Message: message,
@@ -390,7 +394,7 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage, textResponse *str
 
 	default:
 		// Unknown update type - emit as generic progress
-		rawJSON, _ := json.Marshal(updateBytes)
+		rawJSON := datatypes.JSON(raw.Update)
 		a.emitEventUnsafe(&storage.ExecutionEvent{
 			Type:    storage.EventTypeProgress,
 			Message: fmt.Sprintf("Unknown session update: %s", updateType),

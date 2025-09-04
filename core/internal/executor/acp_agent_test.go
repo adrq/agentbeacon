@@ -288,10 +288,14 @@ func TestACPAgentPermissionRequestDetection(t *testing.T) {
 	permissionJSON := `{
 		"sessionId": "test-session",
 		"toolCall": {
+			"sessionUpdate": "tool_call_update",
 			"toolCallId": "file_write_123",
 			"status": "pending"
 		},
-		"options": ["approve", "deny"]
+		"options": [
+			{"id": "allow", "name": "Allow", "kind": "allow"},
+			{"id": "deny", "name": "Deny", "kind": "deny"}
+		]
 	}`
 
 	// Create a mock response
