@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,4 +145,119 @@ func TestEventStreamingCleanup(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Executor cleanup timed out")
 	}
+}
+
+// TestACPEventStreamingIntegration tests the complete ACP event streaming flow from agent to database
+func TestACPEventStreamingIntegration(t *testing.T) {
+	if !mockAgentExists() {
+		t.Skip("mock-agent binary not found, run 'make build' first")
+	}
+
+	// Create in-memory database
+	db := setupTestDB(t, "sqlite3", ":memory:")
+	defer db.Close()
+
+	// Create config loader
+	configLoader := setupTestConfigLoader(t)
+
+	// Create executor with event streaming
+	executor := NewExecutor(db, configLoader)
+	defer executor.Close()
+
+	// Create ACP agent directly and set event channel
+	agent, err := NewACPAgent("../../../bin/mock-agent", []string{"--mode", "acp"}, "/tmp")
+	if err != nil {
+		t.Fatalf("Failed to create ACP agent: %v", err)
+	}
+	defer agent.Close()
+
+	// Set event channel and execution context
+	streamer, ok := agent.(EventStreamer)
+	require.True(t, ok, "ACPAgent should implement EventStreamer interface")
+	streamer.SetEventChannel(executor.eventChan)
+
+	contextSetter, ok := agent.(ContextSetter)
+	require.True(t, ok, "ACPAgent should implement ContextSetter interface")
+	contextSetter.SetContext("test-acp-exec-123", "test-acp-node-456")
+
+	// Execute a task
+	ctx := context.Background()
+	response, err := agent.Execute(ctx, "test ACP event streaming")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if response != "Mock response: test ACP event streaming" {
+		t.Errorf("Expected 'Mock response: test ACP event streaming', got '%s'", response)
+	}
+
+	// Give some time for events to be written to database
+	time.Sleep(100 * time.Millisecond)
+
+	// Query events from database
+	events, err := db.GetExecutionEvents("test-acp-exec-123", 100)
+	if err != nil {
+		t.Fatalf("Failed to get events: %v", err)
+	}
+
+	if len(events) == 0 {
+		t.Fatal("Expected events to be stored in database, but none found")
+	}
+
+	// Verify event structure
+	for _, event := range events {
+		if event.ExecutionID != "test-acp-exec-123" {
+			t.Errorf("Expected ExecutionID 'test-acp-exec-123', got '%s'", event.ExecutionID)
+		}
+		if event.NodeID != "test-acp-node-456" {
+			t.Errorf("Expected NodeID 'test-acp-node-456', got '%s'", event.NodeID)
+		}
+		if event.Source != storage.EventSourceACP {
+			t.Errorf("Expected Source '%s', got '%s'", storage.EventSourceACP, event.Source)
+		}
+		if event.Timestamp.IsZero() {
+			t.Error("Expected timestamp to be set")
+		}
+	}
+
+	// Verify we have expected event types for ACP
+	foundStart := false
+	foundComplete := false
+	foundOutput := false
+	foundSessionCreated := false
+
+	for _, event := range events {
+		switch event.Type {
+		case storage.EventTypeStateChange:
+			if event.State != nil {
+				if *event.State == constants.TaskStateWorking {
+					foundStart = true
+				}
+				if *event.State == constants.TaskStateCompleted {
+					foundComplete = true
+				}
+			}
+		case storage.EventTypeOutput:
+			foundOutput = true
+			// Check for session creation output
+			if strings.Contains(event.Message, "Session created:") {
+				foundSessionCreated = true
+			}
+		}
+	}
+
+	if !foundStart {
+		t.Error("Expected to find start event (state change to working)")
+	}
+	if !foundComplete {
+		t.Error("Expected to find completion event (state change to completed)")
+	}
+	if !foundOutput {
+		t.Error("Expected to find output event")
+	}
+	if !foundSessionCreated {
+		t.Error("Expected to find session creation event")
+	}
+
+	t.Logf("Successfully verified %d ACP events stored in database", len(events))
 }
