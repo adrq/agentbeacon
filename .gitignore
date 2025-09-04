@@ -83,3 +83,13 @@ coverage/
 *.pkg
 *.dmg
 *.msi
+
+requirements/*
+.claude/*
+.specify/*
+.github/*
+.vscode/*
+.serena/*
+AGENTS.md
+CLAUDE.md
+.python-version

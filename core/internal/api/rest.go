@@ -40,6 +40,10 @@ func NewRestHandler(db *storage.DB, configLoader *config.ConfigLoader) http.Hand
 	mux.HandleFunc("/api/executions", api.listExecutionsHandler)
 	mux.HandleFunc("/api/executions/", api.executionHandler)
 
+	// Worker stub endpoints
+	mux.HandleFunc("/api/worker/poll", api.workerPollStubHandler)
+	mux.HandleFunc("/api/worker/result", api.workerResultStubHandler)
+
 	return mux
 }
 

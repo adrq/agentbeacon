@@ -1,4 +1,4 @@
-.PHONY: build test test-nocache clean deps lint fmt build-all dev-tools pre-commit dev npm-install test-deps
+.PHONY: build test test-nocache clean deps lint fmt build-all dev-tools pre-commit dev npm-install test-deps build-worker
 
 # Default target
 all: build
@@ -19,6 +19,8 @@ test-deps: npm-install
 	@mkdir -p bin
 	@echo "Building agentmaestro binary for tests..."
 	go build -o bin/agentmaestro ./core/cmd/agentmaestro
+	@echo "Building agentmaestro-worker for tests..."
+	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
 	@echo "Building mock-agent for testing..."
 	go build -o bin/mock-agent ./core/cmd/mock-agent
 	@echo "Building frontend for embedded files..."
@@ -29,8 +31,16 @@ build: build-frontend
 	@echo "Building agentmaestro..."
 	@mkdir -p bin
 	go build -o bin/agentmaestro ./core/cmd/agentmaestro
+	@echo "Building agentmaestro-worker..."
+	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
 	@echo "Building mock-agent for testing..."
 	go build -o bin/mock-agent ./core/cmd/mock-agent
+
+# Build only the worker binary
+build-worker:
+	@echo "Building agentmaestro-worker..."
+	@mkdir -p bin
+	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
 
 # Run tests
 test: test-deps
