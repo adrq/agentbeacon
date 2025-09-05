@@ -30,6 +30,7 @@ func NewRestHandler(db *storage.DB, configLoader *config.ConfigLoader) http.Hand
 
 	// REST API endpoints
 	mux.HandleFunc("/api/health", api.healthHandler)
+	mux.HandleFunc("/api/ready", api.readyHandler)
 	mux.HandleFunc("/api/configs", api.configsHandler)
 	mux.HandleFunc("/api/configs/", api.configByNameHandler)
 	mux.HandleFunc("/api/workflows/register", api.registerWorkflowHandler)
@@ -55,6 +56,25 @@ func (api *RestAPI) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (api *RestAPI) readyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// For MVP, scheduler is ready when database connection is working
+	// In future, this could check if all required services are available
+	if err := api.db.Ping(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "reason": "database unavailable"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 }
 
 func (api *RestAPI) configsHandler(w http.ResponseWriter, r *http.Request) {

@@ -17,20 +17,26 @@ build-frontend: npm-install
 test-deps: npm-install
 	@echo "Building test dependencies..."
 	@mkdir -p bin
+	@echo "Building frontend for embedded files..."
+	cd web && npm run build
 	@echo "Building agentmaestro binary for tests..."
 	go build -o bin/agentmaestro ./core/cmd/agentmaestro
+	@echo "Building agentmaestro-scheduler for tests..."
+	@cp -r core/cmd/agentmaestro/web core/cmd/agentmaestro-scheduler/ 2>/dev/null || true
+	go build -o bin/agentmaestro-scheduler ./core/cmd/agentmaestro-scheduler
 	@echo "Building agentmaestro-worker for tests..."
 	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
 	@echo "Building mock-agent for testing..."
 	go build -o bin/mock-agent ./core/cmd/mock-agent
-	@echo "Building frontend for embedded files..."
-	cd web && npm run build
 
 # Build target (includes frontend)
 build: build-frontend
 	@echo "Building agentmaestro..."
 	@mkdir -p bin
 	go build -o bin/agentmaestro ./core/cmd/agentmaestro
+	@echo "Building agentmaestro-scheduler..."
+	@cp -r core/cmd/agentmaestro/web core/cmd/agentmaestro-scheduler/ 2>/dev/null || true
+	go build -o bin/agentmaestro-scheduler ./core/cmd/agentmaestro-scheduler
 	@echo "Building agentmaestro-worker..."
 	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
 	@echo "Building mock-agent for testing..."
@@ -74,6 +80,7 @@ clean:
 	rm -rf bin/
 	rm -rf dist/
 	rm -rf core/cmd/agentmaestro/web/dist/
+	rm -rf core/cmd/agentmaestro-scheduler/web/
 	cd web && rm -rf dist/
 	go clean
 

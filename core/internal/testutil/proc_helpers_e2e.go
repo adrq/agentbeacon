@@ -43,10 +43,10 @@ func (p *TestProcess) Logs() string {
 	return fmt.Sprintf("STDOUT:\n%s\nSTDERR:\n%s", p.stdout.String(), p.stderr.String())
 }
 
-// StartAgentMaestroBinary launches the real agentmaestro binary.
+// StartAgentMaestroBinary launches the real agentmaestro-scheduler binary.
 func StartAgentMaestroBinary(t *testing.T, port int, dbFile string) *TestProcess {
 	t.Helper()
-	bin := resolveBinaryPath(t, "agentmaestro")
+	bin := resolveBinaryPath(t, "agentmaestro-scheduler")
 	cmd := exec.Command(bin, "-port", strconv.Itoa(port), "-driver", "sqlite3", "-db", dbFile)
 	// Run from repo root so relative paths like examples/agents.yaml and ./bin/mock-agent resolve
 	cmd.Dir = filepath.Dir(filepath.Dir(bin))
@@ -70,10 +70,10 @@ func StartAgentMaestroBinary(t *testing.T, port int, dbFile string) *TestProcess
 	return proc
 }
 
-// StartAgentMaestroBinaryWith launches the agentmaestro binary with specified driver and dsn.
+// StartAgentMaestroBinaryWith launches the agentmaestro-scheduler binary with specified driver and dsn.
 func StartAgentMaestroBinaryWith(t *testing.T, port int, driver, dsn string) *TestProcess {
 	t.Helper()
-	bin := resolveBinaryPath(t, "agentmaestro")
+	bin := resolveBinaryPath(t, "agentmaestro-scheduler")
 	cmd := exec.Command(bin, "-port", strconv.Itoa(port), "-driver", driver, "-db", dsn)
 	// Run from repo root so relative paths resolve
 	cmd.Dir = filepath.Dir(filepath.Dir(bin))
