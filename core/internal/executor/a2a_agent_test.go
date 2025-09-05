@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
 	"github.com/agentmaestro/agentmaestro/core/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -231,4 +232,110 @@ func TestA2AAgentFallbackToStdio(t *testing.T) {
 	// Verify it's a StdioAgent
 	_, ok := agent.(*StdioAgent)
 	require.True(t, ok, "Expected StdioAgent, got %T", agent)
+}
+
+// TestWorkerResultToA2AFinalStateMapping tests the mapping of WorkerResult status
+// to A2A protocol final states following TDD principles.
+// This test will initially FAIL since WorkerResult and mapping logic don't exist yet.
+func TestWorkerResultToA2AFinalStateMapping(t *testing.T) {
+	tests := []struct {
+		name             string
+		workerStatus     string
+		workerError      error
+		expectedA2AState string
+	}{
+		{
+			name:             "completed worker result maps to completed A2A state",
+			workerStatus:     "completed",
+			workerError:      nil,
+			expectedA2AState: "completed",
+		},
+		{
+			name:             "failed worker result maps to failed A2A state",
+			workerStatus:     "failed",
+			workerError:      nil,
+			expectedA2AState: "failed",
+		},
+		{
+			name:             "canceled worker result maps to canceled A2A state",
+			workerStatus:     "canceled",
+			workerError:      nil,
+			expectedA2AState: "canceled",
+		},
+		{
+			name:             "rejected worker result maps to rejected A2A state",
+			workerStatus:     "rejected",
+			workerError:      nil,
+			expectedA2AState: "rejected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create WorkerResult with test data
+			workerResult := &protocol.WorkerResult{
+				NodeID: "test-node",
+				Status: tt.workerStatus,
+			}
+			if tt.workerError != nil {
+				workerResult.Error = tt.workerError.Error()
+			}
+
+			// Call the status mapping function
+			a2aState := workerResult.ToA2AFinalState()
+
+			// Verify the mapping is correct
+			if a2aState != tt.expectedA2AState {
+				t.Errorf("ToA2AFinalState() = %v, want %v", a2aState, tt.expectedA2AState)
+			}
+		})
+	}
+}
+
+// TestWorkerResultToA2AFinalStateMappingWithErrors tests error cases in status mapping
+func TestWorkerResultToA2AFinalStateMappingWithErrors(t *testing.T) {
+	tests := []struct {
+		name             string
+		workerStatus     string
+		expectedA2AState string
+	}{
+		{
+			name:             "unknown status defaults to failed A2A state",
+			workerStatus:     "unknown-status",
+			expectedA2AState: "failed",
+		},
+		{
+			name:             "empty status defaults to failed A2A state",
+			workerStatus:     "",
+			expectedA2AState: "failed",
+		},
+		{
+			name:             "working status maps to failed A2A state (non-final)",
+			workerStatus:     "working",
+			expectedA2AState: "failed",
+		},
+		{
+			name:             "submitted status maps to failed A2A state (non-final)",
+			workerStatus:     "submitted",
+			expectedA2AState: "failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create WorkerResult with test data
+			workerResult := &protocol.WorkerResult{
+				NodeID: "test-node",
+				Status: tt.workerStatus,
+			}
+
+			// Call the status mapping function
+			a2aState := workerResult.ToA2AFinalState()
+
+			// Verify the mapping is correct
+			if a2aState != tt.expectedA2AState {
+				t.Errorf("ToA2AFinalState() = %v, want %v", a2aState, tt.expectedA2AState)
+			}
+		})
+	}
 }
