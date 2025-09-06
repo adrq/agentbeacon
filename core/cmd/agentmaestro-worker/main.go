@@ -22,12 +22,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
 	"github.com/agentmaestro/agentmaestro/core/internal/executor"
 	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
 )
 
+var configLoader *config.ConfigLoader
+
 func main() {
+	// Initialize config loader
+	configLoader = config.NewConfigLoader("examples/agents.yaml")
 	orchestratorURL, interval, showVersion := parseFlags(os.Args[1:])
 
 	if showVersion {
@@ -181,6 +186,8 @@ func executeTask(ctx context.Context, task *engine.Node) *protocol.WorkerResult 
 		taskContent = request
 	} else if prompt, ok := task.Request["prompt"].(string); ok {
 		taskContent = prompt
+	} else if input, ok := task.Request["input"].(string); ok {
+		taskContent = input
 	} else {
 		taskContent = "default task"
 	}
@@ -192,23 +199,62 @@ func executeTask(ctx context.Context, task *engine.Node) *protocol.WorkerResult 
 		return protocol.NewFailedResult(task.ID, err)
 	}
 
-	log.Printf("Task %s completed successfully", task.ID)
+	log.Printf("Task %s completed successfully: %s", task.ID, output)
 	return protocol.NewCompletedResult(task.ID, output)
 }
 
 // createAgent creates an agent based on the task configuration
 func createAgent(task *engine.Node) (executor.Agent, error) {
-	// For MVP simplification, always use mock-agent via stdio
-	// TODO: Add proper agent configuration lookup in future versions
+	// Get agent config from ConfigLoader
+	agentConfig, err := configLoader.GetAgentConfig(task.Agent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get agent config for '%s': %w", task.Agent, err)
+	}
 
-	switch task.Agent {
-	case "mock-agent", "test-agent", "default":
-		// Use the mock-agent binary via stdio
-		return executor.NewStdioAgent("./bin/mock-agent")
+	// Create agent based on type
+	switch agentConfig.Type {
+	case "stdio":
+		command, ok := agentConfig.Config["command"].(string)
+		if !ok {
+			return nil, fmt.Errorf("stdio agent '%s' missing 'command' in config", task.Agent)
+		}
+
+		// Handle args properly (unlike executor which has a bug here)
+		var args []string
+		if argsInterface, ok := agentConfig.Config["args"].([]interface{}); ok {
+			for _, arg := range argsInterface {
+				if argStr, ok := arg.(string); ok {
+					args = append(args, argStr)
+				}
+			}
+		}
+
+		return executor.NewStdioAgent(command, args...)
+	case "a2a":
+		url, ok := agentConfig.Config["url"].(string)
+		if !ok {
+			return nil, fmt.Errorf("a2a agent '%s' missing 'url' in config", task.Agent)
+		}
+		return executor.NewA2AAgent(url), nil
+	case "acp":
+		command, ok := agentConfig.Config["command"].(string)
+		if !ok {
+			return nil, fmt.Errorf("acp agent '%s' missing 'command' in config", task.Agent)
+		}
+
+		// Handle args for ACP agents
+		var args []string
+		if argsInterface, ok := agentConfig.Config["args"].([]interface{}); ok {
+			for _, arg := range argsInterface {
+				if argStr, ok := arg.(string); ok {
+					args = append(args, argStr)
+				}
+			}
+		}
+
+		return executor.NewACPAgent(command, args, "")
 	default:
-		// For unknown agents, also use mock-agent as fallback
-		log.Printf("Unknown agent type '%s', falling back to mock-agent", task.Agent)
-		return executor.NewStdioAgent("./bin/mock-agent")
+		return nil, fmt.Errorf("unknown agent type: %s", agentConfig.Type)
 	}
 }
 

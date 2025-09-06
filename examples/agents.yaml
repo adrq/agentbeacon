@@ -3,7 +3,15 @@ agents:
   mock-agent:
     type: stdio
     config:
-      command: "./bin/mock-agent"
+      command: "uv"
+      args: ["run", "mock-agent", "--mode", "stdio"]
+
+  # Test agent with special marker for config integration tests
+  test-config-agent:
+    type: stdio
+    config:
+      command: "uv"
+      args: ["run", "mock-agent", "--mode", "stdio", "--config", "test-config-responses.json"]
 
   # Example A2A agent configuration
   # orchestrator-remote:
@@ -23,5 +31,5 @@ agents:
   # acp-mock:
   #   type: acp
   #   config:
-  #     command: "./bin/mock-agent"
-  #     args: ["--mode", "acp"]
+  #     command: "uv"
+  #     args: ["run", "mock-agent", "--mode", "acp"]

@@ -26,8 +26,6 @@ test-deps: npm-install
 	go build -o bin/agentmaestro-scheduler ./core/cmd/agentmaestro-scheduler
 	@echo "Building agentmaestro-worker for tests..."
 	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
-	@echo "Building mock-agent for testing..."
-	go build -o bin/mock-agent ./core/cmd/mock-agent
 
 # Build target (includes frontend)
 build: build-frontend
@@ -39,8 +37,6 @@ build: build-frontend
 	go build -o bin/agentmaestro-scheduler ./core/cmd/agentmaestro-scheduler
 	@echo "Building agentmaestro-worker..."
 	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
-	@echo "Building mock-agent for testing..."
-	go build -o bin/mock-agent ./core/cmd/mock-agent
 
 # Build only the worker binary
 build-worker:

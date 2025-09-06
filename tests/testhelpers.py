@@ -47,7 +47,9 @@ class PortManager:
                 if port not in self._allocated and self._is_port_available(port):
                     self._allocated.add(port)
                     return port
-            raise RuntimeError(f"No available ports in range {self.MIN_PORT}-{self.MAX_PORT}")
+            raise RuntimeError(
+                f"No available ports in range {self.MIN_PORT}-{self.MAX_PORT}"
+            )
 
     def release_port(self, port: int) -> None:
         """Release a previously allocated port.
@@ -82,7 +84,7 @@ class PortManager:
         """
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.bind(('127.0.0.1', port))
+                sock.bind(("127.0.0.1", port))
                 return True
         except OSError:
             return False
@@ -129,7 +131,9 @@ class TempDatabase:
         self.cleanup()
 
 
-def _terminate_single_process(proc: subprocess.Popen, term_timeout: float = 5.0, kill_timeout: float = 2.0) -> None:
+def _terminate_single_process(
+    proc: subprocess.Popen, term_timeout: float = 5.0, kill_timeout: float = 2.0
+) -> None:
     """Terminate a single subprocess.Popen instance gracefully, then forcefully.
 
     Best-effort: swallows errors if the process already exited or disappears.
@@ -206,12 +210,22 @@ def start_mock_orchestrator(port: int, base_dir: Path = None) -> subprocess.Pope
         base_dir = Path.cwd()
 
     orchestrator_proc = subprocess.Popen(
-        ["uv", "run", "uvicorn", "tests.integration.simple_mock_orchestrator:app",
-         "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+        [
+            "uv",
+            "run",
+            "uvicorn",
+            "tests.integration.simple_mock_orchestrator:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        cwd=base_dir
+        cwd=base_dir,
     )
     return orchestrator_proc
 
@@ -234,11 +248,13 @@ def wait_for_port(port: int, timeout: float = 10) -> bool:
                 return True
         except requests.RequestException:
             pass
-        time.sleep(0.2)
+        time.sleep(0.1)
     return False
 
 
-def start_scheduler(port: int, base_dir: Path = None, db_path: str = None) -> tuple[subprocess.Popen, str]:
+def start_scheduler(
+    port: int, base_dir: Path = None, db_path: str = None
+) -> tuple[subprocess.Popen, str]:
     """Start the scheduler binary with specified configuration.
 
     Args:
@@ -262,13 +278,21 @@ def start_scheduler(port: int, base_dir: Path = None, db_path: str = None) -> tu
         temp_db.close()
         temp_db_path = temp_db.name
 
-    scheduler_process = subprocess.Popen([
-        "./bin/agentmaestro-scheduler",
-        "-port", str(port),
-        "-driver", "sqlite3",
-        "-db", temp_db_path
-    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    cwd=base_dir)
+    scheduler_process = subprocess.Popen(
+        [
+            "./bin/agentmaestro-scheduler",
+            "-port",
+            str(port),
+            "-driver",
+            "sqlite3",
+            "-db",
+            temp_db_path,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=base_dir,
+    )
 
     # Wait for scheduler ready
     if not wait_for_port(port, timeout=15):
@@ -301,10 +325,10 @@ def scheduler_context(port: int = None):
     try:
         scheduler_process, temp_db_path = start_scheduler(allocated_port)
         yield {
-            'process': scheduler_process,
-            'url': f"http://localhost:{allocated_port}",
-            'port': allocated_port,
-            'db_path': temp_db_path
+            "process": scheduler_process,
+            "url": f"http://localhost:{allocated_port}",
+            "port": allocated_port,
+            "db_path": temp_db_path,
         }
     finally:
         # Cleanup
