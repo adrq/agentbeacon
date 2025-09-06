@@ -58,19 +58,142 @@ func loadCustomResponses(configFile string) map[string]string {
 	return responses
 }
 
-// runStdioMode runs the agent in stdio mode (original functionality)
+// runStdioMode runs the agent in stdio mode with A2A-compliant results
 func runStdioMode(responses map[string]string) {
-
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
-		prompt := strings.TrimSpace(scanner.Text())
-		response := processPrompt(prompt, responses)
-		fmt.Println(response)
+		input := strings.TrimSpace(scanner.Text())
+
+		// Try to parse as JSON task request, fallback to plain prompt
+		var taskRequest map[string]interface{}
+		var prompt string
+
+		if err := json.Unmarshal([]byte(input), &taskRequest); err == nil {
+			// Structured input - extract prompt from request
+			if req, ok := taskRequest["request"].(map[string]interface{}); ok {
+				if promptVal, exists := req["prompt"]; exists {
+					prompt = fmt.Sprintf("%v", promptVal)
+				} else if taskVal, exists := req["task"]; exists {
+					prompt = fmt.Sprintf("%v", taskVal)
+				}
+			}
+			if prompt == "" {
+				prompt = input // fallback to raw input
+			}
+		} else {
+			// Plain text input
+			prompt = input
+		}
+
+		// Generate A2A-compliant response
+		a2aResponse := generateA2AResponse(prompt, responses)
+		responseJSON, _ := json.Marshal(a2aResponse)
+		fmt.Println(string(responseJSON))
 	}
 
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading from stdin: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// generateA2AResponse creates an A2A-compliant TaskResponse based on prompt processing
+func generateA2AResponse(prompt string, responses map[string]string) interface{} {
+	// Handle special test commands that cause failures
+	if strings.Contains(prompt, "FAIL_NODE") || strings.Contains(prompt, "FAIL_ONCE") {
+		// For FAIL_ONCE, randomly succeed or fail
+		if strings.Contains(prompt, "FAIL_ONCE") {
+			now := time.Now().UnixNano()
+			if now%2 != 0 {
+				// Success case for FAIL_ONCE
+				return createSuccessResponse(fmt.Sprintf("Mock success after retry: %s", prompt))
+			}
+		}
+
+		// Failure case
+		return createFailureResponse(fmt.Sprintf("Mock agent failure: %s", prompt))
+	}
+
+	// Handle delay patterns
+	if strings.HasPrefix(prompt, "DELAY_") {
+		delayStr := strings.TrimPrefix(prompt, "DELAY_")
+		if delayStr != "" {
+			var delay time.Duration
+			switch delayStr {
+			case "1":
+				delay = 1 * time.Second
+			case "2":
+				delay = 2 * time.Second
+			case "3":
+				delay = 3 * time.Second
+			case "5":
+				delay = 5 * time.Second
+			case "1500":
+				delay = 1500 * time.Millisecond
+			default:
+				delay = 1 * time.Second
+			}
+			time.Sleep(delay)
+			return createSuccessResponse(fmt.Sprintf("Mock response after %s delay: %s", delayStr, prompt))
+		}
+	}
+
+	// Handle HANG command (will block indefinitely)
+	if prompt == "HANG" {
+		time.Sleep(1 * time.Hour)
+		return createSuccessResponse("This should never be reached")
+	}
+
+	// Check for custom response
+	if response, exists := responses[prompt]; exists {
+		if response == "HANG" {
+			time.Sleep(1 * time.Hour)
+			return createSuccessResponse("This should never be reached")
+		}
+		return createSuccessResponse(response)
+	}
+
+	// Default success response
+	return createSuccessResponse(fmt.Sprintf("Mock response: %s", prompt))
+}
+
+// createSuccessResponse creates a successful A2A-compliant TaskResponse
+func createSuccessResponse(output string) interface{} {
+	return map[string]interface{}{
+		"taskStatus": map[string]interface{}{
+			"state":     "completed",
+			"timestamp": time.Now().Format(time.RFC3339),
+		},
+		"artifacts": []map[string]interface{}{
+			{
+				"artifactId":  uuid.New().String(),
+				"name":        "agent-output",
+				"description": "Output from mock agent execution",
+				"parts": []map[string]interface{}{
+					{
+						"text": output,
+					},
+				},
+			},
+		},
+	}
+}
+
+// createFailureResponse creates a failed A2A-compliant TaskResponse
+func createFailureResponse(errorMsg string) interface{} {
+	return map[string]interface{}{
+		"taskStatus": map[string]interface{}{
+			"state": "failed",
+			"message": map[string]interface{}{
+				"role": "assistant",
+				"content": []map[string]interface{}{
+					{
+						"text": errorMsg,
+					},
+				},
+			},
+			"timestamp": time.Now().Format(time.RFC3339),
+		},
 	}
 }
 

@@ -88,3 +88,36 @@ func (wr *WorkerResult) Validate() error {
 	}
 	return nil
 }
+
+// TaskRequest represents a work unit submitted to the task queue for external worker polling.
+type TaskRequest struct {
+	NodeID      string                 `json:"node_id" validate:"required"`
+	ExecutionID string                 `json:"execution_id" validate:"required"`
+	Agent       string                 `json:"agent" validate:"required"`
+	ID          string                 `json:"id" validate:"required"`
+	Request     map[string]interface{} `json:"request"`
+}
+
+// TaskResponse represents a completed task result submitted by an external worker in A2A-compliant format.
+type TaskResponse struct {
+	NodeID      string                 `json:"nodeId" validate:"required"`
+	ExecutionID string                 `json:"executionId" validate:"required"`
+	TaskStatus  A2ATaskStatus          `json:"taskStatus" validate:"required"`
+	Artifacts   []A2AArtifact          `json:"artifacts,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// A2ATaskStatus represents A2A Protocol-compliant task status structure.
+type A2ATaskStatus struct {
+	State     string   `json:"state" validate:"required,oneof=completed failed canceled rejected"`
+	Message   *Message `json:"message,omitempty"`
+	Timestamp string   `json:"timestamp,omitempty"`
+}
+
+// A2AArtifact represents A2A Protocol-compliant artifact structure for rich outputs.
+type A2AArtifact struct {
+	ArtifactID  string `json:"artifactId" validate:"required"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parts       []Part `json:"parts" validate:"required,min=1"`
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/agentmaestro/agentmaestro/core/internal/config"
 	"github.com/agentmaestro/agentmaestro/core/internal/constants"
 	"github.com/agentmaestro/agentmaestro/core/internal/engine"
+	"github.com/agentmaestro/agentmaestro/core/internal/protocol"
 	"github.com/agentmaestro/agentmaestro/core/internal/storage"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -22,34 +23,14 @@ const (
 	maxOutputBytes = 10 * 1024 * 1024 // 10MB output limit to prevent memory issues
 )
 
-type Task struct {
-	NodeID    string
-	Execution *engine.Execution
-	Node      *engine.Node
-}
-
-type TaskResult struct {
-	NodeID string
-	Error  error
-}
-
-type WorkerPool struct {
-	workers       int
-	taskChan      chan Task
-	resultChan    chan TaskResult
-	ctx           context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
-	executor      *Executor
-	retryExecutor *RetryableExecutor
-}
-
 type Executor struct {
 	db               *storage.DB
 	configLoader     *config.ConfigLoader
 	mutex            sync.RWMutex
 	activeExecutions map[string]context.CancelFunc
 	dbMutex          sync.Mutex // Serialize database updates
+	// Task queue for external worker integration
+	taskQueue *TaskQueue
 	// Event streaming
 	eventChan       chan *storage.ExecutionEvent
 	eventWriterDone chan struct{}
@@ -61,6 +42,7 @@ func NewExecutor(db *storage.DB, configLoader *config.ConfigLoader) *Executor {
 		db:               db,
 		configLoader:     configLoader,
 		activeExecutions: make(map[string]context.CancelFunc),
+		taskQueue:        NewTaskQueue(100), // Buffer size of 100 tasks
 		eventChan:        make(chan *storage.ExecutionEvent, 1000),
 		eventWriterDone:  make(chan struct{}),
 	}
@@ -73,6 +55,10 @@ func NewExecutor(db *storage.DB, configLoader *config.ConfigLoader) *Executor {
 }
 
 func (e *Executor) Close() {
+	// Close task queue
+	if e.taskQueue != nil {
+		e.taskQueue.Close()
+	}
 	// Signal event writer to stop
 	close(e.eventWriterDone)
 	// Wait for event writer to finish
@@ -81,211 +67,9 @@ func (e *Executor) Close() {
 	close(e.eventChan)
 }
 
-func NewWorkerPool(ctx context.Context, workers int, executor *Executor) *WorkerPool {
-	ctx, cancel := context.WithCancel(ctx)
-	return &WorkerPool{
-		workers:       workers,
-		taskChan:      make(chan Task, workers*2),
-		resultChan:    make(chan TaskResult, workers*2),
-		ctx:           ctx,
-		cancel:        cancel,
-		executor:      executor,
-		retryExecutor: NewRetryableExecutor(executor),
-	}
-}
-
-func (wp *WorkerPool) Start() {
-	for i := 0; i < wp.workers; i++ {
-		wp.wg.Add(1)
-		go wp.worker()
-	}
-}
-
-func (wp *WorkerPool) Shutdown() {
-	wp.cancel()
-	close(wp.taskChan)
-	wp.wg.Wait()
-	close(wp.resultChan)
-}
-
-// worker processes tasks from taskChan until shutdown.
-func (wp *WorkerPool) worker() {
-	defer wp.wg.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Worker panic recovered: %v", r)
-		}
-	}()
-
-	for {
-		select {
-		case task, ok := <-wp.taskChan:
-			if !ok {
-				return
-			}
-
-			var err error
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						err = fmt.Errorf("node execution panicked: %v", r)
-						log.Printf("Node %s execution panic: %v", task.NodeID, r)
-
-						// Mark execution as failed and send terminal update
-						wp.executor.mutex.Lock()
-						task.Execution.Status = constants.TaskStateFailed
-						if task.Execution.CompletedAt == nil {
-							completedAt := time.Now()
-							task.Execution.CompletedAt = &completedAt
-						}
-
-						// Mark the node as failed
-						nodeState := task.Execution.NodeStates[task.NodeID]
-						nodeState.Status = constants.TaskStateFailed
-						nodeState.Output = fmt.Sprintf("Node execution panicked: %v", r)
-						if nodeState.EndedAt == nil {
-							endedAt := time.Now()
-							nodeState.EndedAt = &endedAt
-						}
-						task.Execution.NodeStates[task.NodeID] = nodeState
-						wp.executor.mutex.Unlock()
-
-						// Force terminal update regardless of channel state
-						wp.executor.updateExecutionInDB(task.Execution, fmt.Sprintf("Node %s panicked: %v", task.NodeID, r))
-					}
-				}()
-				err = wp.retryExecutor.executeNodeWithRetry(wp.ctx, task.Execution, task.Node)
-			}()
-
-			result := TaskResult{
-				NodeID: task.NodeID,
-				Error:  err,
-			}
-
-			select {
-			case wp.resultChan <- result:
-			case <-wp.ctx.Done():
-				return
-			}
-
-		case <-wp.ctx.Done():
-			return
-		}
-	}
-}
-
-// executeLevel executes a level with hardcoded stop-all behavior on node failures
-func (wp *WorkerPool) executeLevel(execution *engine.Execution, nodeMap map[string]*engine.Node, level []string) error {
-	if len(level) == 0 {
-		return nil
-	}
-
-	validTasks := 0
-	for _, nodeID := range level {
-		node := nodeMap[nodeID]
-		if node == nil {
-			continue
-		}
-
-		if !wp.shouldExecuteNode(execution, node) {
-			continue
-		}
-
-		task := Task{
-			NodeID:    nodeID,
-			Execution: execution,
-			Node:      node,
-		}
-
-		select {
-		case wp.taskChan <- task:
-			validTasks++
-		case <-wp.ctx.Done():
-			return fmt.Errorf("task submission cancelled: %w", wp.ctx.Err())
-		}
-	}
-
-	for i := 0; i < validTasks; i++ {
-		select {
-		case result := <-wp.resultChan:
-			if result.Error != nil {
-				node := nodeMap[result.NodeID]
-				if node != nil {
-					err := wp.handleNodeFailure(execution, node, result.Error)
-					if err != nil {
-						wp.cancel()
-						return fmt.Errorf("failed to handle node failure: %w", err)
-					}
-
-					wp.cancel()
-					for j := i + 1; j < validTasks; j++ {
-						select {
-						case <-wp.resultChan:
-						case <-wp.ctx.Done():
-							goto drainComplete
-						}
-					}
-				drainComplete:
-					return result.Error
-				}
-				// Node failure already handled above
-			}
-		case <-wp.ctx.Done():
-			// Mark any running nodes as cancelled when context is cancelled
-			wp.markRunningNodesAsCancelled(execution, nodeMap, level)
-			return fmt.Errorf("result collection cancelled: %w", wp.ctx.Err())
-		}
-	}
-
-	return nil
-}
-
-// markRunningNodesAsCancelled marks any running nodes in the current level as cancelled
-func (wp *WorkerPool) markRunningNodesAsCancelled(execution *engine.Execution, nodeMap map[string]*engine.Node, level []string) {
-	// Skip node state updates here to avoid deadlocks
-	// The main execution thread will handle marking all remaining nodes as cancelled
-}
-
-// handleNodeFailure handles node failure with hardcoded stop-all behavior
-func (wp *WorkerPool) handleNodeFailure(execution *engine.Execution, failedNode *engine.Node, nodeErr error) error {
-	wp.executor.mutex.Lock()
-	execution.Status = constants.TaskStateFailed
-	if execution.CompletedAt == nil {
-		completedAt := time.Now()
-		execution.CompletedAt = &completedAt
-	}
-
-	now := time.Now()
-	for nodeID, nodeState := range execution.NodeStates {
-		// Only cancel pending nodes, let running nodes complete naturally
-		if nodeState.Status == constants.TaskStateSubmitted {
-			nodeState.Status = constants.TaskStateCanceled
-			nodeState.EndedAt = &now
-			execution.NodeStates[nodeID] = nodeState
-		}
-	}
-	wp.executor.mutex.Unlock()
-
-	wp.executor.updateExecutionInDB(execution, "Execution failed - cancelling all pending nodes")
-
-	return nil
-}
-
-// shouldExecuteNode determines if a node should be executed
-func (wp *WorkerPool) shouldExecuteNode(execution *engine.Execution, node *engine.Node) bool {
-	wp.executor.mutex.RLock()
-	defer wp.executor.mutex.RUnlock()
-
-	if execution.Status != constants.TaskStateWorking {
-		return false
-	}
-
-	nodeState, exists := execution.NodeStates[node.ID]
-	if !exists {
-		return false
-	}
-
-	return nodeState.Status == constants.TaskStateSubmitted
+// GetTaskQueue returns the executor's task queue for external worker integration.
+func (e *Executor) GetTaskQueue() *TaskQueue {
+	return e.taskQueue
 }
 
 type ExecutionInfo struct {
@@ -357,13 +141,48 @@ func (e *Executor) StartWorkflowRef(rawRef string) (*ExecutionInfo, error) {
 		return nil, fmt.Errorf("failed to create execution record: %w", err)
 	}
 
+	// Perform workflow validation and submit first level tasks synchronously
+	levels, err := engine.TopologicalSort(workflow.Nodes)
+	if err != nil {
+		e.mutex.Lock()
+		execution.Status = constants.TaskStateFailed
+		completedAt := time.Now()
+		execution.CompletedAt = &completedAt
+		e.mutex.Unlock()
+		e.updateExecutionInDB(execution, fmt.Sprintf("Workflow validation failed: %v", err))
+		return nil, fmt.Errorf("workflow validation failed: %w", err)
+	}
+
+	nodeMap := make(map[string]*engine.Node)
+	for i := range workflow.Nodes {
+		nodeMap[workflow.Nodes[i].ID] = &workflow.Nodes[i]
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	e.mutex.Lock()
 	e.activeExecutions[executionID] = cancel
 	e.mutex.Unlock()
 
+	// Submit first level tasks synchronously before returning
+	if len(levels) > 0 {
+		if err := e.submitLevel(ctx, execution, nodeMap, levels[0]); err != nil {
+			e.mutex.Lock()
+			execution.Status = constants.TaskStateFailed
+			completedAt := time.Now()
+			execution.CompletedAt = &completedAt
+			e.mutex.Unlock()
+			e.updateExecutionInDB(execution, fmt.Sprintf("Failed to submit first level: %v", err))
+			cancel()
+			e.mutex.Lock()
+			delete(e.activeExecutions, executionID)
+			e.mutex.Unlock()
+			return nil, fmt.Errorf("failed to submit first level: %w", err)
+		}
+	}
+
+	// Start async execution for remaining levels
 	go func() {
-		if err := e.executeWorkflow(ctx, execution, &workflow); err != nil {
+		if err := e.executeWorkflowFromLevel(ctx, execution, &workflow, levels, nodeMap, 1); err != nil {
 			log.Printf("Workflow execution %s failed: %v", executionID, err)
 		}
 		e.mutex.Lock()
@@ -377,8 +196,58 @@ func (e *Executor) StartWorkflowRef(rawRef string) (*ExecutionInfo, error) {
 	return info, nil
 }
 
-// executeWorkflow runs complete workflow execution using dependency levels and worker pool.
-func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execution, workflow *engine.Workflow) error {
+// submitLevel submits tasks for a level without waiting for completion (used for synchronous first level submission)
+func (e *Executor) submitLevel(ctx context.Context, execution *engine.Execution, nodeMap map[string]*engine.Node, level []string) error {
+	if len(level) == 0 {
+		return nil
+	}
+
+	// Submit all valid tasks to TaskQueue for external workers
+	for _, nodeID := range level {
+		node := nodeMap[nodeID]
+		if node == nil {
+			continue
+		}
+
+		if !e.shouldExecuteNode(execution, node) {
+			continue
+		}
+
+		// Create TaskRequest for external worker
+		taskRequest := protocol.TaskRequest{
+			NodeID:      nodeID,
+			ExecutionID: execution.ID,
+			Agent:       node.Agent,
+			ID:          uuid.New().String(),
+			Request:     node.Request,
+		}
+
+		// Submit task to queue
+		if err := e.taskQueue.SubmitTask(taskRequest); err != nil {
+			return fmt.Errorf("failed to submit task for node %s: %w", nodeID, err)
+		}
+
+		// Track external task in database
+		if err := e.trackExternalTask(execution.ID, nodeID, taskRequest.ID); err != nil {
+			log.Printf("Failed to track external task %s for node %s: %v", taskRequest.ID, nodeID, err)
+		}
+
+		// Update node state to working when submitted
+		e.mutex.Lock()
+		nodeState := execution.NodeStates[nodeID]
+		nodeState.Status = constants.TaskStateWorking
+		nodeState.StartedAt = time.Now()
+		execution.NodeStates[nodeID] = nodeState
+		e.mutex.Unlock()
+
+		e.updateExecutionInDB(execution, fmt.Sprintf("Submitted external task %s for node: %s", taskRequest.ID, nodeID))
+	}
+
+	return nil
+}
+
+// executeWorkflowFromLevel runs workflow execution starting from a specific level
+func (e *Executor) executeWorkflowFromLevel(ctx context.Context, execution *engine.Execution, workflow *engine.Workflow, levels [][]string, nodeMap map[string]*engine.Node, startLevel int) error {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Workflow execution panic recovered for execution %s: %v", execution.ID, r)
@@ -410,29 +279,9 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 		}
 	}()
 
-	levels, err := engine.TopologicalSort(workflow.Nodes)
-	if err != nil {
-		e.mutex.Lock()
-		execution.Status = constants.TaskStateFailed
-		completedAt := time.Now()
-		execution.CompletedAt = &completedAt
-		e.mutex.Unlock()
-		e.updateExecutionInDB(execution, fmt.Sprintf("Workflow validation failed: %v", err))
-		return fmt.Errorf("workflow validation failed: %w", err)
-	}
+	for levelIndex := startLevel; levelIndex < len(levels); levelIndex++ {
+		level := levels[levelIndex]
 
-	// Use hardcoded stop-all behavior for MVP
-
-	pool := NewWorkerPool(ctx, 5, e)
-	pool.Start()
-	defer pool.Shutdown()
-
-	nodeMap := make(map[string]*engine.Node)
-	for i := range workflow.Nodes {
-		nodeMap[workflow.Nodes[i].ID] = &workflow.Nodes[i]
-	}
-
-	for levelIndex, level := range levels {
 		// Check for cancellation before processing level
 		select {
 		case <-ctx.Done():
@@ -459,7 +308,7 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 		default:
 		}
 
-		if err := pool.executeLevel(execution, nodeMap, level); err != nil {
+		if err := e.executeLevel(ctx, execution, nodeMap, level); err != nil {
 			e.mutex.Lock()
 			if execution.CompletedAt == nil {
 				completedAt := time.Now()
@@ -565,6 +414,382 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 	e.mutex.Unlock()
 
 	e.updateExecutionInDB(execution, fmt.Sprintf("Workflow execution %s", finalStatus))
+	return nil
+}
+
+// executeWorkflow runs complete workflow execution using dependency levels and external task queue.
+func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execution, workflow *engine.Workflow) error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Workflow execution panic recovered for execution %s: %v", execution.ID, r)
+
+			// Mark execution as failed and send terminal update
+			e.mutex.Lock()
+			execution.Status = constants.TaskStateFailed
+			if execution.CompletedAt == nil {
+				completedAt := time.Now()
+				execution.CompletedAt = &completedAt
+			}
+
+			// Mark all non-terminal nodes as failed
+			now := time.Now()
+			for nodeID, nodeState := range execution.NodeStates {
+				if nodeState.Status == constants.TaskStateSubmitted || nodeState.Status == constants.TaskStateWorking {
+					nodeState.Status = constants.TaskStateFailed
+					nodeState.Error = fmt.Sprintf("Workflow execution panicked: %v", r)
+					if nodeState.EndedAt == nil {
+						nodeState.EndedAt = &now
+					}
+					execution.NodeStates[nodeID] = nodeState
+				}
+			}
+			e.mutex.Unlock()
+
+			// Force terminal update regardless of channel state
+			e.updateExecutionInDB(execution, fmt.Sprintf("Workflow execution panicked: %v", r))
+		}
+	}()
+
+	levels, err := engine.TopologicalSort(workflow.Nodes)
+	if err != nil {
+		e.mutex.Lock()
+		execution.Status = constants.TaskStateFailed
+		completedAt := time.Now()
+		execution.CompletedAt = &completedAt
+		e.mutex.Unlock()
+		e.updateExecutionInDB(execution, fmt.Sprintf("Workflow validation failed: %v", err))
+		return fmt.Errorf("workflow validation failed: %w", err)
+	}
+
+	nodeMap := make(map[string]*engine.Node)
+	for i := range workflow.Nodes {
+		nodeMap[workflow.Nodes[i].ID] = &workflow.Nodes[i]
+	}
+
+	for levelIndex, level := range levels {
+		// Check for cancellation before processing level
+		select {
+		case <-ctx.Done():
+			e.mutex.Lock()
+			execution.Status = constants.TaskStateCanceled
+			if execution.CompletedAt == nil {
+				completedAt := time.Now()
+				execution.CompletedAt = &completedAt
+			}
+			// Update only pending nodes to cancelled - let running nodes converge naturally
+			for nodeID, nodeState := range execution.NodeStates {
+				if nodeState.Status == constants.TaskStateSubmitted {
+					nodeState.Status = constants.TaskStateCanceled
+					if nodeState.EndedAt == nil {
+						endedAt := time.Now()
+						nodeState.EndedAt = &endedAt
+					}
+					execution.NodeStates[nodeID] = nodeState
+				}
+			}
+			e.mutex.Unlock()
+			e.updateExecutionInDB(execution, "Execution cancelled by user")
+			return fmt.Errorf("execution cancelled: %w", ctx.Err())
+		default:
+		}
+
+		if err := e.executeLevel(ctx, execution, nodeMap, level); err != nil {
+			e.mutex.Lock()
+			if execution.CompletedAt == nil {
+				completedAt := time.Now()
+				execution.CompletedAt = &completedAt
+			}
+			// Set proper status based on the type of error
+			if errors.Is(err, context.Canceled) {
+				execution.Status = constants.TaskStateCanceled
+				// Mark all remaining pending and running nodes as cancelled when execution is cancelled
+				for nodeID, nodeState := range execution.NodeStates {
+					if nodeState.Status == constants.TaskStateSubmitted || nodeState.Status == constants.TaskStateWorking {
+						nodeState.Status = constants.TaskStateCanceled
+						nodeState.Error = "execution was cancelled"
+						if nodeState.EndedAt == nil {
+							endedAt := time.Now()
+							nodeState.EndedAt = &endedAt
+						}
+						execution.NodeStates[nodeID] = nodeState
+					}
+				}
+			} else {
+				execution.Status = constants.TaskStateFailed
+				// Mark all remaining pending nodes as cancelled for StopAll behavior
+				now := time.Now()
+				for nodeID, nodeState := range execution.NodeStates {
+					if nodeState.Status == constants.TaskStateSubmitted {
+						nodeState.Status = constants.TaskStateCanceled
+						nodeState.Error = "execution failed - node cancelled"
+						if nodeState.EndedAt == nil {
+							nodeState.EndedAt = &now
+						}
+						execution.NodeStates[nodeID] = nodeState
+					}
+				}
+			}
+			e.mutex.Unlock()
+			e.updateExecutionInDB(execution, fmt.Sprintf("Execution failed at level %d: %v", levelIndex, err))
+			return fmt.Errorf("execution failed at level %d: %w", levelIndex, err)
+		}
+
+		e.mutex.RLock()
+		status := execution.Status
+		e.mutex.RUnlock()
+
+		if status != constants.TaskStateWorking {
+			e.mutex.Lock()
+			if execution.CompletedAt == nil {
+				completedAt := time.Now()
+				execution.CompletedAt = &completedAt
+			}
+			e.mutex.Unlock()
+			break
+		}
+
+		// Additional check for context cancellation after level completion
+		select {
+		case <-ctx.Done():
+			e.mutex.Lock()
+			execution.Status = constants.TaskStateCanceled
+			if execution.CompletedAt == nil {
+				completedAt := time.Now()
+				execution.CompletedAt = &completedAt
+			}
+			e.mutex.Unlock()
+			e.updateExecutionInDB(execution, "Execution cancelled after level completion")
+			return fmt.Errorf("execution cancelled: %w", ctx.Err())
+		default:
+		}
+	}
+
+	e.mutex.Lock()
+
+	// Final integrity check: ensure no nodes remain in pending or running state
+	now := time.Now()
+	hasOrphanNodes := false
+	for nodeID, nodeState := range execution.NodeStates {
+		if nodeState.Status == constants.TaskStateSubmitted || nodeState.Status == constants.TaskStateWorking {
+			hasOrphanNodes = true
+			nodeState.Status = constants.TaskStateCanceled
+			nodeState.Error = "execution completed - orphaned node cancelled"
+			if nodeState.EndedAt == nil {
+				nodeState.EndedAt = &now
+			}
+			execution.NodeStates[nodeID] = nodeState
+		}
+	}
+	if hasOrphanNodes {
+		log.Printf("Warning: Found orphaned nodes in execution %s, marked as cancelled", execution.ID)
+	}
+
+	e.mutex.Unlock()
+
+	// Determine final status with hardcoded stop-all behavior (after orphan nodes are cancelled)
+	finalStatus := e.determineExecutionStatus(execution)
+
+	e.mutex.Lock()
+	execution.Status = finalStatus
+
+	if execution.CompletedAt == nil {
+		completedAt := time.Now()
+		execution.CompletedAt = &completedAt
+	}
+	e.mutex.Unlock()
+
+	e.updateExecutionInDB(execution, fmt.Sprintf("Workflow execution %s", finalStatus))
+	return nil
+}
+
+// executeLevel executes a level using external task queue with hardcoded stop-all behavior on node failures
+func (e *Executor) executeLevel(ctx context.Context, execution *engine.Execution, nodeMap map[string]*engine.Node, level []string) error {
+	if len(level) == 0 {
+		return nil
+	}
+
+	// Submit all valid tasks to TaskQueue for external workers
+	var submittedTaskIDs []string
+	for _, nodeID := range level {
+		node := nodeMap[nodeID]
+		if node == nil {
+			continue
+		}
+
+		if !e.shouldExecuteNode(execution, node) {
+			continue
+		}
+
+		// Create TaskRequest for external worker
+		taskRequest := protocol.TaskRequest{
+			NodeID:      nodeID,
+			ExecutionID: execution.ID,
+			Agent:       node.Agent,
+			ID:          uuid.New().String(),
+			Request:     node.Request,
+		}
+
+		// Submit task to queue
+		if err := e.taskQueue.SubmitTask(taskRequest); err != nil {
+			return fmt.Errorf("failed to submit task for node %s: %w", nodeID, err)
+		}
+
+		submittedTaskIDs = append(submittedTaskIDs, taskRequest.ID)
+
+		// Track external task in database
+		if err := e.trackExternalTask(execution.ID, nodeID, taskRequest.ID); err != nil {
+			log.Printf("Failed to track external task %s for node %s: %v", taskRequest.ID, nodeID, err)
+		}
+
+		// Update node state to working when submitted
+		e.mutex.Lock()
+		nodeState := execution.NodeStates[nodeID]
+		nodeState.Status = constants.TaskStateWorking
+		nodeState.StartedAt = time.Now()
+		execution.NodeStates[nodeID] = nodeState
+		e.mutex.Unlock()
+
+		e.updateExecutionInDB(execution, fmt.Sprintf("Submitted external task %s for node: %s", taskRequest.ID, nodeID))
+	}
+
+	// Wait for all submitted tasks to complete
+	completedCount := 0
+	for completedCount < len(submittedTaskIDs) {
+		select {
+		case <-ctx.Done():
+			// Mark any remaining nodes as cancelled when context is cancelled
+			e.markRemainingNodesAsCancelled(execution, submittedTaskIDs, completedCount)
+			return fmt.Errorf("task completion waiting cancelled: %w", ctx.Err())
+		default:
+		}
+
+		// Check for completed tasks (poll every 100ms)
+		time.Sleep(100 * time.Millisecond)
+
+		for i := completedCount; i < len(submittedTaskIDs); i++ {
+			taskID := submittedTaskIDs[i]
+			if taskResponse, found := e.taskQueue.GetCompletedTask(taskID); found {
+				// Process completed task
+				if err := e.handleTaskCompletion(execution, nodeMap, *taskResponse); err != nil {
+					// Task failed - implement stop-all behavior
+					e.markRemainingNodesAsCancelled(execution, submittedTaskIDs, i+1)
+					return err
+				}
+				completedCount++
+			}
+		}
+	}
+
+	return nil
+}
+
+// shouldExecuteNode determines if a node should be executed
+func (e *Executor) shouldExecuteNode(execution *engine.Execution, node *engine.Node) bool {
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
+
+	if execution.Status != constants.TaskStateWorking {
+		return false
+	}
+
+	nodeState, exists := execution.NodeStates[node.ID]
+	if !exists {
+		return false
+	}
+
+	return nodeState.Status == constants.TaskStateSubmitted
+}
+
+// handleTaskCompletion processes a completed task response from external worker
+func (e *Executor) handleTaskCompletion(execution *engine.Execution, nodeMap map[string]*engine.Node, taskResponse protocol.TaskResponse) error {
+	node := nodeMap[taskResponse.NodeID]
+	if node == nil {
+		return fmt.Errorf("received task completion for unknown node: %s", taskResponse.NodeID)
+	}
+
+	endedAt := time.Now()
+	e.mutex.Lock()
+	nodeState := execution.NodeStates[taskResponse.NodeID]
+	nodeState.EndedAt = &endedAt
+
+	// Process task result based on A2A state
+	switch taskResponse.TaskStatus.State {
+	case "completed":
+		nodeState.Status = constants.TaskStateCompleted
+		// Extract output from artifacts if available
+		if len(taskResponse.Artifacts) > 0 && len(taskResponse.Artifacts[0].Parts) > 0 {
+			// Simple extraction for MVP - use first artifact's first part as output
+			if taskResponse.Artifacts[0].Parts[0].Text != "" {
+				nodeState.Output = taskResponse.Artifacts[0].Parts[0].Text
+			}
+		}
+	case "failed":
+		nodeState.Status = constants.TaskStateFailed
+		if taskResponse.TaskStatus.Message != nil && len(taskResponse.TaskStatus.Message.Parts) > 0 {
+			if taskResponse.TaskStatus.Message.Parts[0].Text != "" {
+				nodeState.Error = taskResponse.TaskStatus.Message.Parts[0].Text
+			}
+		}
+		if nodeState.Error == "" {
+			nodeState.Error = "Task failed"
+		}
+	case "canceled":
+		nodeState.Status = constants.TaskStateCanceled
+		nodeState.Error = "Task was cancelled"
+	case "rejected":
+		nodeState.Status = constants.TaskStateRejected
+		nodeState.Error = "Task was rejected"
+	default:
+		nodeState.Status = constants.TaskStateFailed
+		nodeState.Error = fmt.Sprintf("Unknown task state: %s", taskResponse.TaskStatus.State)
+	}
+
+	execution.NodeStates[taskResponse.NodeID] = nodeState
+	e.mutex.Unlock()
+
+	// Track external worker result in database
+	if err := e.trackExternalResult(execution.ID, taskResponse); err != nil {
+		log.Printf("Failed to track external result for node %s: %v", taskResponse.NodeID, err)
+	}
+
+	// Check if node failed and implement stop-all behavior
+	if nodeState.Status == constants.TaskStateFailed {
+		e.handleNodeFailure(execution, node, fmt.Errorf("external worker task failed: %s", nodeState.Error))
+		return fmt.Errorf("node %s failed: %s", taskResponse.NodeID, nodeState.Error)
+	}
+
+	e.updateExecutionInDB(execution, fmt.Sprintf("Node %s completed with state: %s (external worker)", taskResponse.NodeID, taskResponse.TaskStatus.State))
+	return nil
+}
+
+// markRemainingNodesAsCancelled marks any remaining nodes in the current level as cancelled
+func (e *Executor) markRemainingNodesAsCancelled(execution *engine.Execution, submittedTaskIDs []string, completedCount int) {
+	// This method would ideally track which nodes correspond to which task IDs
+	// For MVP simplicity, we'll let the main execution logic handle node cancellation
+}
+
+// handleNodeFailure handles node failure with hardcoded stop-all behavior
+func (e *Executor) handleNodeFailure(execution *engine.Execution, failedNode *engine.Node, nodeErr error) error {
+	e.mutex.Lock()
+	execution.Status = constants.TaskStateFailed
+	if execution.CompletedAt == nil {
+		completedAt := time.Now()
+		execution.CompletedAt = &completedAt
+	}
+
+	now := time.Now()
+	for nodeID, nodeState := range execution.NodeStates {
+		// Only cancel pending nodes, let running nodes complete naturally
+		if nodeState.Status == constants.TaskStateSubmitted {
+			nodeState.Status = constants.TaskStateCanceled
+			nodeState.EndedAt = &now
+			execution.NodeStates[nodeID] = nodeState
+		}
+	}
+	e.mutex.Unlock()
+
+	e.updateExecutionInDB(execution, "Execution failed - cancelling all pending nodes")
+
 	return nil
 }
 
@@ -888,6 +1113,93 @@ func (e *Executor) eventWriter() {
 			}
 		}
 	}
+}
+
+// trackExternalTask stores external worker task information in the database
+func (e *Executor) trackExternalTask(executionID, nodeID, taskID string) error {
+	e.dbMutex.Lock()
+	defer e.dbMutex.Unlock()
+
+	// Get current execution from database
+	currentExecution, err := e.db.GetExecution(executionID)
+	if err != nil {
+		return fmt.Errorf("failed to get execution %s for external task tracking: %w", executionID, err)
+	}
+
+	// Parse existing external task mappings from A2ATasks field
+	var externalTasks map[string]string
+	if currentExecution.A2ATasks != nil {
+		if err := json.Unmarshal(currentExecution.A2ATasks, &externalTasks); err != nil {
+			log.Printf("Failed to unmarshal existing A2ATasks, creating new map: %v", err)
+			externalTasks = make(map[string]string)
+		}
+	} else {
+		externalTasks = make(map[string]string)
+	}
+
+	// Store external task mapping: nodeID -> external taskID
+	externalTasks[nodeID] = taskID
+
+	// Marshal back to JSON
+	externalTasksJSON, err := json.Marshal(externalTasks)
+	if err != nil {
+		return fmt.Errorf("failed to marshal external tasks: %w", err)
+	}
+
+	// Update execution with new external task mapping
+	currentExecution.A2ATasks = datatypes.JSON(externalTasksJSON)
+	currentExecution.Logs += fmt.Sprintf("Tracked external task %s for node %s at %s\n", taskID, nodeID, time.Now().Format(time.RFC3339))
+
+	if err := e.db.UpdateExecution(currentExecution); err != nil {
+		return fmt.Errorf("failed to update execution %s with external task tracking: %w", executionID, err)
+	}
+
+	log.Printf("Tracked external task: node %s -> task %s in execution %s", nodeID, taskID, executionID)
+	return nil
+}
+
+// trackExternalResult stores external worker result information in the database
+func (e *Executor) trackExternalResult(executionID string, taskResponse protocol.TaskResponse) error {
+	// Create execution event for external worker result
+	event := &storage.ExecutionEvent{
+		ExecutionID: executionID,
+		NodeID:      taskResponse.NodeID,
+		Timestamp:   time.Now(),
+		Type:        "external_worker_result",
+		Source:      "external_worker",
+		State:       &taskResponse.TaskStatus.State,
+		Message:     fmt.Sprintf("External worker completed task with state: %s", taskResponse.TaskStatus.State),
+	}
+
+	// Store structured result data
+	resultData := map[string]interface{}{
+		"taskStatus": taskResponse.TaskStatus,
+		"artifacts":  taskResponse.Artifacts,
+		"metadata":   taskResponse.Metadata,
+	}
+
+	resultJSON, err := json.Marshal(resultData)
+	if err != nil {
+		log.Printf("Failed to marshal external result data: %v", err)
+	} else {
+		event.Data = datatypes.JSON(resultJSON)
+	}
+
+	// Store raw TaskResponse for complete audit trail
+	rawJSON, err := json.Marshal(taskResponse)
+	if err != nil {
+		log.Printf("Failed to marshal raw TaskResponse: %v", err)
+	} else {
+		event.Raw = datatypes.JSON(rawJSON)
+	}
+
+	// Store event in database
+	if err := e.db.CreateExecutionEvent(event); err != nil {
+		return fmt.Errorf("failed to create execution event for external result: %w", err)
+	}
+
+	log.Printf("Tracked external worker result for node %s in execution %s", taskResponse.NodeID, executionID)
+	return nil
 }
 
 // storeProtocolMapping stores protocol ID mapping in execution record

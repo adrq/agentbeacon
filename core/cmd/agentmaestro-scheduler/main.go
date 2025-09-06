@@ -128,13 +128,15 @@ func startServer(ctx context.Context, addr, driver, dsn string, ready chan<- str
 		}
 	}
 
-	// Add REST API endpoints
-	restHandler := api.NewRestHandler(db, configLoader)
+	// Create shared executor instance
+	sharedExecutor := executor.NewExecutor(db, configLoader)
+
+	// Add REST API endpoints with shared executor
+	restHandler := api.NewRestHandlerWithExecutor(db, configLoader, sharedExecutor)
 	mux.Handle("/api/", restHandler)
 
-	// Add A2A Protocol endpoints
-	executor := executor.NewExecutor(db, configLoader)
-	a2aHandler := api.NewA2AHandler(db, executor)
+	// Add A2A Protocol endpoints with shared executor
+	a2aHandler := api.NewA2AHandler(db, sharedExecutor)
 	mux.Handle("/rpc", a2aHandler)
 	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

@@ -26,6 +26,18 @@ func NewRestHandler(db *storage.DB, configLoader *config.ConfigLoader) http.Hand
 		db:       db,
 		executor: executor.NewExecutor(db, configLoader),
 	}
+	return setupRestAPIRoutes(api)
+}
+
+func NewRestHandlerWithExecutor(db *storage.DB, configLoader *config.ConfigLoader, exec *executor.Executor) http.Handler {
+	api := &RestAPI{
+		db:       db,
+		executor: exec,
+	}
+	return setupRestAPIRoutes(api)
+}
+
+func setupRestAPIRoutes(api *RestAPI) http.Handler {
 	mux := http.NewServeMux()
 
 	// REST API endpoints
@@ -41,9 +53,9 @@ func NewRestHandler(db *storage.DB, configLoader *config.ConfigLoader) http.Hand
 	mux.HandleFunc("/api/executions", api.listExecutionsHandler)
 	mux.HandleFunc("/api/executions/", api.executionHandler)
 
-	// Worker stub endpoints
-	mux.HandleFunc("/api/worker/poll", api.workerPollStubHandler)
-	mux.HandleFunc("/api/worker/result", api.workerResultStubHandler)
+	// Worker API endpoints
+	mux.HandleFunc("/api/worker/poll", api.workerPollHandler)
+	mux.HandleFunc("/api/worker/result", api.workerResultHandler)
 
 	return mux
 }
