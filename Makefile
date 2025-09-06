@@ -59,6 +59,11 @@ test-e2e: test-deps
 	@echo "Running E2E (A2A) tests with real binaries..."
 	go test -tags e2e -v ./core/internal/api -run TestE2E
 
+# Run integration tests
+test-int: test-deps
+	@echo "Running integration tests..."
+	uv run pytest -v tests
+
 # Run target
 run: build
 	@echo "Starting agentmaestro server..."

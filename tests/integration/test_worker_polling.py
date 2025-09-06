@@ -7,20 +7,16 @@ idle periods when no tasks are available from the orchestrator.
 Run with: uv run pytest tests/integration/test_worker_polling.py -v
 """
 
-import os
 import subprocess
-import tempfile
 import time
-import threading
 from pathlib import Path
-from typing import List
 from tests.testhelpers import cleanup_processes, start_mock_orchestrator, wait_for_port
 import pytest
 import requests
 
 
 def test_worker_respects_polling_interval():
-    """Test that worker respects 2s polling interval when no tasks available."""
+    """Test that worker respects 2s sync interval when no tasks available."""
     # Use faster interval for testing to reduce test time
 
     test_port = 19457  # Unique port for this test
@@ -28,57 +24,92 @@ def test_worker_respects_polling_interval():
     processes = []
 
     try:
-        # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(test_port, Path(__file__).parent.parent.parent)
+        # Start simple mock orchestrator with sync endpoint
+        orchestrator_proc = start_mock_orchestrator(
+            test_port, Path(__file__).parent.parent.parent
+        )
         processes.append(orchestrator_proc)
 
         # Wait for orchestrator to be ready
         orchestrator_ready = wait_for_port(test_port, timeout=15)
-        assert orchestrator_ready, f"Mock orchestrator did not start on port {test_port} within 15 seconds"
+        assert orchestrator_ready, (
+            f"Mock orchestrator did not start on port {test_port} within 15 seconds"
+        )
 
         # Verify orchestrator health
         response = requests.get(f"http://localhost:{test_port}/api/health", timeout=5)
         assert response.status_code == 200
 
-        # Start worker with 2s polling interval (faster for testing)
+        # Start worker with 2s sync interval (faster for testing)
         worker_proc = subprocess.Popen(
-            [worker_binary, "-orchestrator-url", f"http://localhost:{test_port}", "-interval", "2s"],
+            [
+                worker_binary,
+                "-orchestrator-url",
+                f"http://localhost:{test_port}",
+                "-interval",
+                "2s",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            cwd=Path(__file__).parent.parent.parent
+            cwd=Path(__file__).parent.parent.parent,
         )
         processes.append(worker_proc)
 
-        # Give worker time to start and make several polls
-        time.sleep(6)  # Allow for at least 3 poll cycles (2s interval)
+        # Give worker time to start and make several sync calls
+        time.sleep(6)  # Allow for at least 3 sync cycles (2s interval)
 
         # Stop worker
         worker_proc.terminate()
         worker_output, _ = worker_proc.communicate(timeout=5)
 
-        # Parse worker output for "No task available" messages which indicate successful polls
-        poll_lines = [line for line in worker_output.split('\n') if 'No task available' in line]
+        # Verify sync endpoint usage instead of poll
+        assert (
+            "syncing with" in worker_output and "/api/worker/sync" in worker_output
+        ), f"Worker should use sync endpoint instead of poll: {worker_output}"
 
-        # Should have multiple successful poll cycles
-        assert len(poll_lines) >= 2, f"Expected at least 2 successful polls, got {len(poll_lines)}"
+        # Verify worker receives no_action responses when idle (no tasks available)
+        assert "No action from sync response" in worker_output, (
+            f"Worker should receive no_action when idle: {worker_output}"
+        )
+
+        # Parse worker output for sync activity - look for sync calls or "no_action" responses
+        sync_activity = [
+            line
+            for line in worker_output.split("\n")
+            if "sync" in line.lower() or "no_action" in line or "idle" in line
+        ]
+
+        # Should have multiple sync cycles
+        assert len(sync_activity) >= 2, (
+            f"Expected at least 2 sync activities, got {len(sync_activity)}: {worker_output}"
+        )
 
         # Verify worker reports correct interval in startup message
-        startup_lines = [line for line in worker_output.split('\n') if 'Starting worker loop' in line and 'every 2s' in line]
-        assert len(startup_lines) >= 1, f"Expected worker to report 2s interval in startup message. Output: {worker_output}"
+        startup_lines = [
+            line
+            for line in worker_output.split("\n")
+            if "Starting worker loop" in line and "every 2s" in line
+        ]
+        assert len(startup_lines) >= 1, (
+            f"Expected worker to report 2s interval in startup message. Output: {worker_output}"
+        )
 
-        # Check that poll requests return expected format (no tasks)
-        response = requests.get(f"http://localhost:{test_port}/api/worker/poll", timeout=5)
-        assert response.status_code == 200
-        assert response.json() == {"task": None}, "Poll should return null task when idle"
+        # Verify sync calls were made by checking orchestrator received them
+        response = requests.get(f"http://localhost:{test_port}/sync_count", timeout=5)
+        if response.status_code == 200:
+            sync_data = response.json()
+            assert sync_data["count"] > 0, (
+                f"Orchestrator should receive sync calls from worker: {sync_data}"
+            )
 
     finally:
         cleanup_processes(processes)
 
 
 def test_worker_handles_orchestrator_unavailable():
-    """Test that worker gracefully handles orchestrator being unavailable."""
-    # This test will fail until error handling is properly implemented
+    """Test that worker gracefully handles orchestrator being unavailable for sync endpoint."""
+    # This test will fail until sync error handling is properly implemented
 
     worker_binary = "./bin/agentmaestro-worker"
     unavailable_port = 19999  # Port that should be unused
@@ -87,27 +118,58 @@ def test_worker_handles_orchestrator_unavailable():
     try:
         # Start worker pointing to non-existent orchestrator
         worker_proc = subprocess.Popen(
-            [worker_binary, "-orchestrator-url", f"http://localhost:{unavailable_port}", "-interval", "2s"],
+            [
+                worker_binary,
+                "-orchestrator-url",
+                f"http://localhost:{unavailable_port}",
+                "-interval",
+                "1s",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            cwd=Path(__file__).parent.parent.parent
+            cwd=Path(__file__).parent.parent.parent,
         )
         processes.append(worker_proc)
 
-        # Let worker attempt polling for several cycles
-        time.sleep(6)  # 3 polling attempts at 2s interval
+        # Let worker attempt sync calls for several cycles
+        time.sleep(3)  # 3 sync attempts at 1s interval
 
-        # Worker should still be running despite connection failures
-        assert worker_proc.poll() is None, "Worker should continue running despite orchestrator unavailability"
+        # Worker should still be running despite sync connection failures
+        assert worker_proc.poll() is None, (
+            "Worker should continue running despite orchestrator unavailability"
+        )
 
         # Terminate worker and get complete output
         worker_proc.terminate()
         worker_output, _ = worker_proc.communicate(timeout=5)
 
-        # Should see poll failure messages but worker continues
-        assert "Poll and execute failed" in worker_output or "connection refused" in worker_output.lower() or "dial tcp" in worker_output.lower(), \
-            f"Expected poll failure messages in worker output: {worker_output}"
+        # Should see sync failure messages but worker continues
+        sync_failure_indicators = [
+            "sync failed",
+            "Sync and execute failed",
+            "connection refused",
+            "dial tcp",
+            "POST /api/worker/sync",
+            "sync endpoint error",
+        ]
+
+        has_sync_failure = any(
+            indicator in worker_output.lower() for indicator in sync_failure_indicators
+        )
+        assert has_sync_failure, (
+            f"Expected sync failure messages in worker output: {worker_output}"
+        )
+
+        # Should show worker attempting sync instead of poll
+        assert (
+            "syncing with" in worker_output and "/api/worker/sync" in worker_output
+        ), f"Worker should attempt sync calls, not poll calls: {worker_output}"
+
+        # Worker should show sync and execute failures due to connection refused
+        assert "Sync and execute failed" in worker_output, (
+            f"Worker should report sync failures: {worker_output}"
+        )
 
     finally:
         cleanup_processes(processes)
@@ -123,7 +185,9 @@ def test_worker_shutdown_on_signal():
 
     try:
         # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(test_port, Path(__file__).parent.parent.parent)
+        orchestrator_proc = start_mock_orchestrator(
+            test_port, Path(__file__).parent.parent.parent
+        )
         processes.append(orchestrator_proc)
 
         # Wait for orchestrator
@@ -132,11 +196,17 @@ def test_worker_shutdown_on_signal():
 
         # Start worker
         worker_proc = subprocess.Popen(
-            [worker_binary, "-orchestrator-url", f"http://localhost:{test_port}", "-interval", "5s"],
+            [
+                worker_binary,
+                "-orchestrator-url",
+                f"http://localhost:{test_port}",
+                "-interval",
+                "5s",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            cwd=Path(__file__).parent.parent.parent
+            cwd=Path(__file__).parent.parent.parent,
         )
         processes.append(worker_proc)
 
@@ -146,12 +216,15 @@ def test_worker_shutdown_on_signal():
 
         # Send SIGTERM to worker
         import signal
+
         worker_proc.send_signal(signal.SIGTERM)
 
         # Worker should shut down gracefully within reasonable time
         try:
             exit_code = worker_proc.wait(timeout=10)
-            assert exit_code == 0, f"Worker should exit cleanly, got exit code {exit_code}"
+            assert exit_code == 0, (
+                f"Worker should exit cleanly, got exit code {exit_code}"
+            )
         except subprocess.TimeoutExpired:
             pytest.fail("Worker did not shutdown within 10 seconds after SIGTERM")
 

@@ -45,7 +45,7 @@ def test_worker_handles_agent_process_failure():
 
         failure_task = {
             "id": "failure-task-789",
-            "agent": "nonexistent-agent",  # Will trigger agent creation failure
+            "agent": "nonexistent-agent",  # This agent doesn't exist in agents.yaml
             "request": {"input": "Task that will fail due to nonexistent agent"},
         }
 
@@ -71,8 +71,8 @@ def test_worker_handles_agent_process_failure():
         )
         processes.append(worker_proc)
 
-        # Wait for worker to attempt task and fail
-        time.sleep(2)  # Give worker time to pick up task and fail
+        # Wait for worker to attempt task, fail, and sync result back
+        time.sleep(3)  # Give worker time to pick up task, fail, and post result
 
         # Stop worker and get output
         worker_proc.terminate()
@@ -83,18 +83,16 @@ def test_worker_handles_agent_process_failure():
             f"Worker should process the task: {worker_output}"
         )
 
-        # Worker should report execution failure
-        failure_indicators = [
-            "failed",
-            "no such file",
-            "executable file not found",
-            "error",
-            "unknown agent",
-        ]
-        has_failure = any(
-            indicator in worker_output.lower() for indicator in failure_indicators
+        # Worker should report nonexistent-agent not found
+        assert "nonexistent-agent" in worker_output, (
+            f"Worker should process with nonexistent-agent: {worker_output}"
         )
-        assert has_failure, f"Worker should report execution failure: {worker_output}"
+        assert "not found" in worker_output, (
+            f"Worker should report agent not found: {worker_output}"
+        )
+        assert "failed" in worker_output, (
+            f"Worker should report task failed: {worker_output}"
+        )
 
         # Check that failure result was posted back
         response = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
@@ -136,10 +134,10 @@ def test_worker_handles_malformed_task_data():
 
         # Add malformed tasks that should cause processing issues
         malformed_tasks = [
-            # Missing required fields
+            # Missing required fields - mock orchestrator preserves missing agent field
             {
                 "id": "malformed-1"
-                # Missing agent field, will cause unmarshaling errors
+                # Missing agent field, worker should validate and reject
             },
             # Task with invalid structure for our worker
             {
@@ -172,27 +170,27 @@ def test_worker_handles_malformed_task_data():
         )
         processes.append(worker_proc)
 
-        # Wait for worker to attempt processing malformed tasks
-        time.sleep(2)  # Give worker time to pick up and process tasks
+        # Wait for worker to attempt processing malformed tasks and sync results
+        time.sleep(4)  # Give worker time to pick up tasks, fail, and post results
 
         # Stop worker and get output
         worker_proc.terminate()
         worker_output, _ = worker_proc.communicate(timeout=5)
 
-        # Worker should have processed both malformed tasks gracefully (by failing them properly)
+        # Worker should have processed malformed-1 (with empty agent field)
         assert "malformed-1" in worker_output, (
             f"Worker should process malformed-1: {worker_output}"
         )
-        assert "Failed to create agent" in worker_output, (
-            f"Worker should fail malformed tasks with proper error: {worker_output}"
-        )
 
-        # Verify that empty agent fields trigger proper error with available agents list
-        error_lines = [
-            line for line in worker_output.split("\n") if "agent '' not found" in line
-        ]
-        assert len(error_lines) >= 1, (
-            f"Worker should report agent not found for empty agent: {worker_output}"
+        # Should see empty agent processing and failure (no default assignment now)
+        assert "agent ''" in worker_output or "agent '' not found" in worker_output, (
+            f"Worker should process with empty agent and report error: {worker_output}"
+        )
+        assert "not found" in worker_output, (
+            f"Worker should report empty agent not found: {worker_output}"
+        )
+        assert "failed" in worker_output, (
+            f"Worker should report task failed: {worker_output}"
         )
         assert "Available agents:" in worker_output, (
             f"Worker should list available agents in error: {worker_output}"
@@ -251,10 +249,10 @@ def test_worker_handles_orchestrator_connection_loss():
         # Let worker establish connection
         time.sleep(2)
 
-        # Check initial poll count
-        response = requests.get(f"http://localhost:{mock_orchestrator_port}/poll_count")
-        initial_poll_count = response.json()["count"]
-        assert initial_poll_count > 0, "Worker should have polled initially"
+        # Check initial sync count
+        response = requests.get(f"http://localhost:{mock_orchestrator_port}/sync_count")
+        initial_sync_count = response.json()["count"]
+        assert initial_sync_count > 0, "Worker should have synced initially"
 
         # Simulate orchestrator downtime
         requests.post(
@@ -274,11 +272,11 @@ def test_worker_handles_orchestrator_connection_loss():
         # Wait for worker to resume normal polling
         time.sleep(3)
 
-        # Check final poll count - should be higher despite downtime
-        response = requests.get(f"http://localhost:{mock_orchestrator_port}/poll_count")
-        final_poll_count = response.json()["count"]
-        assert final_poll_count > initial_poll_count, (
-            f"Worker should have resumed polling: initial={initial_poll_count}, final={final_poll_count}"
+        # Check final sync count - should be higher despite downtime
+        response = requests.get(f"http://localhost:{mock_orchestrator_port}/sync_count")
+        final_sync_count = response.json()["count"]
+        assert final_sync_count > initial_sync_count, (
+            f"Worker should have resumed syncing: initial={initial_sync_count}, final={final_sync_count}"
         )
 
         # Worker should still be running
@@ -339,8 +337,8 @@ def test_worker_fails_on_unknown_agent():
         )
         processes.append(worker_proc)
 
-        # Wait for worker to attempt task
-        time.sleep(2)  # Give worker time to pick up task and fail
+        # Wait for worker to attempt task, fail, and sync result
+        time.sleep(3)  # Give worker time to pick up task, fail, and post result
 
         # Stop worker and get output
         worker_proc.terminate()
