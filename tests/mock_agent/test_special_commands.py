@@ -10,9 +10,13 @@ Tests cover behavior in stdio, A2A, and ACP modes.
 """
 
 import subprocess
-import httpx
 import time
+from pathlib import Path
+
+import httpx
+
 from .conftest import send_stdio_input, send_a2a_message
+from tests.testhelpers import parse_agent_log, get_current_test_name
 
 
 def test_delay_commands_timing(mock_agent_stdio, mock_agent_a2a):
@@ -240,3 +244,93 @@ def test_cross_mode_consistency(mock_agent_stdio, mock_agent_a2a):
 
     # Both modes should ultimately complete successfully
     assert final_a2a_task["status"]["state"] == "completed"
+
+
+def test_special_commands_logging_behavior(mock_agent_stdio):
+    """Test that special commands produce expected logging behavior."""
+
+    # Get current test name for log file lookup
+    test_name = get_current_test_name("test_special_commands_logging_behavior")
+
+    # Clear any existing log entries for this test
+    log_file = Path(f"logs/{test_name}.log")
+    if log_file.exists():
+        log_file.unlink()
+
+    # Test DELAY_X commands produce log entries after delay
+    start_time = time.time()
+    output = send_stdio_input(mock_agent_stdio, "DELAY_1")
+    duration = time.time() - start_time
+
+    # Verify delay occurred and task completed
+    assert duration >= 1.0, f"DELAY_1 should take at least 1 second, took {duration}"
+    assert output["taskStatus"]["state"] == "completed"
+
+    # Verify DELAY command created exactly one log entry
+    delay_log_entries = parse_agent_log(test_name)
+    assert len(delay_log_entries) == 1, (
+        f"DELAY_1 should create exactly 1 log entry, found {len(delay_log_entries)} entries"
+    )
+
+    # Test FAIL_NODE command produces no log entry (returns failure without process termination)
+    fail_output = send_stdio_input(mock_agent_stdio, "FAIL_NODE")
+    assert fail_output["taskStatus"]["state"] == "failed"
+
+    # Check log entries - FAIL_NODE should not add additional entries beyond DELAY_1
+    fail_log_entries = parse_agent_log(test_name)
+    # Should still have only the DELAY_1 entry, no new entry for FAIL_NODE
+    assert len(fail_log_entries) == 1, (
+        f"FAIL_NODE should not create log entry, should still have only 1 entry from DELAY_1, got {len(fail_log_entries)}"
+    )
+
+
+def test_hang_command_logging_behavior():
+    """Test that HANG command produces no log entry when process is killed."""
+
+    # Get current test name for log file lookup
+    test_name = get_current_test_name("test_hang_command_logging_behavior")
+
+    # Clear any existing log entries for this test
+    log_file = Path(f"logs/{test_name}.log")
+    if log_file.exists():
+        log_file.unlink()
+
+    # Start a new mock agent process for HANG test
+    hang_proc = subprocess.Popen(
+        ["python", "-m", "agentmaestro.mock_agent.stdio_mode"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=Path(__file__).parent.parent.parent,
+    )
+
+    try:
+        # Send HANG command
+        hang_proc.stdin.write("HANG\n")
+        hang_proc.stdin.flush()
+
+        # Wait 2 seconds then kill process (HANG would normally run for 1 hour)
+        time.sleep(2)
+        hang_proc.terminate()
+
+        try:
+            hang_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            hang_proc.kill()
+            hang_proc.wait()
+
+        # Verify HANG didn't create any log entries (process killed before completion)
+        hang_log_entries = parse_agent_log(test_name)
+        assert len(hang_log_entries) == 0, (
+            f"HANG should not create log entry when killed, expected 0 entries, got {len(hang_log_entries)}"
+        )
+
+    finally:
+        # Ensure process cleanup
+        if hang_proc.poll() is None:
+            hang_proc.kill()
+            try:
+                hang_proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass

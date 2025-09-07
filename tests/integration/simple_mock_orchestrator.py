@@ -186,7 +186,10 @@ def worker_sync(sync_request: SyncRequest, request: Request) -> SyncResponse:
             nodeId=task["id"],
             executionId=task.get("executionId", "test-exec-1"),
             prompt=task.get(
-                "prompt", task.get("request", {}).get("prompt", "default task")
+                "prompt",
+                task.get("request", {}).get(
+                    "prompt", task.get("request", {}).get("input", "default task")
+                ),
             ),
             agentType=task.get("agent"),
             config=task.get("config", {}),

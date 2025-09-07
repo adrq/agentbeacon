@@ -10,10 +10,17 @@ This test verifies the complete worker lifecycle:
 Run with: uv run pytest tests/integration/test_worker_happy_path.py -v
 """
 
-import subprocess
 import time
+import requests
 from pathlib import Path
-from tests.testhelpers import cleanup_processes, start_mock_orchestrator, wait_for_port
+from tests.testhelpers import (
+    cleanup_processes,
+    start_mock_orchestrator,
+    wait_for_port,
+    parse_agent_log,
+    get_current_test_name,
+    start_worker,
+)
 
 
 def test_worker_complete_task_execution_cycle():
@@ -21,7 +28,6 @@ def test_worker_complete_task_execution_cycle():
     # Test the complete worker sync cycle using simple mock orchestrator
 
     mock_orchestrator_port = 19460
-    worker_binary = "./bin/agentmaestro-worker"
     processes = []
 
     try:
@@ -37,8 +43,6 @@ def test_worker_complete_task_execution_cycle():
             f"Mock orchestrator did not start on port {mock_orchestrator_port}"
         )
 
-        import requests
-
         # Prepare a sample task for the worker
         sample_task = {
             "id": "task-123",
@@ -53,20 +57,14 @@ def test_worker_complete_task_execution_cycle():
         )
         assert response.status_code == 200
 
-        # Start worker pointing to mock orchestrator
-        worker_proc = subprocess.Popen(
-            [
-                worker_binary,
-                "-orchestrator-url",
-                f"http://localhost:{mock_orchestrator_port}",
-                "-interval",
-                "1s",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=Path(__file__).parent.parent.parent,
-        )
+        # Clear any existing log entries for this test before starting worker
+        test_name = get_current_test_name("test_worker_complete_task_execution_cycle")
+        log_file = Path(f"logs/{test_name}.log")
+        if log_file.exists():
+            log_file.unlink()
+
+        # Start worker
+        worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
         processes.append(worker_proc)
 
         # Wait for complete sync execution cycle
@@ -121,6 +119,36 @@ def test_worker_complete_task_execution_cycle():
                 f"Orchestrator should receive sync calls: {sync_data}"
             )
 
+        # T017: Verify backward compatibility - plain text prompts get default values in logs
+        # Parse log entries (test_name already determined earlier)
+        log_entries = parse_agent_log(test_name)
+
+        # Should have at least 1 log entry for the plain text task
+        assert len(log_entries) == 1, (
+            f"Expected 1 log entry, got {len(log_entries)}: {log_entries}"
+        )
+
+        # Verify plain text prompt gets default values
+        first_entry = log_entries[0]
+        assert first_entry.get("execution_id") == "default", (
+            f"Plain text prompt should get default execution_id, got: {first_entry.get('execution_id')}"
+        )
+        assert first_entry.get("node_id") == "default", (
+            f"Plain text prompt should get default node_id, got: {first_entry.get('node_id')}"
+        )
+        assert "Hello, please respond with a greeting" in first_entry.get(
+            "task_text", ""
+        ), f"Task text should contain original prompt: {first_entry.get('task_text')}"
+
+        # Verify timestamp was properly set (not "NOW")
+        timestamp = first_entry.get("timestamp", "")
+        assert timestamp != "NOW", (
+            f"Timestamp should be replaced, not 'NOW': {timestamp}"
+        )
+        assert len(timestamp) == 20, (
+            f"Timestamp should be 20 characters ISO format: {timestamp}"
+        )
+
     finally:
         cleanup_processes(processes)
 
@@ -130,7 +158,6 @@ def test_worker_handles_task_with_output():
     # Test that worker captures output from mock-agent and includes it in result
 
     mock_orchestrator_port = 19462
-    worker_binary = "./bin/agentmaestro-worker"
     processes = []
 
     try:
@@ -160,19 +187,7 @@ def test_worker_handles_task_with_output():
         assert response.status_code == 200
 
         # Start worker
-        worker_proc = subprocess.Popen(
-            [
-                worker_binary,
-                "-orchestrator-url",
-                f"http://localhost:{mock_orchestrator_port}",
-                "-interval",
-                "1s",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=Path(__file__).parent.parent.parent,
-        )
+        worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
         processes.append(worker_proc)
 
         # Wait for task execution
@@ -223,7 +238,6 @@ def test_multiple_task_execution_sequence():
     # Test that worker processes multiple tasks in sequence using sync protocol
 
     mock_orchestrator_port = 19464
-    worker_binary = "./bin/agentmaestro-worker"
     processes = []
 
     try:
@@ -239,19 +253,23 @@ def test_multiple_task_execution_sequence():
 
         import requests
 
-        # Prepare sequence of tasks with execution IDs
+        # Prepare sequence of tasks with same execution ID and bracketed format prompts
         tasks = [
             {
                 "id": "seq-task-1",
                 "agent": "mock-agent",
-                "executionId": "exec-seq-1",
-                "request": {"input": "First task in sequence"},
+                "executionId": "workflow-exec-123",
+                "request": {
+                    "input": "[workflow-exec-123][node-1] NOW First task in sequence"
+                },
             },
             {
                 "id": "seq-task-2",
                 "agent": "mock-agent",
-                "executionId": "exec-seq-2",
-                "request": {"input": "Second task in sequence"},
+                "executionId": "workflow-exec-123",
+                "request": {
+                    "input": "[workflow-exec-123][node-2] NOW Second task in sequence"
+                },
             },
         ]
 
@@ -262,20 +280,14 @@ def test_multiple_task_execution_sequence():
             )
             assert response.status_code == 200
 
+        # Clear any existing log entries for this test before starting worker
+        test_name = get_current_test_name("test_multiple_task_execution_sequence")
+        log_file = Path(f"logs/{test_name}.log")
+        if log_file.exists():
+            log_file.unlink()
+
         # Start worker
-        worker_proc = subprocess.Popen(
-            [
-                worker_binary,
-                "-orchestrator-url",
-                f"http://localhost:{mock_orchestrator_port}",
-                "-interval",
-                "1s",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=Path(__file__).parent.parent.parent,
-        )
+        worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
         processes.append(worker_proc)
 
         # Wait for both tasks to complete (worker processes them one by one via sync)
@@ -341,6 +353,37 @@ def test_multiple_task_execution_sequence():
                 f"Should have multiple sync calls for 2 tasks (idle+working+result per task): {sync_data}"
             )
 
+        # Verify workflow execution logging with bracketed format
+        # Parse log entries (test_name already determined earlier)
+        log_entries = parse_agent_log(test_name)
+
+        # Should have exactly 2 log entries for the 2 tasks
+        assert len(log_entries) == 2, (
+            f"Expected exactly 2 log entries, got {len(log_entries)}: {log_entries}"
+        )
+
+        # Verify first entry (seq-task-1): execution order and content in one go
+        assert log_entries[0].get("execution_id") == "workflow-exec-123", (
+            f"First log entry should have workflow-exec-123, got: {log_entries[0].get('execution_id')}"
+        )
+        assert log_entries[0].get("node_id") == "node-1", (
+            f"First log entry should have node-1, got: {log_entries[0].get('node_id')}"
+        )
+        assert "First task in sequence" in log_entries[0].get("task_text", ""), (
+            f"First log entry should contain 'First task in sequence': {log_entries[0].get('task_text')}"
+        )
+
+        # Verify second entry (seq-task-2): same execution ID, different node ID
+        assert log_entries[1].get("execution_id") == "workflow-exec-123", (
+            f"Second log entry should have same execution ID workflow-exec-123, got: {log_entries[1].get('execution_id')}"
+        )
+        assert log_entries[1].get("node_id") == "node-2", (
+            f"Second log entry should have node-2, got: {log_entries[1].get('node_id')}"
+        )
+        assert "Second task in sequence" in log_entries[1].get("task_text", ""), (
+            f"Second log entry should contain 'Second task in sequence': {log_entries[1].get('task_text')}"
+        )
+
     finally:
         cleanup_processes(processes)
 
@@ -350,7 +393,6 @@ def test_worker_uses_agents_yaml_config():
     # Test that worker reads agent config from examples/agents.yaml and uses configured command/args
 
     mock_orchestrator_port = 19465
-    worker_binary = "./bin/agentmaestro-worker"
     processes = []
 
     try:
@@ -380,19 +422,7 @@ def test_worker_uses_agents_yaml_config():
         assert response.status_code == 200
 
         # Start worker (uses hardcoded examples/agents.yaml)
-        worker_proc = subprocess.Popen(
-            [
-                worker_binary,
-                "-orchestrator-url",
-                f"http://localhost:{mock_orchestrator_port}",
-                "-interval",
-                "1s",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=Path(__file__).parent.parent.parent,
-        )
+        worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
         processes.append(worker_proc)
 
         # Wait for task execution
@@ -443,6 +473,140 @@ def test_worker_uses_agents_yaml_config():
             result = results[0]
             assert "config-test-task-789" in str(result), (
                 f"Result should contain task ID: {result}"
+            )
+
+    finally:
+        cleanup_processes(processes)
+
+
+def test_mixed_bracketed_and_plain_text_compatibility():
+    """T017: Test mixed bracketed and non-bracketed prompts work together."""
+    # Test that workflows can contain both bracketed and plain text prompts
+
+    mock_orchestrator_port = 19467
+    processes = []
+
+    try:
+        # Start simple mock orchestrator
+        orchestrator_proc = start_mock_orchestrator(
+            mock_orchestrator_port, Path(__file__).parent.parent.parent
+        )
+        processes.append(orchestrator_proc)
+
+        # Wait for orchestrator to be ready
+        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert orch_ready, "Mock orchestrator should start"
+
+        import requests
+
+        # Mix of bracketed and plain text prompts
+        mixed_tasks = [
+            {
+                "id": "plain-task-1",
+                "agent": "mock-agent",
+                "request": {"input": "Plain text task without brackets"},
+            },
+            {
+                "id": "bracketed-task-1",
+                "agent": "mock-agent",
+                "request": {
+                    "input": "[workflow-123][step-1] NOW Bracketed task with format"
+                },
+            },
+            {
+                "id": "plain-task-2",
+                "agent": "mock-agent",
+                "request": {"input": "Another plain text task"},
+            },
+        ]
+
+        # Add all tasks to orchestrator
+        for task in mixed_tasks:
+            response = requests.post(
+                f"http://localhost:{mock_orchestrator_port}/add_task", json=task
+            )
+            assert response.status_code == 200
+
+        # Clear any existing log entries for this test before starting worker
+        test_name = get_current_test_name(
+            "test_mixed_bracketed_and_plain_text_compatibility"
+        )
+        log_file = Path(f"logs/{test_name}.log")
+        if log_file.exists():
+            log_file.unlink()
+
+        # Start worker
+        worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
+        processes.append(worker_proc)
+
+        # Wait for all tasks to complete
+        time.sleep(6)  # Give worker time to process all 3 tasks
+
+        # Stop worker and get output
+        worker_proc.terminate()
+        worker_output, _ = worker_proc.communicate(timeout=5)
+
+        # Verify all tasks were processed
+        assert "plain-task-1" in worker_output
+        assert "bracketed-task-1" in worker_output
+        assert "plain-task-2" in worker_output
+
+        # Count successful completions
+        completed_count = worker_output.count("completed successfully")
+        assert completed_count >= 3, (
+            f"Expected 3 completed tasks, got {completed_count}: {worker_output}"
+        )
+
+        # Verify logging behavior for mixed formats
+        # Parse log entries (test_name already determined earlier)
+        log_entries = parse_agent_log(test_name)
+
+        # Should have exactly 3 log entries for the 3 tasks
+        assert len(log_entries) == 3, (
+            f"Expected exactly 3 log entries, got {len(log_entries)}: {log_entries}"
+        )
+
+        # Verify first entry (plain-task-1): execution order and content in one go
+        assert log_entries[0].get("execution_id") == "default", (
+            f"First log entry should have default execution_id, got: {log_entries[0].get('execution_id')}"
+        )
+        assert log_entries[0].get("node_id") == "default", (
+            f"First log entry should have default node_id, got: {log_entries[0].get('node_id')}"
+        )
+        assert "Plain text task without brackets" in log_entries[0].get(
+            "task_text", ""
+        ), (
+            f"First log entry should contain 'Plain text task without brackets': {log_entries[0].get('task_text')}"
+        )
+
+        # Verify second entry (bracketed-task-1): execution order and content in one go
+        assert log_entries[1].get("execution_id") == "workflow-123", (
+            f"Second log entry should have workflow-123, got: {log_entries[1].get('execution_id')}"
+        )
+        assert log_entries[1].get("node_id") == "step-1", (
+            f"Second log entry should have step-1, got: {log_entries[1].get('node_id')}"
+        )
+        assert "Bracketed task with format" in log_entries[1].get("task_text", ""), (
+            f"Second log entry should contain 'Bracketed task with format': {log_entries[1].get('task_text')}"
+        )
+
+        # Verify third entry (plain-task-2): execution order and content in one go
+        assert log_entries[2].get("execution_id") == "default", (
+            f"Third log entry should have default execution_id, got: {log_entries[2].get('execution_id')}"
+        )
+        assert log_entries[2].get("node_id") == "default", (
+            f"Third log entry should have default node_id, got: {log_entries[2].get('node_id')}"
+        )
+        assert "Another plain text task" in log_entries[2].get("task_text", ""), (
+            f"Third log entry should contain 'Another plain text task': {log_entries[2].get('task_text')}"
+        )
+
+        # Verify no breaking changes - all tasks should complete successfully
+        response = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
+        if response.status_code == 200:
+            results = response.json()
+            assert len(results) == 3, (
+                f"Should have exactly 3 results for all 3 tasks: {results}"
             )
 
     finally:

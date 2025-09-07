@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from .task_store import TaskStore
 from .jsonrpc import JSONRPCDispatcher
+from .file_logger import log_task_completion
 
 
 class ACPHandler:
@@ -70,6 +71,10 @@ class ACPHandler:
                 response_text = self.custom_responses[prompt_text]
             else:
                 response_text = f"Mock ACP response: {prompt_text}"
+
+            # Log task completion before sending response
+            if prompt_text:
+                log_task_completion(prompt_text)
 
             # Send notification with response
             notification = {

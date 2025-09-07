@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Set
+from typing import Iterable, Set, List, Dict
 
 import psutil
 import requests
@@ -338,3 +338,135 @@ def scheduler_context(port: int = None):
             cleanup_files([temp_db_path])
         if port_manager:
             port_manager.release_port(allocated_port)
+
+
+def start_worker(
+    orchestrator_url: str, interval: str = "1s", base_dir: Path = None
+) -> subprocess.Popen:
+    """Start the worker binary with specified configuration.
+
+    Args:
+        orchestrator_url: URL of the orchestrator to connect to
+        interval: Polling interval (default: "1s")
+        base_dir: Base directory for the project (defaults to test file parent directory)
+
+    Returns:
+        subprocess.Popen: The worker process
+
+    Note:
+        Worker inherits current environment variables including PYTEST_CURRENT_TEST
+        for mock agent logging support.
+    """
+    if base_dir is None:
+        base_dir = Path(__file__).parent.parent
+
+    # Copy current environment so worker subprocess inherits pytest context
+    worker_env = os.environ.copy()
+
+    worker_process = subprocess.Popen(
+        [
+            "./bin/agentmaestro-worker",
+            "-orchestrator-url",
+            orchestrator_url,
+            "-interval",
+            interval,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=base_dir,
+        env=worker_env,
+    )
+
+    return worker_process
+
+
+def get_current_test_name(fallback: str = "unknown_test") -> str:
+    """Extract and sanitize current test name from pytest environment.
+
+    Args:
+        fallback: Default name if PYTEST_CURRENT_TEST is not available
+
+    Returns:
+        Sanitized test name safe for filesystem use
+
+    Example:
+        "tests/integration::test_worker_happy_path (call)" -> "tests_integration__test_worker_happy_path"
+    """
+    import os
+    import re
+
+    raw_test_name = os.environ.get("PYTEST_CURRENT_TEST", "")
+    if not raw_test_name:
+        return fallback
+
+    # Remove pytest phase info like "(call)" or "(setup)" from test name
+    test_name_base = (
+        raw_test_name.split(" (")[0] if " (" in raw_test_name else raw_test_name
+    )
+
+    # Sanitize test name for filesystem safety
+    test_name = test_name_base.replace("::", "__").replace("/", "_").replace("\\", "_")
+    # Remove other potentially problematic characters
+    test_name = re.sub(r'[<>:"|?*]', "_", test_name)
+
+    return test_name if test_name else fallback
+
+
+@contextmanager
+def worker_context(orchestrator_url: str, interval: str = "1s"):
+    """Context manager for worker startup and cleanup.
+
+    Args:
+        orchestrator_url: URL of the orchestrator to connect to
+        interval: Polling interval (default: "1s")
+
+    Yields:
+        subprocess.Popen: The worker process
+    """
+    worker_process = None
+
+    try:
+        worker_process = start_worker(orchestrator_url, interval)
+        yield worker_process
+    finally:
+        # Cleanup
+        if worker_process:
+            cleanup_processes([worker_process])
+
+
+def parse_agent_log(test_name: str) -> List[Dict]:
+    """Parse log file for test assertions.
+
+    Args:
+        test_name: Test name (used for log file naming)
+
+    Returns:
+        List of parsed log entries, each a dict with keys:
+        execution_id, node_id, timestamp, task_text
+    """
+    from agentmaestro.mock_agent.file_logger import parse_agent_entry
+
+    log_file = Path(f"logs/{test_name}.log")
+
+    # Handle missing files gracefully
+    if not log_file.exists():
+        return []
+
+    try:
+        content = log_file.read_text()
+        if not content.strip():
+            return []
+
+        # Parse each line using unified parse_agent_entry() function
+        entries = []
+        for line in content.strip().split("\n"):
+            # Parse all lines, including empty ones (they get default values)
+            parsed = parse_agent_entry(line.strip())
+            entries.append(parsed)
+
+        return entries
+
+    except Exception:
+        # Handle any file read errors gracefully
+        return []

@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Dict
 
 from .special_commands import SpecialCommands
+from .file_logger import log_task_completion
 
 
 class StdioHandler:
@@ -91,7 +92,7 @@ class StdioHandler:
             response_text = f"Mock response: {text_content}"
 
         # Return A2A-compliant response format
-        return {
+        response = {
             "taskStatus": {
                 "state": "completed",
                 "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -105,6 +106,19 @@ class StdioHandler:
                 }
             ],
         }
+
+        # Log task completion after successful response creation, before returning
+        log_task_completion(input_text)
+
+        return response
+
+
+def process_input(
+    input_text: str, custom_responses: Dict[str, str] = None
+) -> Dict[str, Any]:
+    """Process single input and return response (for testing)."""
+    handler = StdioHandler(custom_responses)
+    return handler.process_input(input_text)
 
 
 def start_stdio_mode(custom_responses: Dict[str, str] = None):

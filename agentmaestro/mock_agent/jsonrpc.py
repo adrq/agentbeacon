@@ -10,6 +10,7 @@ from a2a.utils import new_text_artifact
 
 from .task_store import TaskStore
 from .special_commands import SpecialCommands
+from .file_logger import log_task_completion
 
 
 class JSONRPCDispatcher:
@@ -147,6 +148,10 @@ class JSONRPCDispatcher:
                         # Complete with custom response
                         artifact = new_text_artifact("agent-output", custom_response)
                         self.task_store.add_task_artifact(task.id, artifact)
+
+                        # Log task completion before completing task
+                        log_task_completion(first_text)
+
                         self.task_store.complete_task(task.id)
                 # Check for special commands
                 elif self.special_commands.is_special_command(first_text):
@@ -165,6 +170,10 @@ class JSONRPCDispatcher:
                         if result:
                             artifact = new_text_artifact("agent-output", result)
                             self.task_store.add_task_artifact(task.id, artifact)
+
+                            # Log task completion before completing task
+                            log_task_completion(first_text)
+
                             self.task_store.complete_task(task.id)
                 else:
                     # Regular messages: return in submitted state per test expectations
@@ -236,6 +245,10 @@ class JSONRPCDispatcher:
                         # Complete with custom response
                         artifact = new_text_artifact("agent-output", custom_response)
                         self.task_store.add_task_artifact(task.id, artifact)
+
+                        # Log task completion before completing task
+                        log_task_completion(first_text)
+
                         self.task_store.complete_task(task.id)
                         updated_task = self.task_store.get_task(task.id)
                         return self._success_response(
@@ -294,6 +307,10 @@ class JSONRPCDispatcher:
             if result:
                 artifact = new_text_artifact("agent-output", result)
                 self.task_store.add_task_artifact(task_id, artifact)
+
+                # Log task completion before completing task
+                log_task_completion(command_text)
+
                 self.task_store.complete_task(task_id)
         except Exception:
             # Mark task as failed if command processing fails
