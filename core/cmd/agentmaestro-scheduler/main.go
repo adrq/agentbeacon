@@ -71,10 +71,11 @@ func parseFlags(args []string) (port, driver, dsn string) {
 
 	// Set default DSN if not provided
 	if dsn == "" {
-		if driver == "sqlite3" {
+		// Check DATABASE_URL first for any driver
+		dsn = os.Getenv("DATABASE_URL")
+		if dsn == "" && driver == "sqlite3" {
+			// Only use default path if DATABASE_URL not set
 			dsn = storage.DefaultDBPath()
-		} else {
-			dsn = os.Getenv("DATABASE_URL")
 		}
 	}
 

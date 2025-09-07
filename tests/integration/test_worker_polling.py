@@ -10,7 +10,7 @@ Run with: uv run pytest tests/integration/test_worker_polling.py -v
 import subprocess
 import time
 from pathlib import Path
-from tests.testhelpers import cleanup_processes, start_mock_orchestrator, wait_for_port
+from tests.testhelpers import cleanup_processes, start_mock_scheduler, wait_for_port
 import pytest
 import requests
 
@@ -25,18 +25,18 @@ def test_worker_respects_polling_interval():
 
     try:
         # Start simple mock orchestrator with sync endpoint
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             test_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        # Wait for orchestrator to be ready
-        orchestrator_ready = wait_for_port(test_port, timeout=15)
-        assert orchestrator_ready, (
-            f"Mock orchestrator did not start on port {test_port} within 15 seconds"
+        # Wait for scheduler to be ready
+        scheduler_ready = wait_for_port(test_port, timeout=15)
+        assert scheduler_ready, (
+            f"Mock scheduler did not start on port {test_port} within 15 seconds"
         )
 
-        # Verify orchestrator health
+        # Verify scheduler health
         response = requests.get(f"http://localhost:{test_port}/api/health", timeout=5)
         assert response.status_code == 200
 
@@ -185,10 +185,10 @@ def test_worker_shutdown_on_signal():
 
     try:
         # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             test_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
         # Wait for orchestrator
         orchestrator_ready = wait_for_port(test_port, timeout=10)

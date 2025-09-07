@@ -15,7 +15,7 @@ import requests
 from pathlib import Path
 from tests.testhelpers import (
     cleanup_processes,
-    start_mock_orchestrator,
+    start_mock_scheduler,
     wait_for_port,
     parse_agent_log,
     get_current_test_name,
@@ -32,15 +32,15 @@ def test_worker_complete_task_execution_cycle():
 
     try:
         # Start simple mock orchestrator with sync endpoint
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        # Wait for orchestrator to be ready
-        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert orch_ready, (
-            f"Mock orchestrator did not start on port {mock_orchestrator_port}"
+        # Wait for scheduler to be ready
+        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert scheduler_ready, (
+            f"Mock scheduler did not start on port {mock_orchestrator_port}"
         )
 
         # Prepare a sample task for the worker
@@ -51,7 +51,7 @@ def test_worker_complete_task_execution_cycle():
             "request": {"input": "Hello, please respond with a greeting"},
         }
 
-        # Add task to orchestrator
+        # Add task to scheduler
         response = requests.post(
             f"http://localhost:{mock_orchestrator_port}/add_task", json=sample_task
         )
@@ -162,14 +162,14 @@ def test_worker_handles_task_with_output():
 
     try:
         # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        # Wait for orchestrator to be ready
-        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert orch_ready, "Mock orchestrator should start successfully"
+        # Wait for scheduler to be ready
+        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert scheduler_ready, "Mock orchestrator should start successfully"
 
         import requests
 
@@ -180,7 +180,7 @@ def test_worker_handles_task_with_output():
             "request": {"input": "Generate a test response with some output"},
         }
 
-        # Add task to orchestrator
+        # Add task to scheduler
         response = requests.post(
             f"http://localhost:{mock_orchestrator_port}/add_task", json=output_task
         )
@@ -242,14 +242,14 @@ def test_multiple_task_execution_sequence():
 
     try:
         # Start simple mock orchestrator with sync endpoint support
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        # Wait for orchestrator to be ready
-        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert orch_ready, "Mock orchestrator should start"
+        # Wait for scheduler to be ready
+        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert scheduler_ready, "Mock orchestrator should start"
 
         import requests
 
@@ -397,14 +397,14 @@ def test_worker_uses_agents_yaml_config():
 
     try:
         # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        # Wait for orchestrator to be ready
-        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert orch_ready, "Mock orchestrator should start successfully"
+        # Wait for scheduler to be ready
+        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert scheduler_ready, "Mock orchestrator should start successfully"
 
         import requests
 
@@ -415,7 +415,7 @@ def test_worker_uses_agents_yaml_config():
             "request": {"prompt": "Test task using configured agent"},
         }
 
-        # Add task to orchestrator
+        # Add task to scheduler
         response = requests.post(
             f"http://localhost:{mock_orchestrator_port}/add_task", json=config_task
         )
@@ -488,14 +488,14 @@ def test_mixed_bracketed_and_plain_text_compatibility():
 
     try:
         # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        # Wait for orchestrator to be ready
-        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert orch_ready, "Mock orchestrator should start"
+        # Wait for scheduler to be ready
+        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert scheduler_ready, "Mock orchestrator should start"
 
         import requests
 

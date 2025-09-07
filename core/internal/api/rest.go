@@ -56,6 +56,7 @@ func setupRestAPIRoutes(api *RestAPI) http.Handler {
 	// Worker API endpoints
 	mux.HandleFunc("/api/worker/poll", api.workerPollHandler)
 	mux.HandleFunc("/api/worker/result", api.workerResultHandler)
+	mux.HandleFunc("/api/worker/sync", api.workerSyncHandler)
 
 	return mux
 }

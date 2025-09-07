@@ -15,7 +15,7 @@ Run with: uv run pytest tests/integration/test_worker_failure.py -v
 import subprocess
 import time
 from pathlib import Path
-from tests.testhelpers import cleanup_processes, start_mock_orchestrator, wait_for_port
+from tests.testhelpers import cleanup_processes, start_mock_scheduler, wait_for_port
 
 
 def test_worker_handles_agent_process_failure():
@@ -31,14 +31,14 @@ def test_worker_handles_agent_process_failure():
         # We'll use a non-existent agent name to trigger the fallback error path
 
         # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        # Wait for orchestrator to be ready
-        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert orch_ready, "Mock orchestrator should start"
+        # Wait for scheduler to be ready
+        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert scheduler_ready, "Mock scheduler should start"
 
         # Add a task that will fail due to agent execution error
         import requests
@@ -121,14 +121,14 @@ def test_worker_handles_malformed_task_data():
 
     try:
         # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        # Wait for orchestrator to be ready
-        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert orch_ready, "Mock orchestrator should start"
+        # Wait for scheduler to be ready
+        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert scheduler_ready, "Mock scheduler should start"
 
         import requests
 
@@ -220,13 +220,13 @@ def test_worker_handles_orchestrator_connection_loss():
 
     try:
         # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert orch_ready, "Mock orchestrator should start"
+        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert scheduler_ready, "Mock scheduler should start"
 
         import requests
 
@@ -296,14 +296,14 @@ def test_worker_fails_on_unknown_agent():
 
     try:
         # Start simple mock orchestrator
-        orchestrator_proc = start_mock_orchestrator(
+        scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
         )
-        processes.append(orchestrator_proc)
+        processes.append(scheduler_proc)
 
-        # Wait for orchestrator to be ready
-        orch_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert orch_ready, "Mock orchestrator should start"
+        # Wait for scheduler to be ready
+        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
+        assert scheduler_ready, "Mock scheduler should start"
 
         import requests
 

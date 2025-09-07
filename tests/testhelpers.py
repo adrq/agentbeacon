@@ -14,10 +14,13 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Set, List, Dict
+from typing import Iterable, Set, List, Dict, Any
 
 import psutil
 import requests
+import re
+import uuid
+import pytest
 
 
 class PortManager:
@@ -108,7 +111,7 @@ class TempDatabase:
         """
         self._temp_dir = tempfile.TemporaryDirectory()
         self._db_path = Path(self._temp_dir.name) / "test.db"
-        return f"sqlite://{self._db_path}"
+        return f"sqlite:///{self._db_path}"
 
     def cleanup(self) -> None:
         """Remove the database and temporary directory."""
@@ -196,15 +199,15 @@ def cleanup_files(paths: Iterable[str]) -> None:
             pass
 
 
-def start_mock_orchestrator(port: int, base_dir: Path = None) -> subprocess.Popen:
-    """Start the simple mock orchestrator on the specified port.
+def start_mock_scheduler(port: int, base_dir: Path = None) -> subprocess.Popen:
+    """Start the simple mock scheduler on the specified port.
 
     Args:
-        port: Port number for the orchestrator to listen on
+        port: Port number for the scheduler to listen on
         base_dir: Base directory for the project (defaults to current working directory)
 
     Returns:
-        subprocess.Popen: The orchestrator process
+        subprocess.Popen: The scheduler process
     """
     if base_dir is None:
         base_dir = Path.cwd()
@@ -214,7 +217,7 @@ def start_mock_orchestrator(port: int, base_dir: Path = None) -> subprocess.Pope
             "uv",
             "run",
             "uvicorn",
-            "tests.integration.simple_mock_orchestrator:app",
+            "tests.integration.simple_mock_scheduler:app",
             "--host",
             "127.0.0.1",
             "--port",
@@ -393,8 +396,6 @@ def get_current_test_name(fallback: str = "unknown_test") -> str:
     Example:
         "tests/integration::test_worker_happy_path (call)" -> "tests_integration__test_worker_happy_path"
     """
-    import os
-    import re
 
     raw_test_name = os.environ.get("PYTEST_CURRENT_TEST", "")
     if not raw_test_name:
@@ -470,3 +471,226 @@ def parse_agent_log(test_name: str) -> List[Dict]:
     except Exception:
         # Handle any file read errors gracefully
         return []
+
+
+def register_workflow(scheduler_url: str, workflow_yaml: str) -> str:
+    """Register a workflow and return its reference.
+
+    Args:
+        scheduler_url: Base URL of the scheduler (e.g., "http://localhost:19456")
+        workflow_yaml: YAML content of the workflow to register
+
+    Returns:
+        str: Workflow reference (e.g., "namespace/name:latest")
+
+    Raises:
+        AssertionError: If registration fails or response is invalid
+    """
+
+    response = requests.post(
+        f"{scheduler_url}/api/workflows/register",
+        json={"workflow_yaml": workflow_yaml},
+        timeout=10,
+    )
+    assert response.status_code == 201, f"Workflow registration failed: {response.text}"
+
+    data = response.json()
+    assert "ref" in data, f"Registration should return ref: {data}"
+    return data["ref"]
+
+
+def get_a2a_endpoint(scheduler_url: str) -> str:
+    """Discover A2A endpoint from agent card with proper port handling.
+
+    Args:
+        scheduler_url: Base URL of the scheduler (e.g., "http://localhost:19456")
+
+    Returns:
+        str: A2A endpoint URL with correct port for tests
+
+    Raises:
+        AssertionError: If agent card is not available or invalid
+    """
+
+    agent_card_response = requests.get(
+        f"{scheduler_url}/.well-known/agent-card.json", timeout=5
+    )
+    assert agent_card_response.status_code == 200, (
+        f"Failed to get agent card: {agent_card_response.text}"
+    )
+
+    agent_card = agent_card_response.json()
+    assert "url" in agent_card, f"Agent card should have url field: {agent_card}"
+
+    a2a_url = agent_card["url"]
+
+    # Handle port replacement for tests
+    if "localhost:9456" in a2a_url:
+        # Agent card has hardcoded port 9456, replace with actual test port
+        test_port = scheduler_url.split(":")[-1]
+        a2a_endpoint = a2a_url.replace("localhost:9456", f"localhost:{test_port}")
+    elif a2a_url.startswith("/"):
+        # Relative URL - prepend base scheduler URL
+        a2a_endpoint = scheduler_url + a2a_url
+    else:
+        # Absolute URL - use as-is
+        a2a_endpoint = a2a_url
+
+    return a2a_endpoint
+
+
+def submit_workflow_via_a2a(
+    scheduler_url: str, workflow_ref: str, context_id: str = None
+) -> Dict[str, Any]:
+    """Submit workflow execution via proper A2A JSON-RPC protocol.
+
+    Args:
+        scheduler_url: Base URL of the scheduler
+        workflow_ref: Workflow reference from registration
+        context_id: Optional context ID (generates one if None)
+
+    Returns:
+        dict: Task result from A2A submission
+
+    Raises:
+        AssertionError: If A2A submission fails or response is invalid
+    """
+
+    if context_id is None:
+        context_id = str(uuid.uuid4())
+
+    # A2A message with workflowRef
+    message = {
+        "role": "user",
+        "parts": [{"kind": "data", "data": {"data": {"workflowRef": workflow_ref}}}],
+        "messageId": str(uuid.uuid4()),
+        "kind": "message",
+    }
+
+    # JSON-RPC request
+    jsonrpc_request = {
+        "jsonrpc": "2.0",
+        "method": "message/send",
+        "params": {"contextId": context_id, "messages": [message]},
+        "id": str(uuid.uuid4()),
+    }
+
+    a2a_endpoint = get_a2a_endpoint(scheduler_url)
+    response = requests.post(a2a_endpoint, json=jsonrpc_request, timeout=10)
+    assert response.status_code == 200, (
+        f"A2A workflow submission failed: {response.text}"
+    )
+
+    data = response.json()
+    assert "result" in data, f"A2A response should have result: {data}"
+    assert data.get("error") is None, f"A2A response should not have error: {data}"
+
+    return data["result"]
+
+
+def poll_a2a_task_status(
+    scheduler_url: str, task_id: str, timeout: int = 60
+) -> Dict[str, Any]:
+    """Poll task status via A2A tasks/get method until completion.
+
+    Args:
+        scheduler_url: Base URL of the scheduler
+        task_id: Task ID to poll
+        timeout: Maximum time to wait in seconds
+
+    Returns:
+        dict: Final task status when completed/failed/cancelled
+
+    Raises:
+        AssertionError: If polling fails or task doesn't complete within timeout
+    """
+
+    a2a_endpoint = get_a2a_endpoint(scheduler_url)
+    start_time = time.time()
+    last_state = None
+
+    while time.time() - start_time < timeout:
+        jsonrpc_request = {
+            "jsonrpc": "2.0",
+            "method": "tasks/get",
+            "params": {"taskId": task_id},
+            "id": str(uuid.uuid4()),
+        }
+
+        response = requests.post(a2a_endpoint, json=jsonrpc_request, timeout=5)
+        assert response.status_code == 200, f"Task status poll failed: {response.text}"
+
+        data = response.json()
+        assert "result" in data, f"Task status response should have result: {data}"
+
+        task = data["result"]
+        task_state = task.get("status", {}).get("state")
+
+        # Debug: Print state changes
+        if task_state != last_state:
+            print(f"DEBUG: Task {task_id} state changed: {last_state} -> {task_state}")
+            last_state = task_state
+
+        if task_state in ["completed", "failed", "cancelled"]:
+            return task
+
+        time.sleep(1)  # Poll every second
+
+    pytest.fail(f"Task {task_id} did not complete within {timeout} seconds")
+
+
+def start_orchestrator(
+    port: int, workers: int = 2, db_url: str = None, base_dir: Path = None
+) -> subprocess.Popen:
+    """Start the orchestrator binary with specified configuration.
+
+    Args:
+        port: Port number for scheduler to listen on
+        workers: Number of worker processes to spawn
+        db_url: Complete database URL (creates temp SQLite URL if None)
+        base_dir: Base directory for the project (defaults to test file parent directory)
+
+    Returns:
+        subprocess.Popen: The orchestrator process
+    """
+    if base_dir is None:
+        base_dir = Path(__file__).parent.parent
+
+    # Create temp database URL if not provided
+    if db_url is None:
+        temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        temp_db.close()
+        db_url = f"sqlite:///{temp_db.name}"
+
+    env = os.environ.copy()
+    env["DATABASE_URL"] = db_url
+
+    orchestrator_proc = subprocess.Popen(
+        ["./bin/agentmaestro", "-workers", str(workers), "-scheduler-port", str(port)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        cwd=base_dir,
+    )
+    return orchestrator_proc
+
+
+def count_processes_by_name(name_pattern: str) -> int:
+    """Count running processes matching a name pattern.
+
+    Args:
+        name_pattern: String pattern to match in process command line
+
+    Returns:
+        int: Number of matching processes
+    """
+    count = 0
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.info["cmdline"] or [])
+            if name_pattern in cmdline:
+                count += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return count

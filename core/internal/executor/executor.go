@@ -163,9 +163,9 @@ func (e *Executor) StartWorkflowRef(rawRef string) (*ExecutionInfo, error) {
 	e.activeExecutions[executionID] = cancel
 	e.mutex.Unlock()
 
-	// Submit first level tasks synchronously before returning
+	// Execute first level tasks synchronously before returning (wait for completion)
 	if len(levels) > 0 {
-		if err := e.submitLevel(ctx, execution, nodeMap, levels[0]); err != nil {
+		if err := e.executeLevel(ctx, execution, nodeMap, levels[0]); err != nil {
 			e.mutex.Lock()
 			execution.Status = constants.TaskStateFailed
 			completedAt := time.Now()
