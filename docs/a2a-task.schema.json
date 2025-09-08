@@ -1,0 +1,183 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.agentmaestro.dev/a2a/task-schema.json",
+  "title": "AgentMaestro A2A Task Payload",
+  "description": "Draft-07 schema describing the subset of the A2A Task payload used by AgentMaestro workflows.",
+  "type": "object",
+  "required": ["messages"],
+  "additionalProperties": false,
+  "properties": {
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/Message" }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Artifact" }
+    },
+  "contextId": { "type": "string" },
+    "metadata": {
+      "type": "object",
+      "description": "Protocol-specific metadata blob forwarded to the agent.",
+      "additionalProperties": true
+    }
+  },
+  "definitions": {
+    "Message": {
+      "type": "object",
+      "required": ["role", "parts", "messageId", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["user", "agent"]
+        },
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/Part" }
+        },
+        "messageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "taskId": { "type": "string" },
+        "contextId": { "type": "string" },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "extensions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "referenceTaskIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "kind": {
+          "type": "string",
+          "const": "message"
+        }
+      }
+    },
+    "Artifact": {
+      "type": "object",
+      "required": ["artifactId", "parts"],
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_-]+$"
+        },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/Part" }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "extensions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "Part": {
+      "oneOf": [
+        { "$ref": "#/definitions/TextPart" },
+        { "$ref": "#/definitions/FilePart" },
+        { "$ref": "#/definitions/DataPart" }
+      ]
+    },
+    "TextPart": {
+      "type": "object",
+      "required": ["kind", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "text"
+        },
+        "text": { "type": "string" },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "FilePart": {
+      "type": "object",
+      "required": ["kind", "file"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "file"
+        },
+        "file": {
+          "oneOf": [
+            { "$ref": "#/definitions/FileWithBytes" },
+            { "$ref": "#/definitions/FileWithUri" }
+          ]
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "DataPart": {
+      "type": "object",
+      "required": ["kind", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "data"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "FileWithBytes": {
+      "type": "object",
+      "required": ["bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "type": "string",
+          "description": "Base64-encoded file content"
+        },
+        "mimeType": { "type": "string" },
+        "name": { "type": "string" }
+      }
+    },
+    "FileWithUri": {
+      "type": "object",
+      "required": ["uri"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "mimeType": { "type": "string" },
+        "name": { "type": "string" }
+      }
+    }
+  }
+}

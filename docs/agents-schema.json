@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.agentmaestro.dev/agents-schema.json",
+  "title": "AgentMaestro Agent Configuration",
+  "description": "Validates the AgentMaestro agents.yaml structure once converted to JSON.",
+  "type": "object",
+  "required": ["agents"],
+  "additionalProperties": false,
+  "properties": {
+    "agents": {
+      "type": "object",
+      "description": "Map of agent names to their configuration.",
+      "patternProperties": {
+        "^[a-zA-Z0-9_-]+$": {
+          "$ref": "#/$defs/AgentConfig"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "AgentConfig": {
+      "type": "object",
+      "description": "Configuration for a single agent instance.",
+      "required": ["type", "config"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["stdio", "a2a", "acp"],
+          "description": "Agent protocol type."
+        },
+        "config": {
+          "type": "object",
+          "description": "Type-specific configuration parameters."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "stdio"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "type": "object",
+                "required": ["command", "args"],
+                "additionalProperties": false,
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Executable command to run for stdio communication."
+                  },
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Command line arguments passed to the executable."
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "a2a"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Base URL for the A2A agent endpoint."
+                  },
+                  "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Request timeout in seconds (optional, defaults to 30)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "acp"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "type": "object",
+                "required": ["command", "args"],
+                "additionalProperties": false,
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Executable command to run for ACP communication."
+                  },
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Command line arguments passed to the executable."
+                  },
+                  "working_dir": {
+                    "type": "string",
+                    "description": "Working directory for the ACP agent process (optional)."
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

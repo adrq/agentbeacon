@@ -163,31 +163,28 @@ func (e *Executor) StartWorkflowRef(rawRef string) (*ExecutionInfo, error) {
 	e.activeExecutions[executionID] = cancel
 	e.mutex.Unlock()
 
-	// Execute first level tasks synchronously before returning (wait for completion)
-	if len(levels) > 0 {
-		if err := e.executeLevel(ctx, execution, nodeMap, levels[0]); err != nil {
-			e.mutex.Lock()
-			execution.Status = constants.TaskStateFailed
-			completedAt := time.Now()
-			execution.CompletedAt = &completedAt
-			e.mutex.Unlock()
-			e.updateExecutionInDB(execution, fmt.Sprintf("Failed to submit first level: %v", err))
-			cancel()
+	// Start async execution for all levels (including first level)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Workflow execution %s panicked: %v", executionID, r)
+				e.mutex.Lock()
+				execution.Status = constants.TaskStateFailed
+				if execution.CompletedAt == nil {
+					completedAt := time.Now()
+					execution.CompletedAt = &completedAt
+				}
+				e.mutex.Unlock()
+				e.updateExecutionInDB(execution, fmt.Sprintf("Workflow execution panicked: %v", r))
+			}
 			e.mutex.Lock()
 			delete(e.activeExecutions, executionID)
 			e.mutex.Unlock()
-			return nil, fmt.Errorf("failed to submit first level: %w", err)
-		}
-	}
+		}()
 
-	// Start async execution for remaining levels
-	go func() {
-		if err := e.executeWorkflowFromLevel(ctx, execution, &workflow, levels, nodeMap, 1); err != nil {
+		if err := e.executeWorkflowFromLevel(ctx, execution, &workflow, levels, nodeMap, 0); err != nil {
 			log.Printf("Workflow execution %s failed: %v", executionID, err)
 		}
-		e.mutex.Lock()
-		delete(e.activeExecutions, executionID)
-		e.mutex.Unlock()
 	}()
 
 	e.mutex.RLock()

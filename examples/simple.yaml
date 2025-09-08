@@ -1,15 +1,54 @@
-name: "Simple Pipeline"
-description: "Basic sequential workflow"
+name: simple_pipeline
+description: Basic sequential workflow aligned with the A2A schema.
 config:
-  api_keys: "development"
-on_error: "stop_all"
-nodes:
+  api_keys: development
+on_error: stop_all
+tasks:
   - id: analyze
     agent: demo-agent
-    prompt: "Analyze the codebase structure and identify key components"
-    timeout: 300
+    execution:
+      timeout: 300
+    task:
+      contextId: code_overview
+      metadata:
+        category: architecture
+      messages:
+        - messageId: msg-analyze-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Analyze the codebase structure and identify key components.
+      artifacts:
+        - artifactId: analysis_notes
+          parts:
+            - kind: text
+              text: Detailed analysis notes will be stored here.
   - id: summarize
     agent: demo-agent
-    depends_on: [analyze]
-    prompt: "Summarize findings from analysis: ${analyze.output}"
-    timeout: 180
+    depends_on:
+      - analyze
+    inputs:
+      artifacts:
+        - from: analyze
+          artifactId: analysis_notes
+    execution:
+      timeout: 180
+    task:
+      contextId: code_overview
+      messages:
+        - messageId: msg-summarize-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Summarize the findings from the analysis notes artifact in three bullet points.
+            - kind: text
+              text: "Artifact reference: analysis_notes"
+      artifacts:
+        - artifactId: summary
+          parts:
+            - kind: text
+              text: Concise summary of the analysis.

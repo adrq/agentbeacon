@@ -5,15 +5,12 @@ starts the scheduler, registers a 2-node sequential workflow (A2A + ACP nodes),
 and uses mock polling to execute both tasks sequentially.
 """
 
-import pytest
 import requests
 import uuid
 from tests.testhelpers import scheduler_context
+import time
 
 
-@pytest.mark.skip(
-    reason="A2A message/send blocks until first level completes (BACKLOG.md)"
-)
 def test_scheduler_basic_integration():
     """Test basic scheduler integration with 2-node sequential workflow via HTTP polling."""
     with scheduler_context() as scheduler:
@@ -155,11 +152,19 @@ nodes:
         assert result_response.status_code == 200
 
         # Poll for second task (should be test-task-2 after dependency satisfied)
-        second_poll = requests.get(f"{scheduler_url}/api/worker/poll", timeout=5)
-        assert second_poll.status_code == 200
+        # Allow brief delay for async task submission after first task completion
+        second_task = None
+        for attempt in range(10):  # Try for up to 5 seconds (10 * 0.5s)
+            second_poll = requests.get(f"{scheduler_url}/api/worker/poll", timeout=5)
+            assert second_poll.status_code == 200
 
-        second_poll_data = second_poll.json()
-        second_task = second_poll_data["task"]
+            second_poll_data = second_poll.json()
+            second_task = second_poll_data["task"]
+
+            if second_task is not None:
+                break
+
+            time.sleep(0.5)
 
         assert second_task is not None, (
             "Should return test-task-2 after test-task-1 completion"

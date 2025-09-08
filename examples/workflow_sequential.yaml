@@ -1,0 +1,49 @@
+name: sequential_onboarding
+description: Demonstrates a two-step sequential workflow aligned with the A2A schema mapping.
+on_error: stop_all
+config:
+  environment: sandbox
+tasks:
+  - id: draft_welcome
+    agent: mock-a2a-writer
+    task:
+      contextId: onboarding
+      messages:
+        - messageId: msg-draft-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Compose a short welcome message introducing AgentMaestro to a new teammate.
+      artifacts:
+        - artifactId: welcome_note
+          parts:
+            - kind: text
+              text: Draft welcome note placeholder
+  - id: summarize_plan
+    agent: mock-a2a-editor
+    depends_on:
+      - draft_welcome
+    inputs:
+      artifacts:
+        - from: draft_welcome
+          artifactId: welcome_note
+    execution:
+      timeout: 120
+      retry:
+        attempts: 2
+        backoff: linear
+        delay_seconds: 10
+    task:
+      contextId: onboarding
+      messages:
+        - messageId: msg-summarize-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Review the draft welcome note artifact and summarize the onboarding plan in two bullet points.
+            - kind: text
+              text: "Artifact reference: welcome_note"
