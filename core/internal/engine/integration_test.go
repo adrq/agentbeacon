@@ -66,8 +66,8 @@ func TestParserStorageIntegration(t *testing.T) {
 		t.Errorf("Reloaded workflow name mismatch: expected %q, got %q", workflow.Name, reloadedWorkflow.Name)
 	}
 
-	if len(reloadedWorkflow.Nodes) != len(workflow.Nodes) {
-		t.Errorf("Reloaded workflow node count mismatch: expected %d, got %d", len(workflow.Nodes), len(reloadedWorkflow.Nodes))
+	if len(reloadedWorkflow.Tasks) != len(workflow.Tasks) {
+		t.Errorf("Reloaded workflow task count mismatch: expected %d, got %d", len(workflow.Tasks), len(reloadedWorkflow.Tasks))
 	}
 }
 
@@ -162,11 +162,11 @@ nodes:
 
 	// Note: OnError field removed - now uses hardcoded stop-all behavior
 
-	if len(finalWorkflow.Nodes) != 1 {
-		t.Errorf("Expected 1 node, got %d", len(finalWorkflow.Nodes))
+	if len(finalWorkflow.Tasks) != 1 {
+		t.Errorf("Expected 1 task, got %d", len(finalWorkflow.Tasks))
 	}
 
-	node := finalWorkflow.Nodes[0]
+	node := finalWorkflow.Tasks[0]
 	if node.ID != "updated_node" {
 		t.Errorf("Expected updated node ID, got %q", node.ID)
 	}

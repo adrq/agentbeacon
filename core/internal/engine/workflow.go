@@ -8,7 +8,7 @@ type Workflow struct {
 	Name        string         `json:"name" yaml:"name"`
 	Description string         `json:"description" yaml:"description"`
 	Config      WorkflowConfig `json:"config" yaml:"config"`
-	Nodes       []Node         `json:"nodes" yaml:"nodes"`
+	Tasks       []Node         `json:"tasks" yaml:"tasks"`
 	CreatedAt   time.Time      `json:"created_at" yaml:"-"`
 	UpdatedAt   time.Time      `json:"updated_at" yaml:"-"`
 }
@@ -16,8 +16,8 @@ type Workflow struct {
 // Node represents a single node in a workflow
 type Node struct {
 	ID        string                 `json:"id" yaml:"id"`
-	Agent     string                 `json:"agent" yaml:"agent"`     // Name from agents.yaml (required)
-	Request   map[string]interface{} `json:"request" yaml:"request"` // Type-specific request fields
+	Agent     string                 `json:"agent" yaml:"agent"` // Name from agents.yaml (required)
+	Task      map[string]interface{} `json:"task" yaml:"task"`   // Type-specific task fields
 	DependsOn []string               `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
 	Timeout   int                    `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	Retry     *RetryConfig           `json:"retry,omitempty" yaml:"retry,omitempty"`

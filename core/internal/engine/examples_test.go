@@ -39,8 +39,8 @@ func TestExampleWorkflows(t *testing.T) {
 				t.Errorf("Expected name %q, got %q", example.expectedName, workflow.Name)
 			}
 
-			if len(workflow.Nodes) != example.expectedNodes {
-				t.Errorf("Expected %d nodes, got %d", example.expectedNodes, len(workflow.Nodes))
+			if len(workflow.Tasks) != example.expectedNodes {
+				t.Errorf("Expected %d tasks, got %d", example.expectedNodes, len(workflow.Tasks))
 			}
 
 			// Verify the workflow passes validation

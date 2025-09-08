@@ -5,37 +5,37 @@ import (
 	"strings"
 )
 
-// ValidateDAG validates that the given nodes form a valid DAG (no cycles)
+// ValidateDAG validates that the given tasks form a valid DAG (no cycles)
 func ValidateDAG(nodes []Node) error {
 	if len(nodes) == 0 {
 		return nil
 	}
 
-	// Build node ID set for quick lookup
-	nodeIDs := make(map[string]bool)
-	for _, node := range nodes {
-		if nodeIDs[node.ID] {
+	// Build task ID set for quick lookup
+	taskIDs := make(map[string]bool)
+	for _, task := range nodes {
+		if taskIDs[task.ID] {
 			return ValidationError{
-				Field:   "nodes",
-				Message: fmt.Sprintf("duplicate node ID: %s", node.ID),
+				Field:   "tasks",
+				Message: fmt.Sprintf("duplicate task ID: %s", task.ID),
 			}
 		}
-		nodeIDs[node.ID] = true
+		taskIDs[task.ID] = true
 	}
 
 	// Check for self-dependencies and missing dependencies
-	for _, node := range nodes {
-		for _, dep := range node.DependsOn {
-			if dep == node.ID {
+	for _, task := range nodes {
+		for _, dep := range task.DependsOn {
+			if dep == task.ID {
 				return ValidationError{
-					Field:   "nodes",
-					Message: fmt.Sprintf("node %s has self dependency", node.ID),
+					Field:   "tasks",
+					Message: fmt.Sprintf("task %s has self dependency", task.ID),
 				}
 			}
-			if !nodeIDs[dep] {
+			if !taskIDs[dep] {
 				return ValidationError{
-					Field:   "nodes",
-					Message: fmt.Sprintf("node %s depends on non-existent node: %s", node.ID, dep),
+					Field:   "tasks",
+					Message: fmt.Sprintf("task %s depends on non-existent task: %s", task.ID, dep),
 				}
 			}
 		}
@@ -55,7 +55,7 @@ func ValidateDAG(nodes []Node) error {
 		if !visited[node.ID] {
 			if hasCycleDFS(node.ID, adj, visited, recStack) {
 				return ValidationError{
-					Field:   "nodes",
+					Field:   "tasks",
 					Message: "cycle detected in workflow dependencies",
 				}
 			}

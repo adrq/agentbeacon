@@ -189,7 +189,26 @@ func (api *RestAPI) registerWorkflowHandler(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusBadRequest, "workflow_yaml is required")
 			return
 		}
-		// Parse YAML to extract required fields
+		// Simple validation to reject old format and require new format
+		var workflowDoc map[string]interface{}
+		if err := yaml.Unmarshal([]byte(yamlHolder.WorkflowYAML), &workflowDoc); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid workflow YAML")
+			return
+		}
+
+		// Check for old "nodes" field and reject it
+		if _, hasNodes := workflowDoc["nodes"]; hasNodes {
+			writeError(w, http.StatusBadRequest, "workflow schema error: 'nodes' field not supported, use 'tasks' instead")
+			return
+		}
+
+		// Require new "tasks" field
+		if _, hasTasks := workflowDoc["tasks"]; !hasTasks {
+			writeError(w, http.StatusBadRequest, "workflow schema error: 'tasks' field is required")
+			return
+		}
+
+		// Parse YAML to extract required fields (after schema validation)
 		var parsed struct {
 			Name        string `yaml:"name"`
 			Namespace   string `yaml:"namespace"`
@@ -199,9 +218,13 @@ func (api *RestAPI) registerWorkflowHandler(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusBadRequest, "invalid workflow YAML")
 			return
 		}
-		if parsed.Name == "" || parsed.Namespace == "" {
-			writeError(w, http.StatusBadRequest, "workflow YAML must include name and namespace")
+		if parsed.Name == "" {
+			writeError(w, http.StatusBadRequest, "workflow YAML must include name")
 			return
+		}
+		// Use empty namespace for new schema (backward compatibility with DB)
+		if parsed.Namespace == "" {
+			parsed.Namespace = "default"
 		}
 		wf, regErr := api.db.RegisterInlineWorkflow(parsed.Namespace, parsed.Name, parsed.Description, yamlHolder.WorkflowYAML)
 		if regErr != nil {

@@ -97,7 +97,7 @@ func (e *Executor) StartWorkflowRef(rawRef string) (*ExecutionInfo, error) {
 	}
 
 	nodeIDMap := make(map[string]bool)
-	for _, node := range workflow.Nodes {
+	for _, node := range workflow.Tasks {
 		if nodeIDMap[node.ID] {
 			return nil, fmt.Errorf("duplicate node ID found: %s", node.ID)
 		}
@@ -106,7 +106,7 @@ func (e *Executor) StartWorkflowRef(rawRef string) (*ExecutionInfo, error) {
 
 	executionID := uuid.New().String()
 	nodeStates := make(map[string]engine.NodeState)
-	for _, node := range workflow.Nodes {
+	for _, node := range workflow.Tasks {
 		nodeStates[node.ID] = engine.NodeState{Status: constants.TaskStateSubmitted}
 	}
 	nodeStatesJSON, err := json.Marshal(nodeStates)
@@ -142,7 +142,7 @@ func (e *Executor) StartWorkflowRef(rawRef string) (*ExecutionInfo, error) {
 	}
 
 	// Perform workflow validation and submit first level tasks synchronously
-	levels, err := engine.TopologicalSort(workflow.Nodes)
+	levels, err := engine.TopologicalSort(workflow.Tasks)
 	if err != nil {
 		e.mutex.Lock()
 		execution.Status = constants.TaskStateFailed
@@ -154,8 +154,8 @@ func (e *Executor) StartWorkflowRef(rawRef string) (*ExecutionInfo, error) {
 	}
 
 	nodeMap := make(map[string]*engine.Node)
-	for i := range workflow.Nodes {
-		nodeMap[workflow.Nodes[i].ID] = &workflow.Nodes[i]
+	for i := range workflow.Tasks {
+		nodeMap[workflow.Tasks[i].ID] = &workflow.Tasks[i]
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -216,7 +216,7 @@ func (e *Executor) submitLevel(ctx context.Context, execution *engine.Execution,
 			ExecutionID: execution.ID,
 			Agent:       node.Agent,
 			ID:          uuid.New().String(),
-			Request:     node.Request,
+			Request:     node.Task,
 		}
 
 		// Submit task to queue
@@ -447,7 +447,7 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 		}
 	}()
 
-	levels, err := engine.TopologicalSort(workflow.Nodes)
+	levels, err := engine.TopologicalSort(workflow.Tasks)
 	if err != nil {
 		e.mutex.Lock()
 		execution.Status = constants.TaskStateFailed
@@ -459,8 +459,8 @@ func (e *Executor) executeWorkflow(ctx context.Context, execution *engine.Execut
 	}
 
 	nodeMap := make(map[string]*engine.Node)
-	for i := range workflow.Nodes {
-		nodeMap[workflow.Nodes[i].ID] = &workflow.Nodes[i]
+	for i := range workflow.Tasks {
+		nodeMap[workflow.Tasks[i].ID] = &workflow.Tasks[i]
 	}
 
 	for levelIndex, level := range levels {
@@ -623,7 +623,7 @@ func (e *Executor) executeLevel(ctx context.Context, execution *engine.Execution
 			ExecutionID: execution.ID,
 			Agent:       node.Agent,
 			ID:          uuid.New().String(),
-			Request:     node.Request,
+			Request:     node.Task,
 		}
 
 		// Submit task to queue
@@ -968,9 +968,9 @@ func (e *Executor) executeNode(ctx context.Context, execution *engine.Execution,
 
 	// Extract prompt from request based on agent type
 	var prompt string
-	if promptValue, exists := node.Request["prompt"]; exists {
+	if promptValue, exists := node.Task["prompt"]; exists {
 		prompt = promptValue.(string)
-	} else if taskValue, exists := node.Request["task"]; exists {
+	} else if taskValue, exists := node.Task["task"]; exists {
 		prompt = taskValue.(string)
 	} else {
 		return fmt.Errorf("node %s missing prompt or task in request", node.ID)
@@ -1472,7 +1472,7 @@ func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
 			return nil, fmt.Errorf("acp agent '%s' missing 'command' in config", node.Agent)
 		}
 		args, _ := agentConfig.Config["args"].([]string)
-		workingDir, _ := node.Request["working_dir"].(string)
+		workingDir, _ := node.Task["working_dir"].(string)
 		agent, err = NewACPAgent(command, args, workingDir)
 	default:
 		return nil, fmt.Errorf("unknown agent type: %s", agentConfig.Type)
@@ -1494,18 +1494,18 @@ func (e *Executor) createAgentForNode(node *engine.Node) (Agent, error) {
 func (e *Executor) validateNodeRequest(node *engine.Node, agentConfig *config.AgentConfig) error {
 	switch agentConfig.Type {
 	case "stdio":
-		if node.Request["prompt"] == nil {
+		if node.Task["prompt"] == nil {
 			return fmt.Errorf("stdio agent '%s' requires 'prompt' in request", node.Agent)
 		}
 	case "a2a":
-		if node.Request["task"] == nil && node.Request["prompt"] == nil {
+		if node.Task["task"] == nil && node.Task["prompt"] == nil {
 			return fmt.Errorf("a2a agent '%s' requires 'task' or 'prompt' in request", node.Agent)
 		}
 	case "acp":
-		if node.Request["prompt"] == nil {
+		if node.Task["prompt"] == nil {
 			return fmt.Errorf("acp agent '%s' requires 'prompt' in request", node.Agent)
 		}
-		if node.Request["working_dir"] == nil {
+		if node.Task["working_dir"] == nil {
 			return fmt.Errorf("acp agent '%s' requires 'working_dir' in request", node.Agent)
 		}
 	default:

@@ -19,17 +19,16 @@ def test_scheduler_basic_integration():
         # Register 2-node sequential workflow for HTTP polling test
         workflow_yaml = """
 name: basic-integration-test
-namespace: integration
 description: Simple 2-node sequential workflow for HTTP polling test
-nodes:
+tasks:
   - id: test-task-1
     agent: mock-agent
-    request:
+    task:
       prompt: Analyze the processed data
   - id: test-task-2
     agent: mock-agent
     depends_on: [test-task-1]
-    request:
+    task:
       prompt: Analyze the processed data
 """.strip()
 
@@ -49,8 +48,6 @@ nodes:
             f"Registration should return name: {response_data}"
         )
         assert response_data["name"] == "basic-integration-test"
-        assert "namespace" in response_data
-        assert response_data["namespace"] == "integration"
         assert "ref" in response_data  # Should have a workflow reference
 
         workflow_ref = response_data["ref"]
@@ -288,4 +285,45 @@ def test_result_endpoint_validates_required_fields():
         error_data = result_response.json()
         assert "error" in error_data, (
             f"Error response should have error field: {error_data}"
+        )
+
+
+def test_old_nodes_format_rejected():
+    """Test that workflows using old 'nodes' format are rejected with schema validation error."""
+    with scheduler_context() as scheduler:
+        scheduler_url = scheduler["url"]
+
+        # Test workflow using old schema format with "nodes" and "request"
+        old_format_yaml = """
+name: old-format-test
+description: Test workflow using old schema format
+nodes:
+  - id: test-node-1
+    agent: mock-agent
+    request:
+      prompt: This should be rejected
+""".strip()
+
+        # Attempt to register old format workflow
+        register_response = requests.post(
+            f"{scheduler_url}/api/workflows/register",
+            json={"workflow_yaml": old_format_yaml},
+            timeout=10,
+        )
+
+        # Should be rejected with 400 status
+        assert register_response.status_code == 400, (
+            f"Old format should be rejected with 400, got {register_response.status_code}: {register_response.text}"
+        )
+
+        # Response should contain schema validation error about nodes field
+        error_data = register_response.json()
+        assert "error" in error_data, (
+            f"Error response should have error field: {error_data}"
+        )
+
+        # Should contain error message about nodes field not being supported
+        error_message = error_data["error"].lower()
+        assert "nodes" in error_message and "not supported" in error_message, (
+            f"Error should mention 'nodes' field not supported: {error_data['error']}"
         )

@@ -29,11 +29,11 @@ nodes:
 		t.Errorf("Expected name 'Simple Workflow', got %q", workflow.Name)
 	}
 
-	if len(workflow.Nodes) != 1 {
-		t.Errorf("Expected 1 node, got %d", len(workflow.Nodes))
+	if len(workflow.Tasks) != 1 {
+		t.Errorf("Expected 1 task, got %d", len(workflow.Tasks))
 	}
 
-	node := workflow.Nodes[0]
+	node := workflow.Tasks[0]
 	if node.ID != "analyze" {
 		t.Errorf("Expected node ID 'analyze', got %q", node.ID)
 	}
@@ -79,8 +79,8 @@ nodes:
 		t.Fatalf("Expected no error for valid complex YAML, got: %v", err)
 	}
 
-	if len(workflow.Nodes) != 4 {
-		t.Errorf("Expected 4 nodes, got %d", len(workflow.Nodes))
+	if len(workflow.Tasks) != 4 {
+		t.Errorf("Expected 4 tasks, got %d", len(workflow.Tasks))
 	}
 
 	// Check dependencies

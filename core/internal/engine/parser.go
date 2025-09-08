@@ -36,8 +36,8 @@ func ValidateWorkflow(w *Workflow) error {
 		return ValidationError{Field: "name", Message: "name is required"}
 	}
 
-	if len(w.Nodes) == 0 {
-		return ValidationError{Field: "nodes", Message: "at least one node is required"}
+	if len(w.Tasks) == 0 {
+		return ValidationError{Field: "tasks", Message: "at least one task is required"}
 	}
 
 	// Note: on_error field removed in favor of hardcoded stop-all behavior
@@ -45,30 +45,30 @@ func ValidateWorkflow(w *Workflow) error {
 	// Track node IDs for uniqueness check
 	nodeIDs := make(map[string]bool)
 
-	// Validate each node
-	for i, node := range w.Nodes {
-		if err := ValidateNode(&node); err != nil {
-			return fmt.Errorf("node %d: %w", i, err)
+	// Validate each task
+	for i, task := range w.Tasks {
+		if err := ValidateNode(&task); err != nil {
+			return fmt.Errorf("task %d: %w", i, err)
 		}
 
-		// Check for duplicate node IDs
-		if nodeIDs[node.ID] {
-			return ValidationError{Field: "nodes", Message: fmt.Sprintf("duplicate node ID: %s", node.ID)}
+		// Check for duplicate task IDs
+		if nodeIDs[task.ID] {
+			return ValidationError{Field: "tasks", Message: fmt.Sprintf("duplicate task ID: %s", task.ID)}
 		}
-		nodeIDs[node.ID] = true
+		nodeIDs[task.ID] = true
 	}
 
-	// Validate dependencies reference existing nodes
-	for _, node := range w.Nodes {
-		for _, depID := range node.DependsOn {
+	// Validate dependencies reference existing tasks
+	for _, task := range w.Tasks {
+		for _, depID := range task.DependsOn {
 			if !nodeIDs[depID] {
-				return ValidationError{Field: "nodes", Message: fmt.Sprintf("node %s depends on non-existent node: %s", node.ID, depID)}
+				return ValidationError{Field: "tasks", Message: fmt.Sprintf("task %s depends on non-existent task: %s", task.ID, depID)}
 			}
 		}
 	}
 
 	// Validate DAG structure (no cycles)
-	if err := ValidateDAG(w.Nodes); err != nil {
+	if err := ValidateDAG(w.Tasks); err != nil {
 		return err
 	}
 
