@@ -93,3 +93,4 @@ requirements/*
 AGENTS.md
 CLAUDE.md
 .python-version
+target/*
