@@ -106,7 +106,7 @@ tasks:
         jsonrpc_request = {
             "jsonrpc": "2.0",
             "method": "message/send",
-            "params": {"messages": [message]},
+            "params": {"message": message},
             "id": str(uuid.uuid4()),
         }
 

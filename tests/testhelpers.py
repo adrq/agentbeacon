@@ -560,18 +560,20 @@ def submit_workflow_via_a2a(
         context_id = str(uuid.uuid4())
 
     # A2A message with workflowRef
+    # Per A2A spec: contextId is optional field inside Message, not in params
     message = {
         "role": "user",
         "parts": [{"kind": "data", "data": {"data": {"workflowRef": workflow_ref}}}],
         "messageId": str(uuid.uuid4()),
         "kind": "message",
+        "contextId": context_id,
     }
 
     # JSON-RPC request
     jsonrpc_request = {
         "jsonrpc": "2.0",
         "method": "message/send",
-        "params": {"contextId": context_id, "messages": [message]},
+        "params": {"message": message},
         "id": str(uuid.uuid4()),
     }
 

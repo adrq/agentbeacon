@@ -13,7 +13,7 @@ The worker emits a single line of UTF-8 JSON terminated by `\n`. The JSON struct
     "workflowRef": "team/refactor-auth:latest",
     "agent": "mock-a2a-writer",
     "task": {
-      "messages": [
+      "history": [
         {
           "messageId": "msg-stdin-1",
           "kind": "message",

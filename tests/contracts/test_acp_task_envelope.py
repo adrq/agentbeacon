@@ -12,7 +12,7 @@ def test_acp_envelope_reuses_a2a_task_schema(load_json_asset, validate_payload) 
     # Spot-check that a minimal valid payload round-trips against the schema by
     # leveraging the canonical task validator.
     sample_task = {
-        "messages": [
+        "history": [
             {
                 "messageId": "example",
                 "kind": "message",

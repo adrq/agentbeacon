@@ -8,6 +8,7 @@ These fixtures handle process management for the mock agent across all test mode
 Fixtures automatically handle process startup, port allocation, and cleanup.
 """
 
+import uuid
 import pytest
 import subprocess
 import time
@@ -176,10 +177,13 @@ def send_a2a_message(
         "method": "message/send",
         "id": 1,
         "params": {
-            "contextId": "test-context",
-            "messages": [
-                {"role": "user", "parts": [{"kind": "text", "text": message_text}]}
-            ],
+            "message": {
+                "kind": "message",
+                "messageId": str(uuid.uuid4()),
+                "role": "user",
+                "parts": [{"kind": "text", "text": message_text}],
+                "contextId": "test-context",
+            }
         },
     }
 

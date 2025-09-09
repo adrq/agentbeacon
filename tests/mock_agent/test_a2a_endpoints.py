@@ -8,6 +8,7 @@ These tests validate the A2A protocol contract compliance by testing:
 
 """
 
+import uuid
 import pytest
 import httpx
 from typing import Dict, Any
@@ -21,21 +22,24 @@ def json_rpc_url(mock_agent_a2a):
 
 @pytest.fixture
 def valid_message_send_request() -> Dict[str, Any]:
-    """Valid message/send JSON-RPC request matching contract."""
+    """Valid message/send JSON-RPC request matching A2A spec.
+
+    Per A2A spec:
+    - MessageSendParams has singular 'message', not 'messages' array
+    - contextId is optional field inside Message object, not in params
+    """
     return {
         "jsonrpc": "2.0",
         "method": "message/send",
         "id": 1,
         "params": {
-            "contextId": "test-context-123",
-            "messages": [
-                {
-                    "kind": "message",
-                    "messageId": "msg-test-001",
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": "Hello mock agent"}],
-                }
-            ],
+            "message": {
+                "kind": "message",
+                "messageId": "msg-test-001",
+                "role": "user",
+                "parts": [{"kind": "text", "text": "Hello mock agent"}],
+                "contextId": "test-context-123",
+            }
         },
     }
 
@@ -94,8 +98,13 @@ def test_message_send_with_special_command_hang(
         "method": "message/send",
         "id": 2,
         "params": {
-            "contextId": "hang-test",
-            "messages": [{"role": "user", "parts": [{"kind": "text", "text": "HANG"}]}],
+            "message": {
+                "kind": "message",
+                "messageId": str(uuid.uuid4()),
+                "role": "user",
+                "parts": [{"kind": "text", "text": "HANG"}],
+                "contextId": "hang-test",
+            }
         },
     }
 
