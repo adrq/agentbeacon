@@ -4,42 +4,82 @@ Based on FastAPI basic example pattern: https://fastapi.tiangolo.com/#create-it
 """
 
 from fastapi import FastAPI, HTTPException, Request
-from typing import Dict, Any, Optional, List, Literal
+from typing import Dict, Any, Optional, List, Literal, Union
 from pydantic import BaseModel
 import datetime
 
 app = FastAPI()
 
-# Pydantic Models for API validation
+# Pydantic Models for API validation with A2A protocol compliance
+# Note: A2A protocol types allow extensions, so extra='forbid' is NOT used
 
 
-class MessagePart(BaseModel):
-    kind: Literal["text", "image", "audio"]
-    text: Optional[str] = None
-    data: Optional[str] = None  # base64 encoded
+class TextPart(BaseModel):
+    """A2A TextPart - allows extension fields via metadata."""
+
+    kind: Literal["text"]
+    text: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class FilePart(BaseModel):
+    """A2A FilePart - allows extension fields via metadata."""
+
+    kind: Literal["file"]
+    file: Dict[str, Any]
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class DataPart(BaseModel):
+    """A2A DataPart - allows extension fields via metadata."""
+
+    kind: Literal["data"]
+    data: Dict[str, Any]
+    metadata: Optional[Dict[str, Any]] = None
+
+
+Part = Union[TextPart, FilePart, DataPart]
 
 
 class A2AMessage(BaseModel):
+    """A2A Message - allows extension fields per A2A protocol spec."""
+
+    messageId: str
+    kind: Literal["message"] = "message"
     role: Literal["user", "agent"]
-    parts: List[MessagePart]
+    parts: List[Part]
+    metadata: Optional[Dict[str, Any]] = None
+    taskId: Optional[str] = None
+    contextId: Optional[str] = None
+    extensions: Optional[List[str]] = None
+    referenceTaskIds: Optional[List[str]] = None
 
 
 class A2ATaskStatus(BaseModel):
+    """A2A TaskStatus - allows extension fields per A2A protocol spec."""
+
     state: Literal["pending", "running", "completed", "failed", "cancelled"]
     message: Optional[A2AMessage] = None
     timestamp: str
 
 
 class A2AArtifact(BaseModel):
+    """A2A Artifact - allows extension fields per A2A protocol spec."""
+
     artifactId: str
-    name: str
+    name: Optional[str] = None
     description: Optional[str] = None
-    parts: List[MessagePart]
+    parts: List[Part]
+    metadata: Optional[Dict[str, Any]] = None
+    extensions: Optional[List[str]] = None
 
 
 class CurrentTask(BaseModel):
     nodeId: str
     executionId: str
+
+    class Config:
+        extra = "forbid"
 
 
 class TaskResult(BaseModel):
@@ -48,12 +88,18 @@ class TaskResult(BaseModel):
     taskStatus: A2ATaskStatus
     artifacts: Optional[List[A2AArtifact]] = None
 
+    class Config:
+        extra = "forbid"
+
 
 class SyncRequest(BaseModel):
     status: Literal["idle", "working", "failed"]
     timestamp: str
     currentTask: Optional[CurrentTask] = None
     taskResult: Optional[TaskResult] = None
+
+    class Config:
+        extra = "forbid"
 
 
 class WorkerCommand(BaseModel):
@@ -62,13 +108,22 @@ class WorkerCommand(BaseModel):
     executionId: Optional[str] = None
     reason: Optional[str] = None
 
+    class Config:
+        extra = "forbid"
+
 
 class TaskAssignment(BaseModel):
     nodeId: str
     executionId: str
-    prompt: str
-    agentType: Optional[str] = None  # Allow missing agent for validation testing
-    config: Optional[Dict[str, Any]] = None
+    workflowRegistryId: str
+    workflowVersion: str
+    workflowRef: str
+    agent: str
+    task: Dict[str, Any]
+    protocolMetadata: Dict[str, Any] = {}
+
+    class Config:
+        extra = "forbid"
 
 
 class SyncResponse(BaseModel):
@@ -77,23 +132,38 @@ class SyncResponse(BaseModel):
     task: Optional[TaskAssignment] = None
     command: Optional[WorkerCommand] = None
 
+    class Config:
+        extra = "forbid"
+
 
 class AddCommandRequest(BaseModel):
     executionId: str
     nodeId: str
     command: WorkerCommand
 
+    class Config:
+        extra = "forbid"
+
 
 class DowntimeRequest(BaseModel):
     enabled: bool
+
+    class Config:
+        extra = "forbid"
 
 
 class StatusResponse(BaseModel):
     status: str
 
+    class Config:
+        extra = "forbid"
+
 
 class CountResponse(BaseModel):
     count: int
+
+    class Config:
+        extra = "forbid"
 
 
 class SyncStatusResponse(BaseModel):
@@ -102,9 +172,15 @@ class SyncStatusResponse(BaseModel):
     taskQueue: int
     resultsCount: int
 
+    class Config:
+        extra = "forbid"
+
 
 class HealthResponse(BaseModel):
     status: str
+
+    class Config:
+        extra = "forbid"
 
 
 # Simple in-memory task queue and results storage
@@ -181,18 +257,16 @@ def worker_sync(sync_request: SyncRequest, request: Request) -> SyncResponse:
 
     # Check for available tasks when worker is idle
     if status == "idle" and task_queue:
-        task = task_queue.pop(0)  # FIFO
+        task_payload = task_queue.pop(0)  # FIFO
         task_assignment = TaskAssignment(
-            nodeId=task["id"],
-            executionId=task.get("executionId", "test-exec-1"),
-            prompt=task.get(
-                "prompt",
-                task.get("request", {}).get(
-                    "prompt", task.get("request", {}).get("input", "default task")
-                ),
-            ),
-            agentType=task.get("agent"),
-            config=task.get("config", {}),
+            nodeId=task_payload["nodeId"],
+            executionId=task_payload.get("executionId", "test-exec-1"),
+            workflowRegistryId=task_payload["workflowRegistryId"],
+            workflowVersion=task_payload["workflowVersion"],
+            workflowRef=task_payload["workflowRef"],
+            agent=task_payload["agent"],
+            task=task_payload["task"],
+            protocolMetadata=task_payload.get("protocolMetadata", {}),
         )
         return SyncResponse(
             type="task_assigned",
@@ -207,6 +281,27 @@ def worker_sync(sync_request: SyncRequest, request: Request) -> SyncResponse:
 @app.post("/add_task")
 def add_task_endpoint(task: Dict[str, Any]) -> StatusResponse:
     """Add a task to the queue for testing."""
+    required_fields = {
+        "nodeId",
+        "executionId",
+        "workflowRegistryId",
+        "workflowVersion",
+        "workflowRef",
+        "agent",
+        "task",
+    }
+    missing = sorted(required_fields - task.keys())
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": f"Missing required fields: {', '.join(missing)}"},
+        )
+
+    if not isinstance(task["task"], dict):
+        raise HTTPException(
+            status_code=422, detail={"error": "task payload must be an object"}
+        )
+
     task_queue.append(task)
     return StatusResponse(status="added")
 

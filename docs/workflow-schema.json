@@ -54,7 +54,7 @@
           "description": "Agent identifier defined in repository configuration."
         },
         "task": {
-          "$ref": "https://schemas.agentmaestro.dev/a2a/task-schema.json",
+          "$ref": "a2a-task.schema.json",
           "description": "Payload delivered to the selected agent using the A2A protocol."
         },
         "inputs": {

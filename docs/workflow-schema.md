@@ -26,6 +26,25 @@ Workflows are YAML documents with the following top-level keys. The authoritativ
 | `on_error` | ❌ | enum (`stop_all`, `continue_branches`) | `stop_all` | Controls how execution proceeds when a task fails. |
 | `tasks` | ✅ | array | — | Ordered list of task definitions. Parallelism is expressed through `depends_on`. |
 
+### Workflow Identifiers & Registry Integration
+
+The runtime keeps three identifiers in flight for every workflow submission. All of them are validated by the schema and appear in scheduler↔worker sync payloads:
+
+| Field | Location | Source | Purpose |
+|-------|----------|--------|---------|
+| `name` | Workflow YAML root | Author supplied | Human friendly display label shown in logs, UI, and notifications. Changing it does **not** create a new registry version. |
+| `workflowRef` | Scheduler request payload | Caller supplied (optional) | A pointer chosen by the API client to reference a registry entry (e.g., `team/refactor-auth:latest`). Defaults to `name` when omitted for backwards compatibility. |
+| `workflowRegistryId` | Scheduler response → worker | Registry resolver | Canonical namespace/name tuple resolved from `workflowRef` or `name`, immutable for a given registry record. |
+| `workflowVersion` | Scheduler response → worker | Registry resolver | Monotonic content hash or version string pinned at dispatch time; workers and agents must echo it for audit trails. |
+
+**Lifecycle:** When a workflow definition is submitted, the scheduler first resolves the request-level `workflowRef` (or falls back to the supplied `name`) against the registry. The resolved `workflowRegistryId` and `workflowVersion` are embedded alongside every task payload, including transports such as stdio and ACP. Workers and adapters must treat the pair as opaque strings—never trim, parse, or attempt to mutate them.
+
+**Aliases:** Authors can register aliases (for example, `team/refactor-auth:latest`) that point at a concrete version. The schema allows either the fully qualified ref or a bare `name`; both are normalized by the scheduler before reaching workers.
+
+**Audit trail:** Logs and task records always contain the triad `(workflowRegistryId, workflowVersion, workflowRef)` for traceability. Prefer querying by `workflowRegistryId` + `workflowVersion` when debugging historic runs because `name` may change between releases.
+
+**Do authors set these?** Workflow authors only define `name` in the YAML file. The scheduler injects `workflowRef`, `workflowRegistryId`, and `workflowVersion` into sync responses (and persists them with each execution) based on registry state.
+
 ## Task Definition ↔︎ A2A Mapping
 
 Each entry in `tasks` is validated against the `TaskDefinition` schema which delegates the `task` payload to the A2A
@@ -35,7 +54,7 @@ Draft-07 schema. The table below summarises the mapping and constraints.
 |----------------|----------|------|-------------|-------|
 | `id` | ✅ | slug (`^[a-z0-9_-]+$`) | Task identifier | Must be unique across the workflow and referenced by `depends_on`. |
 | `agent` | ✅ | string | Agent binding | Points to an agent declared in repository configuration. |
-| `task.messages[*]` | ✅ | array | A2A `Message` | Each message must include `messageId`, `kind: message`, `role` (`user` or `agent`), and at least one typed `part`. |
+| `task.history[*]` | ✅ | array | A2A `Message` | Each message must include `messageId`, `kind: message`, `role` (`user` or `agent`), and at least one typed `part`. |
 | `task.artifacts` | ❌ | array | A2A `Artifact` | Declare expected outputs; each artifact provides an `artifactId` slug and one or more typed `parts` (`kind: text|file|data`). |
 | `inputs.artifacts` | ❌ | array | Artifact dependency | Declaratively request upstream artifacts by `artifactId`; scheduler ensures matching `depends_on` edges. |
 | `task.contextId` | ❌ | string | A2A `contextId` | Groups related tasks for downstream systems. |
@@ -95,7 +114,7 @@ tasks:
     agent: mock-a2a-writer
     task:
       contextId: onboarding
-      messages:
+      history:
         - messageId: msg-draft-1
           kind: message
           role: user
@@ -124,7 +143,7 @@ tasks:
         delay_seconds: 10
     task:
       contextId: onboarding
-      messages:
+      history:
         - messageId: msg-summarize-1
           kind: message
           role: user
@@ -182,7 +201,7 @@ Use the full file for validation and automated tooling; keep snippets in documen
 
 Legacy workflows may still use a `prompt` string attached directly to a node. Migrate by:
 
-1. Creating a new `task.messages` array with a single `role: user` entry that contains the original prompt text.
+1. Creating a new `task.history` array with a single `role: user` entry that contains the original prompt text.
 2. Moving any structured context into `task.metadata` if required by adapters.
 3. Recording outputs with `task.artifacts` so downstream tasks reference `artifact.artifactId` instead of the legacy prompt text.
 

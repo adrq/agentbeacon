@@ -142,7 +142,7 @@ class JSONRPCDispatcher:
                         # Return task in working state, don't complete it (will hang)
                         updated_task = self.task_store.get_task(task.id)
                         return self._success_response(
-                            request_id, updated_task.model_dump()
+                            request_id, updated_task.model_dump(exclude_none=True)
                         )
                     else:
                         # Complete with custom response
@@ -161,7 +161,7 @@ class JSONRPCDispatcher:
                         # Return task in working state, don't complete it
                         updated_task = self.task_store.get_task(task.id)
                         return self._success_response(
-                            request_id, updated_task.model_dump()
+                            request_id, updated_task.model_dump(exclude_none=True)
                         )
                     else:
                         # For other special commands, handle and complete immediately
@@ -185,7 +185,9 @@ class JSONRPCDispatcher:
 
             # Get task and serialize with model_dump
             updated_task = self.task_store.get_task(task.id)
-            return self._success_response(request_id, updated_task.model_dump())
+            return self._success_response(
+                request_id, updated_task.model_dump(exclude_none=True)
+            )
 
         except Exception as e:
             return self._error_response(request_id, -32603, f"Internal error: {str(e)}")
@@ -239,7 +241,7 @@ class JSONRPCDispatcher:
                         # Return task in working state, don't complete it (will hang)
                         updated_task = self.task_store.get_task(task.id)
                         return self._success_response(
-                            request_id, updated_task.model_dump()
+                            request_id, updated_task.model_dump(exclude_none=True)
                         )
                     else:
                         # Complete with custom response
@@ -252,7 +254,7 @@ class JSONRPCDispatcher:
                         self.task_store.complete_task(task.id)
                         updated_task = self.task_store.get_task(task.id)
                         return self._success_response(
-                            request_id, updated_task.model_dump()
+                            request_id, updated_task.model_dump(exclude_none=True)
                         )
                 # Check for special commands
                 elif self.special_commands.is_special_command(first_text):
@@ -262,14 +264,14 @@ class JSONRPCDispatcher:
                         # Return task in working state, don't complete it
                         updated_task = self.task_store.get_task(task.id)
                         return self._success_response(
-                            request_id, updated_task.model_dump()
+                            request_id, updated_task.model_dump(exclude_none=True)
                         )
                     elif first_text.strip().upper() == "FAIL_NODE":
                         # For FAIL_NODE, immediately mark as failed
                         self.task_store.fail_task(task.id)
                         updated_task = self.task_store.get_task(task.id)
                         return self._success_response(
-                            request_id, updated_task.model_dump()
+                            request_id, updated_task.model_dump(exclude_none=True)
                         )
                     else:
                         # For other special commands, handle async and complete
@@ -283,7 +285,7 @@ class JSONRPCDispatcher:
                         # Return task in working state immediately
                         updated_task = self.task_store.get_task(task.id)
                         return self._success_response(
-                            request_id, updated_task.model_dump()
+                            request_id, updated_task.model_dump(exclude_none=True)
                         )
                 else:
                     # Regular messages: return in submitted state per test expectations
@@ -295,7 +297,9 @@ class JSONRPCDispatcher:
 
             # Get task and serialize with model_dump
             updated_task = self.task_store.get_task(task.id)
-            return self._success_response(request_id, updated_task.model_dump())
+            return self._success_response(
+                request_id, updated_task.model_dump(exclude_none=True)
+            )
 
         except Exception as e:
             return self._error_response(request_id, -32603, f"Internal error: {str(e)}")
@@ -328,7 +332,7 @@ class JSONRPCDispatcher:
         if not task:
             return self._error_response(request_id, -32001, "Task not found")
 
-        return self._success_response(request_id, task.model_dump())
+        return self._success_response(request_id, task.model_dump(exclude_none=True))
 
     def _handle_tasks_cancel(
         self, request_id: Any, params: Dict[str, Any]
@@ -342,7 +346,7 @@ class JSONRPCDispatcher:
         if not task:
             return self._error_response(request_id, -32001, "Task not found")
 
-        return self._success_response(request_id, task.model_dump())
+        return self._success_response(request_id, task.model_dump(exclude_none=True))
 
     def _handle_acp_initialize(
         self, request_id: Any, params: Dict[str, Any]

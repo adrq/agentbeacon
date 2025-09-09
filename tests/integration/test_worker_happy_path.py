@@ -11,8 +11,10 @@ Run with: uv run pytest tests/integration/test_worker_happy_path.py -v
 """
 
 import time
-import requests
 from pathlib import Path
+
+import requests
+
 from tests.testhelpers import (
     cleanup_processes,
     start_mock_scheduler,
@@ -20,6 +22,11 @@ from tests.testhelpers import (
     parse_agent_log,
     get_current_test_name,
     start_worker,
+)
+from tests.contracts.schema_helpers import (
+    DEFAULT_WORKFLOW_REF,
+    DEFAULT_WORKFLOW_REGISTRY_ID,
+    build_canonical_task,
 )
 
 
@@ -44,12 +51,11 @@ def test_worker_complete_task_execution_cycle():
         )
 
         # Prepare a sample task for the worker
-        sample_task = {
-            "id": "task-123",
-            "agent": "mock-agent",
-            "executionId": "exec-123",
-            "request": {"input": "Hello, please respond with a greeting"},
-        }
+        sample_task = build_canonical_task(
+            node_id="task-123",
+            execution_id="exec-123",
+            text="Hello, please respond with a greeting",
+        )
 
         # Add task to scheduler
         response = requests.post(
@@ -82,6 +88,14 @@ def test_worker_complete_task_execution_cycle():
         )
         assert "completed successfully" in worker_output, (
             f"Task should complete: {worker_output}"
+        )
+
+        # Canonical identifiers should surface in worker logs once the contract is wired through
+        assert DEFAULT_WORKFLOW_REGISTRY_ID in worker_output, (
+            f"Worker logs should include workflowRegistryId: {worker_output}"
+        )
+        assert DEFAULT_WORKFLOW_REF in worker_output, (
+            f"Worker logs should include workflowRef: {worker_output}"
         )
 
         # Verify sync endpoint usage (worker should use /api/worker/sync instead of /poll and /result)
@@ -171,14 +185,12 @@ def test_worker_handles_task_with_output():
         scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
         assert scheduler_ready, "Mock orchestrator should start successfully"
 
-        import requests
-
         # Task that should produce output
-        output_task = {
-            "id": "output-task-456",
-            "agent": "mock-agent",
-            "request": {"input": "Generate a test response with some output"},
-        }
+        output_task = build_canonical_task(
+            node_id="output-task-456",
+            execution_id="output-exec-456",
+            text="Generate a test response with some output",
+        )
 
         # Add task to scheduler
         response = requests.post(
@@ -203,6 +215,13 @@ def test_worker_handles_task_with_output():
         )
         assert "completed successfully" in worker_output, (
             f"Task should complete: {worker_output}"
+        )
+
+        assert DEFAULT_WORKFLOW_REGISTRY_ID in worker_output, (
+            f"Worker logs should include workflowRegistryId: {worker_output}"
+        )
+        assert DEFAULT_WORKFLOW_REF in worker_output, (
+            f"Worker logs should include workflowRef: {worker_output}"
         )
 
         # Verify sync endpoint usage (worker should use /api/worker/sync instead of /poll and /result)
@@ -251,26 +270,18 @@ def test_multiple_task_execution_sequence():
         scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
         assert scheduler_ready, "Mock orchestrator should start"
 
-        import requests
-
         # Prepare sequence of tasks with same execution ID and bracketed format prompts
         tasks = [
-            {
-                "id": "seq-task-1",
-                "agent": "mock-agent",
-                "executionId": "workflow-exec-123",
-                "request": {
-                    "input": "[workflow-exec-123][node-1] NOW First task in sequence"
-                },
-            },
-            {
-                "id": "seq-task-2",
-                "agent": "mock-agent",
-                "executionId": "workflow-exec-123",
-                "request": {
-                    "input": "[workflow-exec-123][node-2] NOW Second task in sequence"
-                },
-            },
+            build_canonical_task(
+                node_id="seq-task-1",
+                execution_id="workflow-exec-123",
+                text="[workflow-exec-123][node-1] NOW First task in sequence",
+            ),
+            build_canonical_task(
+                node_id="seq-task-2",
+                execution_id="workflow-exec-123",
+                text="[workflow-exec-123][node-2] NOW Second task in sequence",
+            ),
         ]
 
         # Add tasks to orchestrator
@@ -320,6 +331,10 @@ def test_multiple_task_execution_sequence():
         task_assignment_count = worker_output.count("Received task assignment")
         assert task_assignment_count >= 2, (
             f"Worker should receive 2 task assignments: {worker_output}"
+        )
+
+        assert worker_output.count(DEFAULT_WORKFLOW_REGISTRY_ID) >= 2, (
+            f"Worker logs should include workflowRegistryId for each task: {worker_output}"
         )
 
         # Check that results were submitted via sync endpoint
@@ -406,14 +421,13 @@ def test_worker_uses_agents_yaml_config():
         scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
         assert scheduler_ready, "Mock orchestrator should start successfully"
 
-        import requests
-
         # Task that specifies test-config-agent from examples/agents.yaml
-        config_task = {
-            "id": "config-test-task-789",
-            "agent": "test-config-agent",  # This agent is in examples/agents.yaml with special args
-            "request": {"prompt": "Test task using configured agent"},
-        }
+        config_task = build_canonical_task(
+            node_id="config-test-task-789",
+            execution_id="config-exec-789",
+            agent="test-config-agent",
+            text="Test task using configured agent",
+        )
 
         # Add task to scheduler
         response = requests.post(
@@ -438,6 +452,9 @@ def test_worker_uses_agents_yaml_config():
         )
         assert "test-config-agent" in worker_output, (
             f"Worker should reference configured agent: {worker_output}"
+        )
+        assert DEFAULT_WORKFLOW_REGISTRY_ID in worker_output, (
+            f"Worker logs should include workflowRegistryId: {worker_output}"
         )
 
         # Check if CONFIG_LOADED appears in task results rather than worker logs
@@ -497,27 +514,23 @@ def test_mixed_bracketed_and_plain_text_compatibility():
         scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
         assert scheduler_ready, "Mock orchestrator should start"
 
-        import requests
-
         # Mix of bracketed and plain text prompts
         mixed_tasks = [
-            {
-                "id": "plain-task-1",
-                "agent": "mock-agent",
-                "request": {"input": "Plain text task without brackets"},
-            },
-            {
-                "id": "bracketed-task-1",
-                "agent": "mock-agent",
-                "request": {
-                    "input": "[workflow-123][step-1] NOW Bracketed task with format"
-                },
-            },
-            {
-                "id": "plain-task-2",
-                "agent": "mock-agent",
-                "request": {"input": "Another plain text task"},
-            },
+            build_canonical_task(
+                node_id="plain-task-1",
+                execution_id="plain-exec-1",
+                text="Plain text task without brackets",
+            ),
+            build_canonical_task(
+                node_id="bracketed-task-1",
+                execution_id="workflow-123",
+                text="[workflow-123][step-1] NOW Bracketed task with format",
+            ),
+            build_canonical_task(
+                node_id="plain-task-2",
+                execution_id="plain-exec-2",
+                text="Another plain text task",
+            ),
         ]
 
         # Add all tasks to orchestrator
@@ -550,6 +563,10 @@ def test_mixed_bracketed_and_plain_text_compatibility():
         assert "plain-task-1" in worker_output
         assert "bracketed-task-1" in worker_output
         assert "plain-task-2" in worker_output
+
+        assert worker_output.count(DEFAULT_WORKFLOW_REGISTRY_ID) >= 3, (
+            f"Worker logs should include workflowRegistryId for mixed tasks: {worker_output}"
+        )
 
         # Count successful completions
         completed_count = worker_output.count("completed successfully")

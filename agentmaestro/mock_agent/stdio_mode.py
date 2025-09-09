@@ -46,7 +46,28 @@ class StdioHandler:
                 if "prompt" in request_data:
                     text_content = request_data["prompt"]
                 elif "task" in request_data:
-                    text_content = request_data["task"]
+                    # Extract text from canonical A2A task format
+                    task = request_data["task"]
+                    if isinstance(task, dict) and "history" in task:
+                        # Extract first text part from first message
+                        history = task["history"]
+                        if history and len(history) > 0:
+                            first_message = history[0]
+                            if (
+                                "parts" in first_message
+                                and len(first_message["parts"]) > 0
+                            ):
+                                first_part = first_message["parts"][0]
+                                if first_part.get("kind") == "text":
+                                    text_content = first_part.get("text", "")
+                                else:
+                                    text_content = str(task)
+                            else:
+                                text_content = str(task)
+                        else:
+                            text_content = str(task)
+                    else:
+                        text_content = str(task)
                 else:
                     text_content = str(request_data)
             else:
@@ -78,9 +99,14 @@ class StdioHandler:
                         "state": "failed",
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                         "message": {
+                            "kind": "message",
+                            "messageId": str(uuid.uuid4()),
                             "role": "assistant",
-                            "content": [
-                                {"text": f"Mock agent failure: {text_content}"}
+                            "parts": [
+                                {
+                                    "kind": "text",
+                                    "text": f"Mock agent failure: {text_content}",
+                                }
                             ],
                         },
                     }
@@ -102,7 +128,7 @@ class StdioHandler:
                     "artifactId": str(uuid.uuid4()),
                     "name": "agent-output",
                     "description": "Output from mock agent execution",
-                    "parts": [{"text": response_text}],
+                    "parts": [{"kind": "text", "text": response_text}],
                 }
             ],
         }

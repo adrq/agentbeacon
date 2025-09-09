@@ -12,7 +12,7 @@ tasks:
       contextId: code_overview
       metadata:
         category: architecture
-      messages:
+      history:
         - messageId: msg-analyze-1
           kind: message
           role: user
@@ -37,7 +37,7 @@ tasks:
       timeout: 180
     task:
       contextId: code_overview
-      messages:
+      history:
         - messageId: msg-summarize-1
           kind: message
           role: user

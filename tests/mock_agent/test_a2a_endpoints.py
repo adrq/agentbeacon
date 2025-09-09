@@ -30,6 +30,8 @@ def valid_message_send_request() -> Dict[str, Any]:
             "contextId": "test-context-123",
             "messages": [
                 {
+                    "kind": "message",
+                    "messageId": "msg-test-001",
                     "role": "user",
                     "parts": [{"kind": "text", "text": "Hello mock agent"}],
                 }
@@ -38,7 +40,9 @@ def valid_message_send_request() -> Dict[str, Any]:
     }
 
 
-def test_message_send_success_response_schema(json_rpc_url, valid_message_send_request):
+def test_message_send_success_response_schema(
+    json_rpc_url, valid_message_send_request, assert_canonical_task_contract
+):
     """Test message/send returns valid task object with required fields."""
     response = httpx.post(json_rpc_url, json=valid_message_send_request)
 
@@ -52,20 +56,38 @@ def test_message_send_success_response_schema(json_rpc_url, valid_message_send_r
 
     task = data["result"]
 
+    assert_canonical_task_contract(task)
+
     # Validate task object schema per contract
     assert "id" in task
     assert "contextId" in task
     assert task["contextId"] == "test-context-123"
+    assert "history" in task
+    assert isinstance(task["history"], list)
+    assert task["history"], "history should not be empty"
+
+    first_message = task["history"][0]
+    assert first_message["kind"] == "message"
+    assert first_message["role"] == "user"
+    assert isinstance(first_message.get("messageId"), str)
+    assert first_message["parts"]
+    assert first_message["parts"][0]["kind"] == "text"
+    assert "text" in first_message["parts"][0]
+
     assert "status" in task
     assert "state" in task["status"]
     assert task["status"]["state"] in ["submitted"]
-    assert "history" in task
     assert "artifacts" in task
-    assert isinstance(task["history"], list)
     assert isinstance(task["artifacts"], list)
+    if task["artifacts"]:
+        first_artifact = task["artifacts"][0]
+        assert "artifactId" in first_artifact
+        assert "parts" in first_artifact
 
 
-def test_message_send_with_special_command_hang(json_rpc_url):
+def test_message_send_with_special_command_hang(
+    json_rpc_url, assert_canonical_task_contract
+):
     """Test message/send with HANG command triggers long-running task."""
     request = {
         "jsonrpc": "2.0",
@@ -81,6 +103,7 @@ def test_message_send_with_special_command_hang(json_rpc_url):
     assert response.status_code == 200
 
     task = response.json()["result"]
+    assert_canonical_task_contract(task)
     assert task["status"]["state"] in ["submitted", "working"]
 
 
@@ -102,11 +125,15 @@ def test_message_send_invalid_request_format(json_rpc_url):
     assert "message" in data["error"]
 
 
-def test_tasks_get_and_cancel_with_errors(json_rpc_url, valid_message_send_request):
+def test_tasks_get_and_cancel_with_errors(
+    json_rpc_url, valid_message_send_request, assert_canonical_task_contract
+):
     """Test task retrieval, cancellation, and error handling for nonexistent tasks."""
     # Test task cancellation with valid task
     create_response = httpx.post(json_rpc_url, json=valid_message_send_request)
-    task_id = create_response.json()["result"]["id"]
+    created_task = create_response.json()["result"]
+    assert_canonical_task_contract(created_task)
+    task_id = created_task["id"]
 
     cancel_request = {
         "jsonrpc": "2.0",
@@ -117,7 +144,9 @@ def test_tasks_get_and_cancel_with_errors(json_rpc_url, valid_message_send_reque
 
     response = httpx.post(json_rpc_url, json=cancel_request)
     assert response.status_code == 200
-    assert response.json()["result"]["status"]["state"] == "canceled"
+    canceled_task = response.json()["result"]
+    assert_canonical_task_contract(canceled_task)
+    assert canceled_task["status"]["state"] == "canceled"
 
     # Test TaskNotFoundError for both get and cancel
     for method in ["tasks/get", "tasks/cancel"]:

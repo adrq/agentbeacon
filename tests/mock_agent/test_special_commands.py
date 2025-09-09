@@ -74,7 +74,7 @@ def test_fail_node_stdio_mode(mock_agent_stdio):
     assert output["taskStatus"]["state"] == "failed"
     assert "message" in output["taskStatus"]
     assert output["taskStatus"]["message"]["role"] == "assistant"
-    assert "Mock agent failure" in output["taskStatus"]["message"]["content"][0]["text"]
+    assert "Mock agent failure" in output["taskStatus"]["message"]["parts"][0]["text"]
 
 
 def test_fail_node_a2a_mode(mock_agent_a2a):

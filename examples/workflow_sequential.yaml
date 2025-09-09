@@ -8,7 +8,7 @@ tasks:
     agent: mock-a2a-writer
     task:
       contextId: onboarding
-      messages:
+      history:
         - messageId: msg-draft-1
           kind: message
           role: user
@@ -37,7 +37,7 @@ tasks:
         delay_seconds: 10
     task:
       contextId: onboarding
-      messages:
+      history:
         - messageId: msg-summarize-1
           kind: message
           role: user

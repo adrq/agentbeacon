@@ -10,7 +10,7 @@ tasks:
       timeout: 120
     task:
       contextId: project_audit
-      messages:
+      history:
         - messageId: msg-fetch-1
           kind: message
           role: user
@@ -35,7 +35,7 @@ tasks:
       timeout: 300
     task:
       contextId: project_audit
-      messages:
+      history:
         - messageId: msg-analyze-code-1
           kind: message
           role: user
@@ -64,7 +64,7 @@ tasks:
         delay_seconds: 15
     task:
       contextId: project_audit
-      messages:
+      history:
         - messageId: msg-analyze-docs-1
           kind: message
           role: user
@@ -94,7 +94,7 @@ tasks:
       contextId: project_audit
       metadata:
         audience: leadership
-      messages:
+      history:
         - messageId: msg-report-1
           kind: message
           role: user

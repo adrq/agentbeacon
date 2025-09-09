@@ -94,12 +94,29 @@ def _assert_artifact_contract(document: dict) -> None:
 
         task_ids.add(task_id)
 
+        agent = task.get("agent")
+        if not isinstance(agent, str) or not agent.strip():
+            pytest.fail(f"tasks[{index}] must define a non-empty agent binding")
+
+        if "prompt" in task:
+            pytest.fail(f"tasks[{index}] must not include legacy 'prompt' field")
+
+        task_block = task.get("task")
+        if not isinstance(task_block, dict):
+            pytest.fail(
+                f"tasks[{index}].task must be an object containing the shared contract"
+            )
+
+        messages = task_block.get("messages")
+        if not isinstance(messages, list) or not messages:
+            pytest.fail(f"tasks[{index}].task.messages must be a non-empty list")
+        _assert_messages_contract(messages, task_index=index)
+
         depends_on = task.get("depends_on", []) or []
         if not isinstance(depends_on, list):
             pytest.fail(f"tasks[{index}].depends_on must be a list when present")
         task_dependencies[task_id] = {dep for dep in depends_on if isinstance(dep, str)}
 
-        task_block = task.get("task")
         artifacts = []
         if isinstance(task_block, dict):
             artifacts = task_block.get("artifacts", []) or []
@@ -173,6 +190,65 @@ def _assert_artifact_contract(document: dict) -> None:
                 )
 
 
+def _assert_messages_contract(messages: list[dict], *, task_index: int) -> None:
+    for message_index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            pytest.fail(
+                f"tasks[{task_index}].task.messages[{message_index}] must be an object"
+            )
+
+        required_keys = ("role", "parts", "messageId", "kind")
+        for key in required_keys:
+            if key not in message:
+                pytest.fail(
+                    f"tasks[{task_index}].task.messages[{message_index}] missing required field '{key}'"
+                )
+
+        role = message.get("role")
+        if role not in {"user", "agent"}:
+            pytest.fail(
+                f"tasks[{task_index}].task.messages[{message_index}].role must be 'user' or 'agent'"
+            )
+
+        if message.get("kind") != "message":
+            pytest.fail(
+                f"tasks[{task_index}].task.messages[{message_index}].kind must be 'message'"
+            )
+
+        parts = message.get("parts")
+        if not isinstance(parts, list) or not parts:
+            pytest.fail(
+                f"tasks[{task_index}].task.messages[{message_index}].parts must be a non-empty list"
+            )
+
+        for part_index, part in enumerate(parts):
+            if not isinstance(part, dict):
+                pytest.fail(
+                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}] must be an object"
+                )
+
+            kind = part.get("kind")
+            if kind not in {"text", "file", "data"}:
+                pytest.fail(
+                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}].kind must be one of 'text', 'file', or 'data'"
+                )
+
+            if kind == "text" and "text" not in part:
+                pytest.fail(
+                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}] missing 'text' payload"
+                )
+
+            if kind == "file" and "file" not in part:
+                pytest.fail(
+                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}] missing 'file' payload"
+                )
+
+            if kind == "data" and "data" not in part:
+                pytest.fail(
+                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}] missing 'data' payload"
+                )
+
+
 @pytest.mark.parametrize(
     "example_path",
     [
@@ -185,6 +261,8 @@ def _assert_artifact_contract(document: dict) -> None:
 def test_examples_match_schema(example_path: Path) -> None:
     validator = _build_workflow_validator()
     document = _load_yaml_document(example_path)
+    if "defaultAgent" in document:
+        pytest.fail("Workflow documents must not define legacy 'defaultAgent'")
     validator.validate(document)
     _assert_artifact_contract(document)
 

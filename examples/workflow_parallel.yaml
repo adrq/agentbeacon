@@ -5,7 +5,7 @@ tasks:
   - id: gather_requirements
     agent: mock-a2a-analyst
     task:
-      messages:
+      history:
         - messageId: msg-requirements-1
           kind: message
           role: user
@@ -21,7 +21,7 @@ tasks:
   - id: collect_metrics
     agent: mock-a2a-analyst
     task:
-      messages:
+      history:
         - messageId: msg-metrics-1
           kind: message
           role: user
@@ -47,7 +47,7 @@ tasks:
     task:
       metadata:
         audience: leadership
-      messages:
+      history:
         - messageId: msg-brief-1
           kind: message
           role: user

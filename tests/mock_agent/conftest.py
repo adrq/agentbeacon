@@ -15,6 +15,8 @@ import socket
 import json
 from typing import Dict, Any
 
+from tests.contracts import schema_helpers as contract_schema_helpers
+
 
 def find_free_port() -> int:
     """Find an available port on localhost."""
@@ -124,6 +126,33 @@ def send_stdio_input(proc: subprocess.Popen, input_text: str) -> Dict[str, Any]:
     proc.stdin.flush()
     output_line = proc.stdout.readline()
     return json.loads(output_line.strip())
+
+
+@pytest.fixture(scope="session")
+def assert_canonical_task_contract():
+    """Assert that a task payload matches the canonical A2A task contract."""
+
+    def _assert(payload: Dict[str, Any]) -> None:
+        canonical_subset = {
+            key: payload[key]
+            for key in ("history", "artifacts", "contextId", "metadata")
+            if key in payload
+        }
+
+        # Ensure history exists before attempting validation so failures are explicit.
+        assert "history" in canonical_subset, (
+            "canonical task payload must include history"
+        )
+
+        contract_schema_helpers.validate_payload("a2a-task", canonical_subset)
+
+        # Legacy prompt/messages fields should no longer surface on canonical tasks.
+        assert "prompt" not in payload, "legacy prompt field should not appear"
+        assert "messages" not in payload, (
+            "non-canonical messages field should be removed"
+        )
+
+    return _assert
 
 
 def send_a2a_message(

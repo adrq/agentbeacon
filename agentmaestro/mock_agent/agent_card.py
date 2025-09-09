@@ -31,4 +31,4 @@ def create_agent_card(base_url: str, port: int = 8080) -> AgentCard:
 def create_agent_card_dict(base_url: str, port: int = 8080) -> dict:
     """Create agent card as dictionary for JSON serialization."""
     card = create_agent_card(base_url, port)
-    return card.model_dump()
+    return card.model_dump(exclude_none=True)

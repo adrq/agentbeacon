@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ACPTaskEnvelope",
+  "type": "object",
+  "required": ["jsonrpc", "id", "method", "params"],
+  "properties": {
+    "jsonrpc": {"const": "2.0"},
+    "id": {"type": "string"},
+    "method": {"const": "agent.executeTask"},
+    "params": {
+      "type": "object",
+      "required": ["requestId", "task"],
+      "properties": {
+        "requestId": {"type": "string"},
+        "task": {"$ref": "../../docs/a2a-task.schema.json"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

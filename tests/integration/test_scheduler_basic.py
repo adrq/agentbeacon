@@ -7,8 +7,10 @@ and uses mock polling to execute both tasks sequentially.
 
 import requests
 import uuid
-from tests.testhelpers import scheduler_context
 import time
+
+from tests.contracts import schema_helpers as contract_schema_helpers
+from tests.testhelpers import scheduler_context
 
 
 def test_scheduler_basic_integration():
@@ -21,15 +23,27 @@ def test_scheduler_basic_integration():
 name: basic-integration-test
 description: Simple 2-node sequential workflow for HTTP polling test
 tasks:
-  - id: test-task-1
-    agent: mock-agent
-    task:
-      prompt: Analyze the processed data
-  - id: test-task-2
-    agent: mock-agent
-    depends_on: [test-task-1]
-    task:
-      prompt: Analyze the processed data
+    - id: test-task-1
+        agent: mock-agent
+        task:
+            messages:
+                - role: user
+                    messageId: "msg-test-task-1"
+                    kind: message
+                    parts:
+                        - kind: text
+                            text: Analyze the processed data
+    - id: test-task-2
+        agent: mock-agent
+        depends_on: [test-task-1]
+        task:
+            messages:
+                - role: user
+                    messageId: "msg-test-task-2"
+                    kind: message
+                    parts:
+                        - kind: text
+                            text: Analyze the processed data
 """.strip()
 
         register_response = requests.post(
@@ -117,13 +131,18 @@ tasks:
         task = poll_data["task"]
 
         assert task is not None, "Should return test-task-1"
-        assert task["node_id"] == "test-task-1"
+        assert task["nodeId"] == "test-task-1"
         assert task["agent"] == "mock-agent"
-        assert "id" in task
-        assert "execution_id" in task
+        assert task["workflowRef"] == workflow_ref
+        assert task["workflowRegistryId"], "workflowRegistryId should be present"
+        assert task["workflowVersion"], "workflowVersion should be present"
+        assert isinstance(task.get("protocolMetadata", {}), dict)
+        contract_schema_helpers.validate_payload("a2a-task", task["task"])
+        assert "prompt" not in task["task"], (
+            "Canonical task payload should omit legacy prompt"
+        )
 
-        _ = task["id"]
-        execution_id = task["execution_id"]
+        execution_id = task["executionId"]
 
         # Submit result for first task (using A2A-compliant format)
         result_response = requests.post(
@@ -166,12 +185,18 @@ tasks:
         assert second_task is not None, (
             "Should return test-task-2 after test-task-1 completion"
         )
-        assert second_task["node_id"] == "test-task-2"
+        assert second_task["nodeId"] == "test-task-2"
         assert second_task["agent"] == "mock-agent"
-        assert "execution_id" in second_task
+        assert second_task["workflowRef"] == workflow_ref
+        assert second_task["workflowRegistryId"], "workflowRegistryId should be present"
+        assert second_task["workflowVersion"], "workflowVersion should be present"
+        assert isinstance(second_task.get("protocolMetadata", {}), dict)
+        contract_schema_helpers.validate_payload("a2a-task", second_task["task"])
+        assert "prompt" not in second_task["task"], (
+            "Canonical task payload should omit legacy prompt"
+        )
 
-        _ = second_task["id"]
-        second_execution_id = second_task["execution_id"]
+        second_execution_id = second_task["executionId"]
 
         # Submit result for second task (using A2A-compliant format)
         second_result = requests.post(

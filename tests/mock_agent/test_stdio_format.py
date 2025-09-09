@@ -26,6 +26,11 @@ def test_stdio_plain_text_success_response(mock_agent_stdio):
     task_status = output["taskStatus"]
     assert task_status["state"] == "completed"
     assert "timestamp" in task_status
+    if "message" in task_status and task_status["message"] is not None:
+        status_message = task_status["message"]
+        assert status_message["kind"] == "message"
+        assert isinstance(status_message.get("messageId"), str)
+        assert status_message["parts"][0]["kind"] == "text"
 
     artifacts = output["artifacts"]
     assert isinstance(artifacts, list)
@@ -39,6 +44,7 @@ def test_stdio_plain_text_success_response(mock_agent_stdio):
 
     parts = artifact["parts"]
     assert len(parts) == 1
+    assert parts[0]["kind"] == "text"
     assert "text" in parts[0]
     assert "Mock response: Hello mock agent" in parts[0]["text"]
 
@@ -54,7 +60,9 @@ def test_stdio_plain_text_with_delay_command(mock_agent_stdio):
 
     # Should still return success format
     assert output["taskStatus"]["state"] == "completed"
-    assert "Mock response: DELAY_2" in output["artifacts"][0]["parts"][0]["text"]
+    parts = output["artifacts"][0]["parts"]
+    assert parts[0]["kind"] == "text"
+    assert "Mock response: DELAY_2" in parts[0]["text"]
 
 
 def test_stdio_plain_text_with_fail_command(mock_agent_stdio):
@@ -71,31 +79,42 @@ def test_stdio_plain_text_with_fail_command(mock_agent_stdio):
     assert "message" in task_status
 
     message = task_status["message"]
+    assert message["kind"] == "message"
     assert message["role"] == "assistant"
-    assert "content" in message
-
-    content = message["content"]
-    assert len(content) == 1
-    assert "text" in content[0]
-    assert "Mock agent failure: FAIL_NODE" in content[0]["text"]
+    assert isinstance(message.get("messageId"), str)
+    assert message["parts"], "failure message should include parts"
+    assert message["parts"][0]["kind"] == "text"
+    assert "text" in message["parts"][0]
+    assert "Mock agent failure: FAIL_NODE" in message["parts"][0]["text"]
 
 
 def test_stdio_json_input_formats(mock_agent_stdio):
     """Test JSON input parsing with various formats and error handling."""
-    # Test prompt field
-    json_input = json.dumps({"request": {"prompt": "Test prompt"}})
-    output = send_stdio_input(mock_agent_stdio, json_input)
-    assert output["taskStatus"]["state"] == "completed"
-    assert "Mock response: Test prompt" in output["artifacts"][0]["parts"][0]["text"]
+    canonical_task = {
+        "history": [
+            {
+                "kind": "message",
+                "messageId": "stdin-001",
+                "role": "user",
+                "parts": [{"kind": "text", "text": "Test prompt"}],
+            }
+        ],
+        "contextId": "stdin-context",
+        "metadata": {"priority": "normal"},
+    }
 
-    # Test task field
-    json_input = json.dumps({"request": {"task": "Test task"}})
+    json_input = json.dumps({"request": {"task": canonical_task}})
     output = send_stdio_input(mock_agent_stdio, json_input)
     assert output["taskStatus"]["state"] == "completed"
-    assert "Mock response: Test task" in output["artifacts"][0]["parts"][0]["text"]
+    assert output["artifacts"][0]["parts"][0]["kind"] == "text"
+    assert "Mock response: Test prompt" in output["artifacts"][0]["parts"][0]["text"]
+    assert "prompt" not in output, (
+        "legacy prompt field should not appear in stdio response"
+    )
 
     # Test malformed JSON falls back to plain text
     malformed_json = '{"request": {"prompt": "test"'  # Missing closing braces
     output = send_stdio_input(mock_agent_stdio, malformed_json)
     assert output["taskStatus"]["state"] == "completed"
     assert "Mock response:" in output["artifacts"][0]["parts"][0]["text"]
+    assert output["artifacts"][0]["parts"][0]["kind"] == "text"
