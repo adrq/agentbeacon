@@ -1,14 +1,9 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod a2a;
+pub mod schemas;
+pub mod validation;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use a2a::{A2AArtifact, A2ATaskStatus, Message, Part};
+pub use validation::{
+    ValidationError, validate_a2a_request, validate_agents_config, validate_sync_request,
+    validate_sync_response,
+};

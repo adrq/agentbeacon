@@ -22,8 +22,10 @@ DOCS_ROOT = Path(__file__).resolve().parents[2] / "docs"
 SCHEMA_NAME_MAP: Dict[str, str] = {
     "workflow": "workflow-schema.json",
     "workflow-schema": "workflow-schema.json",
-    "a2a-task": "a2a-task.schema.json",
-    "a2a-task.schema": "a2a-task.schema.json",
+    "a2a-task": "a2a-v0.3.0.schema.json",
+    "a2a-task.schema": "a2a-v0.3.0.schema.json",
+    "a2a": "a2a-v0.3.0.schema.json",
+    "a2a-v0.3.0": "a2a-v0.3.0.schema.json",
 }
 
 

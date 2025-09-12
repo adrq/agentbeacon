@@ -1,0 +1,166 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.agentmaestro.dev/worker-sync-request.schema.json",
+  "title": "Worker Sync Request",
+  "description": "Request sent by worker to scheduler during sync cycle. Part of bidirectional worker-scheduler sync protocol.",
+  "type": "object",
+  "required": ["status"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["idle", "working"],
+      "description": "Current worker execution state. 'idle' = ready for new task, 'working' = currently executing task."
+    },
+    "currentTask": {
+      "$ref": "#/definitions/CurrentTask",
+      "description": "Present when status=working. Provides heartbeat and enables cancellation."
+    },
+    "taskResult": {
+      "$ref": "#/definitions/TaskResult",
+      "description": "Present when reporting completed task. Included once, then cleared."
+    }
+  },
+  "definitions": {
+    "CurrentTask": {
+      "type": "object",
+      "required": ["executionId", "nodeId"],
+      "additionalProperties": false,
+      "properties": {
+        "executionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workflow execution identifier for task correlation."
+        },
+        "nodeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Node identifier within workflow for task correlation."
+        }
+      }
+    },
+    "TaskResult": {
+      "type": "object",
+      "required": ["executionId", "nodeId", "taskStatus"],
+      "additionalProperties": false,
+      "properties": {
+        "executionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workflow execution identifier for result correlation."
+        },
+        "nodeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Node identifier within workflow for result correlation."
+        },
+        "taskStatus": {
+          "$ref": "a2a-v0.3.0.schema.json#/definitions/TaskStatus",
+          "description": "A2A Protocol-compliant task status per spec §6.2."
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "a2a-v0.3.0.schema.json#/definitions/Artifact"
+          },
+          "description": "Generated artifacts from A2A protocol agents. Optional."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "description": "Worker requesting new task (idle)",
+      "data": {
+        "status": "idle"
+      }
+    },
+    {
+      "description": "Worker reporting task in progress (heartbeat)",
+      "data": {
+        "status": "working",
+        "currentTask": {
+          "executionId": "exec-123",
+          "nodeId": "node-1"
+        }
+      }
+    },
+    {
+      "description": "Worker reporting successful completion",
+      "data": {
+        "status": "idle",
+        "taskResult": {
+          "executionId": "exec-123",
+          "nodeId": "node-1",
+          "taskStatus": {
+            "state": "completed",
+            "message": {
+              "messageId": "msg-result-1",
+              "kind": "message",
+              "role": "agent",
+              "parts": [
+                {
+                  "kind": "text",
+                  "text": "Task completed successfully"
+                }
+              ]
+            },
+            "timestamp": "2025-09-30T10:00:00Z"
+          }
+        }
+      }
+    },
+    {
+      "description": "Worker reporting failure",
+      "data": {
+        "status": "idle",
+        "taskResult": {
+          "executionId": "exec-123",
+          "nodeId": "node-1",
+          "taskStatus": {
+            "state": "failed",
+            "message": {
+              "messageId": "msg-error-1",
+              "kind": "message",
+              "role": "agent",
+              "parts": [
+                {
+                  "kind": "text",
+                  "text": "Agent connection refused"
+                }
+              ]
+            },
+            "timestamp": "2025-09-30T10:00:00Z"
+          }
+        }
+      }
+    },
+    {
+      "description": "Worker reporting success with artifacts",
+      "data": {
+        "status": "idle",
+        "taskResult": {
+          "executionId": "exec-123",
+          "nodeId": "node-1",
+          "taskStatus": {
+            "state": "completed",
+            "timestamp": "2025-09-30T10:00:00Z"
+          },
+          "artifacts": [
+            {
+              "artifactId": "artifact-1",
+              "name": "report.txt",
+              "description": "Code quality report",
+              "parts": [
+                {
+                  "kind": "text",
+                  "text": "Code quality: Good"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

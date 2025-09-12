@@ -25,6 +25,36 @@ class TaskStore:
             self._tasks[task.id] = task
             return task
 
+    def append_message_to_task(self, task_id: str, message: Message) -> Optional[Task]:
+        """Append a message to an existing task's history per §6.4 continuation support.
+
+        Used for multi-turn conversations where client sets message.taskId to continue
+        an existing task rather than creating a new one.
+
+        Returns None if task not found or if task is in terminal state per §7.1.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+
+            # Per §7.1: Tasks in terminal states (completed, failed, canceled, rejected) can't be restarted
+            if self._is_terminal_state(task.status.state):
+                return None
+
+            # Append message to task history
+            task.history.append(message)
+            return task
+
+    def _is_terminal_state(self, state: TaskState) -> bool:
+        """Check if task state is terminal per §7.1."""
+        return state in (
+            TaskState.completed,
+            TaskState.failed,
+            TaskState.canceled,
+            TaskState.rejected,
+        )
+
     def get_task(self, task_id: str) -> Optional[Task]:
         """Get task by ID."""
         with self._lock:

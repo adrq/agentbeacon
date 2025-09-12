@@ -10,7 +10,13 @@ Run with: uv run pytest tests/integration/test_worker_polling.py -v
 import subprocess
 import time
 from pathlib import Path
-from tests.testhelpers import cleanup_processes, start_mock_scheduler, wait_for_port
+from tests.testhelpers import (
+    cleanup_processes,
+    start_mock_scheduler,
+    start_worker_with_retry_config,
+    wait_for_port,
+    start_and_wait_for_a2a_agent,
+)
 import pytest
 import requests
 
@@ -24,6 +30,12 @@ def test_worker_respects_polling_interval():
     processes = []
 
     try:
+        # Start A2A mock agent (required for Rust worker Phase 1)
+        agent_proc = start_and_wait_for_a2a_agent(
+            18765, Path(__file__).parent.parent.parent
+        )
+        processes.append(agent_proc)
+
         # Start simple mock orchestrator with sync endpoint
         scheduler_proc = start_mock_scheduler(
             test_port, Path(__file__).parent.parent.parent
@@ -44,9 +56,9 @@ def test_worker_respects_polling_interval():
         worker_proc = subprocess.Popen(
             [
                 worker_binary,
-                "-orchestrator-url",
+                "--scheduler-url",
                 f"http://localhost:{test_port}",
-                "-interval",
+                "--interval",
                 "2s",
             ],
             stdout=subprocess.PIPE,
@@ -108,67 +120,54 @@ def test_worker_respects_polling_interval():
 
 
 def test_worker_handles_orchestrator_unavailable():
-    """Test that worker gracefully handles orchestrator being unavailable for sync endpoint."""
-    # This test will fail until sync error handling is properly implemented
-
-    worker_binary = "./bin/agentmaestro-worker"
+    """Test that worker exits gracefully when scheduler never available."""
     unavailable_port = 19999  # Port that should be unused
     processes = []
 
     try:
         # Start worker pointing to non-existent orchestrator
-        worker_proc = subprocess.Popen(
-            [
-                worker_binary,
-                "-orchestrator-url",
-                f"http://localhost:{unavailable_port}",
-                "-interval",
-                "1s",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=Path(__file__).parent.parent.parent,
+        # Use fast startup failure: 3 attempts × 100ms = 300ms
+        worker_proc = start_worker_with_retry_config(
+            f"http://localhost:{unavailable_port}",
+            startup_attempts=3,
+            reconnect_attempts=5,  # Unused since never connects
+            retry_delay_ms=100,
         )
         processes.append(worker_proc)
 
-        # Let worker attempt sync calls for several cycles
-        time.sleep(3)  # 3 sync attempts at 1s interval
+        # Wait for worker to exhaust startup retries and exit
+        # Should exit in ~300ms, wait up to 2s with buffer
+        exit_code = worker_proc.wait(timeout=2)
 
-        # Worker should still be running despite sync connection failures
-        assert worker_proc.poll() is None, (
-            "Worker should continue running despite orchestrator unavailability"
+        # Verify proper exit behavior
+        assert exit_code == 1, (
+            "Worker should exit with error code when scheduler unavailable"
         )
 
-        # Terminate worker and get complete output
-        worker_proc.terminate()
-        worker_output, _ = worker_proc.communicate(timeout=5)
+        # Get output and verify error logging
+        worker_output = worker_proc.stdout.read() if worker_proc.stdout else ""
 
-        # Should see sync failure messages but worker continues
-        sync_failure_indicators = [
-            "sync failed",
-            "Sync and execute failed",
-            "connection refused",
-            "dial tcp",
-            "POST /api/worker/sync",
-            "sync endpoint error",
-        ]
-
-        has_sync_failure = any(
-            indicator in worker_output.lower() for indicator in sync_failure_indicators
+        assert "scheduler unreachable - exiting worker" in worker_output, (
+            "Worker should log exit reason"
         )
-        assert has_sync_failure, (
-            f"Expected sync failure messages in worker output: {worker_output}"
+        assert "during startup" in worker_output, (
+            "Worker should indicate startup failure context"
         )
 
-        # Should show worker attempting sync instead of poll
-        assert (
-            "syncing with" in worker_output and "/api/worker/sync" in worker_output
-        ), f"Worker should attempt sync calls, not poll calls: {worker_output}"
+        # Verify retry attempts logged
+        sync_failure_count = worker_output.lower().count("sync failed")
+        assert sync_failure_count >= 2, (
+            f"Worker should log multiple retry attempts, found {sync_failure_count}"
+        )
 
-        # Worker should show sync and execute failures due to connection refused
-        assert "Sync and execute failed" in worker_output, (
-            f"Worker should report sync failures: {worker_output}"
+        # Should show worker attempting sync
+        assert "/api/worker/sync" in worker_output, (
+            f"Worker should attempt sync calls: {worker_output}"
+        )
+
+        # Verify sync failures were logged (already validated by sync_failure_count above)
+        assert "failed to send sync request" in worker_output, (
+            f"Worker should report sync connection failures: {worker_output}"
         )
 
     finally:
@@ -184,6 +183,12 @@ def test_worker_shutdown_on_signal():
     processes = []
 
     try:
+        # Start A2A mock agent (required for Rust worker Phase 1)
+        agent_proc = start_and_wait_for_a2a_agent(
+            18765, Path(__file__).parent.parent.parent
+        )
+        processes.append(agent_proc)
+
         # Start simple mock orchestrator
         scheduler_proc = start_mock_scheduler(
             test_port, Path(__file__).parent.parent.parent
@@ -198,9 +203,9 @@ def test_worker_shutdown_on_signal():
         worker_proc = subprocess.Popen(
             [
                 worker_binary,
-                "-orchestrator-url",
+                "--scheduler-url",
                 f"http://localhost:{test_port}",
-                "-interval",
+                "--interval",
                 "5s",
             ],
             stdout=subprocess.PIPE,

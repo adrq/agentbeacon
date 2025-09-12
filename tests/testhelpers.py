@@ -199,6 +199,82 @@ def cleanup_files(paths: Iterable[str]) -> None:
             pass
 
 
+def start_mock_agent_a2a(port: int = 18765, base_dir: Path = None) -> subprocess.Popen:
+    """Start the mock agent A2A HTTP server on the specified port.
+
+    Args:
+        port: Port number for the A2A server to listen on (default: 18765)
+        base_dir: Base directory for the project (defaults to current working directory)
+
+    Returns:
+        subprocess.Popen: The mock agent process
+    """
+    if base_dir is None:
+        base_dir = Path.cwd()
+
+    agent_proc = subprocess.Popen(
+        [
+            "uv",
+            "run",
+            "mock-agent",
+            "--mode",
+            "a2a",
+            "--port",
+            str(port),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=base_dir,
+    )
+    return agent_proc
+
+
+def start_and_wait_for_a2a_agent(
+    port: int = 18765,
+    base_dir: Path = None,
+    timeout: float = 10,
+    config_file: str = None,
+) -> subprocess.Popen:
+    """Start A2A mock agent and wait for it to be ready.
+
+    Args:
+        port: Port number for the A2A server (default: 18765)
+        base_dir: Base directory for the project (defaults to current working directory)
+        timeout: Maximum time to wait for agent to be ready (default: 10s)
+        config_file: Optional config file for custom responses (e.g., "test-config-responses.json")
+
+    Returns:
+        subprocess.Popen: The mock agent process
+
+    Raises:
+        AssertionError: If agent fails to start within timeout
+    """
+    if base_dir is None:
+        base_dir = Path.cwd()
+
+    cmd = ["uv", "run", "mock-agent", "--mode", "a2a", "--port", str(port)]
+    if config_file:
+        cmd.extend(["--config", config_file])
+
+    agent_proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=base_dir,
+    )
+
+    agent_ready = wait_for_port(
+        port, timeout=timeout, health_path="/.well-known/agent-card.json"
+    )
+    if not agent_ready:
+        agent_proc.kill()
+        raise AssertionError(f"Mock agent A2A server did not start on port {port}")
+
+    return agent_proc
+
+
 def start_mock_scheduler(port: int, base_dir: Path = None) -> subprocess.Popen:
     """Start the simple mock scheduler on the specified port.
 
@@ -233,12 +309,15 @@ def start_mock_scheduler(port: int, base_dir: Path = None) -> subprocess.Popen:
     return orchestrator_proc
 
 
-def wait_for_port(port: int, timeout: float = 10) -> bool:
+def wait_for_port(
+    port: int, timeout: float = 10, health_path: str = "/api/health"
+) -> bool:
     """Wait for a port to become available for HTTP requests.
 
     Args:
         port: Port number to check
         timeout: Maximum time to wait in seconds
+        health_path: Health check endpoint path (default: /api/health for scheduler)
 
     Returns:
         bool: True if port is ready, False if timeout exceeded
@@ -246,7 +325,7 @@ def wait_for_port(port: int, timeout: float = 10) -> bool:
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            response = requests.get(f"http://localhost:{port}/api/health", timeout=1)
+            response = requests.get(f"http://localhost:{port}{health_path}", timeout=1)
             if response.status_code == 200:
                 return True
         except requests.RequestException:
@@ -369,10 +448,65 @@ def start_worker(
     worker_process = subprocess.Popen(
         [
             "./bin/agentmaestro-worker",
-            "-orchestrator-url",
+            "--scheduler-url",
             orchestrator_url,
-            "-interval",
+            "--interval",
             interval,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=base_dir,
+        env=worker_env,
+    )
+
+    return worker_process
+
+
+def start_worker_with_retry_config(
+    scheduler_url: str,
+    startup_attempts: int = 3,
+    reconnect_attempts: int = 5,
+    retry_delay_ms: int = 100,
+    interval: str = "1s",
+    base_dir: Path = None,
+) -> subprocess.Popen:
+    """Start worker with custom retry configuration for fast tests.
+
+    Args:
+        scheduler_url: URL of the scheduler to connect to
+        startup_attempts: Maximum retry attempts during startup (default: 3)
+        reconnect_attempts: Maximum retry attempts after connection (default: 5)
+        retry_delay_ms: Delay between retries in milliseconds (default: 100)
+        interval: Sync interval (default: "1s")
+        base_dir: Base directory for the project
+
+    Returns:
+        subprocess.Popen: The worker process
+
+    Note:
+        Fast retry config allows tests to run quickly while validating retry behavior.
+        Production defaults: 10 startup / 60 reconnect / 500ms delay.
+    """
+    if base_dir is None:
+        base_dir = Path(__file__).parent.parent
+
+    # Copy current environment for pytest context
+    worker_env = os.environ.copy()
+
+    worker_process = subprocess.Popen(
+        [
+            "./bin/agentmaestro-worker",
+            "--scheduler-url",
+            scheduler_url,
+            "--interval",
+            interval,
+            "--startup-max-attempts",
+            str(startup_attempts),
+            "--reconnect-max-attempts",
+            str(reconnect_attempts),
+            "--retry-delay",
+            f"{retry_delay_ms}ms",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

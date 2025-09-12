@@ -1,17 +1,22 @@
 agents:
-  # Simple stdio agent for testing
+  # A2A agent for Rust worker testing (Phase 1)
   mock-agent:
+    type: a2a
+    config:
+      url: "http://localhost:18765"
+
+  # Simple stdio agent for Go worker testing
+  mock-agent-stdio:
     type: stdio
     config:
       command: "uv"
       args: ["run", "mock-agent", "--mode", "stdio"]
 
-  # Test agent with special marker for config integration tests
+  # Test agent with special marker for config integration tests (A2A for Rust Phase 1)
   test-config-agent:
-    type: stdio
+    type: a2a
     config:
-      command: "uv"
-      args: ["run", "mock-agent", "--mode", "stdio", "--config", "test-config-responses.json"]
+      url: "http://localhost:18766"  # Different port from main mock-agent
 
   # Example A2A agent configuration
   # orchestrator-remote:

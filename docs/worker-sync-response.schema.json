@@ -1,0 +1,185 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.agentmaestro.dev/worker-sync-response.schema.json",
+  "title": "Worker Sync Response",
+  "description": "Response sent by scheduler to worker during sync cycle. Part of bidirectional worker-scheduler sync protocol.",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/NoActionResponse"
+    },
+    {
+      "$ref": "#/definitions/TaskAssignedResponse"
+    },
+    {
+      "$ref": "#/definitions/CommandResponse"
+    }
+  ],
+  "definitions": {
+    "NoActionResponse": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "no_action",
+          "description": "No work available. Worker should continue polling."
+        }
+      }
+    },
+    "TaskAssignedResponse": {
+      "type": "object",
+      "required": ["type", "task"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "task_assigned",
+          "description": "New task assignment for worker to execute."
+        },
+        "task": {
+          "$ref": "#/definitions/TaskAssignment"
+        }
+      }
+    },
+    "CommandResponse": {
+      "type": "object",
+      "required": ["type", "command"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "command",
+          "description": "Control command from scheduler to worker."
+        },
+        "command": {
+          "$ref": "#/definitions/WorkerCommand"
+        }
+      }
+    },
+    "TaskAssignment": {
+      "type": "object",
+      "required": ["executionId", "nodeId", "agent", "task"],
+      "additionalProperties": true,
+      "properties": {
+        "executionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workflow execution identifier for task correlation."
+        },
+        "nodeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Node identifier within workflow for task correlation."
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Agent name from agents.yaml. Must match agent configuration.",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "task": {
+          "type": "object",
+          "description": "Protocol-specific task payload. For A2A agents, this conforms to A2A v0.3.0 spec. Worker forwards this opaquely to the agent."
+        },
+        "workflowRegistryId": {
+          "type": "string",
+          "description": "Optional. Namespace-qualified workflow name (e.g., 'team/refactor-auth')."
+        },
+        "workflowVersion": {
+          "type": "string",
+          "description": "Optional. Immutable version key (Git commit hash or UUID)."
+        },
+        "workflowRef": {
+          "type": "string",
+          "description": "Optional. Original reference provided by caller (e.g., 'latest', 'v1.2.3')."
+        },
+        "protocolMetadata": {
+          "type": "object",
+          "description": "Optional. Scheduler hints for downstream adapters (e.g., preferred transport).",
+          "additionalProperties": true
+        }
+      },
+      "description": "Task assignment structure. See docs/scheduler-sync-response.md for complete field descriptions."
+    },
+    "WorkerCommand": {
+      "type": "string",
+      "enum": ["cancel", "shutdown"],
+      "description": "Control commands: 'cancel' = abort current task, 'shutdown' = graceful worker termination."
+    }
+  },
+  "examples": [
+    {
+      "description": "No tasks available",
+      "data": {
+        "type": "no_action"
+      }
+    },
+    {
+      "description": "Task assignment with minimal fields",
+      "data": {
+        "type": "task_assigned",
+        "task": {
+          "executionId": "exec-123",
+          "nodeId": "node-1",
+          "agent": "mock-agent",
+          "task": {
+            "history": [
+              {
+                "messageId": "msg-1",
+                "kind": "message",
+                "role": "user",
+                "parts": [
+                  {
+                    "kind": "text",
+                    "text": "Analyze code quality"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "description": "Task assignment with workflow metadata",
+      "data": {
+        "type": "task_assigned",
+        "task": {
+          "executionId": "exec-456",
+          "nodeId": "node-2",
+          "agent": "example-a2a",
+          "task": {
+            "history": [
+              {
+                "messageId": "msg-2",
+                "kind": "message",
+                "role": "user",
+                "parts": [
+                  {
+                    "kind": "text",
+                    "text": "Generate test cases"
+                  }
+                ]
+              }
+            ]
+          },
+          "workflowRegistryId": "team/refactor-auth",
+          "workflowVersion": "a3f4b2c1",
+          "workflowRef": "team/refactor-auth:latest"
+        }
+      }
+    },
+    {
+      "description": "Cancel command",
+      "data": {
+        "type": "command",
+        "command": "cancel"
+      }
+    },
+    {
+      "description": "Shutdown command",
+      "data": {
+        "type": "command",
+        "command": "shutdown"
+      }
+    }
+  ]
+}

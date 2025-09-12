@@ -6,7 +6,6 @@ Based on FastAPI basic example pattern: https://fastapi.tiangolo.com/#create-it
 from fastapi import FastAPI, HTTPException, Request
 from typing import Dict, Any, Optional, List, Literal, Union
 from pydantic import BaseModel
-import datetime
 
 app = FastAPI()
 
@@ -55,36 +54,85 @@ class A2AMessage(BaseModel):
     referenceTaskIds: Optional[List[str]] = None
 
 
-class A2ATaskStatus(BaseModel):
-    """A2A TaskStatus - allows extension fields per A2A protocol spec."""
+# class A2ATaskStatus(BaseModel):
+#     """A2A TaskStatus - allows extension fields per A2A protocol spec."""
 
-    state: Literal["pending", "running", "completed", "failed", "cancelled"]
-    message: Optional[A2AMessage] = None
-    timestamp: str
+#     state: Literal["pending", "running", "completed", "failed", "cancelled"]
+#     message: Optional[A2AMessage] = None
+#     timestamp: str
 
 
-class A2AArtifact(BaseModel):
-    """A2A Artifact - allows extension fields per A2A protocol spec."""
+# class A2AArtifact(BaseModel):
+#     """A2A Artifact - allows extension fields per A2A protocol spec."""
 
-    artifactId: str
-    name: Optional[str] = None
-    description: Optional[str] = None
-    parts: List[Part]
-    metadata: Optional[Dict[str, Any]] = None
-    extensions: Optional[List[str]] = None
+#     artifactId: str
+#     name: Optional[str] = None
+#     description: Optional[str] = None
+#     parts: List[Part]
+#     metadata: Optional[Dict[str, Any]] = None
+#     extensions: Optional[List[str]] = None
 
 
 class CurrentTask(BaseModel):
-    nodeId: str
     executionId: str
+    nodeId: str
+
+    class Config:
+        extra = "forbid"
+
+
+class Part(BaseModel):
+    """A2A Protocol Part union type."""
+
+    kind: Literal["text", "file", "data"]
+    text: Optional[str] = None
+    data: Optional[str] = None
+    mimeType: Optional[str] = None
+
+    class Config:
+        extra = "forbid"
+
+
+class Message(BaseModel):
+    """A2A Protocol Message structure."""
+
+    messageId: str
+    kind: Literal["message"]
+    role: Literal["user", "agent"]
+    parts: List[Part]
+
+    class Config:
+        extra = "forbid"
+
+
+class A2ATaskStatus(BaseModel):
+    """A2A Protocol TaskStatus structure."""
+
+    state: Literal["completed", "failed", "canceled", "rejected"]
+    message: Optional[Message] = None
+    timestamp: Optional[str] = None
+
+    class Config:
+        extra = "forbid"
+
+
+class A2AArtifact(BaseModel):
+    """A2A Protocol Artifact structure."""
+
+    artifactId: str
+    name: str
+    description: Optional[str] = None
+    parts: List[Part]
 
     class Config:
         extra = "forbid"
 
 
 class TaskResult(BaseModel):
-    nodeId: str
+    """Worker TaskResult with A2A types."""
+
     executionId: str
+    nodeId: str
     taskStatus: A2ATaskStatus
     artifacts: Optional[List[A2AArtifact]] = None
 
@@ -93,8 +141,7 @@ class TaskResult(BaseModel):
 
 
 class SyncRequest(BaseModel):
-    status: Literal["idle", "working", "failed"]
-    timestamp: str
+    status: Literal["idle", "working"]
     currentTask: Optional[CurrentTask] = None
     taskResult: Optional[TaskResult] = None
 
@@ -102,44 +149,35 @@ class SyncRequest(BaseModel):
         extra = "forbid"
 
 
-class WorkerCommand(BaseModel):
-    action: Literal["cancel", "fail"]
-    nodeId: Optional[str] = None
-    executionId: Optional[str] = None
-    reason: Optional[str] = None
-
-    class Config:
-        extra = "forbid"
-
-
 class TaskAssignment(BaseModel):
-    nodeId: str
     executionId: str
-    workflowRegistryId: str
-    workflowVersion: str
-    workflowRef: str
+    nodeId: str
     agent: str
     task: Dict[str, Any]
-    protocolMetadata: Dict[str, Any] = {}
+    workflowRegistryId: Optional[str] = None
+    workflowVersion: Optional[str] = None
+    workflowRef: Optional[str] = None
+    protocolMetadata: Optional[Dict[str, Any]] = None
 
     class Config:
-        extra = "forbid"
+        extra = "allow"  # Schema says additionalProperties: true
 
 
 class SyncResponse(BaseModel):
     type: Literal["no_action", "task_assigned", "command"]
-    timestamp: str
     task: Optional[TaskAssignment] = None
-    command: Optional[WorkerCommand] = None
+    command: Optional[Literal["cancel", "shutdown"]] = None
 
     class Config:
         extra = "forbid"
+        # Skip null values to match canonical schema's additionalProperties: false
+        exclude_none = True
 
 
 class AddCommandRequest(BaseModel):
     executionId: str
     nodeId: str
-    command: WorkerCommand
+    command: Literal["cancel", "shutdown"]
 
     class Config:
         extra = "forbid"
@@ -219,7 +257,7 @@ sync_count = 0
 #     return {"accepted": True}
 
 
-@app.post("/api/worker/sync")
+@app.post("/api/worker/sync", response_model_exclude_none=True)
 def worker_sync(sync_request: SyncRequest, request: Request) -> SyncResponse:
     """Unified worker sync endpoint for bidirectional communication."""
     global sync_count, simulate_downtime
@@ -233,25 +271,22 @@ def worker_sync(sync_request: SyncRequest, request: Request) -> SyncResponse:
     # No worker tracking needed - workers are truly anonymous
 
     # Process task result if present
-    task_is_final = False
     if sync_request.taskResult:
         task_result = sync_request.taskResult
-        # Store the A2A-compliant result directly
+        # Store the result
         results.append(task_result.dict())
+        # Per worker-sync-protocol.md: acknowledge result with no_action
+        # Worker expects acknowledgment before receiving new tasks
+        return SyncResponse(type="no_action")
 
-        # Check if task is in final state
-        task_state = task_result.taskStatus.state
-        task_is_final = task_state in ["completed", "failed", "cancelled"]
-
-    # Check for pending commands based on current task (only if task not final)
-    if not task_is_final and sync_request.currentTask:
+    # Check for pending commands based on current task
+    if sync_request.currentTask:
         current_task = sync_request.currentTask
         task_key = f"{current_task.executionId}:{current_task.nodeId}"
         if task_key in command_queue and command_queue[task_key]:
             command = command_queue[task_key].pop(0)
             return SyncResponse(
                 type="command",
-                timestamp=datetime.datetime.now().isoformat(),
                 command=command,
             )
 
@@ -259,23 +294,22 @@ def worker_sync(sync_request: SyncRequest, request: Request) -> SyncResponse:
     if status == "idle" and task_queue:
         task_payload = task_queue.pop(0)  # FIFO
         task_assignment = TaskAssignment(
-            nodeId=task_payload["nodeId"],
             executionId=task_payload.get("executionId", "test-exec-1"),
-            workflowRegistryId=task_payload["workflowRegistryId"],
-            workflowVersion=task_payload["workflowVersion"],
-            workflowRef=task_payload["workflowRef"],
+            nodeId=task_payload["nodeId"],
             agent=task_payload["agent"],
             task=task_payload["task"],
-            protocolMetadata=task_payload.get("protocolMetadata", {}),
+            workflowRegistryId=task_payload.get("workflowRegistryId"),
+            workflowVersion=task_payload.get("workflowVersion"),
+            workflowRef=task_payload.get("workflowRef"),
+            protocolMetadata=task_payload.get("protocolMetadata"),
         )
         return SyncResponse(
             type="task_assigned",
-            timestamp=datetime.datetime.now().isoformat(),
             task=task_assignment,
         )
 
     # Default response - no action needed
-    return SyncResponse(type="no_action", timestamp=datetime.datetime.now().isoformat())
+    return SyncResponse(type="no_action")
 
 
 @app.post("/add_task")
@@ -308,7 +342,10 @@ def add_task_endpoint(task: Dict[str, Any]) -> StatusResponse:
 
 @app.get("/results")
 def get_results() -> list:
-    """Get all submitted results for testing."""
+    """Get all submitted results for testing.
+
+    Worker now sends A2A-compliant TaskResult format directly.
+    """
     return results
 
 

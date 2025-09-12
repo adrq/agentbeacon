@@ -22,6 +22,7 @@ from tests.testhelpers import (
     parse_agent_log,
     get_current_test_name,
     start_worker,
+    start_and_wait_for_a2a_agent,
 )
 from tests.contracts.schema_helpers import (
     DEFAULT_WORKFLOW_REF,
@@ -49,6 +50,12 @@ def test_worker_complete_task_execution_cycle():
         assert scheduler_ready, (
             f"Mock scheduler did not start on port {mock_orchestrator_port}"
         )
+
+        # Start A2A mock agent (required for Rust worker Phase 1)
+        agent_proc = start_and_wait_for_a2a_agent(
+            18765, Path(__file__).parent.parent.parent
+        )
+        processes.append(agent_proc)
 
         # Prepare a sample task for the worker
         sample_task = build_canonical_task(
@@ -175,6 +182,12 @@ def test_worker_handles_task_with_output():
     processes = []
 
     try:
+        # Start A2A mock agent (required for Rust worker Phase 1)
+        agent_proc = start_and_wait_for_a2a_agent(
+            18765, Path(__file__).parent.parent.parent
+        )
+        processes.append(agent_proc)
+
         # Start simple mock orchestrator
         scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
@@ -243,9 +256,12 @@ def test_worker_handles_task_with_output():
             assert "output-task-456" in str(result), (
                 f"Result should contain task ID: {result}"
             )
-            # Result should contain the mock-agent output
+            # Result should contain A2A-compliant taskStatus
             assert "nodeId" in result and "taskStatus" in result, (
-                f"Result should have required fields: {result}"
+                f"Result should have required fields (nodeId, taskStatus): {result}"
+            )
+            assert result["taskStatus"]["state"] == "completed", (
+                f"Task should be completed: {result}"
             )
 
     finally:
@@ -260,6 +276,12 @@ def test_multiple_task_execution_sequence():
     processes = []
 
     try:
+        # Start A2A mock agent (required for Rust worker Phase 1)
+        agent_proc = start_and_wait_for_a2a_agent(
+            18765, Path(__file__).parent.parent.parent
+        )
+        processes.append(agent_proc)
+
         # Start simple mock orchestrator with sync endpoint support
         scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
@@ -411,6 +433,14 @@ def test_worker_uses_agents_yaml_config():
     processes = []
 
     try:
+        # Start A2A mock agent with custom config for test-config-agent (required for Rust worker Phase 1)
+        config_agent_proc = start_and_wait_for_a2a_agent(
+            port=18766,
+            base_dir=Path(__file__).parent.parent.parent,
+            config_file="test-config-responses.json",
+        )
+        processes.append(config_agent_proc)
+
         # Start simple mock orchestrator
         scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
@@ -504,6 +534,12 @@ def test_mixed_bracketed_and_plain_text_compatibility():
     processes = []
 
     try:
+        # Start A2A mock agent (required for Rust worker Phase 1)
+        agent_proc = start_and_wait_for_a2a_agent(
+            18765, Path(__file__).parent.parent.parent
+        )
+        processes.append(agent_proc)
+
         # Start simple mock orchestrator
         scheduler_proc = start_mock_scheduler(
             mock_orchestrator_port, Path(__file__).parent.parent.parent
