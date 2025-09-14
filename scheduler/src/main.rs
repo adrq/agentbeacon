@@ -1,3 +1,127 @@
-fn main() {
-    println!("Hello, world!");
+use anyhow::{Context, Result};
+use clap::Parser;
+use std::net::SocketAddr;
+use tokio::signal;
+use tracing::info;
+
+use scheduler::{
+    app::{AppState, create_router},
+    db, telemetry,
+    validation::SchemaValidator,
+};
+
+/// AgentMaestro Scheduler - Workflow orchestration and execution tracking
+#[derive(Parser, Debug)]
+#[command(name = "agentmaestro-scheduler")]
+#[command(version = "1.0.0")]
+#[command(about = "Rust scheduler with database layer and REST API", long_about = None)]
+struct Cli {
+    /// Port to listen on
+    #[arg(short, long, default_value = "9456")]
+    port: u16,
+
+    /// Database URL (SQLite or PostgreSQL)
+    /// Examples:
+    ///   sqlite:///tmp/scheduler.db
+    ///   postgres://user:pass@localhost/dbname
+    #[arg(long, env = "DATABASE_URL", default_value = "sqlite://scheduler.db")]
+    db_url: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Parse CLI arguments
+    let cli = Cli::parse();
+
+    // Initialize telemetry (JSON-formatted logs)
+    telemetry::init_telemetry();
+
+    // Register SQLx Any drivers (required for SQLx 0.8+ with Pool<Any>)
+    sqlx::any::install_default_drivers();
+
+    info!("AgentMaestro Scheduler starting...");
+    info!("Configuration: port={}, db_url={}", cli.port, cli.db_url);
+
+    // Run bootstrap and startup flow
+    bootstrap(cli).await
+}
+
+async fn bootstrap(cli: Cli) -> Result<()> {
+    // Connect to database
+    info!("Connecting to database: {}", cli.db_url);
+    let db_pool = db::pool::create(&cli.db_url)
+        .await
+        .context("Failed to create database pool")?;
+
+    // Verify database connection with health check query
+    sqlx::query("SELECT 1")
+        .fetch_one(db_pool.as_ref())
+        .await
+        .context("Database connection health check failed - verify database is accessible")?;
+    info!("Database connection established and verified");
+
+    // Run migrations
+    info!("Running database migrations...");
+    db::migrations::run(&db_pool, &cli.db_url)
+        .await
+        .context("Failed to run database migrations")?;
+    info!("Database migrations completed successfully");
+
+    // Compile schema validator (fail-fast on errors per FR-VAL-011)
+    info!("Compiling schema validator...");
+    let validator = SchemaValidator::new()
+        .context("FATAL: Schema compilation failed - cannot start scheduler")?;
+    info!("Schema validator compiled successfully");
+
+    // Build application state and router
+    let app_state = AppState::new(db_pool, validator);
+    let app = create_router(app_state);
+
+    // Bind to port
+    let addr = SocketAddr::from(([0, 0, 0, 0], cli.port));
+    info!("Binding to {}", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .context(format!("Failed to bind to {addr}"))?;
+
+    info!("AgentMaestro Scheduler listening on http://{}", addr);
+
+    // Start server with graceful shutdown
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("Server error")?;
+
+    info!("AgentMaestro Scheduler shut down gracefully");
+    Ok(())
+}
+
+/// Handle SIGTERM and SIGINT for graceful shutdown
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            info!("Received SIGINT (Ctrl+C), shutting down...");
+        },
+        _ = terminate => {
+            info!("Received SIGTERM, shutting down...");
+        },
+    }
 }

@@ -14,7 +14,7 @@ export default defineConfig({
     }
   },
   build: {
-    outDir: '../core/cmd/agentmaestro/web/dist',
+    outDir: 'dist',  // Shared build location for both Go and Rust implementations
     emptyOutDir: true
   }
 })
