@@ -5,6 +5,8 @@ use crate::error::SchedulerError;
 
 /// Embedded migration files
 const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");
+const MIGRATION_0002: &str = include_str!("../../migrations/0002_add_workflow_registry.sql");
+const MIGRATION_0003: &str = include_str!("../../migrations/0003_add_pending_tasks.sql");
 
 /// Replace TIMESTAMP with TIMESTAMPTZ using sqlparser tokenizer for correctness
 ///
@@ -77,50 +79,68 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     let is_postgres =
         database_url.starts_with("postgres:") || database_url.starts_with("postgresql:");
 
-    // Adapt migration for database-specific syntax
-    let migration = if is_postgres {
-        // Replace SQLite-specific syntax with PostgreSQL equivalents
-        // 1. AUTOINCREMENT -> SERIAL for auto-increment columns
-        // 2. INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
-        // 3. TIMESTAMP -> TIMESTAMPTZ for timezone-aware storage (fixes timezone bug)
-        //    Uses sqlparser tokenizer to handle all cases: TIMESTAMP, TIMESTAMP,
-        //    TIMESTAMP), TIMESTAMP;, etc. Prevents timezone shifts on non-UTC servers.
-        let m = MIGRATION_0001
-            .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-            .replace(
-                "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, CURRENT_TIMESTAMP)",
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (1, CURRENT_TIMESTAMP) ON CONFLICT (version) DO NOTHING"
-            );
+    // Get current migration version (0 if no migrations applied yet)
+    let current_version = get_current_version(pool).await.unwrap_or(0);
 
-        // Use tokenizer to replace all TIMESTAMP → TIMESTAMPTZ comprehensively
-        replace_timestamp_with_timestamptz(&m)
-    } else {
-        MIGRATION_0001.to_string()
-    };
+    // List of all migrations in order
+    let migrations = vec![
+        (MIGRATION_0001, 1),
+        (MIGRATION_0002, 2),
+        (MIGRATION_0003, 3),
+    ];
 
-    // Remove comments first, then split by semicolon
-    let cleaned_migration = migration
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !trimmed.is_empty() && !trimmed.starts_with("--")
-        })
-        .collect::<Vec<&str>>()
-        .join("\n");
+    // Process each migration
+    for (migration_sql, version) in migrations {
+        // Skip already-applied migrations (makes runner idempotent)
+        if version <= current_version {
+            continue;
+        }
+        // Adapt migration for database-specific syntax
+        let migration = if is_postgres {
+            // Replace SQLite-specific syntax with PostgreSQL equivalents
+            // 1. AUTOINCREMENT -> SERIAL for auto-increment columns
+            // 2. INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
+            // 3. TIMESTAMP -> TIMESTAMPTZ for timezone-aware storage (fixes timezone bug)
+            //    Uses sqlparser tokenizer to handle all cases: TIMESTAMP, TIMESTAMP,
+            //    TIMESTAMP), TIMESTAMP;, etc. Prevents timezone shifts on non-UTC servers.
+            let m = migration_sql
+                .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+                .replace(
+                    &format!("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ({version}, CURRENT_TIMESTAMP)"),
+                    &format!("INSERT INTO schema_migrations (version, applied_at) VALUES ({version}, CURRENT_TIMESTAMP) ON CONFLICT (version) DO NOTHING")
+                );
 
-    let statements: Vec<&str> = cleaned_migration
-        .split(';')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
+            // Use tokenizer to replace all TIMESTAMP → TIMESTAMPTZ comprehensively
+            replace_timestamp_with_timestamptz(&m)
+        } else {
+            migration_sql.to_string()
+        };
 
-    for stmt in statements {
-        pool.as_ref().execute(stmt).await.map_err(|e| {
-            SchedulerError::Database(format!(
-                "Failed to run migration statement: {e}\nStatement: {}",
-                &stmt[..std::cmp::min(200, stmt.len())]
-            ))
-        })?;
+        // Remove comments first, then split by semicolon
+        let cleaned_migration = migration
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty() && !trimmed.starts_with("--")
+            })
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        let statements: Vec<&str> = cleaned_migration
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        for stmt in statements {
+            pool.as_ref().execute(stmt).await.map_err(|e| {
+                SchedulerError::Database(format!(
+                    "Failed to run migration v{} statement: {e}\nStatement: {}",
+                    version,
+                    &stmt[..std::cmp::min(200, stmt.len())]
+                ))
+            })?;
+        }
     }
 
     Ok(())

@@ -1,12 +1,16 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::signal;
 use tracing::info;
 
 use scheduler::{
     app::{AppState, create_router},
-    db, telemetry,
+    db,
+    queue::TaskQueue,
+    scheduling::scheduler::Scheduler,
+    telemetry,
     validation::SchemaValidator,
 };
 
@@ -69,12 +73,28 @@ async fn bootstrap(cli: Cli) -> Result<()> {
 
     // Compile schema validator (fail-fast on errors per FR-VAL-011)
     info!("Compiling schema validator...");
-    let validator = SchemaValidator::new()
-        .context("FATAL: Schema compilation failed - cannot start scheduler")?;
+    let validator = Arc::new(
+        SchemaValidator::new()
+            .context("FATAL: Schema compilation failed - cannot start scheduler")?,
+    );
     info!("Schema validator compiled successfully");
 
+    // Create task queue (database-only, no rebuild needed)
+    info!("Initializing task queue...");
+    let task_queue = Arc::new(TaskQueue::new(db_pool.clone()));
+    let queue_len = task_queue
+        .len()
+        .await
+        .context("Failed to get task queue length")?;
+    info!("Task queue initialized with {queue_len} pending tasks");
+
+    // Create scheduler
+    info!("Initializing scheduler...");
+    let scheduler = Scheduler::new(db_pool.clone(), task_queue.clone(), validator.clone());
+    info!("Scheduler initialized");
+
     // Build application state and router
-    let app_state = AppState::new(db_pool, validator);
+    let app_state = AppState::new(db_pool, validator, task_queue, scheduler);
     let app = create_router(app_state);
 
     // Bind to port

@@ -1,4 +1,4 @@
-.PHONY: build test test-nocache clean deps lint fmt build-all dev-tools pre-commit dev npm-install test-deps build-worker
+.PHONY: build build-go build-rust-workspace test test-go test-nocache test-nocache-go clean deps lint fmt build-all dev-tools pre-commit dev npm-install test-deps test-deps-go build-worker build-worker-go build-scheduler install-bins test-int
 
 # Default target
 all: build
@@ -13,9 +13,9 @@ build-frontend: npm-install
 	@echo "Building frontend..."
 	cd web && npm run build
 
-# Build only test dependencies (mock-agent and embedded files)
-test-deps: npm-install
-	@echo "Building test dependencies..."
+# Build only test dependencies (Go - mock-agent and embedded files)
+test-deps-go: npm-install
+	@echo "Building Go test dependencies..."
 	@mkdir -p bin
 	@echo "Building frontend for embedded files..."
 	cd web && npm run build
@@ -27,9 +27,9 @@ test-deps: npm-install
 	@echo "Building agentmaestro-worker for tests..."
 	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
 
-# Build target (includes frontend)
-build: build-frontend
-	@echo "Building agentmaestro..."
+# Build Go binaries (includes frontend)
+build-go: build-frontend
+	@echo "Building Go binaries..."
 	@mkdir -p bin
 	go build -o bin/agentmaestro ./core/cmd/agentmaestro
 	@echo "Building agentmaestro-scheduler..."
@@ -38,31 +38,74 @@ build: build-frontend
 	@echo "Building agentmaestro-worker..."
 	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
 
-# Build only the worker binary
-build-worker:
-	@echo "Building agentmaestro-worker..."
+# Build only the Go worker binary
+build-worker-go:
+	@echo "Building Go agentmaestro-worker..."
 	@mkdir -p bin
 	go build -o bin/agentmaestro-worker ./core/cmd/agentmaestro-worker
 
-# Run tests
-test: test-deps
-	@echo "Running tests..."
+# Run Go tests
+test-go: test-deps-go
+	@echo "Running Go tests..."
 	go test ./... -v
 
-# Run tests without cache
-test-nocache: test-deps
-	@echo "Running tests without cache..."
+# Run Go tests without cache
+test-nocache-go: test-deps-go
+	@echo "Running Go tests without cache..."
 	go test -count=1 ./... -v
 
-# Run A2A integration tests
-test-e2e: test-deps
+# Run A2A integration tests (Go)
+test-e2e: test-deps-go
 	@echo "Running E2E (A2A) tests with real binaries..."
 	go test -tags e2e -v ./core/internal/api -run TestE2E
 
-# Run integration tests
-test-int: test-deps
-	@echo "Running integration tests..."
+# ==============================================================================
+# Rust Build Targets (Default)
+# ==============================================================================
+
+# Build Rust binaries and install to bin/
+build: install-bins
+
+# Build all Rust workspace binaries in release mode
+build-rust-workspace:
+	@echo "Building Rust workspace..."
+	cargo build --release
+
+# Install Rust binaries to bin/ directory
+install-bins: build-rust-workspace
+	@echo "Installing Rust binaries to bin/..."
+	@mkdir -p bin
+	cp target/release/agentmaestro-scheduler bin/
+	cp target/release/agentmaestro-worker bin/
+	@echo "Rust binaries installed to bin/"
+
+# Build only the Rust scheduler binary
+build-scheduler:
+	@echo "Building Rust scheduler..."
+	cargo build --release --bin agentmaestro-scheduler
+	@mkdir -p bin
+	cp target/release/agentmaestro-scheduler bin/
+
+# Build only the Rust worker binary
+build-worker:
+	@echo "Building Rust worker..."
+	cargo build --release --bin agentmaestro-worker
+	@mkdir -p bin
+	cp target/release/agentmaestro-worker bin/
+
+# Run Rust unit tests
+test:
+	@echo "Running Rust tests..."
+	cargo test
+
+# Build Rust binaries and run Python integration tests
+test-int: build
+	@echo "Running Python integration tests with Rust binaries..."
 	uv run pytest -v tests
+
+# Test dependencies (for backwards compatibility)
+test-deps: build
+	@echo "Rust binaries built and ready for testing"
 
 # Run target
 run: build
@@ -75,7 +118,7 @@ deps:
 	go mod download
 	go mod tidy
 
-# Clean build artifacts
+# Clean build artifacts (both Rust and Go)
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf bin/
@@ -83,6 +126,7 @@ clean:
 	rm -rf core/cmd/agentmaestro/web/dist/
 	rm -rf core/cmd/agentmaestro-scheduler/web/
 	cd web && rm -rf dist/
+	cargo clean
 	go clean
 
 # Lint code (if staticcheck is installed)

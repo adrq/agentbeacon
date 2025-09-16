@@ -3,5 +3,8 @@ pub mod app;
 pub mod assets;
 pub mod db;
 pub mod error;
+pub mod queue;
+pub mod registry;
+pub mod scheduling;
 pub mod telemetry;
 pub mod validation;

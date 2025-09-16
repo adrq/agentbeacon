@@ -1,4 +1,5 @@
 use axum::{Router, routing::get};
+use std::sync::Arc;
 use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
@@ -6,36 +7,41 @@ use tower_http::{
 
 use crate::assets::Assets;
 use crate::db::DbPool;
+use crate::queue::TaskQueue;
+use crate::scheduling::scheduler::Scheduler;
 use crate::validation::SchemaValidator;
 
 /// Application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {
     pub db_pool: DbPool,
-    pub validator: std::sync::Arc<SchemaValidator>,
+    pub validator: Arc<SchemaValidator>,
+    pub task_queue: Arc<TaskQueue>,
+    pub scheduler: Arc<Scheduler>,
 }
 
 impl AppState {
     /// Create new application state
-    pub fn new(db_pool: DbPool, validator: SchemaValidator) -> Self {
+    pub fn new(
+        db_pool: DbPool,
+        validator: Arc<SchemaValidator>,
+        task_queue: Arc<TaskQueue>,
+        scheduler: Scheduler,
+    ) -> Self {
         Self {
             db_pool,
-            validator: std::sync::Arc::new(validator),
+            validator,
+            task_queue,
+            scheduler: Arc::new(scheduler),
         }
     }
 }
 
 /// Build Axum router with all routes and middleware
 pub fn create_router(state: AppState) -> Router {
-    // Start with API routes (Router<AppState>)
-    let api_router = crate::api::health::routes()
-        .merge(crate::api::workflows::routes())
-        .merge(crate::api::executions::routes())
-        .merge(crate::api::config::routes());
-
     // Merge with asset routes and apply state
     Router::new()
-        .merge(api_router)
+        .merge(crate::api::routes())
         .route("/", get(serve_index))
         .route("/index.html", get(serve_index))
         .route("/assets/*path", get(serve_asset))

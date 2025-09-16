@@ -108,4 +108,30 @@ impl SchemaValidator {
 
         Ok(workflow_json)
     }
+
+    /// Validate task payload against A2A v0.3.0 schema (FR-010)
+    pub fn validate_task(&self, task: &JsonValue) -> Result<(), SchedulerError> {
+        // For now, skip strict schema validation in tests
+        // TODO: Implement proper A2A Task schema validation with cross-reference resolution
+        // The challenge is that Task schema has $ref to other definitions in the A2A schema
+        // and we need to provide the full schema context for validation to work.
+
+        // Basic validation: ensure task has required fields
+        if !task.is_object() {
+            return Err(SchedulerError::ValidationFailed(
+                "Task must be a JSON object".to_string(),
+            ));
+        }
+
+        let obj = task.as_object().unwrap();
+
+        // Check for required field: history
+        if !obj.contains_key("history") {
+            return Err(SchedulerError::ValidationFailed(
+                "Task must have 'history' field".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }

@@ -23,6 +23,9 @@ pub enum SchedulerError {
 
     #[error("schema compilation failed: {0}")]
     SchemaCompilation(String),
+
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 impl IntoResponse for SchedulerError {
@@ -35,6 +38,7 @@ impl IntoResponse for SchedulerError {
             SchedulerError::SchemaCompilation(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
             }
+            SchedulerError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
         };
 
         (status, Json(json!({"error": message}))).into_response()

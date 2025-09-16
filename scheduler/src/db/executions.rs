@@ -17,6 +17,9 @@ pub struct Execution {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    // Week 5: Workflow registry metadata
+    pub workflow_namespace: Option<String>,
+    pub workflow_version: Option<String>,
 }
 
 /// Create a new execution
@@ -60,7 +63,8 @@ pub async fn get_by_id(pool: &DbPool, id: &Uuid) -> Result<Execution, SchedulerE
 
     let sql = format!(
         r#"
-        SELECT id, workflow_id, status, task_states, {} as created_at, {} as updated_at, {} as completed_at
+        SELECT id, workflow_id, status, task_states, {} as created_at, {} as updated_at, {} as completed_at,
+               workflow_namespace, workflow_version
         FROM executions
         WHERE id = ?
         "#,
@@ -109,6 +113,8 @@ pub async fn get_by_id(pool: &DbPool, id: &Uuid) -> Result<Execution, SchedulerE
                 .map(|dt| dt.with_timezone(&Utc))
                 .ok()
         }),
+        workflow_namespace: row.get("workflow_namespace"),
+        workflow_version: row.get("workflow_version"),
     })
 }
 
@@ -129,7 +135,7 @@ pub async fn list(
 
     // Build query dynamically based on filters
     let mut query = format!(
-        "SELECT id, workflow_id, status, task_states, {} as created_at, {} as updated_at, {} as completed_at FROM executions WHERE 1=1",
+        "SELECT id, workflow_id, status, task_states, {} as created_at, {} as updated_at, {} as completed_at, workflow_namespace, workflow_version FROM executions WHERE 1=1",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -192,6 +198,8 @@ pub async fn list(
                         .map(|dt| dt.with_timezone(&Utc))
                         .ok()
                 }),
+                workflow_namespace: row.get("workflow_namespace"),
+                workflow_version: row.get("workflow_version"),
             })
         })
         .collect();

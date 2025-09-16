@@ -12,13 +12,18 @@ anyhow = "1.0.100"
 axum = "0.8.6"
 chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4.5.48", features = ["derive", "env"] }
+common = { path = "../common" }
+hex = "0.4"
+jsonrpsee = { version = "0.24", features = ["server"] }
 jsonschema = "0.33.0"
+regex = "1.11"
 rust-embed = { version = "8.7.2", features = ["include-exclude"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 serde_yaml = "0.9.34"
+sha2 = "0.10"
 sqlparser = "0.58"
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "postgres", "any", "runtime-tokio-native-tls", "macros", "migrate"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "postgres", "any", "runtime-tokio-native-tls", "macros", "migrate", "chrono"] }
 thiserror = "2.0.17"
 tokio = { version = "1.47.1", features = ["full"] }
 tower-http = { version = "0.6.6", features = ["cors", "compression-gzip"] }
