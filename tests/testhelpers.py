@@ -804,7 +804,13 @@ def start_orchestrator(
     env["DATABASE_URL"] = db_url
 
     orchestrator_proc = subprocess.Popen(
-        ["./bin/agentmaestro", "-workers", str(workers), "-scheduler-port", str(port)],
+        [
+            "./bin/agentmaestro",
+            "--workers",
+            str(workers),
+            "--scheduler-port",
+            str(port),
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

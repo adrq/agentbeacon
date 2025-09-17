@@ -75,6 +75,7 @@ build-rust-workspace:
 install-bins: build-rust-workspace
 	@echo "Installing Rust binaries to bin/..."
 	@mkdir -p bin
+	cp target/release/orchestrator bin/agentmaestro
 	cp target/release/agentmaestro-scheduler bin/
 	cp target/release/agentmaestro-worker bin/
 	@echo "Rust binaries installed to bin/"
