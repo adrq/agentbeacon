@@ -772,6 +772,23 @@ tasks:
         // Verify task-a is queued
         assert_eq!(task_queue.len().await.expect("len failed"), 1);
 
+        // Worker pops task-a
+        let task_a = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert_eq!(task_a.node_id, "task-a");
+
+        // Mark task-a as assigned (simulates worker pickup)
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), "task-a")
+            .await
+            .expect("Failed to mark task-a assigned");
+
+        // Verify queue empty after task-a consumed
+        assert_eq!(task_queue.len().await.expect("len failed"), 0);
+
         // Simulate task-a completion
         scheduler
             .handle_task_result(&execution_id.to_string(), "task-a", true)
@@ -779,7 +796,21 @@ tasks:
             .expect("Failed to handle task-a result");
 
         // Verify task-b is now queued
-        assert_eq!(task_queue.len().await.expect("len failed"), 2); // task-a (already popped by worker) + task-b
+        assert_eq!(task_queue.len().await.expect("len failed"), 1);
+
+        // Worker pops task-b
+        let task_b = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert_eq!(task_b.node_id, "task-b");
+
+        // Mark task-b as assigned
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), "task-b")
+            .await
+            .expect("Failed to mark task-b assigned");
 
         // Simulate task-b completion
         scheduler
@@ -788,7 +819,21 @@ tasks:
             .expect("Failed to handle task-b result");
 
         // Verify task-c is now queued
-        assert_eq!(task_queue.len().await.expect("len failed"), 3);
+        assert_eq!(task_queue.len().await.expect("len failed"), 1);
+
+        // Worker pops task-c
+        let task_c = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert_eq!(task_c.node_id, "task-c");
+
+        // Mark task-c as assigned
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), "task-c")
+            .await
+            .expect("Failed to mark task-c assigned");
 
         // Simulate task-c completion
         scheduler
@@ -825,6 +870,20 @@ tasks:
 
         assert_eq!(task_queue.len().await.expect("len failed"), 1);
 
+        // Worker pops task-a
+        let task_a = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert_eq!(task_a.node_id, "task-a");
+
+        // Mark task-a as assigned
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), "task-a")
+            .await
+            .expect("Failed to mark task-a assigned");
+
         // Simulate task-a completion
         scheduler
             .handle_task_result(&execution_id.to_string(), "task-a", true)
@@ -832,7 +891,36 @@ tasks:
             .expect("Failed to handle task-a result");
 
         // Verify both task-b and task-c are queued (parallel execution)
-        assert_eq!(task_queue.len().await.expect("len failed"), 3); // Original + 2 new tasks
+        assert_eq!(task_queue.len().await.expect("len failed"), 2);
+
+        // Worker pops first parallel task (could be task-b or task-c)
+        let task_1 = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert!(task_1.node_id == "task-b" || task_1.node_id == "task-c");
+
+        // Mark first task as assigned
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), &task_1.node_id)
+            .await
+            .expect("Failed to mark first task assigned");
+
+        // Worker pops second parallel task
+        let task_2 = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert!(task_2.node_id == "task-b" || task_2.node_id == "task-c");
+        assert_ne!(task_1.node_id, task_2.node_id, "Should be different tasks");
+
+        // Mark second task as assigned
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), &task_2.node_id)
+            .await
+            .expect("Failed to mark second task assigned");
 
         // Complete task-b
         scheduler
@@ -872,6 +960,20 @@ tasks:
             .await
             .expect("Failed to queue entry nodes");
 
+        // Worker pops task-a
+        let task_a = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert_eq!(task_a.node_id, "task-a");
+
+        // Mark task-a as assigned
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), "task-a")
+            .await
+            .expect("Failed to mark task-a assigned");
+
         // Simulate task-a completion
         scheduler
             .handle_task_result(&execution_id.to_string(), "task-a", true)
@@ -879,7 +981,31 @@ tasks:
             .expect("Failed to handle task-a result");
 
         // Both task-b and task-c should be queued
-        assert_eq!(task_queue.len().await.expect("len failed"), 3);
+        assert_eq!(task_queue.len().await.expect("len failed"), 2);
+
+        // Worker pops both parallel tasks (order doesn't matter)
+        let task_1 = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert!(task_1.node_id == "task-b" || task_1.node_id == "task-c");
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), &task_1.node_id)
+            .await
+            .expect("Failed to mark first task assigned");
+
+        let task_2 = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert!(task_2.node_id == "task-b" || task_2.node_id == "task-c");
+        assert_ne!(task_1.node_id, task_2.node_id);
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), &task_2.node_id)
+            .await
+            .expect("Failed to mark second task assigned");
 
         // Complete task-b
         scheduler
@@ -888,7 +1014,7 @@ tasks:
             .expect("Failed to handle task-b result");
 
         // task-d should NOT be queued yet (waiting for task-c)
-        assert_eq!(task_queue.len().await.expect("len failed"), 3); // No new tasks
+        assert_eq!(task_queue.len().await.expect("len failed"), 0);
 
         // Complete task-c
         scheduler
@@ -897,7 +1023,21 @@ tasks:
             .expect("Failed to handle task-c result");
 
         // NOW task-d should be queued (both dependencies satisfied)
-        assert_eq!(task_queue.len().await.expect("len failed"), 4);
+        assert_eq!(task_queue.len().await.expect("len failed"), 1);
+
+        // Worker pops task-d
+        let task_d = task_queue
+            .pop()
+            .await
+            .expect("pop failed")
+            .expect("task should be queued");
+        assert_eq!(task_d.node_id, "task-d");
+
+        // Mark task-d as assigned
+        scheduler
+            .mark_task_assigned(&execution_id.to_string(), "task-d")
+            .await
+            .expect("Failed to mark task-d assigned");
 
         // Complete task-d
         scheduler

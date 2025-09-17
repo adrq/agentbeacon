@@ -288,4 +288,64 @@ mod tests {
         assert!(queue.is_empty().await.expect("is_empty failed"));
         assert_eq!(queue.len().await.expect("len failed"), 0);
     }
+
+    #[tokio::test]
+    async fn test_pop_rollback_on_parse_failure() {
+        let queue = setup_test_queue().await;
+        let pool = &queue.db_pool;
+
+        create_test_execution(pool, "00000000-0000-0000-0000-000000000001").await;
+
+        // Insert corrupted task JSON directly via SQL
+        let corrupted_json = "{invalid json";
+        let query = pool.prepare_query(
+            "INSERT INTO pending_tasks (execution_id, node_id, task_assignment) VALUES (?, ?, ?)",
+        );
+        sqlx::query(&query)
+            .bind("00000000-0000-0000-0000-000000000001")
+            .bind("task-1")
+            .bind(corrupted_json)
+            .execute(pool.as_ref())
+            .await
+            .expect("Failed to insert corrupted task");
+
+        // Pop should fail but transaction should rollback
+        let result = queue.pop().await;
+        assert!(result.is_err(), "Pop should fail on corrupted JSON");
+
+        // Verify task is STILL in database (rollback succeeded)
+        let query = pool.prepare_query("SELECT COUNT(*) FROM pending_tasks");
+        let count: i64 = sqlx::query_scalar(&query)
+            .fetch_one(pool.as_ref())
+            .await
+            .expect("Failed to count tasks");
+        assert_eq!(count, 1, "Task should remain in DB after failed pop");
+    }
+
+    #[tokio::test]
+    async fn test_push_idempotency() {
+        let queue = setup_test_queue().await;
+        let pool = &queue.db_pool;
+
+        create_test_execution(pool, "00000000-0000-0000-0000-000000000001").await;
+
+        let task = create_test_task("00000000-0000-0000-0000-000000000001", "task-1");
+
+        // First push should succeed
+        queue
+            .push(task.clone())
+            .await
+            .expect("First push should succeed");
+
+        // Second push with same (execution_id, node_id) should fail
+        let result = queue.push(task).await;
+        assert!(
+            result.is_err(),
+            "Duplicate push should fail due to unique constraint"
+        );
+
+        // Verify only one task in queue
+        let count = queue.len().await.expect("len failed");
+        assert_eq!(count, 1, "Queue should contain exactly 1 task, not 2");
+    }
 }

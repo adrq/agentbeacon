@@ -336,14 +336,14 @@ mod tests {
             .await
             .expect("Failed to insert task1");
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let task2 = create_test_task("00000000-0000-0000-0000-000000000001", "task-2");
         insert_pending_task(&pool, &task2)
             .await
             .expect("Failed to insert task2");
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let task3 = create_test_task("00000000-0000-0000-0000-000000000001", "task-3");
         insert_pending_task(&pool, &task3)
@@ -445,14 +445,14 @@ mod tests {
             .await
             .expect("Failed to insert task1");
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let task2 = create_test_task("00000000-0000-0000-0000-000000000001", "task-2");
         insert_pending_task(&pool, &task2)
             .await
             .expect("Failed to insert task2");
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let task3 = create_test_task("00000000-0000-0000-0000-000000000001", "task-3");
         insert_pending_task(&pool, &task3)

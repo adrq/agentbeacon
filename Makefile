@@ -1,4 +1,4 @@
-.PHONY: build build-go build-rust-workspace test test-go test-nocache test-nocache-go clean deps lint fmt build-all dev-tools pre-commit dev npm-install test-deps test-deps-go build-worker build-worker-go build-scheduler install-bins test-int
+.PHONY: build build-go build-rust-workspace test test-go test-nocache test-nocache-go test-sqlite test-postgres clean deps lint fmt build-all dev-tools pre-commit dev npm-install test-deps test-deps-go build-worker build-worker-go build-scheduler install-bins test-int
 
 # Default target
 all: build
@@ -93,10 +93,35 @@ build-worker:
 	@mkdir -p bin
 	cp target/release/agentmaestro-worker bin/
 
-# Run Rust unit tests
+# Run Rust unit tests with both SQLite and PostgreSQL
 test:
-	@echo "Running Rust tests..."
+	@echo "=== Running Rust tests with SQLite ==="
+	cargo test -- test-threads=1
+	@echo ""
+	@echo "=== Running Rust tests with PostgreSQL ==="
+	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentmaestro_test cargo test -- --test-threads=1
+	@echo ""
+	@echo "✅ All tests passed with both backends"
+
+# Run Rust tests without cache (both backends)
+test-nocache:
+	@echo "=== Running Rust tests with SQLite (no cache) ==="
+	cargo test -- --nocapture
+	@echo ""
+	@echo "=== Running Rust tests with PostgreSQL (no cache) ==="
+	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentmaestro_test cargo test -- --nocapture
+	@echo ""
+	@echo "✅ All tests passed with both backends"
+
+# Run Rust tests with SQLite only
+test-sqlite:
+	@echo "Running Rust tests with SQLite..."
 	cargo test
+
+# Run Rust tests with PostgreSQL only
+test-postgres:
+	@echo "Running Rust tests with PostgreSQL..."
+	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentmaestro_test cargo test
 
 # Build Rust binaries and run Python integration tests
 test-int: build
