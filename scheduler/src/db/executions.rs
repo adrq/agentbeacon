@@ -27,6 +27,8 @@ pub async fn create(
     pool: &DbPool,
     workflow_id: &Uuid,
     task_states: JsonValue,
+    workflow_namespace: Option<String>,
+    workflow_version: Option<String>,
 ) -> Result<Uuid, SchedulerError> {
     let id = Uuid::new_v4();
     let status = "pending";
@@ -37,8 +39,8 @@ pub async fn create(
 
     let query = pool.prepare_query(
         r#"
-        INSERT INTO executions (id, workflow_id, status, task_states, created_at, updated_at, completed_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL)
+        INSERT INTO executions (id, workflow_id, status, task_states, created_at, updated_at, completed_at, workflow_namespace, workflow_version)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, ?, ?)
         "#,
     );
 
@@ -47,6 +49,8 @@ pub async fn create(
         .bind(workflow_id.to_string())
         .bind(status)
         .bind(task_states_json)
+        .bind(workflow_namespace)
+        .bind(workflow_version)
         .execute(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("Failed to create execution: {e}")))?;

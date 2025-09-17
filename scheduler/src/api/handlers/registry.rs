@@ -119,7 +119,7 @@ pub async fn register_workflow(
             workflow_registry_id: format!("{}/{}", req.namespace, req.name),
             version: req.version,
             content_hash,
-            created_at: created_at.to_rfc3339(),
+            created_at: workflow_version.created_at.clone(),
             message: "Workflow registered successfully".to_string(),
         }),
     ))

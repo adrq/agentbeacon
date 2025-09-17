@@ -44,7 +44,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(crate::api::routes())
         .route("/", get(serve_index))
         .route("/index.html", get(serve_index))
-        .route("/assets/*path", get(serve_asset))
+        .route("/assets/{*path}", get(serve_asset))
         .fallback(serve_spa_fallback)
         .layer(
             CorsLayer::new()

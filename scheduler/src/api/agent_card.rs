@@ -68,7 +68,7 @@ impl AgentCard {
             name: "AgentMaestro Scheduler".to_string(),
             version: "1.0.0".to_string(),
             protocol_version: "0.3.0".to_string(),
-            url: "http://localhost:9456".to_string(),
+            url: "http://localhost:9456/rpc".to_string(),
             description: "AgentMaestro scheduler for AI agent workflow orchestration with DAG-based task scheduling and workflow registry support".to_string(),
             preferred_transport: "JSONRPC".to_string(),
             default_input_modes: vec![
@@ -99,7 +99,7 @@ impl AgentCard {
                 output_modes: vec!["application/json".to_string()],
             }],
             additional_interfaces: Some(vec![AdditionalInterface {
-                url: "http://localhost:9456".to_string(),
+                url: "http://localhost:9456/rpc".to_string(),
                 transport: "JSONRPC".to_string(),
             }]),
         }
@@ -138,7 +138,7 @@ mod tests {
         assert_eq!(card.name, "AgentMaestro Scheduler");
         assert_eq!(card.version, "1.0.0");
         assert_eq!(card.protocol_version, "0.3.0");
-        assert_eq!(card.url, "http://localhost:9456");
+        assert_eq!(card.url, "http://localhost:9456/rpc");
         assert!(!card.description.is_empty());
         assert_eq!(card.preferred_transport, "JSONRPC");
         assert!(!card.default_input_modes.is_empty());

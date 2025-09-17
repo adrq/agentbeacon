@@ -335,17 +335,18 @@ def wait_for_port(
 
 
 def start_scheduler(
-    port: int, base_dir: Path = None, db_path: str = None
-) -> tuple[subprocess.Popen, str]:
+    port: int, base_dir: Path = None, db_url: str = None
+) -> tuple[subprocess.Popen, str | None]:
     """Start the scheduler binary with specified configuration.
 
     Args:
         port: Port number for scheduler to listen on
         base_dir: Base directory for the project (defaults to test file parent directory)
-        db_path: Path to existing database file (creates temp file if None)
+        db_url: Database URL (SQLite or PostgreSQL). Creates temp SQLite if None.
 
     Returns:
         tuple: (scheduler_process, temp_db_path)
+            temp_db_path is None if db_url was provided (caller handles cleanup)
 
     Raises:
         RuntimeError: If scheduler fails to start within timeout
@@ -353,22 +354,21 @@ def start_scheduler(
     if base_dir is None:
         base_dir = Path(__file__).parent.parent
 
-    # Create temp database if not provided
-    temp_db_path = db_path
-    if db_path is None:
+    # Create temp database only if no db_url provided
+    temp_db_path = None
+    if db_url is None:
         temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         temp_db.close()
         temp_db_path = temp_db.name
+        db_url = f"sqlite:{temp_db_path}?mode=rwc"
 
     scheduler_process = subprocess.Popen(
         [
             "./bin/agentmaestro-scheduler",
-            "-port",
+            "--port",
             str(port),
-            "-driver",
-            "sqlite3",
-            "-db",
-            temp_db_path,
+            "--db-url",
+            db_url,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -390,14 +390,16 @@ def start_scheduler(
 
 
 @contextmanager
-def scheduler_context(port: int = None):
+def scheduler_context(port: int = None, db_url: str = None):
     """Context manager for scheduler startup and cleanup.
 
     Args:
         port: Port number (allocates one if None)
+        db_url: Database URL (creates temp SQLite if None)
 
     Yields:
         dict: Contains 'process', 'url', 'port', 'db_path'
+            Note: db_path will be None if db_url was provided
     """
     port_manager = PortManager() if port is None else None
     allocated_port = port_manager.allocate_port() if port_manager else port
@@ -405,7 +407,7 @@ def scheduler_context(port: int = None):
     temp_db_path = None
 
     try:
-        scheduler_process, temp_db_path = start_scheduler(allocated_port)
+        scheduler_process, temp_db_path = start_scheduler(allocated_port, db_url=db_url)
         yield {
             "process": scheduler_process,
             "url": f"http://localhost:{allocated_port}",

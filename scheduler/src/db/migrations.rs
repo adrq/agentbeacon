@@ -8,6 +8,118 @@ const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../../migrations/0002_add_workflow_registry.sql");
 const MIGRATION_0003: &str = include_str!("../../migrations/0003_add_pending_tasks.sql");
 
+/// Replace BOOLEAN with INTEGER for SQLite using sqlparser tokenizer for correctness
+///
+/// SQLite doesn't have a native BOOLEAN type - it stores booleans as INTEGER (0/1).
+/// This function replaces BOOLEAN type declarations with INTEGER to ensure schema
+/// metadata matches the actual storage type, preventing SQLx type checking errors.
+///
+/// Only replaces BOOLEAN when it appears as a SQL type (after a column name),
+/// not when it's used as a column name itself.
+///
+/// # Example
+/// ```ignore
+/// replace_boolean_with_integer("is_latest BOOLEAN NOT NULL")
+/// // Returns: "is_latest INTEGER NOT NULL"
+/// ```
+fn replace_boolean_with_integer(sql: &str) -> String {
+    use sqlparser::dialect::GenericDialect;
+    use sqlparser::tokenizer::{Token, Tokenizer};
+
+    let dialect = GenericDialect {};
+    let mut tokenizer = Tokenizer::new(&dialect, sql);
+
+    let tokens = match tokenizer.tokenize() {
+        Ok(tokens) => tokens,
+        Err(_) => {
+            // Fallback for malformed SQL
+            return sql.to_string();
+        }
+    };
+
+    let mut result = String::new();
+    let mut prev_word_token: Option<Token> = None;
+
+    for token in tokens {
+        if let Token::Word(ref w) = token {
+            // Only replace uppercase BOOLEAN (the SQL type)
+            if w.value == "BOOLEAN" {
+                // Only replace BOOLEAN if previous WORD token exists (column/table name)
+                let should_replace = prev_word_token.is_some();
+
+                if should_replace {
+                    // Replace BOOLEAN with INTEGER for SQLite
+                    result.push_str("INTEGER");
+                    prev_word_token = Some(token.clone());
+                    continue;
+                }
+            }
+            // Update prev_word_token for any Word token
+            prev_word_token = Some(token.clone());
+        }
+        // Preserve all other tokens
+        result.push_str(&token.to_string());
+    }
+
+    result
+}
+
+/// Replace TIMESTAMP with TEXT for SQLite using sqlparser tokenizer for correctness
+///
+/// SQLite doesn't have a native TIMESTAMP type - we store RFC3339 strings as TEXT.
+/// This function replaces TIMESTAMP type declarations with TEXT to ensure schema
+/// metadata matches the actual storage type, preventing SQLx type checking errors.
+///
+/// Only replaces TIMESTAMP when it appears as a SQL type (after a column name),
+/// not when it's used as a column name itself (e.g., `timestamp TIMESTAMP`).
+///
+/// # Example
+/// ```ignore
+/// replace_timestamp_with_text("created_at TIMESTAMP NOT NULL")
+/// // Returns: "created_at TEXT NOT NULL"
+/// ```
+fn replace_timestamp_with_text(sql: &str) -> String {
+    use sqlparser::dialect::GenericDialect;
+    use sqlparser::tokenizer::{Token, Tokenizer};
+
+    let dialect = GenericDialect {};
+    let mut tokenizer = Tokenizer::new(&dialect, sql);
+
+    let tokens = match tokenizer.tokenize() {
+        Ok(tokens) => tokens,
+        Err(_) => {
+            // Fallback for malformed SQL
+            return sql.to_string();
+        }
+    };
+
+    let mut result = String::new();
+    let mut prev_word_token: Option<Token> = None;
+
+    for token in tokens {
+        if let Token::Word(ref w) = token {
+            // Only replace uppercase TIMESTAMP (the SQL type)
+            if w.value == "TIMESTAMP" {
+                // Only replace TIMESTAMP if previous WORD token exists (column/table name)
+                let should_replace = prev_word_token.is_some();
+
+                if should_replace {
+                    // Replace TIMESTAMP with TEXT for SQLite
+                    result.push_str("TEXT");
+                    prev_word_token = Some(token.clone());
+                    continue;
+                }
+            }
+            // Update prev_word_token for any Word token
+            prev_word_token = Some(token.clone());
+        }
+        // Preserve all other tokens
+        result.push_str(&token.to_string());
+    }
+
+    result
+}
+
 /// Replace TIMESTAMP with TIMESTAMPTZ using sqlparser tokenizer for correctness
 ///
 /// This function uses sqlparser's tokenizer to safely identify TIMESTAMP type keywords
@@ -113,7 +225,11 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
             // Use tokenizer to replace all TIMESTAMP → TIMESTAMPTZ comprehensively
             replace_timestamp_with_timestamptz(&m)
         } else {
-            migration_sql.to_string()
+            // SQLite: Replace semantic types with storage types for schema metadata compatibility
+            // 1. BOOLEAN → INTEGER (SQLite stores booleans as 0/1)
+            // 2. TIMESTAMP → TEXT (we store RFC3339 strings)
+            let m = replace_boolean_with_integer(migration_sql);
+            replace_timestamp_with_text(&m)
         };
 
         // Remove comments first, then split by semicolon

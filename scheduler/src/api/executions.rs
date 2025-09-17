@@ -180,8 +180,14 @@ async fn create_execution(
     }
 
     // Create execution record
-    let execution_id =
-        db::executions::create(&state.db_pool, &workflow_id, task_states.clone()).await?;
+    let execution_id = db::executions::create(
+        &state.db_pool,
+        &workflow_id,
+        task_states.clone(),
+        None,
+        None,
+    )
+    .await?;
 
     // Create initial execution event
     db::execution_events::create(
@@ -207,5 +213,5 @@ pub fn routes() -> Router<AppState> {
             "/api/executions",
             get(list_executions).post(create_execution),
         )
-        .route("/api/executions/:id", get(get_execution))
+        .route("/api/executions/{id}", get(get_execution))
 }

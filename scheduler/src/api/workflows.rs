@@ -124,5 +124,5 @@ async fn create_workflow(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/workflows", get(list_workflows).post(create_workflow))
-        .route("/api/workflows/:id", get(get_workflow))
+        .route("/api/workflows/{id}", get(get_workflow))
 }

@@ -12,7 +12,7 @@ from referencing import Registry, Resource
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_SCHEMA_PATH = ROOT / "docs" / "workflow-schema.json"
-A2A_SCHEMA_PATH = ROOT / "docs" / "a2a-task.schema.json"
+A2A_SCHEMA_PATH = ROOT / "docs" / "a2a-v0.3.0.schema.json"
 AGENTS_SCHEMA_PATH = ROOT / "docs" / "agents-schema.json"
 SEQUENTIAL_EXAMPLE_PATH = ROOT / "examples" / "workflow_sequential.yaml"
 PARALLEL_EXAMPLE_PATH = ROOT / "examples" / "workflow_parallel.yaml"

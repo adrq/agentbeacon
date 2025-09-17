@@ -5,6 +5,7 @@ use crate::error::SchedulerError;
 
 /// TaskAssignment represents a task ready for worker execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskAssignment {
     pub execution_id: String,
     pub node_id: String,

@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::Row;
 
 use crate::db::DbPool;
 use crate::error::SchedulerError;
 
 /// WorkflowVersion represents a versioned workflow in the registry
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowVersion {
     pub namespace: String,
     pub name: String,
@@ -17,43 +17,77 @@ pub struct WorkflowVersion {
     pub git_path: Option<String>,
     pub git_commit: Option<String>,
     pub git_branch: Option<String>,
-    pub created_at: String, // Stored as TEXT for SQLx Any compatibility
+    pub created_at: String, // RFC3339 string for SQLx Any compatibility
 }
 
 /// Create a new workflow version in the registry
 pub async fn create(pool: &DbPool, wf: &WorkflowVersion) -> Result<(), SchedulerError> {
-    let query = pool.prepare_query(
-        r#"
-        INSERT INTO workflow_version
-            (namespace, name, version, is_latest, content_hash, yaml_snapshot,
-             git_repo, git_path, git_commit, git_branch, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-    );
-    sqlx::query(&query)
-        .bind(&wf.namespace)
-        .bind(&wf.name)
-        .bind(&wf.version)
-        .bind(wf.is_latest)
-        .bind(&wf.content_hash)
-        .bind(&wf.yaml_snapshot)
-        .bind(&wf.git_repo)
-        .bind(&wf.git_path)
-        .bind(&wf.git_commit)
-        .bind(&wf.git_branch)
-        .bind(&wf.created_at)
-        .execute(pool.as_ref())
-        .await
-        .map_err(|e| {
-            if e.to_string().contains("UNIQUE") || e.to_string().contains("unique") {
-                SchedulerError::Conflict(format!(
-                    "Workflow version {}:{}@{} already exists",
-                    wf.namespace, wf.name, wf.version
-                ))
-            } else {
-                SchedulerError::Database(e.to_string())
-            }
-        })?;
+    // Use database-specific SQL for timestamp handling
+    // PostgreSQL requires explicit cast from RFC3339 string to TIMESTAMPTZ
+    // SQLite accepts string directly for TIMESTAMP columns
+    let query = if pool.is_postgres() {
+        pool.prepare_query(
+            r#"
+            INSERT INTO workflow_version
+                (namespace, name, version, is_latest, content_hash, yaml_snapshot,
+                 git_repo, git_path, git_commit, git_branch, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS TIMESTAMPTZ))
+            "#,
+        )
+    } else {
+        pool.prepare_query(
+            r#"
+            INSERT INTO workflow_version
+                (namespace, name, version, is_latest, content_hash, yaml_snapshot,
+                 git_repo, git_path, git_commit, git_branch, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+    };
+
+    // Database-specific binding: PostgreSQL uses bool, SQLite uses i64
+    let result = if pool.is_postgres() {
+        sqlx::query(&query)
+            .bind(&wf.namespace)
+            .bind(&wf.name)
+            .bind(&wf.version)
+            .bind(wf.is_latest) // PostgreSQL: bind bool directly
+            .bind(&wf.content_hash)
+            .bind(&wf.yaml_snapshot)
+            .bind(&wf.git_repo)
+            .bind(&wf.git_path)
+            .bind(&wf.git_commit)
+            .bind(&wf.git_branch)
+            .bind(&wf.created_at)
+            .execute(pool.as_ref())
+            .await
+    } else {
+        sqlx::query(&query)
+            .bind(&wf.namespace)
+            .bind(&wf.name)
+            .bind(&wf.version)
+            .bind(if wf.is_latest { 1i64 } else { 0i64 }) // SQLite: bind i64
+            .bind(&wf.content_hash)
+            .bind(&wf.yaml_snapshot)
+            .bind(&wf.git_repo)
+            .bind(&wf.git_path)
+            .bind(&wf.git_commit)
+            .bind(&wf.git_branch)
+            .bind(&wf.created_at)
+            .execute(pool.as_ref())
+            .await
+    };
+
+    result.map_err(|e| {
+        if e.to_string().contains("UNIQUE") || e.to_string().contains("unique") {
+            SchedulerError::Conflict(format!(
+                "Workflow version {}:{}@{} already exists",
+                wf.namespace, wf.name, wf.version
+            ))
+        } else {
+            SchedulerError::Database(e.to_string())
+        }
+    })?;
 
     Ok(())
 }
@@ -65,42 +99,113 @@ pub async fn get_by_ref(
     name: &str,
     version: &str,
 ) -> Result<Option<WorkflowVersion>, SchedulerError> {
-    let result = if version == "latest" {
-        // Resolve :latest to is_latest=true
-        let query = pool.prepare_query(
+    let (query, row) = if version == "latest" {
+        // Resolve :latest - database-specific handling
+        let created_at_expr = pool.format_timestamp(crate::db::pool::TimestampColumn::CreatedAt);
+        let query_str = format!(
             r#"
             SELECT namespace, name, version, is_latest, content_hash, yaml_snapshot,
-                   git_repo, git_path, git_commit, git_branch, created_at
+                   git_repo, git_path, git_commit, git_branch, {} as created_at
             FROM workflow_version
-            WHERE namespace = ? AND name = ? AND is_latest = true
+            WHERE namespace = ? AND name = ? AND is_latest = ?
             "#,
+            created_at_expr
         );
-        sqlx::query_as::<_, WorkflowVersion>(&query)
-            .bind(namespace)
-            .bind(name)
-            .fetch_optional(pool.as_ref())
-            .await
-            .map_err(|e| SchedulerError::Database(e.to_string()))?
+        let query = pool.prepare_query(&query_str);
+
+        let row = if pool.is_postgres() {
+            sqlx::query(&query)
+                .bind(namespace)
+                .bind(name)
+                .bind(true) // PostgreSQL: bind bool
+                .fetch_optional(pool.as_ref())
+                .await
+        } else {
+            sqlx::query(&query)
+                .bind(namespace)
+                .bind(name)
+                .bind(1i64) // SQLite: bind i64
+                .fetch_optional(pool.as_ref())
+                .await
+        }
+        .map_err(|e| SchedulerError::Database(e.to_string()))?;
+
+        (query, row)
     } else {
         // Exact version match
-        let query = pool.prepare_query(
+        let created_at_expr = pool.format_timestamp(crate::db::pool::TimestampColumn::CreatedAt);
+        let query_str = format!(
             r#"
             SELECT namespace, name, version, is_latest, content_hash, yaml_snapshot,
-                   git_repo, git_path, git_commit, git_branch, created_at
+                   git_repo, git_path, git_commit, git_branch, {} as created_at
             FROM workflow_version
             WHERE namespace = ? AND name = ? AND version = ?
             "#,
+            created_at_expr
         );
-        sqlx::query_as::<_, WorkflowVersion>(&query)
+        let query = pool.prepare_query(&query_str);
+
+        let row = sqlx::query(&query)
             .bind(namespace)
             .bind(name)
             .bind(version)
             .fetch_optional(pool.as_ref())
             .await
-            .map_err(|e| SchedulerError::Database(e.to_string()))?
+            .map_err(|e| SchedulerError::Database(e.to_string()))?;
+
+        (query, row)
     };
 
-    Ok(result)
+    match row {
+        None => Ok(None),
+        Some(r) => {
+            // Database-specific decoding: PostgreSQL uses bool, SQLite uses i64
+            let is_latest = if pool.is_postgres() {
+                r.try_get("is_latest")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?
+            } else {
+                // SQLite: Migration replaces BOOLEAN→INTEGER, so decode as i64
+                let val: i64 = r
+                    .try_get("is_latest")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?;
+                val != 0
+            };
+
+            Ok(Some(WorkflowVersion {
+                namespace: r
+                    .try_get("namespace")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+                name: r
+                    .try_get("name")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+                version: r
+                    .try_get("version")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+                is_latest,
+                content_hash: r
+                    .try_get("content_hash")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+                yaml_snapshot: r
+                    .try_get("yaml_snapshot")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+                git_repo: r
+                    .try_get("git_repo")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+                git_path: r
+                    .try_get("git_path")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+                git_commit: r
+                    .try_get("git_commit")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+                git_branch: r
+                    .try_get("git_branch")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+                created_at: r
+                    .try_get("created_at")
+                    .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            }))
+        }
+    }
 }
 
 /// List all versions for a workflow (namespace/name)
@@ -109,21 +214,74 @@ pub async fn list_versions(
     namespace: &str,
     name: &str,
 ) -> Result<Vec<WorkflowVersion>, SchedulerError> {
-    let query = pool.prepare_query(
+    let created_at_expr = pool.format_timestamp(crate::db::pool::TimestampColumn::CreatedAt);
+    let query_str = format!(
         r#"
         SELECT namespace, name, version, is_latest, content_hash, yaml_snapshot,
-               git_repo, git_path, git_commit, git_branch, created_at
+               git_repo, git_path, git_commit, git_branch, {} as created_at
         FROM workflow_version
         WHERE namespace = ? AND name = ?
         ORDER BY created_at DESC
         "#,
+        created_at_expr
     );
-    let versions = sqlx::query_as::<_, WorkflowVersion>(&query)
+    let query = pool.prepare_query(&query_str);
+
+    let rows = sqlx::query(&query)
         .bind(namespace)
         .bind(name)
         .fetch_all(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(e.to_string()))?;
+
+    let mut versions = Vec::new();
+    for r in rows {
+        // Database-specific decoding: PostgreSQL uses bool, SQLite uses i64
+        let is_latest = if pool.is_postgres() {
+            r.try_get("is_latest")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?
+        } else {
+            // SQLite: Migration replaces BOOLEAN→INTEGER, so decode as i64
+            let val: i64 = r
+                .try_get("is_latest")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?;
+            val != 0
+        };
+
+        versions.push(WorkflowVersion {
+            namespace: r
+                .try_get("namespace")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            name: r
+                .try_get("name")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            version: r
+                .try_get("version")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            is_latest,
+            content_hash: r
+                .try_get("content_hash")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            yaml_snapshot: r
+                .try_get("yaml_snapshot")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            git_repo: r
+                .try_get("git_repo")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            git_path: r
+                .try_get("git_path")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            git_commit: r
+                .try_get("git_commit")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            git_branch: r
+                .try_get("git_branch")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+            created_at: r
+                .try_get("created_at")
+                .map_err(|e| SchedulerError::Database(e.to_string()))?,
+        });
+    }
 
     Ok(versions)
 }
@@ -135,36 +293,59 @@ pub async fn update_latest(
     name: &str,
     new_latest_version: &str,
 ) -> Result<(), SchedulerError> {
-    // Clear existing is_latest flags
+    // Clear existing is_latest flags - database-specific handling
     let query = pool.prepare_query(
         r#"
         UPDATE workflow_version
-        SET is_latest = false
+        SET is_latest = ?
         WHERE namespace = ? AND name = ?
         "#,
     );
-    sqlx::query(&query)
-        .bind(namespace)
-        .bind(name)
-        .execute(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(e.to_string()))?;
 
-    // Set new is_latest
+    if pool.is_postgres() {
+        sqlx::query(&query)
+            .bind(false) // PostgreSQL: bind bool
+            .bind(namespace)
+            .bind(name)
+            .execute(pool.as_ref())
+            .await
+    } else {
+        sqlx::query(&query)
+            .bind(0i64) // SQLite: bind i64
+            .bind(namespace)
+            .bind(name)
+            .execute(pool.as_ref())
+            .await
+    }
+    .map_err(|e| SchedulerError::Database(e.to_string()))?;
+
+    // Set new is_latest - database-specific handling
     let query = pool.prepare_query(
         r#"
         UPDATE workflow_version
-        SET is_latest = true
+        SET is_latest = ?
         WHERE namespace = ? AND name = ? AND version = ?
         "#,
     );
-    sqlx::query(&query)
-        .bind(namespace)
-        .bind(name)
-        .bind(new_latest_version)
-        .execute(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(e.to_string()))?;
+
+    if pool.is_postgres() {
+        sqlx::query(&query)
+            .bind(true) // PostgreSQL: bind bool
+            .bind(namespace)
+            .bind(name)
+            .bind(new_latest_version)
+            .execute(pool.as_ref())
+            .await
+    } else {
+        sqlx::query(&query)
+            .bind(1i64) // SQLite: bind i64
+            .bind(namespace)
+            .bind(name)
+            .bind(new_latest_version)
+            .execute(pool.as_ref())
+            .await
+    }
+    .map_err(|e| SchedulerError::Database(e.to_string()))?;
 
     Ok(())
 }

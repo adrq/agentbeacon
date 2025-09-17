@@ -601,9 +601,10 @@ mod tests {
             .expect("Failed to create workflow");
 
         let task_states = json!({});
-        let execution_id = crate::db::executions::create(pool, &workflow_id, task_states)
-            .await
-            .expect("Failed to create execution");
+        let execution_id =
+            crate::db::executions::create(pool, &workflow_id, task_states, None, None)
+                .await
+                .expect("Failed to create execution");
 
         (workflow_id, execution_id)
     }
