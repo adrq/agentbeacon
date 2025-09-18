@@ -53,14 +53,15 @@ def _build_workflow_validator() -> Draft202012Validator:
     workflow_schema_id = workflow_schema.get(
         "$id", "https://schemas.agentmaestro.dev/workflow-schema.json"
     )
-    a2a_schema_id = a2a_schema.get(
-        "$id", "https://agentmaestro.dev/schemas/a2a-task.json"
-    )
+
+    # Register A2A schema with URI that resolves relative to workflow schema's base URI
+    # workflow-schema.json references "a2a-v0.3.0.schema.json" which resolves to this URI
+    a2a_schema_uri = "https://schemas.agentmaestro.dev/a2a-v0.3.0.schema.json"
 
     registry = Registry().with_resources(
         [
             (workflow_schema_id, Resource.from_contents(workflow_schema)),
-            (a2a_schema_id, Resource.from_contents(a2a_schema)),
+            (a2a_schema_uri, Resource.from_contents(a2a_schema)),
         ]
     )
 
@@ -107,10 +108,10 @@ def _assert_artifact_contract(document: dict) -> None:
                 f"tasks[{index}].task must be an object containing the shared contract"
             )
 
-        messages = task_block.get("messages")
-        if not isinstance(messages, list) or not messages:
-            pytest.fail(f"tasks[{index}].task.messages must be a non-empty list")
-        _assert_messages_contract(messages, task_index=index)
+        history = task_block.get("history")
+        if not isinstance(history, list) or not history:
+            pytest.fail(f"tasks[{index}].task.history must be a non-empty list")
+        _assert_messages_contract(history, task_index=index)
 
         depends_on = task.get("depends_on", []) or []
         if not isinstance(depends_on, list):
@@ -194,58 +195,58 @@ def _assert_messages_contract(messages: list[dict], *, task_index: int) -> None:
     for message_index, message in enumerate(messages):
         if not isinstance(message, dict):
             pytest.fail(
-                f"tasks[{task_index}].task.messages[{message_index}] must be an object"
+                f"tasks[{task_index}].task.history[{message_index}] must be an object"
             )
 
         required_keys = ("role", "parts", "messageId", "kind")
         for key in required_keys:
             if key not in message:
                 pytest.fail(
-                    f"tasks[{task_index}].task.messages[{message_index}] missing required field '{key}'"
+                    f"tasks[{task_index}].task.history[{message_index}] missing required field '{key}'"
                 )
 
         role = message.get("role")
         if role not in {"user", "agent"}:
             pytest.fail(
-                f"tasks[{task_index}].task.messages[{message_index}].role must be 'user' or 'agent'"
+                f"tasks[{task_index}].task.history[{message_index}].role must be 'user' or 'agent'"
             )
 
         if message.get("kind") != "message":
             pytest.fail(
-                f"tasks[{task_index}].task.messages[{message_index}].kind must be 'message'"
+                f"tasks[{task_index}].task.history[{message_index}].kind must be 'message'"
             )
 
         parts = message.get("parts")
         if not isinstance(parts, list) or not parts:
             pytest.fail(
-                f"tasks[{task_index}].task.messages[{message_index}].parts must be a non-empty list"
+                f"tasks[{task_index}].task.history[{message_index}].parts must be a non-empty list"
             )
 
         for part_index, part in enumerate(parts):
             if not isinstance(part, dict):
                 pytest.fail(
-                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}] must be an object"
+                    f"tasks[{task_index}].task.history[{message_index}].parts[{part_index}] must be an object"
                 )
 
             kind = part.get("kind")
             if kind not in {"text", "file", "data"}:
                 pytest.fail(
-                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}].kind must be one of 'text', 'file', or 'data'"
+                    f"tasks[{task_index}].task.history[{message_index}].parts[{part_index}].kind must be one of 'text', 'file', or 'data'"
                 )
 
             if kind == "text" and "text" not in part:
                 pytest.fail(
-                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}] missing 'text' payload"
+                    f"tasks[{task_index}].task.history[{message_index}].parts[{part_index}] missing 'text' payload"
                 )
 
             if kind == "file" and "file" not in part:
                 pytest.fail(
-                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}] missing 'file' payload"
+                    f"tasks[{task_index}].task.history[{message_index}].parts[{part_index}] missing 'file' payload"
                 )
 
             if kind == "data" and "data" not in part:
                 pytest.fail(
-                    f"tasks[{task_index}].task.messages[{message_index}].parts[{part_index}] missing 'data' payload"
+                    f"tasks[{task_index}].task.history[{message_index}].parts[{part_index}] missing 'data' payload"
                 )
 
 
