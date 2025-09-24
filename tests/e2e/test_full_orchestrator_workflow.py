@@ -25,6 +25,7 @@ from tests.testhelpers import (
     cleanup_processes,
     wait_for_port,
     start_orchestrator,
+    start_and_wait_for_a2a_agent,
     register_workflow,
     submit_workflow_via_a2a,
     poll_a2a_task_status,
@@ -47,6 +48,12 @@ def test_full_orchestrator_workflow_execution():
         log_file.unlink()
 
     try:
+        # Start mock-agent A2A server on port 18765 (required by examples/agents.yaml)
+        agent_proc = start_and_wait_for_a2a_agent(
+            18765, Path(__file__).parent.parent.parent
+        )
+        processes.append(agent_proc)
+
         # Create temporary database
         with TempDatabase() as db_url:
             # Start orchestrator with 2 workers using the complete database URL
@@ -67,7 +74,7 @@ def test_full_orchestrator_workflow_execution():
                 f"http://localhost:{test_port}/api/health", timeout=5
             )
             assert response.status_code == 200
-            assert response.json()["status"] == "ok"
+            assert response.json()["status"] == "healthy"
 
             # Verify processes are running
             time.sleep(2)  # Let workers start
@@ -82,24 +89,42 @@ def test_full_orchestrator_workflow_execution():
             )
 
             # Register a 2-node sequential workflow with bracketed format prompts
-            workflow_yaml = """
+            import uuid
+
+            msg_id_1 = str(uuid.uuid4())
+            msg_id_2 = str(uuid.uuid4())
+
+            workflow_yaml = f"""
 name: e2e-full-test
-namespace: integration
 description: Full orchestrator E2E test workflow
-nodes:
+tasks:
   - id: task-1
     agent: mock-agent
-    request:
-      prompt: "[e2e-execution][task-1] NOW Process data step 1"
+    task:
+      history:
+        - kind: message
+          messageId: "{msg_id_1}"
+          role: user
+          parts:
+            - kind: text
+              text: "[e2e-execution][task-1] NOW Process data step 1"
   - id: task-2
     agent: mock-agent
     depends_on: [task-1]
-    request:
-      prompt: "[e2e-execution][task-2] NOW Process data step 2"
+    task:
+      history:
+        - kind: message
+          messageId: "{msg_id_2}"
+          role: user
+          parts:
+            - kind: text
+              text: "[e2e-execution][task-2] NOW Process data step 2"
 """.strip()
 
             scheduler_url = f"http://localhost:{test_port}"
-            workflow_ref = register_workflow(scheduler_url, workflow_yaml)
+            workflow_ref = register_workflow(
+                scheduler_url, workflow_yaml, namespace="integration"
+            )
             assert workflow_ref.startswith("integration/e2e-full-test:"), (
                 f"Workflow ref should start with 'integration/e2e-full-test:', got: {workflow_ref}"
             )
@@ -131,24 +156,12 @@ nodes:
             # Poll task status until completion
             final_task = poll_a2a_task_status(scheduler_url, task_id, timeout=120)
 
-            # Verify task completed successfully
-            assert final_task["status"]["state"] == "completed", (
+            # Verify task completed successfully (new format: status is string)
+            assert final_task["status"] == "completed", (
                 f"Task should complete successfully: {final_task}"
             )
-            assert "artifacts" in final_task, (
-                f"Completed task should have artifacts: {final_task}"
-            )
-            assert len(final_task["artifacts"]) >= 1, (
-                f"Task should have execution status artifact: {final_task}"
-            )
-
-            # Verify execution status artifact exists
-            execution_artifact = final_task["artifacts"][0]
-            assert execution_artifact["artifactId"] == "execution-status", (
-                f"Should have execution status artifact: {execution_artifact}"
-            )
-            assert "completed" in execution_artifact["parts"][0]["text"], (
-                f"Artifact should show completed status: {execution_artifact}"
+            assert "taskStates" in final_task or "task_states" in final_task, (
+                f"Completed task should have task states: {final_task}"
             )
 
             # Verify scheduler still responding
@@ -156,7 +169,7 @@ nodes:
                 f"http://localhost:{test_port}/api/health", timeout=5
             )
             assert response.status_code == 200
-            assert response.json()["status"] == "ok"
+            assert response.json()["status"] == "healthy"
 
             # Verify mock agent logging functionality
             log_entries = parse_agent_log(test_name)

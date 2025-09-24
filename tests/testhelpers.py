@@ -21,6 +21,7 @@ import requests
 import re
 import uuid
 import pytest
+import yaml
 
 
 class PortManager:
@@ -111,7 +112,7 @@ class TempDatabase:
         """
         self._temp_dir = tempfile.TemporaryDirectory()
         self._db_path = Path(self._temp_dir.name) / "test.db"
-        return f"sqlite:///{self._db_path}"
+        return f"sqlite:{self._db_path}?mode=rwc"
 
     def cleanup(self) -> None:
         """Remove the database and temporary directory."""
@@ -609,30 +610,49 @@ def parse_agent_log(test_name: str) -> List[Dict]:
         return []
 
 
-def register_workflow(scheduler_url: str, workflow_yaml: str) -> str:
+def register_workflow(
+    scheduler_url: str, workflow_yaml: str, namespace: str = "default"
+) -> str:
     """Register a workflow and return its reference.
 
     Args:
         scheduler_url: Base URL of the scheduler (e.g., "http://localhost:19456")
         workflow_yaml: YAML content of the workflow to register
+        namespace: Workflow namespace (default: "default")
 
     Returns:
-        str: Workflow reference (e.g., "namespace/name:latest")
+        str: Workflow reference (e.g., "namespace/name:version")
 
     Raises:
         AssertionError: If registration fails or response is invalid
     """
 
+    # Parse YAML to extract name
+    workflow_data = yaml.safe_load(workflow_yaml)
+    name = workflow_data.get("name", "unnamed")
+
+    # Generate UUID-based version
+    version = str(uuid.uuid4())
+
+    # Call Rust scheduler registry endpoint
     response = requests.post(
-        f"{scheduler_url}/api/workflows/register",
-        json={"workflow_yaml": workflow_yaml},
+        f"{scheduler_url}/api/registry/workflows",
+        json={
+            "namespace": namespace,
+            "name": name,
+            "version": version,
+            "isLatest": True,
+            "workflowYaml": workflow_yaml,
+        },
         timeout=10,
     )
     assert response.status_code == 201, f"Workflow registration failed: {response.text}"
 
     data = response.json()
-    assert "ref" in data, f"Registration should return ref: {data}"
-    return data["ref"]
+    # Construct ref from response: "namespace/name:version"
+    workflow_registry_id = data.get("workflowRegistryId") or f"{namespace}/{name}"
+    version_from_response = data.get("version", version)
+    return f"{workflow_registry_id}:{version_from_response}"
 
 
 def get_a2a_endpoint(scheduler_url: str) -> str:
@@ -751,7 +771,7 @@ def poll_a2a_task_status(
         jsonrpc_request = {
             "jsonrpc": "2.0",
             "method": "tasks/get",
-            "params": {"taskId": task_id},
+            "params": {"executionId": task_id},
             "id": str(uuid.uuid4()),
         }
 
@@ -761,20 +781,24 @@ def poll_a2a_task_status(
         data = response.json()
         assert "result" in data, f"Task status response should have result: {data}"
 
-        task = data["result"]
-        task_state = task.get("status", {}).get("state")
+        result = data["result"]
+        task_status = result.get("status", "unknown")
 
-        # Debug: Print state changes
-        if task_state != last_state:
-            print(f"DEBUG: Task {task_id} state changed: {last_state} -> {task_state}")
-            last_state = task_state
+        # Debug: Print status changes
+        if task_status != last_state:
+            print(
+                f"DEBUG: Task {task_id} status changed: {last_state} -> {task_status}"
+            )
+            last_state = task_status
 
-        if task_state in ["completed", "failed", "cancelled"]:
-            return task
+        if task_status in ["completed", "failed", "cancelled"]:
+            return result
 
         time.sleep(1)  # Poll every second
 
-    pytest.fail(f"Task {task_id} did not complete within {timeout} seconds")
+    pytest.fail(
+        f"Task {task_id} did not complete within {timeout} seconds. Last status: {last_state}"
+    )
 
 
 def start_orchestrator(

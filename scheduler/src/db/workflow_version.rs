@@ -99,17 +99,16 @@ pub async fn get_by_ref(
     name: &str,
     version: &str,
 ) -> Result<Option<WorkflowVersion>, SchedulerError> {
-    let (query, row) = if version == "latest" {
+    let (_query, row) = if version == "latest" {
         // Resolve :latest - database-specific handling
         let created_at_expr = pool.format_timestamp(crate::db::pool::TimestampColumn::CreatedAt);
         let query_str = format!(
             r#"
             SELECT namespace, name, version, is_latest, content_hash, yaml_snapshot,
-                   git_repo, git_path, git_commit, git_branch, {} as created_at
+                   git_repo, git_path, git_commit, git_branch, {created_at_expr} as created_at
             FROM workflow_version
             WHERE namespace = ? AND name = ? AND is_latest = ?
-            "#,
-            created_at_expr
+            "#
         );
         let query = pool.prepare_query(&query_str);
 
@@ -137,11 +136,10 @@ pub async fn get_by_ref(
         let query_str = format!(
             r#"
             SELECT namespace, name, version, is_latest, content_hash, yaml_snapshot,
-                   git_repo, git_path, git_commit, git_branch, {} as created_at
+                   git_repo, git_path, git_commit, git_branch, {created_at_expr} as created_at
             FROM workflow_version
             WHERE namespace = ? AND name = ? AND version = ?
-            "#,
-            created_at_expr
+            "#
         );
         let query = pool.prepare_query(&query_str);
 
@@ -218,12 +216,11 @@ pub async fn list_versions(
     let query_str = format!(
         r#"
         SELECT namespace, name, version, is_latest, content_hash, yaml_snapshot,
-               git_repo, git_path, git_commit, git_branch, {} as created_at
+               git_repo, git_path, git_commit, git_branch, {created_at_expr} as created_at
         FROM workflow_version
         WHERE namespace = ? AND name = ?
         ORDER BY created_at DESC
-        "#,
-        created_at_expr
+        "#
     );
     let query = pool.prepare_query(&query_str);
 

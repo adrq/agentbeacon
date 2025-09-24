@@ -66,6 +66,10 @@ pub async fn handle_worker_sync(
             eprintln!("Error handling task result: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+        // When a worker submits a result, acknowledge with NoAction
+        // Don't assign new task in same request (prevents race condition)
+        return Ok(Json(WorkerSyncResponse::NoAction));
     }
 
     // Assign task from queue if worker is idle
@@ -126,11 +130,25 @@ async fn handle_task_result(
     // Determine success based on task status state
     let success = task_result.task_status.state == "completed";
 
+    tracing::info!(
+        execution_id = %task_result.execution_id,
+        node_id = %task_result.node_id,
+        success = success,
+        state = %task_result.task_status.state,
+        "Received task result from worker"
+    );
+
     // Update scheduler with task result (triggers event-driven scheduling)
     state
         .scheduler
         .handle_task_result(&task_result.execution_id, &task_result.node_id, success)
         .await?;
+
+    tracing::info!(
+        execution_id = %task_result.execution_id,
+        node_id = %task_result.node_id,
+        "Task result processed successfully"
+    );
 
     Ok(())
 }

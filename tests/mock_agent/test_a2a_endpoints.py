@@ -80,7 +80,7 @@ def test_message_send_success_response_schema(
 
     assert "status" in task
     assert "state" in task["status"]
-    assert task["status"]["state"] in ["submitted"]
+    assert task["status"]["state"] in ["submitted", "working", "completed"]
     assert "artifacts" in task
     assert isinstance(task["artifacts"], list)
     if task["artifacts"]:

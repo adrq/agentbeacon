@@ -12,7 +12,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use nix::sys::signal::{kill, Signal};
+use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{Duration, Instant, sleep};
 
 /// ANSI color codes for log prefixes
 const COLORS: &[&str] = &[
@@ -148,7 +148,7 @@ impl Orchestrator {
 
     /// Start a worker process
     async fn start_worker(&self, id: usize) -> Result<()> {
-        let name = format!("worker-{}", id);
+        let name = format!("worker-{id}");
         let scheduler_url = format!("http://localhost:{}", self.scheduler_port);
 
         let mut cmd = Command::new("./bin/agentmaestro-worker");
@@ -168,10 +168,10 @@ impl Orchestrator {
         is_scheduler: bool,
     ) -> Result<()> {
         let color = get_color(&name);
-        let mut child = cmd.spawn().context(format!("failed to spawn {}", name))?;
+        let mut child = cmd.spawn().context(format!("failed to spawn {name}"))?;
 
         let pid = child.id().context("no PID for child process")?;
-        println!("Started {} (PID: {})", name, pid);
+        println!("Started {name} (PID: {pid})");
 
         // Get stdout/stderr pipes
         let stdout = child.stdout.take().context("failed to get stdout pipe")?;
@@ -217,15 +217,15 @@ impl Orchestrator {
         reader: impl tokio::io::AsyncRead + Unpin,
     ) {
         let prefix = if color.is_empty() {
-            format!("{} | ", name)
+            format!("{name} | ")
         } else {
-            format!("{}{} |{} ", color, name, COLOR_RESET)
+            format!("{color}{name} |{COLOR_RESET} ")
         };
 
         let mut lines = BufReader::new(reader).lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
-            println!("{}{}", prefix, line);
+            println!("{prefix}{line}");
         }
     }
 
@@ -255,18 +255,15 @@ impl Orchestrator {
 
             // Process crashed
             if let Err(e) = exit_status {
-                eprintln!("Process {} exited unexpectedly: {}", name, e);
+                eprintln!("Process {name} exited unexpectedly: {e}");
             } else {
-                eprintln!("Process {} exited unexpectedly", name);
+                eprintln!("Process {name} exited unexpectedly");
             }
 
             retry_count += 1;
 
             if retry_count >= max_retries {
-                eprintln!(
-                    "Process {} exceeded max retries ({}), not restarting",
-                    name, max_retries
-                );
+                eprintln!("Process {name} exceeded max retries ({max_retries}), not restarting");
 
                 // If scheduler failed, exit orchestrator
                 if is_scheduler {
@@ -291,7 +288,7 @@ impl Orchestrator {
 
             // Restart the process
             if let Err(e) = self.restart_process(&name, is_scheduler, color).await {
-                eprintln!("Failed to restart {}: {}", name, e);
+                eprintln!("Failed to restart {name}: {e}");
                 return;
             }
         }
@@ -317,9 +314,9 @@ impl Orchestrator {
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().context(format!("failed to restart {}", name))?;
+        let mut child = cmd.spawn().context(format!("failed to restart {name}"))?;
         let pid = child.id().context("no PID for restarted process")?;
-        println!("Restarted {} (PID: {})", name, pid);
+        println!("Restarted {name} (PID: {pid})");
 
         // Get pipes
         let stdout = child.stdout.take().context("failed to get stdout pipe")?;
@@ -372,8 +369,8 @@ impl Orchestrator {
         // Send SIGTERM to all processes (no locks held)
         for (pid, name) in &pids_and_names {
             match kill(Pid::from_raw(*pid as i32), Signal::SIGTERM) {
-                Ok(_) => println!("Sent SIGTERM to {}", name),
-                Err(e) => eprintln!("Failed to send SIGTERM to {}: {}", name, e),
+                Ok(_) => println!("Sent SIGTERM to {name}"),
+                Err(e) => eprintln!("Failed to send SIGTERM to {name}: {e}"),
             }
         }
 
@@ -387,7 +384,7 @@ impl Orchestrator {
             if let Ok(()) = kill(Pid::from_raw(*pid as i32), None) {
                 // Process still alive
                 any_alive = true;
-                eprintln!("Process {} still alive, sending SIGKILL", name);
+                eprintln!("Process {name} still alive, sending SIGKILL");
                 let _ = kill(Pid::from_raw(*pid as i32), Signal::SIGKILL);
             }
         }

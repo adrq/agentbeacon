@@ -315,7 +315,7 @@ pub async fn create_execution(
     workflow_id: &Uuid,
     task_states: serde_json::Value,
 ) -> Result<Uuid, scheduler::error::SchedulerError> {
-    scheduler::db::executions::create(pool, workflow_id, task_states).await
+    scheduler::db::executions::create(pool, workflow_id, task_states, None, None).await
 }
 
 pub async fn get_execution_by_id(

@@ -117,8 +117,7 @@ fn parse_workflow_ref(ref_str: &str) -> Result<(String, String, String), Schedul
     let parts: Vec<&str> = ref_str.split('/').collect();
     if parts.len() != 2 {
         return Err(SchedulerError::ValidationFailed(format!(
-            "Invalid workflowRef format '{}', expected namespace/name[:version]",
-            ref_str
+            "Invalid workflowRef format '{ref_str}', expected namespace/name[:version]"
         )));
     }
 
@@ -130,8 +129,7 @@ fn parse_workflow_ref(ref_str: &str) -> Result<(String, String, String), Schedul
         2 => (name_version[0].to_string(), name_version[1].to_string()),
         _ => {
             return Err(SchedulerError::ValidationFailed(format!(
-                "Invalid workflowRef format '{}', expected namespace/name[:version]",
-                ref_str
+                "Invalid workflowRef format '{ref_str}', expected namespace/name[:version]"
             )));
         }
     };
