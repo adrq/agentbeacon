@@ -51,6 +51,9 @@ async fn main() -> Result<()> {
 }
 
 async fn bootstrap(cli: Cli) -> Result<()> {
+    // Check for development mode
+    let dev_mode = std::env::var("DEV_MODE").map(|v| v == "1").unwrap_or(false);
+
     // Connect to database
     info!("Connecting to database: {}", cli.db_url);
     let db_pool = db::pool::create(&cli.db_url)
@@ -95,7 +98,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
 
     // Build application state and router
     let app_state = AppState::new(db_pool, validator, task_queue, scheduler);
-    let app = create_router(app_state);
+    let app = create_router(app_state, dev_mode);
 
     // Bind to port
     let addr = SocketAddr::from(([0, 0, 0, 0], cli.port));
@@ -105,7 +108,17 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .await
         .context(format!("Failed to bind to {addr}"))?;
 
-    info!("AgentMaestro Scheduler listening on http://{}", addr);
+    if dev_mode {
+        info!(
+            "Starting scheduler on {} (DEV_MODE: redirecting to Vite dev server at localhost:5173)",
+            addr
+        );
+    } else {
+        info!(
+            "Starting scheduler on {} (PRODUCTION: serving embedded static files)",
+            addr
+        );
+    }
 
     // Start server with graceful shutdown
     axum::serve(listener, app)

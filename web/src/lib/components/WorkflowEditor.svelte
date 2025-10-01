@@ -1,77 +1,160 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
+  import { EditorView, basicSetup } from 'codemirror';
+  import { yaml } from '@codemirror/lang-yaml';
+  import { oneDark } from '@codemirror/theme-one-dark';
 
   export let value: string = '';
+  export let theme: 'dark' | 'light' = 'dark';
+  export let validating: boolean = false;
 
-  const dispatch = createEventDispatcher<{ change: string }>();
+  const dispatch = createEventDispatcher<{
+    change: string;
+    validate: void;
+    loadSample: void;
+  }>();
 
-  let textareaElement: HTMLTextAreaElement;
+  let editorContainer: HTMLDivElement;
+  let editorView: EditorView | null = null;
+  let hasUnsavedChanges = false;
 
-  // Sample YAML workflow for placeholder
+  // Sample YAML workflow
   const sampleWorkflow = `name: "Sample Workflow"
 description: "A simple example workflow"
 
-config:
-  api_keys: "production"
-
-on_error: "stop_all"
-
-nodes:
+tasks:
   - id: analyze
     agent: claude-code
-    prompt: |
-      Analyze the current codebase and identify
-      potential improvements
-    timeout: 300
+    task:
+      history:
+        - kind: message
+          messageId: "msg-1"
+          role: user
+          parts:
+            - kind: text
+              text: "Analyze the current codebase and identify potential improvements"
 
   - id: implement
     agent: gemini-cli
-    prompt: |
-      Implement the improvements suggested by:
-      \${analyze.output}
-    depends_on: [analyze]
-    retry:
-      attempts: 3
-      backoff: exponential`;
+    task:
+      history:
+        - kind: message
+          messageId: "msg-2"
+          role: user
+          parts:
+            - kind: text
+              text: "Implement the improvements suggested by the analysis"
+    depends_on: [analyze]`;
 
-  function handleInput(event: Event) {
-    const target = event.target as HTMLTextAreaElement;
-    value = target.value;
-    dispatch('change', value);
+  onMount(() => {
+    const updateListener = EditorView.updateListener.of((update) => {
+      if (update.docChanged) {
+        const newValue = update.state.doc.toString();
+        value = newValue;
+        hasUnsavedChanges = true;
+        dispatch('change', value);
+      }
+    });
+
+    const extensions = [
+      basicSetup,
+      yaml(),
+      updateListener,
+    ];
+
+    // Add theme based on prop
+    if (theme === 'dark') {
+      extensions.push(oneDark);
+    }
+
+    editorView = new EditorView({
+      doc: value,
+      extensions,
+      parent: editorContainer,
+    });
+
+    return () => {
+      editorView?.destroy();
+    };
+  });
+
+  function handleValidate() {
+    dispatch('validate');
   }
 
-  function loadSample() {
+  function handleLoadSample() {
+    if (hasUnsavedChanges && value.trim().length > 0) {
+      const confirmed = confirm('You have unsaved changes. Load sample workflow anyway?');
+      if (!confirmed) return;
+    }
+
     value = sampleWorkflow;
-    dispatch('change', value);
+    hasUnsavedChanges = false;
+
+    // Update CodeMirror editor
+    if (editorView) {
+      editorView.dispatch({
+        changes: {
+          from: 0,
+          to: editorView.state.doc.length,
+          insert: sampleWorkflow,
+        },
+      });
+    }
+
+    dispatch('loadSample');
   }
 </script>
 
 <div class="workflow-editor">
-    <div class="flex items-center justify-between mb-2">
-      <button class="inline-flex items-center rounded-md bg-primary text-primary-foreground text-[11px] font-medium px-2 py-1 hover:brightness-110 transition" on:click={loadSample}>
+  <div class="flex items-center justify-between mb-2 gap-2">
+    <div class="flex gap-2">
+      <button
+        class="inline-flex items-center rounded-md bg-primary text-primary-foreground text-[11px] font-medium px-2 py-1 hover:brightness-110 transition disabled:opacity-50 disabled:cursor-not-allowed"
+        on:click={handleLoadSample}
+        disabled={validating}
+      >
         Load Sample
       </button>
-      <span class="editor-stats tabular-nums">{value.length} chars</span>
+      <button
+        class="inline-flex items-center rounded-md bg-blue-600 text-white text-[11px] font-medium px-2 py-1 hover:brightness-110 transition disabled:opacity-50 disabled:cursor-not-allowed"
+        on:click={handleValidate}
+        disabled={validating}
+      >
+        {validating ? 'Validating...' : 'Validate Workflow'}
+      </button>
     </div>
+    <span class="editor-stats tabular-nums">{value.length} chars</span>
+  </div>
 
-  <textarea
-    bind:this={textareaElement}
-    bind:value={value}
-    on:input={handleInput}
-    placeholder="Enter your workflow YAML here..."
-    class="code-surface w-full flex-1 min-h-[420px] p-4 resize-none scroll-thin"
-    spellcheck="false"
-    autocomplete="off"
-  ></textarea>
+  <div bind:this={editorContainer} class="editor-container code-surface flex-1"></div>
 </div>
 
 <style>
-  .workflow-editor { height: 100%; display: flex; flex-direction: column; }
+  .workflow-editor {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
 
-  /* Legacy CSS largely removed; using utility classes + tokens */
+  .editor-container {
+    overflow: auto;
+    border-radius: 4px;
+  }
+
+  .editor-container :global(.cm-editor) {
+    height: 100%;
+    font-size: 13px;
+  }
+
+  .editor-container :global(.cm-scroller) {
+    overflow: auto;
+  }
 
   /* Dark mode */
   @media (prefers-color-scheme: dark) {
-    .code-surface { background: #0f172a; }
+    .code-surface {
+      background: #0f172a;
+    }
   }
 </style>

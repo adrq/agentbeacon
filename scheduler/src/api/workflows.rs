@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::get,
+    routing::{get, post},
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -120,9 +120,85 @@ async fn create_workflow(
     Ok(Json(saved_workflow.into()))
 }
 
+/// Request body for validating workflows (no database persistence)
+#[derive(Debug, Deserialize)]
+pub struct ValidateWorkflowRequest {
+    pub yaml: String,
+}
+
+/// Validation error response
+#[derive(Debug, Serialize)]
+pub struct ValidationError {
+    #[serde(rename = "type")]
+    pub error_type: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nodes: Option<Vec<String>>,
+}
+
+/// Validation response
+#[derive(Debug, Serialize)]
+pub struct ValidationResponse {
+    pub valid: bool,
+    pub errors: Vec<ValidationError>,
+}
+
+/// Validate workflow YAML without persisting (POST /api/validate-workflow)
+async fn validate_workflow(
+    State(state): State<AppState>,
+    Json(payload): Json<ValidateWorkflowRequest>,
+) -> Result<Json<ValidationResponse>, SchedulerError> {
+    // Check size limit
+    if payload.yaml.len() > MAX_YAML_SIZE {
+        return Ok(Json(ValidationResponse {
+            valid: false,
+            errors: vec![ValidationError {
+                error_type: "semantic".to_string(),
+                message: format!(
+                    "YAML content exceeds maximum size of {} bytes ({} bytes provided)",
+                    MAX_YAML_SIZE,
+                    payload.yaml.len()
+                ),
+                line: None,
+                node: None,
+                nodes: None,
+            }],
+        }));
+    }
+
+    // Reuse existing validation logic from workflow registration
+    match state.validator.validate_workflow_yaml(&payload.yaml) {
+        Ok(_) => {
+            // Validation passed
+            Ok(Json(ValidationResponse {
+                valid: true,
+                errors: vec![],
+            }))
+        }
+        Err(e) => {
+            // Validation failed - convert error to ValidationError format
+            Ok(Json(ValidationResponse {
+                valid: false,
+                errors: vec![ValidationError {
+                    error_type: "syntax".to_string(),
+                    message: e.to_string(),
+                    line: None,
+                    node: None,
+                    nodes: None,
+                }],
+            }))
+        }
+    }
+}
+
 /// Workflow routes
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/workflows", get(list_workflows).post(create_workflow))
         .route("/api/workflows/{id}", get(get_workflow))
+        .route("/api/validate-workflow", post(validate_workflow))
 }

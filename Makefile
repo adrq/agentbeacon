@@ -186,10 +186,15 @@ pre-commit:
 	@echo "Running pre-commit hooks..."
 	uv run pre-commit run --all-files
 
-# Development mode - run backend in dev mode
+# Development mode - run backend in dev mode (Go)
 dev-backend:
 	@echo "Starting backend in development mode..."
 	DEV_MODE=1 go run ./core/cmd/agentmaestro
+
+# Development mode - run Rust scheduler in dev mode
+dev-backend-rust:
+	@echo "Starting Rust scheduler in development mode..."
+	DEV_MODE=1 cargo run --bin agentmaestro-scheduler
 
 # Development mode - run frontend dev server
 dev-frontend:
@@ -199,7 +204,7 @@ dev-frontend:
 # Development mode - run both backend and frontend (in separate terminals)
 dev:
 	@echo "To run in development mode, use two terminals:"
-	@echo "Terminal 1: make dev-backend"
+	@echo "Terminal 1: make dev-backend      (Go) or make dev-backend-rust (Rust)"
 	@echo "Terminal 2: make dev-frontend"
 	@echo "Then open http://localhost:5173 for development with HMR"
 	@echo "Or run them in background with: make dev-backend & make dev-frontend"

@@ -1,4 +1,4 @@
-use axum::{Router, routing::get};
+use axum::{Router, extract::Request, response::Redirect, routing::get};
 use std::sync::Arc;
 use tower_http::{
     compression::CompressionLayer,
@@ -38,14 +38,23 @@ impl AppState {
 }
 
 /// Build Axum router with all routes and middleware
-pub fn create_router(state: AppState) -> Router {
-    // Merge with asset routes and apply state
-    Router::new()
-        .merge(crate::api::routes())
-        .route("/", get(serve_index))
-        .route("/index.html", get(serve_index))
-        .route("/assets/{*path}", get(serve_asset))
-        .fallback(serve_spa_fallback)
+pub fn create_router(state: AppState, dev_mode: bool) -> Router {
+    let base_router = Router::new().merge(crate::api::routes());
+
+    let router = if dev_mode {
+        // Development mode - redirect all UI routes to Vite dev server
+        base_router
+            .route("/", get(dev_mode_redirect_root))
+            .fallback(dev_mode_redirect_path)
+    } else {
+        // Production mode - serve embedded static files (use fallback for all non-API routes)
+        base_router
+            .route("/", get(serve_index))
+            .route("/index.html", get(serve_index))
+            .fallback(serve_spa_fallback)
+    };
+
+    router
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -56,19 +65,32 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Development mode - redirect root to Vite dev server
+async fn dev_mode_redirect_root() -> Redirect {
+    Redirect::temporary("http://localhost:5173")
+}
+
+/// Development mode - redirect all other paths to Vite dev server
+async fn dev_mode_redirect_path(req: Request) -> Redirect {
+    let path = req.uri().path();
+    let redirect_url = format!("http://localhost:5173{}", path);
+    Redirect::temporary(&redirect_url)
+}
+
 /// Serve index.html
 async fn serve_index() -> axum::response::Response {
     Assets::serve("index.html")
 }
 
-/// Serve asset by path
-async fn serve_asset(
-    axum::extract::Path(path): axum::extract::Path<String>,
-) -> axum::response::Response {
-    Assets::serve(&format!("assets/{path}"))
-}
+/// SPA fallback - try to serve asset, otherwise serve index.html
+async fn serve_spa_fallback(req: Request) -> axum::response::Response {
+    let path = req.uri().path().trim_start_matches('/');
 
-/// SPA fallback - serve index.html for all non-API routes
-async fn serve_spa_fallback() -> axum::response::Response {
-    Assets::serve_spa_fallback()
+    // Try to serve the requested asset first
+    if !path.is_empty() && path != "index.html" {
+        Assets::serve(path)
+    } else {
+        // Default to index.html for root and unmatched routes
+        Assets::serve_spa_fallback()
+    }
 }

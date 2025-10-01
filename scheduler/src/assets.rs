@@ -11,6 +11,13 @@ use rust_embed::RustEmbed;
 #[include = "*.html"]
 #[include = "*.js"]
 #[include = "*.css"]
+#[include = "*.svg"]
+#[include = "*.png"]
+#[include = "*.jpg"]
+#[include = "*.jpeg"]
+#[include = "*.ico"]
+#[include = "*.woff"]
+#[include = "*.woff2"]
 #[include = "assets/*"]
 pub struct Assets;
 

@@ -37,6 +37,19 @@ export interface UpdateWorkflowRequest {
   yaml_source?: string;
 }
 
+export interface ValidationError {
+  type: 'syntax' | 'structural' | 'semantic';
+  message: string;
+  line?: number;
+  node?: string;
+  nodes?: string[];
+}
+
+export interface ValidationResponse {
+  valid: boolean;
+  errors: ValidationError[];
+}
+
 // API Client class
 export class AgentMaestroAPI {
   private baseURL: string;
@@ -108,6 +121,47 @@ export class AgentMaestroAPI {
     });
   }
 
+  async validateWorkflow(yaml: string): Promise<ValidationResponse> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+    try {
+      const response = await fetch(`${this.baseURL}/validate-workflow`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ yaml }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        throw new Error(`Validation request failed: ${response.status} ${response.statusText}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      clearTimeout(timeout);
+
+      // Handle timeout specifically
+      if (error instanceof Error && error.name === 'AbortError') {
+        return {
+          valid: false,
+          errors: [
+            {
+              type: 'syntax',
+              message: 'Validation timeout - please try again',
+            },
+          ],
+        };
+      }
+
+      throw error;
+    }
+  }
+
   // Execution operations
   async getExecutions(workflowId?: string): Promise<Execution[]> {
     const endpoint = workflowId ? `/executions?workflow_id=${workflowId}` : '/executions';
@@ -158,6 +212,17 @@ export class AgentMaestroAPI {
     return this.fetchJSON<void>(`/configs/${id}`, {
       method: 'DELETE',
     });
+  }
+
+  // Health check operations
+  async checkReady(): Promise<{ status: string; ok: boolean }> {
+    try {
+      const response = await fetch(`${this.baseURL}/ready`);
+      const data = await response.json();
+      return { status: data.status, ok: response.ok };
+    } catch (error) {
+      return { status: 'error', ok: false };
+    }
   }
 }
 
