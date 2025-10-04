@@ -1,0 +1,41 @@
+name: guardrails_missing_artifact
+description: Invalid workflow with reference to non-existent artifact (FR-006)
+config:
+  api_keys: development
+on_error: stop_all
+tasks:
+  - id: draft_welcome
+    agent: demo-agent
+    task:
+      contextId: doc_workflow
+      history:
+        - messageId: msg-draft-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Draft a welcome message.
+      artifacts:
+        - artifactId: welcome_note
+          parts:
+            - kind: text
+              text: Welcome to AgentMaestro!
+  - id: summarize_plan
+    agent: demo-agent
+    depends_on:
+      - draft_welcome
+    inputs:
+      artifacts:
+        - from: draft_welcome
+          artifactId: nonexistent_artifact
+    task:
+      contextId: doc_workflow
+      history:
+        - messageId: msg-summarize-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Summarize using the artifact (which doesn't exist).

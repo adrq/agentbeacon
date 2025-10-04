@@ -1,6 +1,6 @@
 use jsonschema::{Retrieve, Uri, Validator};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::SchedulerError;
 
@@ -106,7 +106,36 @@ impl SchemaValidator {
             )));
         }
 
+        // Perform DAG validation (guardrails)
+        let dag_errors = self.validate_dag_guardrails(&workflow_json);
+        if !dag_errors.is_empty() {
+            return Err(SchedulerError::DagValidationFailed(dag_errors));
+        }
+
         Ok(workflow_json)
+    }
+
+    /// Validate DAG guardrails (Phase 1 implementation)
+    /// Returns a vector of human-readable error messages
+    fn validate_dag_guardrails(&self, workflow: &JsonValue) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Extract tasks array
+        let tasks = match workflow.get("tasks").and_then(|t| t.as_array()) {
+            Some(tasks) => tasks,
+            None => return errors, // Schema validation should have caught this
+        };
+
+        // Check for duplicate task IDs
+        self.check_duplicate_task_ids(tasks, &mut errors);
+
+        // Check dependencies (existence, cycles, self-references)
+        self.check_dependencies(tasks, &mut errors);
+
+        // Check artifact constraints
+        self.check_artifacts(tasks, &mut errors);
+
+        errors
     }
 
     /// Validate task payload against A2A v0.3.0 schema (FR-010)
@@ -133,5 +162,179 @@ impl SchemaValidator {
         }
 
         Ok(())
+    }
+
+    /// Check for duplicate task IDs (FR-001)
+    fn check_duplicate_task_ids(&self, tasks: &[JsonValue], errors: &mut Vec<String>) {
+        let mut seen_ids = HashSet::new();
+
+        for task in tasks {
+            if let Some(id) = task.get("id").and_then(|v| v.as_str()) {
+                if !seen_ids.insert(id) {
+                    errors.push(format!("Task id '{id}' is declared more than once"));
+                }
+            }
+        }
+    }
+
+    /// Check dependencies (existence, cycles, self-references)
+    fn check_dependencies(&self, tasks: &[JsonValue], errors: &mut Vec<String>) {
+        // Build task ID set and dependency map
+        let mut task_ids = HashSet::new();
+        let mut dependencies: HashMap<&str, Vec<&str>> = HashMap::new();
+
+        for task in tasks {
+            if let Some(id) = task.get("id").and_then(|v| v.as_str()) {
+                task_ids.insert(id);
+
+                if let Some(depends_on) = task.get("depends_on").and_then(|v| v.as_array()) {
+                    let deps: Vec<&str> = depends_on.iter().filter_map(|d| d.as_str()).collect();
+                    dependencies.insert(id, deps);
+                }
+            }
+        }
+
+        // Check dependency existence and self-references
+        for (task_id, deps) in &dependencies {
+            for dep in deps {
+                // Check for self-dependency
+                if dep == task_id {
+                    errors.push(format!("Task '{task_id}' cannot depend on itself"));
+                }
+
+                // Check if dependency exists
+                if !task_ids.contains(dep) {
+                    errors.push(format!(
+                        "Task '{task_id}' depends on '{dep}' which does not exist"
+                    ));
+                }
+            }
+        }
+
+        // Check for cycles using DFS
+        let mut visited = HashSet::new();
+        let mut rec_stack = HashSet::new();
+
+        for task_id in &task_ids {
+            if !visited.contains(task_id)
+                && Self::has_cycle(task_id, &dependencies, &mut visited, &mut rec_stack)
+            {
+                errors.push("Workflow contains circular dependencies".to_string());
+                break; // Report cycle once
+            }
+        }
+    }
+
+    /// Helper for cycle detection using DFS
+    fn has_cycle<'a>(
+        node: &'a str,
+        dependencies: &HashMap<&'a str, Vec<&'a str>>,
+        visited: &mut HashSet<&'a str>,
+        rec_stack: &mut HashSet<&'a str>,
+    ) -> bool {
+        visited.insert(node);
+        rec_stack.insert(node);
+
+        if let Some(deps) = dependencies.get(node) {
+            for dep in deps {
+                if !visited.contains(dep) {
+                    if Self::has_cycle(dep, dependencies, visited, rec_stack) {
+                        return true;
+                    }
+                } else if rec_stack.contains(dep) {
+                    return true; // Back edge found - cycle detected
+                }
+            }
+        }
+
+        rec_stack.remove(node);
+        false
+    }
+
+    /// Check artifact constraints
+    fn check_artifacts(&self, tasks: &[JsonValue], errors: &mut Vec<String>) {
+        // Build artifact producer map
+        let mut artifact_producers: HashMap<String, String> = HashMap::new();
+        let mut task_dependencies: HashMap<String, HashSet<String>> = HashMap::new();
+
+        // First pass: collect all artifact producers and dependencies
+        for task in tasks {
+            let task_id = match task.get("id").and_then(|v| v.as_str()) {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+
+            // Collect depends_on relationships
+            if let Some(depends_on) = task.get("depends_on").and_then(|v| v.as_array()) {
+                let deps: HashSet<String> = depends_on
+                    .iter()
+                    .filter_map(|d| d.as_str().map(String::from))
+                    .collect();
+                task_dependencies.insert(task_id.clone(), deps);
+            }
+
+            // Collect artifact outputs from task.artifacts (A2A protocol)
+            if let Some(task_block) = task.get("task").and_then(|v| v.as_object()) {
+                if let Some(artifacts) = task_block.get("artifacts").and_then(|v| v.as_array()) {
+                    for artifact in artifacts {
+                        if let Some(artifact_id) =
+                            artifact.get("artifactId").and_then(|v| v.as_str())
+                        {
+                            // Check for duplicate artifact producers
+                            if let Some(existing_producer) = artifact_producers.get(artifact_id) {
+                                errors.push(format!(
+                                    "Artifact '{artifact_id}' is declared by both task '{existing_producer}' and task '{task_id}'"
+                                ));
+                            } else {
+                                artifact_producers.insert(artifact_id.to_string(), task_id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Second pass: validate artifact inputs
+        for task in tasks {
+            let task_id = match task.get("id").and_then(|v| v.as_str()) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            if let Some(inputs) = task.get("inputs").and_then(|v| v.as_object()) {
+                if let Some(artifact_refs) = inputs.get("artifacts").and_then(|v| v.as_array()) {
+                    for artifact_ref in artifact_refs {
+                        let from_task = artifact_ref.get("from").and_then(|v| v.as_str());
+                        let artifact_id = artifact_ref.get("artifactId").and_then(|v| v.as_str());
+
+                        if let (Some(from), Some(artifact)) = (from_task, artifact_id) {
+                            // Check if artifact producer exists
+                            if let Some(producer) = artifact_producers.get(artifact) {
+                                // Verify producer matches the 'from' field
+                                if producer != from {
+                                    errors.push(format!(
+                                        "Task '{task_id}' expects artifact '{artifact}' from task '{from}', but it is produced by '{producer}'"
+                                    ));
+                                }
+
+                                // Check if producer is in depends_on
+                                let deps =
+                                    task_dependencies.get(task_id).cloned().unwrap_or_default();
+                                if !deps.contains(from) {
+                                    errors.push(format!(
+                                        "Task '{task_id}' consumes artifact '{artifact}' but does not depend on producer '{from}'"
+                                    ));
+                                }
+                            } else {
+                                // Artifact producer doesn't exist
+                                errors.push(format!(
+                                    "Task '{task_id}' expects artifact '{artifact}' but no task declares it"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

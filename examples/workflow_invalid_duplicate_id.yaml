@@ -1,0 +1,30 @@
+name: guardrails_duplicate_id
+description: Invalid workflow with duplicate task IDs (FR-001)
+config:
+  api_keys: development
+on_error: stop_all
+tasks:
+  - id: draft_welcome
+    agent: demo-agent
+    task:
+      contextId: doc_workflow
+      history:
+        - messageId: msg-draft-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Draft a welcome message.
+  - id: draft_welcome
+    agent: demo-agent
+    task:
+      contextId: doc_workflow
+      history:
+        - messageId: msg-draft-2
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Draft another welcome message.

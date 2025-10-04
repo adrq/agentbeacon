@@ -73,7 +73,7 @@ async fn dev_mode_redirect_root() -> Redirect {
 /// Development mode - redirect all other paths to Vite dev server
 async fn dev_mode_redirect_path(req: Request) -> Redirect {
     let path = req.uri().path();
-    let redirect_url = format!("http://localhost:5173{}", path);
+    let redirect_url = format!("http://localhost:5173{path}");
     Redirect::temporary(&redirect_url)
 }
 

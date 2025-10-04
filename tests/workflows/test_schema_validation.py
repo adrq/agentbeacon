@@ -19,6 +19,13 @@ PARALLEL_EXAMPLE_PATH = ROOT / "examples" / "workflow_parallel.yaml"
 SIMPLE_EXAMPLE_PATH = ROOT / "examples" / "simple.yaml"
 PARALLEL_NEW_SPEC_PATH = ROOT / "examples" / "parallel.yaml"
 AGENTS_EXAMPLE_PATH = ROOT / "examples" / "agents.yaml"
+GUARDRAILS_VALID_PATH = ROOT / "examples" / "workflow_guardrails_valid.yaml"
+GUARDRAILS_DUPLICATE_ID_PATH = ROOT / "examples" / "workflow_invalid_duplicate_id.yaml"
+GUARDRAILS_CYCLE_PATH = ROOT / "examples" / "workflow_invalid_cycle.yaml"
+GUARDRAILS_ARTIFACT_PATH = ROOT / "examples" / "workflow_invalid_artifact.yaml"
+GUARDRAILS_MISSING_ARTIFACT_PATH = (
+    ROOT / "examples" / "workflow_invalid_missing_artifact.yaml"
+)
 
 
 def _load_yaml_document(path: Path) -> dict:
@@ -273,3 +280,76 @@ def test_agents_yaml_validates_against_schema() -> None:
     validator = _build_agents_validator()
     document = _load_yaml_document(AGENTS_EXAMPLE_PATH)
     validator.validate(document)
+
+
+def test_guardrails_valid_workflow_passes() -> None:
+    """Valid guardrail workflow should pass all validations."""
+    validator = _build_workflow_validator()
+    document = _load_yaml_document(GUARDRAILS_VALID_PATH)
+    validator.validate(document)
+    _assert_artifact_contract(document)
+
+
+def test_guardrails_duplicate_id_fails() -> None:
+    """Workflow with duplicate task IDs should fail validation."""
+    from _pytest.outcomes import Failed
+
+    document = _load_yaml_document(GUARDRAILS_DUPLICATE_ID_PATH)
+    with pytest.raises(Failed, match="Duplicate task id"):
+        _assert_artifact_contract(document)
+
+
+def test_guardrails_cycle_detection() -> None:
+    """Workflow with circular dependencies should be detected."""
+    document = _load_yaml_document(GUARDRAILS_CYCLE_PATH)
+
+    # Build dependency graph and check for cycles
+    tasks = document.get("tasks", [])
+    task_ids = {task["id"] for task in tasks}
+    dependencies = {task["id"]: set(task.get("depends_on", [])) for task in tasks}
+
+    # Detect cycles using DFS
+    def has_cycle(node: str, visited: set[str], rec_stack: set[str]) -> bool:
+        visited.add(node)
+        rec_stack.add(node)
+
+        for neighbor in dependencies.get(node, set()):
+            if neighbor not in visited:
+                if has_cycle(neighbor, visited, rec_stack):
+                    return True
+            elif neighbor in rec_stack:
+                return True
+
+        rec_stack.remove(node)
+        return False
+
+    visited: set[str] = set()
+    has_cycle_detected = False
+
+    for task_id in task_ids:
+        if task_id not in visited:
+            if has_cycle(task_id, visited, set()):
+                has_cycle_detected = True
+                break
+
+    assert has_cycle_detected, "Expected cycle to be detected in workflow"
+
+
+def test_guardrails_artifact_dependency_enforcement() -> None:
+    """Task consuming artifact must list producer in depends_on."""
+    from _pytest.outcomes import Failed
+
+    document = _load_yaml_document(GUARDRAILS_ARTIFACT_PATH)
+    with pytest.raises(
+        Failed, match="must declare depends_on.*when consuming artifact"
+    ):
+        _assert_artifact_contract(document)
+
+
+def test_guardrails_missing_artifact_producer() -> None:
+    """Task consuming non-existent artifact should fail validation."""
+    from _pytest.outcomes import Failed
+
+    document = _load_yaml_document(GUARDRAILS_MISSING_ARTIFACT_PATH)
+    with pytest.raises(Failed, match="expects artifact.*but no task declares it"):
+        _assert_artifact_contract(document)

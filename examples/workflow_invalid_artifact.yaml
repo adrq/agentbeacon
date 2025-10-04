@@ -1,0 +1,39 @@
+name: guardrails_artifact_violation
+description: Invalid workflow with artifact dependency violation (FR-008)
+config:
+  api_keys: development
+on_error: stop_all
+tasks:
+  - id: draft_welcome
+    agent: demo-agent
+    task:
+      contextId: doc_workflow
+      history:
+        - messageId: msg-draft-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Draft a welcome message for the project documentation.
+      artifacts:
+        - artifactId: welcome_note
+          parts:
+            - kind: text
+              text: Welcome to AgentMaestro!
+  - id: summarize_plan
+    agent: demo-agent
+    inputs:
+      artifacts:
+        - from: draft_welcome
+          artifactId: welcome_note
+    task:
+      contextId: doc_workflow
+      history:
+        - messageId: msg-summarize-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: |
+                Summarize the welcome note (but forgot to add draft_welcome to depends_on).

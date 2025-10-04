@@ -21,6 +21,9 @@ pub enum SchedulerError {
     #[error("validation failed: {0}")]
     ValidationFailed(String),
 
+    #[error("DAG validation failed")]
+    DagValidationFailed(Vec<String>),
+
     #[error("schema compilation failed: {0}")]
     SchemaCompilation(String),
 
@@ -30,17 +33,37 @@ pub enum SchedulerError {
 
 impl IntoResponse for SchedulerError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            SchedulerError::WorkflowNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
-            SchedulerError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
-            SchedulerError::ValidationFailed(_) => (StatusCode::BAD_REQUEST, self.to_string()),
-            SchedulerError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            SchedulerError::SchemaCompilation(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+        match self {
+            SchedulerError::WorkflowNotFound(msg) => {
+                (StatusCode::NOT_FOUND, Json(json!({"error": msg}))).into_response()
             }
-            SchedulerError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
-        };
-
-        (status, Json(json!({"error": message}))).into_response()
+            SchedulerError::NotFound(msg) => {
+                (StatusCode::NOT_FOUND, Json(json!({"error": msg}))).into_response()
+            }
+            SchedulerError::ValidationFailed(msg) => {
+                (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response()
+            }
+            SchedulerError::DagValidationFailed(issues) => {
+                // Return HTTP 422 with {"status": "error", "issues": [...]} per spec
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(json!({"status": "error", "issues": issues})),
+                )
+                    .into_response()
+            }
+            SchedulerError::Database(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": msg})),
+            )
+                .into_response(),
+            SchedulerError::SchemaCompilation(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": msg})),
+            )
+                .into_response(),
+            SchedulerError::Conflict(msg) => {
+                (StatusCode::CONFLICT, Json(json!({"error": msg}))).into_response()
+            }
+        }
     }
 }
