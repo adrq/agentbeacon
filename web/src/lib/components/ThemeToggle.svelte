@@ -1,6 +1,8 @@
 <script lang="ts">
   import Button from './ui/button.svelte';
-  import { onMount } from 'svelte';
+  import { onMount, createEventDispatcher } from 'svelte';
+
+  const dispatch = createEventDispatcher<{ themeChange: 'dark' | 'light' }>();
 
   // Single source of truth for storage key
   const STORAGE_KEY = 'agentmaestro-theme';
@@ -10,6 +12,7 @@
     const root = document.documentElement.classList;
     if (mode === 'light') root.add('light'); else root.remove('light');
     try { localStorage.setItem(STORAGE_KEY, mode); } catch {}
+    dispatch('themeChange', mode);
   }
 
   function toggle() {
@@ -24,7 +27,7 @@
       if (saved === 'light' || saved === 'dark') mode = saved as any;
       else if (window.matchMedia('(prefers-color-scheme: light)').matches) mode = 'light';
     } catch {}
-    applyMode();
+    applyMode(); // This will dispatch the initial theme to parent
     // Fallback listener in case Svelte binding fails (observed no state change on click)
     const btn = document.getElementById('theme-toggle');
     if (btn) {

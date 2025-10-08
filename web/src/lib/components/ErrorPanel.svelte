@@ -9,6 +9,7 @@
   export let theme: 'dark' | 'light' = 'dark';
   export let visible: boolean = true;
   export let onDismiss: (() => void) | null = null;
+  export let element: HTMLDivElement | null = null;
 
   function getErrorBadgeColor(type: string): string {
     switch (type) {
@@ -24,8 +25,8 @@
   }
 </script>
 
-{#if visible && errors.length > 0}
-  <div class="error-panel" class:dark={theme === 'dark'}>
+{#if visible}
+  <div bind:this={element} class="error-panel" class:dark={theme === 'dark'}>
     <div class="error-header">
       <div class="flex items-center gap-2">
         <span class="error-icon">⚠️</span>
@@ -67,11 +68,11 @@
 <style>
   .error-panel {
     border: 1px solid #ef4444;
-    border-radius: 0.375rem;
+    border-radius: 0.25rem;
     background-color: #fee2e2;
     color: #991b1b;
-    padding: 1rem;
-    margin-top: 1rem;
+    padding: 0.5rem;
+    margin-top: 0.5rem;
   }
 
   .error-panel.dark {
@@ -84,15 +85,15 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.5rem;
   }
 
   .error-icon {
-    font-size: 1.25rem;
+    font-size: 1rem;
   }
 
   .error-title {
-    font-size: 0.875rem;
+    font-size: 0.75rem;
     font-weight: 600;
     margin: 0;
   }
@@ -116,14 +117,14 @@
   .error-list {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.5rem;
   }
 
   .error-item {
     display: flex;
     align-items: flex-start;
-    gap: 0.75rem;
-    padding: 0.75rem;
+    gap: 0.5rem;
+    padding: 0.5rem;
     background-color: rgba(255, 255, 255, 0.5);
     border-radius: 0.25rem;
   }

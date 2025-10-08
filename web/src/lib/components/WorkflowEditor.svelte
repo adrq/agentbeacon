@@ -140,6 +140,7 @@ tasks:
   .editor-container {
     overflow: auto;
     border-radius: 4px;
+    min-height: 200px;
   }
 
   .editor-container :global(.cm-editor) {

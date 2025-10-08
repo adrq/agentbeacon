@@ -37,6 +37,17 @@ export interface UpdateWorkflowRequest {
   yaml_source?: string;
 }
 
+// Backend response types (new API contract)
+interface ValidationSuccessResponse {
+  status: 'ok';
+}
+
+interface ValidationErrorResponse {
+  status: 'error';
+  issues: string[];
+}
+
+// Frontend internal type (for ErrorPanel compatibility)
 export interface ValidationError {
   type: 'syntax' | 'structural' | 'semantic';
   message: string;
@@ -45,6 +56,7 @@ export interface ValidationError {
   nodes?: string[];
 }
 
+// Adapted response for frontend consumers
 export interface ValidationResponse {
   valid: boolean;
   errors: ValidationError[];
@@ -126,7 +138,7 @@ export class AgentMaestroAPI {
     const timeout = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
     try {
-      const response = await fetch(`${this.baseURL}/validate-workflow`, {
+      const response = await fetch(`${this.baseURL}/workflows/validate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -137,11 +149,54 @@ export class AgentMaestroAPI {
 
       clearTimeout(timeout);
 
-      if (!response.ok) {
-        throw new Error(`Validation request failed: ${response.status} ${response.statusText}`);
+      // HTTP 200 = validation success
+      if (response.status === 200) {
+        const data: ValidationSuccessResponse = await response.json();
+        if (data.status === 'ok') {
+          return { valid: true, errors: [] };
+        }
+        // Unexpected response format
+        throw new Error('Unexpected success response format');
       }
 
-      return await response.json();
+      // HTTP 422 = validation failure (DAG guardrails)
+      if (response.status === 422) {
+        const data: ValidationErrorResponse = await response.json();
+        return {
+          valid: false,
+          errors: data.issues.map(issue => ({
+            type: 'semantic' as const,
+            message: issue,
+          })),
+        };
+      }
+
+      // HTTP 400 or other errors - extract error message from response body
+      try {
+        const errorData = await response.json();
+        const errorMessage = errorData.error || errorData.message || `Validation failed: ${response.status} ${response.statusText}`;
+        return {
+          valid: false,
+          errors: [
+            {
+              type: 'syntax',
+              message: errorMessage,
+            },
+          ],
+        };
+      } catch {
+        // If response body is not JSON, fall back to generic error
+        return {
+          valid: false,
+          errors: [
+            {
+              type: 'syntax',
+              message: `Validation failed: ${response.status} ${response.statusText}`,
+            },
+          ],
+        };
+      }
+
     } catch (error) {
       clearTimeout(timeout);
 
@@ -158,6 +213,7 @@ export class AgentMaestroAPI {
         };
       }
 
+      // Network/other errors
       throw error;
     }
   }

@@ -126,7 +126,11 @@
   {:else}
     <SvelteFlow nodes={$nodes} edges={$edges} fitView>
       <Controls />
-      <Background />
+      <Background
+        bgColor={theme === 'dark' ? '#0f172a' : '#ffffff'}
+        color={theme === 'dark' ? '#475569' : '#e2e8f0'}
+        gap={16}
+      />
       <MiniMap />
     </SvelteFlow>
   {/if}
@@ -177,32 +181,95 @@
 
   /* Svelte Flow theming */
   .dag-container :global(.svelte-flow) {
-    background: transparent;
+    background: #ffffff;
   }
 
+  .dag-container.dark :global(.svelte-flow) {
+    background: #0f172a !important;
+  }
+
+  /* Dark mode background pattern */
+  .dag-container.dark :global(.svelte-flow__background) {
+    background-color: #0f172a !important;
+  }
+
+  .dag-container.dark :global(.svelte-flow__background pattern circle) {
+    fill: #475569 !important;
+  }
+
+  /* Dark mode nodes */
   .dag-container.dark :global(.svelte-flow__node) {
     background: #1e293b;
-    border-color: #475569;
+    border: 2px solid #475569;
     color: #e2e8f0;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
   }
 
+  .dag-container.dark :global(.svelte-flow__node:hover) {
+    border-color: #64748b;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+  }
+
+  .dag-container.dark :global(.svelte-flow__node.selected) {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+  }
+
+  /* Dark mode edges */
   .dag-container.dark :global(.svelte-flow__edge-path) {
     stroke: #64748b;
+    stroke-width: 2;
   }
 
+  .dag-container.dark :global(.svelte-flow__edge.selected .svelte-flow__edge-path) {
+    stroke: #3b82f6;
+  }
+
+  /* Dark mode controls */
   .dag-container.dark :global(.svelte-flow__controls) {
     background: #1e293b;
-    border-color: #475569;
+    border: 1px solid #475569;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
   }
 
   .dag-container.dark :global(.svelte-flow__controls button) {
     background: #334155;
-    border-color: #475569;
+    border-bottom: 1px solid #475569;
     color: #e2e8f0;
   }
 
+  .dag-container.dark :global(.svelte-flow__controls button:hover) {
+    background: #475569;
+  }
+
+  .dag-container.dark :global(.svelte-flow__controls button:disabled) {
+    background: #1e293b;
+    color: #64748b;
+  }
+
+  /* Dark mode minimap */
   .dag-container.dark :global(.svelte-flow__minimap) {
     background: #1e293b;
-    border-color: #475569;
+    border: 1px solid #475569;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+  }
+
+  .dag-container.dark :global(.svelte-flow__minimap-mask) {
+    fill: rgba(15, 23, 42, 0.6);
+  }
+
+  .dag-container.dark :global(.svelte-flow__minimap-node) {
+    fill: #334155;
+    stroke: #475569;
+  }
+
+  /* Dark mode attribution link */
+  .dag-container.dark :global(.svelte-flow__attribution) {
+    background: rgba(30, 41, 59, 0.8);
+    color: #94a3b8;
+  }
+
+  .dag-container.dark :global(.svelte-flow__attribution a) {
+    color: #60a5fa;
   }
 </style>

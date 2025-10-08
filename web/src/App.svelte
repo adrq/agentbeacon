@@ -15,6 +15,7 @@
   import ThemeToggle from './lib/components/ThemeToggle.svelte';
 
   let currentWorkflow: string = '';
+  let validatedWorkflow: string = ''; // Only updated on successful validation
   let isExecuting = false;
   let showOutput = false;
 
@@ -29,23 +30,93 @@
     nodes?: string[];
   }> = [];
   let theme: 'dark' | 'light' = 'dark';
+  let errorPanelElement: HTMLDivElement | null = null;
+
+  // Resizable panels state
+  let leftPanelWidth = 50; // percentage
+  let isDragging = false;
+  let containerElement: HTMLDivElement;
+
+  // Error panel state
+  let errorPanelExpanded = false;
+  let errorHideTimeout: number | null = null;
+
+  // Show errors when they appear, then auto-collapse after 5 seconds
+  $: {
+    if (validationErrors.length > 0) {
+      errorPanelExpanded = true;
+
+      // Clear any existing timeout
+      if (errorHideTimeout) {
+        clearTimeout(errorHideTimeout);
+      }
+
+      // Auto-collapse after 5 seconds
+      errorHideTimeout = setTimeout(() => {
+        errorPanelExpanded = false;
+      }, 5000);
+    } else {
+      // Hide completely when errors are cleared (successful validation)
+      errorPanelExpanded = false;
+      if (errorHideTimeout) {
+        clearTimeout(errorHideTimeout);
+        errorHideTimeout = null;
+      }
+    }
+  }
+
+  // Auto-scroll to errors when they appear (separate reactive statement)
+  $: if (errorPanelExpanded && errorPanelElement) {
+    setTimeout(() => {
+      errorPanelElement?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 100);
+  }
+
+  function toggleErrorPanel() {
+    errorPanelExpanded = !errorPanelExpanded;
+  }
+
+  function handleDividerMouseDown(e: MouseEvent) {
+    isDragging = true;
+    e.preventDefault();
+  }
+
+  function handleMouseMove(e: MouseEvent) {
+    if (!isDragging || !containerElement) return;
+
+    const containerRect = containerElement.getBoundingClientRect();
+    const newLeftWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+
+    // Constrain between 20% and 80%
+    leftPanelWidth = Math.min(Math.max(newLeftWidth, 20), 80);
+  }
+
+  function handleMouseUp() {
+    isDragging = false;
+    // Save to localStorage when dragging stops
+    localStorage.setItem('agentmaestro-divider-position', leftPanelWidth.toString());
+  }
 
   onMount(() => {
     environment.showNotification('AgentMaestro started', 'info');
 
-    // Detect system theme
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    theme = prefersDark ? 'dark' : 'light';
+    // Load saved divider position from localStorage
+    const savedPosition = localStorage.getItem('agentmaestro-divider-position');
+    if (savedPosition) {
+      const position = parseFloat(savedPosition);
+      if (!isNaN(position) && position >= 20 && position <= 80) {
+        leftPanelWidth = position;
+      }
+    }
 
-    // Listen for theme changes
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleThemeChange = (e: MediaQueryListEvent) => {
-      theme = e.matches ? 'dark' : 'light';
-    };
-    mediaQuery.addEventListener('change', handleThemeChange);
+
+    // Add global mouse event listeners for resizing
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
 
     return () => {
-      mediaQuery.removeEventListener('change', handleThemeChange);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
     };
   });
 
@@ -66,6 +137,8 @@
       if (result.valid) {
         isValid = true;
         validationErrors = [];
+        // Only update DAG when validation succeeds
+        validatedWorkflow = currentWorkflow;
       } else {
         isValid = false;
         validationErrors = result.errors;
@@ -114,36 +187,63 @@
       <div class="text-xs px-3 py-1 rounded-full bg-secondary text-secondary-foreground font-medium">
         {environment.name}
       </div>
-      <ThemeToggle />
+      <ThemeToggle on:themeChange={(e) => theme = e.detail} />
     </div>
   </header>
   <main class="flex-1 flex flex-col overflow-hidden">
-    <!-- Top 2-column region per technical requirements (3.1 Layout) -->
-    <div class="flex-1 grid gap-4 p-4 md:grid-cols-2 grid-cols-1 auto-rows-[minmax(0,1fr)] min-h-0">
-      <Card className="min-h-0 card-elevated">
-        <CardHeader className="py-3">
-          <h2 class="section-heading">Workflow Editor</h2>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          <WorkflowEditor
-            bind:value={currentWorkflow}
-            {theme}
-            {validating}
-            on:change={handleWorkflowChange}
-            on:validate={handleValidate}
-            on:loadSample={handleLoadSample}
-          />
-          <ErrorPanel errors={validationErrors} {theme} visible={validationErrors.length > 0} />
-        </CardContent>
-      </Card>
-      <Card className="min-h-0 card-elevated">
-        <CardHeader className="py-3">
-          <h2 class="section-heading">DAG Visualization</h2>
-        </CardHeader>
-        <CardContent>
-          <DAGVisualization workflow={currentWorkflow} {isValid} {theme} />
-        </CardContent>
-      </Card>
+    <!-- Top 2-column region with resizable divider -->
+    <div bind:this={containerElement} class="flex-1 flex gap-0 p-4 min-h-0" class:dragging={isDragging}>
+      <div style="width: {leftPanelWidth}%; min-width: 20%; max-width: 80%;" class="flex flex-col min-h-0">
+        <Card className="min-h-0 card-elevated flex-1 flex flex-col">
+          <CardHeader className="py-3">
+            <h2 class="section-heading">Workflow Editor</h2>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <WorkflowEditor
+              bind:value={currentWorkflow}
+              {theme}
+              {validating}
+              on:change={handleWorkflowChange}
+              on:validate={handleValidate}
+              on:loadSample={handleLoadSample}
+            />
+            {#if validationErrors.length > 0}
+              {#if errorPanelExpanded}
+                <ErrorPanel bind:element={errorPanelElement} errors={validationErrors} {theme} visible={true} />
+              {:else}
+                <button
+                  class="error-collapsed-indicator"
+                  on:click={toggleErrorPanel}
+                  class:dark={theme === 'dark'}
+                >
+                  <span class="error-icon">⚠️</span>
+                  <span class="error-text">{validationErrors.length} validation {validationErrors.length === 1 ? 'error' : 'errors'}</span>
+                  <span class="expand-icon">▼</span>
+                </button>
+              {/if}
+            {/if}
+          </CardContent>
+        </Card>
+      </div>
+
+      <!-- Draggable divider -->
+      <div
+        class="divider"
+        on:mousedown={handleDividerMouseDown}
+        role="separator"
+        aria-orientation="vertical"
+      ></div>
+
+      <div style="width: {100 - leftPanelWidth}%; min-width: 20%;" class="flex flex-col min-h-0">
+        <Card className="min-h-0 card-elevated flex-1 flex flex-col">
+          <CardHeader className="py-3">
+            <h2 class="section-heading">DAG Visualization</h2>
+          </CardHeader>
+          <CardContent>
+            <DAGVisualization workflow={validatedWorkflow} {isValid} {theme} />
+          </CardContent>
+        </Card>
+      </div>
     </div>
     <!-- Execution controls spanning full width -->
     <div class="border-t bg-card/80 backdrop-blur px-4 py-3 flex items-center justify-between gap-4">
@@ -173,3 +273,81 @@
     </div>
   </main>
 </div>
+
+<style>
+  .divider {
+    width: 8px;
+    cursor: col-resize;
+    background: transparent;
+    position: relative;
+    user-select: none;
+    margin: 0 4px;
+  }
+
+  .divider:hover::after,
+  .dragging .divider::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 100%;
+    background: hsl(var(--primary));
+    opacity: 0.5;
+  }
+
+  .divider:hover::after {
+    opacity: 0.7;
+  }
+
+  .dragging {
+    cursor: col-resize;
+    user-select: none;
+  }
+
+  .error-collapsed-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #ef4444;
+    border-radius: 0.25rem;
+    background-color: #fee2e2;
+    color: #991b1b;
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s;
+    font-size: 0.875rem;
+    font-weight: 500;
+    width: 100%;
+  }
+
+  .error-collapsed-indicator:hover {
+    background-color: #fecaca;
+    border-color: #dc2626;
+  }
+
+  .error-collapsed-indicator.dark {
+    background-color: #3f1515;
+    border-color: #7f1d1d;
+    color: #fca5a5;
+  }
+
+  .error-collapsed-indicator.dark:hover {
+    background-color: #4f1d1d;
+    border-color: #991b1b;
+  }
+
+  .error-collapsed-indicator .error-icon {
+    font-size: 1rem;
+  }
+
+  .error-collapsed-indicator .error-text {
+    flex: 1;
+  }
+
+  .error-collapsed-indicator .expand-icon {
+    font-size: 0.75rem;
+    opacity: 0.7;
+  }
+</style>
