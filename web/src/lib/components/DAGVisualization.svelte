@@ -5,14 +5,34 @@
   import '@xyflow/svelte/dist/style.css';
   import ELK from 'elkjs/lib/elk.bundled.js';
   import yaml from 'js-yaml';
+  import type { NodeStatus } from '../types';
 
   export let workflow: string = '';
   export let isValid: boolean = false;
   export let theme: 'dark' | 'light' = 'dark';
+  export let executionState: NodeStatus | undefined = undefined;
+  export let placeholderMode: boolean = false;
 
-  let nodes = writable([]);
-  let edges = writable([]);
-  let lastValidLayout: { nodes: any[]; edges: any[] } | null = null;
+  interface DAGNode {
+    id: string;
+    data: {
+      label: string;
+      agent: string;
+      status?: string;
+    };
+    position: { x: number; y: number };
+  }
+
+  interface DAGEdge {
+    id: string;
+    source: string;
+    target: string;
+    type: string;
+  }
+
+  let nodes = writable<DAGNode[]>([]);
+  let edges = writable<DAGEdge[]>([]);
+  let lastValidLayout: { nodes: DAGNode[]; edges: DAGEdge[] } | null = null;
 
   const elk = new ELK();
 
@@ -32,12 +52,24 @@
         throw new Error('Invalid workflow: missing tasks');
       }
 
-      // Build nodes and edges
-      const nodeList = workflowData.tasks.map((node: any, index: number) => ({
-        id: node.id,
-        data: { label: node.id, agent: node.agent || 'unknown' },
-        position: { x: 0, y: 0 }, // Will be updated by ELK
-      }));
+      // Build nodes and edges with status if executionState provided
+      const nodeList = workflowData.tasks.map((node: any, index: number) => {
+        const status = executionState?.[node.id];
+        const statusIcon = status === 'completed' ? '✅' :
+                           status === 'running' ? '🔄' :
+                           status === 'waiting' ? '⏸️' :
+                           status === 'failed' ? '❌' : '';
+
+        return {
+          id: node.id,
+          data: {
+            label: statusIcon ? `${statusIcon} ${node.id}` : node.id,
+            agent: node.agent || 'unknown',
+            status: status
+          },
+          position: { x: 0, y: 0 }, // Will be updated by ELK
+        };
+      });
 
       const edgeList: any[] = [];
       workflowData.tasks.forEach((node: any) => {
@@ -63,7 +95,7 @@
           'elk.layered.spacing.nodeNodeBetweenLayers': '100',
           'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
         },
-        children: nodeList.map((node) => ({
+        children: nodeList.map((node: DAGNode) => ({
           id: node.id,
           width: 150,
           height: 50,
@@ -78,7 +110,7 @@
       const layout = await elk.layout(elkGraph);
 
       // Update node positions from ELK layout
-      const positionedNodes = nodeList.map((node) => {
+      const positionedNodes = nodeList.map((node: DAGNode) => {
         const elkNode = layout.children?.find((n) => n.id === node.id);
         return {
           ...node,
@@ -101,16 +133,37 @@
     }
   }
 
+  // Placeholder mode: show static DAG without parsing
+  function showPlaceholderDAG() {
+    const placeholderNodes = [
+      { id: 'analyze', data: { label: 'analyze', agent: 'claude-code' }, position: { x: 100, y: 50 } },
+      { id: 'fix_tests', data: { label: 'fix_tests', agent: 'claude-code' }, position: { x: 100, y: 150 } },
+      { id: 'validate', data: { label: 'validate', agent: 'cursor' }, position: { x: 100, y: 250 } },
+    ];
+    const placeholderEdges = [
+      { id: 'analyze->fix_tests', source: 'analyze', target: 'fix_tests', type: 'default' },
+      { id: 'fix_tests->validate', source: 'fix_tests', target: 'validate', type: 'default' },
+    ];
+    nodes.set(placeholderNodes);
+    edges.set(placeholderEdges);
+  }
+
   // Only update DAG when isValid is true - use separate reactive blocks for each prop
-  // This ensures the statement re-runs when EITHER prop changes
   $: {
-    if (isValid && workflow) {
+    if (placeholderMode) {
+      showPlaceholderDAG();
+    } else if (isValid && workflow) {
       parseAndLayoutWorkflow(workflow);
     }
   }
 
+  // Re-render with execution state changes (for live progress updates)
+  $: if (executionState && workflow && isValid) {
+    parseAndLayoutWorkflow(workflow);
+  }
+
   // Preserve frozen state when isValid becomes false
-  $: if (!isValid && lastValidLayout) {
+  $: if (!isValid && !placeholderMode && lastValidLayout) {
     nodes.set(lastValidLayout.nodes);
     edges.set(lastValidLayout.edges);
   }
@@ -128,7 +181,6 @@
       <Controls />
       <Background
         bgColor={theme === 'dark' ? '#0f172a' : '#ffffff'}
-        color={theme === 'dark' ? '#475569' : '#e2e8f0'}
         gap={16}
       />
       <MiniMap />

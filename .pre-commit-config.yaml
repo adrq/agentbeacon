@@ -28,6 +28,14 @@ repos:
         args: [clippy, --all-targets, --all-features, --, -D, warnings]
         files: \.rs$
         pass_filenames: false
+      - id: web-check
+        name: web npm run check
+        entry: npm
+        language: system
+        args: [run, --prefix, web, check]
+        files: ^web/(src/.*\.(svelte|ts|js|css)|package\.json|tsconfig\..*|svelte\.config\.js|vite\.config\.ts)
+        pass_filenames: false
+        stages: [pre-commit]
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.13.1
     hooks:
