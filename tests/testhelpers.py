@@ -27,18 +27,32 @@ import yaml
 class PortManager:
     """Thread-safe port allocation manager for test isolation.
 
-    Allocates ports in range 19456-19500 with socket-based availability checking.
+    Allocates ports from different ranges for different process types:
+    - Scheduler: 19456-19500
+    - Agents: 18700-18799
+
+    Provides socket-based availability checking to avoid conflicts.
     """
 
-    MIN_PORT = 19456
-    MAX_PORT = 19500
+    SCHEDULER_MIN_PORT = 19456
+    SCHEDULER_MAX_PORT = 19500
+    AGENT_MIN_PORT = 18700
+    AGENT_MAX_PORT = 18799
+
+    # Legacy aliases for backward compatibility
+    MIN_PORT = SCHEDULER_MIN_PORT
+    MAX_PORT = SCHEDULER_MAX_PORT
 
     def __init__(self):
         self._lock = threading.Lock()
         self._allocated: Set[int] = set()
 
-    def allocate_port(self) -> int:
-        """Allocate an unused port from the range.
+    def allocate_port(self, min_port: int = None, max_port: int = None) -> int:
+        """Allocate an unused port from specified or default range.
+
+        Args:
+            min_port: Minimum port in range (defaults to SCHEDULER_MIN_PORT)
+            max_port: Maximum port in range (defaults to SCHEDULER_MAX_PORT)
 
         Returns:
             int: Allocated port number
@@ -46,14 +60,33 @@ class PortManager:
         Raises:
             RuntimeError: If no ports are available
         """
+        if min_port is None:
+            min_port = self.SCHEDULER_MIN_PORT
+        if max_port is None:
+            max_port = self.SCHEDULER_MAX_PORT
+
         with self._lock:
-            for port in range(self.MIN_PORT, self.MAX_PORT + 1):
+            for port in range(min_port, max_port + 1):
                 if port not in self._allocated and self._is_port_available(port):
                     self._allocated.add(port)
                     return port
-            raise RuntimeError(
-                f"No available ports in range {self.MIN_PORT}-{self.MAX_PORT}"
-            )
+            raise RuntimeError(f"No available ports in range {min_port}-{max_port}")
+
+    def allocate_scheduler_port(self) -> int:
+        """Allocate a port from the scheduler range (19456-19500).
+
+        Returns:
+            int: Allocated scheduler port
+        """
+        return self.allocate_port(self.SCHEDULER_MIN_PORT, self.SCHEDULER_MAX_PORT)
+
+    def allocate_agent_port(self) -> int:
+        """Allocate a port from the agent range (18700-18799).
+
+        Returns:
+            int: Allocated agent port
+        """
+        return self.allocate_port(self.AGENT_MIN_PORT, self.AGENT_MAX_PORT)
 
     def release_port(self, port: int) -> None:
         """Release a previously allocated port.
@@ -65,13 +98,20 @@ class PortManager:
             self._allocated.discard(port)
 
     @contextmanager
-    def port_context(self):
+    def port_context(self, port_type: str = "scheduler"):
         """Context manager for automatic port cleanup.
+
+        Args:
+            port_type: Type of port to allocate ("scheduler" or "agent")
 
         Yields:
             int: Allocated port number
         """
-        port = self.allocate_port()
+        if port_type == "agent":
+            port = self.allocate_agent_port()
+        else:
+            port = self.allocate_scheduler_port()
+
         try:
             yield port
         finally:
@@ -133,6 +173,268 @@ class TempDatabase:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit with cleanup."""
         self.cleanup()
+
+
+class ProcessTracker:
+    """Track and manage test-spawned processes for isolation from external instances.
+
+    Provides PID-based process tracking to avoid conflicts when AgentMaestro
+    is running separately outside of tests.
+
+    Example:
+        tracker = ProcessTracker()
+        orchestrator_proc = start_orchestrator(port=19456)
+        tracker.register_process(orchestrator_proc, "orchestrator", {"port": 19456})
+
+        # Later: count only our processes
+        count = tracker.count_alive("scheduler")
+
+        # Cleanup only our processes
+        tracker.cleanup_all()
+    """
+
+    def __init__(self, test_name: str = "unknown"):
+        """Initialize process tracker.
+
+        Args:
+            test_name: Name of test for debugging purposes
+        """
+        self._lock = threading.Lock()
+        self._processes: Dict[int, Dict[str, Any]] = {}
+        self._test_name = test_name
+
+    def register_process(
+        self,
+        proc: subprocess.Popen,
+        process_type: str,
+        metadata: Dict[str, Any] = None,
+    ) -> int:
+        """Register a spawned process for tracking.
+
+        Args:
+            proc: subprocess.Popen instance
+            process_type: Type identifier (e.g., "orchestrator", "scheduler", "worker", "agent")
+            metadata: Optional metadata dict (port, db_path, etc.)
+
+        Returns:
+            int: Process ID of registered process
+        """
+        with self._lock:
+            pid = proc.pid
+            self._processes[pid] = {
+                "proc": proc,
+                "type": process_type,
+                "metadata": metadata or {},
+                "parent_pid": None,
+            }
+            return pid
+
+    def register_child_pid(
+        self, child_pid: int, process_type: str, parent_pid: int, metadata: Dict = None
+    ) -> None:
+        """Register a child PID (e.g., orchestrator's spawned scheduler/workers).
+
+        Args:
+            child_pid: PID of child process
+            process_type: Type identifier
+            parent_pid: PID of parent process
+            metadata: Optional metadata dict
+        """
+        with self._lock:
+            self._processes[child_pid] = {
+                "proc": None,  # We don't have Popen object for children
+                "type": process_type,
+                "metadata": metadata or {},
+                "parent_pid": parent_pid,
+            }
+
+    def is_alive(self, pid: int) -> bool:
+        """Check if a tracked PID is still alive.
+
+        Args:
+            pid: Process ID to check
+
+        Returns:
+            bool: True if process exists and is running
+        """
+        try:
+            proc = psutil.Process(pid)
+            return proc.is_running()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+
+    def count_alive(self, process_type: str = None) -> int:
+        """Count tracked processes that are still alive.
+
+        Args:
+            process_type: Optional type filter (e.g., "scheduler", "worker")
+                         If None, counts all tracked processes
+
+        Returns:
+            int: Number of alive tracked processes matching criteria
+        """
+        with self._lock:
+            count = 0
+            for pid, info in self._processes.items():
+                if process_type is None or info["type"] == process_type:
+                    if self.is_alive(pid):
+                        count += 1
+            return count
+
+    def get_pids_by_type(self, process_type: str) -> List[int]:
+        """Get list of tracked PIDs by type.
+
+        Args:
+            process_type: Type identifier to filter by
+
+        Returns:
+            List of PIDs matching the type
+        """
+        with self._lock:
+            return [
+                pid
+                for pid, info in self._processes.items()
+                if info["type"] == process_type
+            ]
+
+    def assert_exact_count(self, process_type: str, expected: int) -> None:
+        """Assert that exactly N processes of given type are alive.
+
+        Args:
+            process_type: Type to check
+            expected: Expected count
+
+        Raises:
+            AssertionError: If count doesn't match expected
+        """
+        actual = self.count_alive(process_type)
+        assert actual == expected, (
+            f"Expected exactly {expected} {process_type} process(es), "
+            f"found {actual} in test {self._test_name}"
+        )
+
+    def cleanup_all(self, term_timeout: float = 5.0, kill_timeout: float = 2.0) -> None:
+        """Terminate all tracked processes gracefully, then forcefully.
+
+        Args:
+            term_timeout: Seconds to wait after SIGTERM
+            kill_timeout: Seconds to wait after SIGKILL
+        """
+        with self._lock:
+            processes = list(self._processes.values())
+
+        for info in processes:
+            proc = info.get("proc")
+            if proc is not None:
+                _terminate_single_process(proc, term_timeout, kill_timeout)
+
+    def discover_orchestrator_children(
+        self, orchestrator_pid: int, timeout: float = 5.0
+    ) -> Dict[str, List[int]]:
+        """Discover and register child processes spawned by orchestrator.
+
+        Polls for scheduler and worker processes that are children of the orchestrator.
+
+        Args:
+            orchestrator_pid: PID of orchestrator parent process
+            timeout: Maximum time to wait for children to appear
+
+        Returns:
+            Dict with keys "scheduler" and "workers" containing discovered PIDs
+        """
+        start_time = time.time()
+        found_scheduler = None
+        found_workers = []
+
+        while time.time() - start_time < timeout:
+            try:
+                parent = psutil.Process(orchestrator_pid)
+                children = parent.children(recursive=False)
+
+                for child in children:
+                    try:
+                        cmdline = " ".join(child.cmdline() or [])
+                        child_pid = child.pid
+
+                        if (
+                            "agentmaestro-scheduler" in cmdline
+                            and found_scheduler is None
+                        ):
+                            self.register_child_pid(
+                                child_pid,
+                                "scheduler",
+                                orchestrator_pid,
+                                {"discovered": True},
+                            )
+                            found_scheduler = child_pid
+
+                        elif (
+                            "agentmaestro-worker" in cmdline
+                            and child_pid not in found_workers
+                        ):
+                            self.register_child_pid(
+                                child_pid,
+                                "worker",
+                                orchestrator_pid,
+                                {"discovered": True},
+                            )
+                            found_workers.append(child_pid)
+
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+
+                # If we found at least scheduler, give a bit more time for workers
+                if found_scheduler and len(found_workers) > 0:
+                    time.sleep(0.2)
+                    break
+
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+            time.sleep(0.1)
+
+        return {
+            "scheduler": [found_scheduler] if found_scheduler else [],
+            "workers": found_workers,
+        }
+
+    def log_external_processes(self, process_type: str = None) -> None:
+        """Log any external processes matching our patterns (for debugging).
+
+        Args:
+            process_type: Optional type to check ("scheduler", "worker", etc.)
+        """
+        patterns = {
+            "scheduler": "agentmaestro-scheduler",
+            "worker": "agentmaestro-worker",
+            "orchestrator": "agentmaestro",
+        }
+
+        search_patterns = (
+            [patterns[process_type]] if process_type else patterns.values()
+        )
+
+        external_found = []
+        for pattern in search_patterns:
+            for proc in psutil.process_iter(["pid", "cmdline"]):
+                try:
+                    cmdline = " ".join(proc.info["cmdline"] or [])
+                    if pattern in cmdline and proc.info["pid"] not in self._processes:
+                        external_found.append((proc.info["pid"], cmdline))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+        if external_found:
+            print(
+                f"\n⚠️  WARNING [{self._test_name}]: Found external agentmaestro processes "
+                f"(not spawned by this test):"
+            )
+            for pid, cmdline in external_found:
+                print(f"  - PID {pid}: {cmdline}")
+            print(
+                f"These processes are IGNORED by this test. "
+                f"Only tracking {len(self._processes)} test-spawned PIDs.\n"
+            )
 
 
 def _terminate_single_process(
@@ -842,6 +1144,132 @@ def start_orchestrator(
         cwd=base_dir,
     )
     return orchestrator_proc
+
+
+@contextmanager
+def orchestrator_context(
+    workers: int = 2,
+    db_url: str = None,
+    port: int = None,
+    test_name: str = None,
+):
+    """Context manager for orchestrator with PID-tracked process management.
+
+    Provides complete lifecycle management for orchestrator tests:
+    - Allocates unique port if not provided
+    - Starts orchestrator process
+    - Discovers and tracks scheduler + worker child PIDs
+    - Waits for system readiness
+    - Cleans up all tracked processes on exit
+    - Logs external processes for debugging
+
+    Args:
+        workers: Number of worker processes (default: 2)
+        db_url: Database URL (creates temp SQLite if None)
+        port: Port number (allocates one if None)
+        test_name: Test name for debugging (auto-detected if None)
+
+    Yields:
+        dict: Contains orchestrator info and PID tracker:
+            {
+                'orchestrator': subprocess.Popen,
+                'orchestrator_pid': int,
+                'port': int,
+                'url': str,
+                'tracker': ProcessTracker,
+                'scheduler_pids': List[int],
+                'worker_pids': List[int],
+                'db_url': str,
+                'temp_db_path': str or None
+            }
+
+    Example:
+        with orchestrator_context(workers=2) as orch:
+            # Assert using tracker instead of global scanning
+            orch['tracker'].assert_exact_count("scheduler", 1)
+            orch['tracker'].assert_exact_count("worker", 2)
+
+            # Make API calls
+            response = requests.get(f"{orch['url']}/api/health")
+
+            # Processes cleaned up automatically on exit
+    """
+    if test_name is None:
+        test_name = get_current_test_name()
+
+    # Allocate port if not provided
+    port_manager = PortManager() if port is None else None
+    allocated_port = port_manager.allocate_scheduler_port() if port_manager else port
+
+    # Create temp database if not provided
+    temp_db_path = None
+    if db_url is None:
+        temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        temp_db.close()
+        temp_db_path = temp_db.name
+        db_url = f"sqlite:{temp_db_path}?mode=rwc"
+
+    # Create process tracker
+    tracker = ProcessTracker(test_name)
+
+    orchestrator_proc = None
+    base_dir = Path(__file__).parent.parent
+
+    try:
+        # Start orchestrator
+        orchestrator_proc = start_orchestrator(
+            allocated_port, workers=workers, db_url=db_url, base_dir=base_dir
+        )
+
+        # Register orchestrator PID
+        orchestrator_pid = tracker.register_process(
+            orchestrator_proc,
+            "orchestrator",
+            {"port": allocated_port, "workers": workers},
+        )
+
+        # Wait for scheduler to be ready (orchestrator spawns it)
+        if not wait_for_port(allocated_port, timeout=15):
+            raise RuntimeError(
+                f"Orchestrator system did not start on port {allocated_port} within 15 seconds"
+            )
+
+        # Give orchestrator time to spawn all workers
+        time.sleep(2)
+
+        # Discover and register child PIDs (scheduler + workers)
+        children = tracker.discover_orchestrator_children(orchestrator_pid, timeout=5)
+        scheduler_pids = children.get("scheduler", [])
+        worker_pids = children.get("workers", [])
+
+        # Log any external processes (for debugging)
+        tracker.log_external_processes()
+
+        # Yield control to test
+        yield {
+            "orchestrator": orchestrator_proc,
+            "orchestrator_pid": orchestrator_pid,
+            "port": allocated_port,
+            "url": f"http://localhost:{allocated_port}",
+            "tracker": tracker,
+            "scheduler_pids": scheduler_pids,
+            "worker_pids": worker_pids,
+            "db_url": db_url,
+            "temp_db_path": temp_db_path,
+        }
+
+    finally:
+        # Cleanup all tracked processes
+        if tracker:
+            tracker.cleanup_all()
+
+        # Cleanup temporary database file
+        if temp_db_path:
+            cleanup_files([temp_db_path])
+
+        # Release port
+        if port_manager:
+            port_manager.release_port(allocated_port)
 
 
 def count_processes_by_name(name_pattern: str) -> int:

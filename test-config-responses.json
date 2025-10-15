@@ -1,0 +1,3 @@
+{
+  "Test task using configured agent": "CONFIG_LOADED: Agent configuration was successfully loaded from agents.yaml"
+}

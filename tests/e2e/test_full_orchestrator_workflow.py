@@ -8,6 +8,8 @@ This test verifies the complete system integration:
 4. Task completion monitoring through A2A endpoints
 5. Graceful shutdown of all processes
 
+Uses PID-based process tracking to avoid conflicts with separately running instances.
+
 Run with: uv run pytest tests/e2e/test_full_orchestrator_workflow.py -v
 """
 
@@ -20,73 +22,52 @@ from pathlib import Path
 import pytest
 import requests
 from tests.testhelpers import (
-    PortManager,
-    TempDatabase,
-    cleanup_processes,
-    wait_for_port,
-    start_orchestrator,
+    orchestrator_context,
     start_and_wait_for_a2a_agent,
     register_workflow,
     submit_workflow_via_a2a,
     poll_a2a_task_status,
-    count_processes_by_name,
     get_current_test_name,
     parse_agent_log,
+    cleanup_processes,
 )
 
 
 def test_full_orchestrator_workflow_execution():
-    """Test complete orchestrator workflow execution with A2A protocol."""
-    port_manager = PortManager()
-    test_port = port_manager.allocate_port()
-    processes = []
+    """Test complete orchestrator workflow execution with A2A protocol using PID tracking."""
+    test_name = get_current_test_name("test_full_orchestrator_workflow_execution")
 
     # Clear any existing log file for this test before starting
-    test_name = get_current_test_name("test_full_orchestrator_workflow_execution")
     log_file = Path(f"logs/{test_name}.log")
     if log_file.exists():
         log_file.unlink()
 
+    # Use fixed agent port to match agents.yaml configuration
+    # The orchestrator uses dynamic ports (19456+), so this won't conflict
+    agent_port = 18765
+    agent_proc = None
+
     try:
-        # Start mock-agent A2A server on port 18765 (required by examples/agents.yaml)
+        # Start mock-agent A2A server on port matching agents.yaml
         agent_proc = start_and_wait_for_a2a_agent(
-            18765, Path(__file__).parent.parent.parent
+            agent_port, Path(__file__).parent.parent.parent
         )
-        processes.append(agent_proc)
 
-        # Create temporary database
-        with TempDatabase() as db_url:
-            # Start orchestrator with 2 workers using the complete database URL
-            # This avoids URL reconstruction issues in start_orchestrator
-            orchestrator_proc = start_orchestrator(test_port, workers=2, db_url=db_url)
-            processes.append(orchestrator_proc)
+        # Use orchestrator_context for complete lifecycle management
+        with orchestrator_context(workers=2, test_name=test_name) as orch:
+            scheduler_url = orch["url"]
+            tracker = orch["tracker"]
 
-            # Wait for system to be ready
-            print(f"DEBUG: Waiting for orchestrator on port {test_port}")
-            system_ready = wait_for_port(test_port, timeout=15)
-            assert system_ready, (
-                f"Orchestrator system did not start on port {test_port} within 15 seconds"
-            )
-            print(f"DEBUG: Orchestrator ready on port {test_port}")
+            print(f"DEBUG: Orchestrator ready on port {orch['port']}")
 
             # Verify health endpoint responds properly
-            response = requests.get(
-                f"http://localhost:{test_port}/api/health", timeout=5
-            )
+            response = requests.get(f"{scheduler_url}/api/health", timeout=5)
             assert response.status_code == 200
             assert response.json()["status"] == "healthy"
 
-            # Verify processes are running
-            time.sleep(2)  # Let workers start
-            scheduler_count = count_processes_by_name("agentmaestro-scheduler")
-            worker_count = count_processes_by_name("agentmaestro-worker")
-
-            assert scheduler_count == 1, (
-                f"Expected exactly 1 scheduler process, found {scheduler_count}"
-            )
-            assert worker_count == 2, (
-                f"Expected exactly 2 worker processes, found {worker_count}"
-            )
+            # Verify processes using PID tracking (not global scanning)
+            tracker.assert_exact_count("scheduler", 1)
+            tracker.assert_exact_count("worker", 2)
 
             # Register a 2-node sequential workflow with bracketed format prompts
             import uuid
@@ -121,7 +102,6 @@ tasks:
               text: "[e2e-execution][task-2] NOW Process data step 2"
 """.strip()
 
-            scheduler_url = f"http://localhost:{test_port}"
             workflow_ref = register_workflow(
                 scheduler_url, workflow_yaml, namespace="integration"
             )
@@ -165,9 +145,7 @@ tasks:
             )
 
             # Verify scheduler still responding
-            response = requests.get(
-                f"http://localhost:{test_port}/api/health", timeout=5
-            )
+            response = requests.get(f"{scheduler_url}/api/health", timeout=5)
             assert response.status_code == 200
             assert response.json()["status"] == "healthy"
 
@@ -211,41 +189,35 @@ tasks:
                     f"Entry {i} timestamp should be 20 characters ISO format: {timestamp}"
                 )
 
-            # Test graceful shutdown
-            initial_scheduler_count = count_processes_by_name("agentmaestro-scheduler")
-            initial_worker_count = count_processes_by_name("agentmaestro-worker")
-
-            assert initial_scheduler_count == 1, (
-                f"Expected exactly 1 scheduler process before shutdown, found {initial_scheduler_count}"
-            )
-            assert initial_worker_count == 2, (
-                f"Expected exactly 2 worker processes before shutdown, found {initial_worker_count}"
-            )
+            # Test graceful shutdown using PID tracking
+            # Verify processes are still alive before shutdown
+            tracker.assert_exact_count("scheduler", 1)
+            tracker.assert_exact_count("worker", 2)
 
             # Send SIGTERM for graceful shutdown
-            orchestrator_proc.send_signal(signal.SIGTERM)
+            orch["orchestrator"].send_signal(signal.SIGTERM)
 
             # Wait for orchestrator to exit
             try:
-                orchestrator_proc.wait(timeout=15)
+                orch["orchestrator"].wait(timeout=15)
             except subprocess.TimeoutExpired:
                 pytest.fail("Orchestrator did not exit within 15 seconds after SIGTERM")
 
             # Wait for children cleanup
             time.sleep(3)
 
-            # Verify no orphaned processes remain
-            final_scheduler_count = count_processes_by_name("agentmaestro-scheduler")
-            final_worker_count = count_processes_by_name("agentmaestro-worker")
+            # Verify no tracked processes remain alive (PID-based check)
+            final_scheduler_count = tracker.count_alive("scheduler")
+            final_worker_count = tracker.count_alive("worker")
 
             assert final_scheduler_count == 0, (
-                f"Found {final_scheduler_count} orphaned scheduler processes"
+                f"Found {final_scheduler_count} tracked scheduler PIDs still alive after shutdown"
             )
             assert final_worker_count == 0, (
-                f"Found {final_worker_count} orphaned worker processes"
+                f"Found {final_worker_count} tracked worker PIDs still alive after shutdown"
             )
 
     finally:
-        # Clean up all processes and release port
-        cleanup_processes(processes)
-        port_manager.release_port(test_port)
+        # Clean up agent process
+        if agent_proc:
+            cleanup_processes([agent_proc])
