@@ -437,7 +437,7 @@ def test_worker_uses_agents_yaml_config():
         config_agent_proc = start_and_wait_for_a2a_agent(
             port=18766,
             base_dir=Path(__file__).parent.parent.parent,
-            config_file="test-config-responses.json",
+            config_file="tests/test-config-responses.json",
         )
         processes.append(config_agent_proc)
 
