@@ -1,15 +1,16 @@
 use axum::{Router, extract::Request, response::Redirect, routing::get};
 use std::sync::Arc;
-use tower_http::{
-    compression::CompressionLayer,
-    cors::{Any, CorsLayer},
-};
+use tower_http::{compression::CompressionLayer, cors::CorsLayer};
+use tracing::warn;
 
 use crate::assets::Assets;
 use crate::db::DbPool;
 use crate::queue::TaskQueue;
 use crate::scheduling::scheduler::Scheduler;
 use crate::validation::SchemaValidator;
+
+/// Port used by Vite dev server in development mode
+const VITE_DEV_PORT: u16 = 5173;
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -21,7 +22,6 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create new application state
     pub fn new(
         db_pool: DbPool,
         validator: Arc<SchemaValidator>,
@@ -38,7 +38,7 @@ impl AppState {
 }
 
 /// Build Axum router with all routes and middleware
-pub fn create_router(state: AppState, dev_mode: bool) -> Router {
+pub fn create_router(state: AppState, dev_mode: bool, port: u16) -> Router {
     let base_router = Router::new().merge(crate::api::routes());
 
     let router = if dev_mode {
@@ -55,25 +55,78 @@ pub fn create_router(state: AppState, dev_mode: bool) -> Router {
     };
 
     router
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(build_cors_layer(dev_mode, port))
         .layer(CompressionLayer::new())
         .with_state(state)
 }
 
-/// Development mode - redirect root to Vite dev server
+/// Build CORS layer with restricted origins for security
+///
+/// Default allowed origins:
+/// - Development mode: http://localhost:5173 (Vite dev server)
+/// - Production mode: http://localhost:{port} (embedded UI)
+///
+/// Additional origins can be configured via CORS_ALLOWED_ORIGINS environment variable
+/// (comma-separated list of origins, e.g., "http://localhost:3000,http://localhost:8080")
+fn build_cors_layer(dev_mode: bool, port: u16) -> CorsLayer {
+    use axum::http::{
+        HeaderValue, Method,
+        header::{AUTHORIZATION, CONTENT_TYPE},
+    };
+    use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin};
+
+    let mut allowed_origins = Vec::new();
+
+    if dev_mode {
+        allowed_origins.push(format!("http://localhost:{VITE_DEV_PORT}"));
+    }
+    allowed_origins.push(format!("http://localhost:{port}"));
+
+    if let Ok(custom_origins) = std::env::var("CORS_ALLOWED_ORIGINS") {
+        for origin in custom_origins.split(',') {
+            let trimmed = origin.trim();
+            if !trimmed.is_empty() && !allowed_origins.contains(&trimmed.to_string()) {
+                allowed_origins.push(trimmed.to_string());
+            }
+        }
+    }
+
+    let origin_values: Vec<HeaderValue> = allowed_origins
+        .iter()
+        .filter_map(|origin| match origin.parse::<HeaderValue>() {
+            Ok(value) => Some(value),
+            Err(e) => {
+                warn!(
+                    origin = %origin,
+                    error = %e,
+                    "Invalid CORS origin in configuration; skipping"
+                );
+                None
+            }
+        })
+        .collect();
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origin_values))
+        .allow_methods(AllowMethods::list([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ]))
+        .allow_headers(AllowHeaders::list([CONTENT_TYPE, AUTHORIZATION]))
+        .allow_credentials(true)
+}
+
 async fn dev_mode_redirect_root() -> Redirect {
-    Redirect::temporary("http://localhost:5173")
+    Redirect::temporary(&format!("http://localhost:{VITE_DEV_PORT}"))
 }
 
 /// Development mode - redirect all other paths to Vite dev server
 async fn dev_mode_redirect_path(req: Request) -> Redirect {
     let path = req.uri().path();
-    let redirect_url = format!("http://localhost:5173{path}");
+    let redirect_url = format!("http://localhost:{VITE_DEV_PORT}{path}");
     Redirect::temporary(&redirect_url)
 }
 

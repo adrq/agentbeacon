@@ -98,7 +98,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
 
     // Build application state and router
     let app_state = AppState::new(db_pool, validator, task_queue, scheduler);
-    let app = create_router(app_state, dev_mode);
+    let app = create_router(app_state, dev_mode, cli.port);
 
     // Bind to port
     let addr = SocketAddr::from(([0, 0, 0, 0], cli.port));
