@@ -1,0 +1,4 @@
+# Mark generated schema files
+docs/acp/schema.json linguist-generated=true
+docs/acp/meta.json linguist-generated=true
+docs/a2a-v0.3.0.schema.json linguist-generated=true

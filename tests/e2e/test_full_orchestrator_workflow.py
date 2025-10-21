@@ -82,24 +82,24 @@ tasks:
   - id: task-1
     agent: mock-agent
     task:
-      history:
-        - kind: message
-          messageId: "{msg_id_1}"
-          role: user
-          parts:
-            - kind: text
-              text: "[e2e-execution][task-1] NOW Process data step 1"
+      message:
+        kind: message
+        messageId: "{msg_id_1}"
+        role: user
+        parts:
+          - kind: text
+            text: "[e2e-execution][task-1] NOW Process data step 1"
   - id: task-2
     agent: mock-agent
     depends_on: [task-1]
     task:
-      history:
-        - kind: message
-          messageId: "{msg_id_2}"
-          role: user
-          parts:
-            - kind: text
-              text: "[e2e-execution][task-2] NOW Process data step 2"
+      message:
+        kind: message
+        messageId: "{msg_id_2}"
+        role: user
+        parts:
+          - kind: text
+            text: "[e2e-execution][task-2] NOW Process data step 2"
 """.strip()
 
             workflow_ref = register_workflow(

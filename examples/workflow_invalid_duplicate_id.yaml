@@ -7,24 +7,22 @@ tasks:
   - id: draft_welcome
     agent: demo-agent
     task:
-      contextId: doc_workflow
-      history:
-        - messageId: msg-draft-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Draft a welcome message.
+      message:
+        messageId: msg-draft-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Draft a welcome message.
   - id: draft_welcome
     agent: demo-agent
     task:
-      contextId: doc_workflow
-      history:
-        - messageId: msg-draft-2
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Draft another welcome message.
+      message:
+        messageId: msg-draft-2
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Draft another welcome message.

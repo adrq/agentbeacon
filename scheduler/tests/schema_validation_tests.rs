@@ -2,36 +2,7 @@ mod common;
 
 use common::create_test_validator;
 
-/// Test 1.1: Valid A2A Message Structure
-#[test]
-fn test_valid_a2a_message_validates() {
-    // Given: Valid workflow YAML with A2A Message structure
-    let yaml = r#"
-name: valid-workflow
-description: "Valid A2A workflow"
-tasks:
-  - id: task-1
-    agent: mock-agent
-    task:
-      history:
-        - messageId: msg-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Hello A2A"
-"#;
-
-    // When: Validating against workflow-schema.json
-    let validator = create_test_validator().expect("Validator should be created");
-    let result = validator.validate_workflow_yaml(yaml);
-    assert!(
-        result.is_ok(),
-        "Valid A2A Message structure should validate"
-    );
-}
-
-/// Test 1.2: Invalid A2A Message Role
+/// Test 1.1: Invalid A2A Message Role
 #[test]
 #[allow(clippy::uninlined_format_args)] // Test assertion formatting
 fn test_invalid_a2a_message_role_fails() {
@@ -43,13 +14,13 @@ tasks:
   - id: task-1
     agent: mock-agent
     task:
-      history:
-        - messageId: msg-1
-          kind: message
-          role: invalid_role
-          parts:
-            - kind: text
-              text: "Test"
+      message:
+        messageId: msg-1
+        kind: message
+        role: invalid_role
+        parts:
+          - kind: text
+            text: "Test"
 "#;
 
     // When: Validating against workflow-schema.json
@@ -86,61 +57,25 @@ description: "Missing required tasks array"
     );
 }
 
-/// Test 1.4: Cross-Schema $ref Resolution (A2A Artifact)
-#[test]
-fn test_a2a_artifact_ref_resolves() {
-    // Given: Workflow YAML with A2A Artifact structure
-    let yaml = r#"
-name: artifacts-test
-description: "Test A2A Artifact validation"
-tasks:
-  - id: task-1
-    agent: mock-agent
-    task:
-      history:
-        - messageId: msg-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Test"
-      artifacts:
-        - artifactId: output-1
-          name: output.txt
-          mimeType: text/plain
-          parts:
-            - kind: text
-              text: "Result data"
-"#;
-
-    // When: Validating (requires InMemoryRetriever for $ref resolution)
-    let validator = create_test_validator().expect("Validator should be created");
-    let result = validator.validate_workflow_yaml(yaml);
-    assert!(
-        result.is_ok(),
-        "A2A Artifact structure should validate via $ref resolution"
-    );
-}
-
-/// Test 1.5: Invalid Task ID Format
+/// Test 1.4: Invalid Task ID Format
 #[test]
 #[allow(clippy::uninlined_format_args)] // Test assertion formatting
 fn test_invalid_task_id_format_fails() {
-    // Given: Workflow YAML with invalid task ID (must match ^[a-z0-9_-]+$)
+    // Given: Workflow YAML with invalid task ID (must match ^[a-zA-Z0-9_-]+$)
     let yaml = r#"
 name: invalid-task-id
 description: "Invalid task ID test"
 tasks:
-  - id: Task-1-Invalid
+  - id: task@invalid
     agent: mock-agent
     task:
-      history:
-        - messageId: msg-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Test"
+      message:
+        messageId: msg-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Test"
 "#;
 
     // When: Validating against workflow-schema.json
@@ -167,13 +102,13 @@ tasks:
   - id: task-1
     agent: mock-agent
     task:
-      history:
-        - messageId: msg-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Test"
+      message:
+        messageId: msg-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Test"
 "#;
 
     // When: Validating against workflow-schema.json
@@ -200,13 +135,13 @@ tasks:
   - id: task-1
     agent: mock-agent
     task:
-      history:
-        - messageId: msg-1
-          kind: message
-          role: user
-          parts:
-            - kind: invalid_kind
-              text: "Test"
+      message:
+        messageId: msg-1
+        kind: message
+        role: user
+        parts:
+          - kind: invalid_kind
+            text: "Test"
 "#;
 
     // When: Validating against workflow-schema.json
@@ -221,15 +156,192 @@ tasks:
     );
 }
 
-/// Test 1.8: Circular $ref Detection
+// =============================================================================
+// Tests for MessageSendParams Migration (T001)
+// =============================================================================
+
+/// Schema compilation with MessageSendParams $ref from A2A spec
 #[test]
-fn test_circular_ref_detection_at_startup() {
-    // When: Creating schema validator (should fail-fast at startup if circular $ref)
+fn test_schema_compiles_with_messagesendparams_ref() {
     let validator = create_test_validator();
 
-    // Then: Validator creation should succeed (no circular refs in official schemas)
     assert!(
         validator.is_ok(),
-        "Schema compilation should succeed (no circular refs in docs/)"
+        "Schema with MessageSendParams $ref should compile successfully"
+    );
+}
+
+/// Validates new MessageSendParams format with task.message
+#[test]
+fn test_valid_new_format_validates() {
+    let yaml = r#"
+name: test-messagesendparams
+tasks:
+  - id: task-1
+    agent: test-agent
+    task:
+      message:
+        messageId: msg-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Test message"
+"#;
+
+    let validator = create_test_validator().expect("Validator should be created");
+    let result = validator.validate_workflow_yaml(yaml);
+
+    assert!(
+        result.is_ok(),
+        "Valid MessageSendParams format should validate: {:?}",
+        result.err()
+    );
+}
+
+/// Test that mixed-case task identifiers are valid
+#[test]
+fn test_mixed_case_identifiers_validate() {
+    let yaml = r#"
+name: test-mixed-case-ids
+tasks:
+  - id: AnalyzeCode
+    agent: test-agent
+    task:
+      message:
+        messageId: msg-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Analyze the codebase"
+  - id: GenerateReport
+    agent: test-agent
+    depends_on:
+      - AnalyzeCode
+    task:
+      message:
+        messageId: msg-2
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Generate a report"
+"#;
+
+    let validator = create_test_validator().expect("Validator should be created");
+    let result = validator.validate_workflow_yaml(yaml);
+
+    assert!(
+        result.is_ok(),
+        "Mixed-case identifiers should be valid: {:?}",
+        result.err()
+    );
+}
+
+/// Rejects legacy task.history array format
+#[test]
+fn test_old_format_history_rejected() {
+    let yaml = r#"
+name: test-old-format
+tasks:
+  - id: task-1
+    agent: test-agent
+    task:
+      history:
+        - messageId: msg-1
+          kind: message
+          role: user
+          parts:
+            - kind: text
+              text: "Old format"
+"#;
+
+    let validator = create_test_validator().expect("Validator should be created");
+    let result = validator.validate_workflow_yaml(yaml);
+
+    assert!(
+        result.is_err(),
+        "Old format with 'history' field should be rejected"
+    );
+}
+
+/// Message without messageId validates (auto-generated at runtime)
+#[test]
+fn test_message_without_messageid_validates() {
+    let yaml = r#"
+name: test-no-messageid
+tasks:
+  - id: task-1
+    agent: test-agent
+    task:
+      message:
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Test message without messageId"
+"#;
+
+    let validator = create_test_validator().expect("Validator should be created");
+    let result = validator.validate_workflow_yaml(yaml);
+
+    assert!(
+        result.is_ok(),
+        "Message without messageId should validate (injected at validation): {:?}",
+        result.err()
+    );
+}
+
+/// Message without kind validates (auto-injected at runtime)
+#[test]
+fn test_message_without_kind_validates() {
+    let yaml = r#"
+name: test-no-kind
+tasks:
+  - id: task-1
+    agent: test-agent
+    task:
+      message:
+        messageId: msg-1
+        role: user
+        parts:
+          - kind: text
+            text: "Test message without kind"
+"#;
+
+    let validator = create_test_validator().expect("Validator should be created");
+    let result = validator.validate_workflow_yaml(yaml);
+
+    assert!(
+        result.is_ok(),
+        "Message without kind should validate (injected at validation): {:?}",
+        result.err()
+    );
+}
+
+/// Message without messageId and kind validates (both auto-injected)
+#[test]
+fn test_message_without_messageid_and_kind_validates() {
+    let yaml = r#"
+name: test-minimal-message
+tasks:
+  - id: task-1
+    agent: test-agent
+    task:
+      message:
+        role: user
+        parts:
+          - kind: text
+            text: "Minimal message structure"
+"#;
+
+    let validator = create_test_validator().expect("Validator should be created");
+    let result = validator.validate_workflow_yaml(yaml);
+
+    assert!(
+        result.is_ok(),
+        "Message without messageId and kind should validate (both injected): {:?}",
+        result.err()
     );
 }

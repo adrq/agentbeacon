@@ -12,7 +12,7 @@
       "required": ["requestId", "task"],
       "properties": {
         "requestId": {"type": "string"},
-        "task": {"$ref": "../../docs/a2a-task.schema.json"}
+        "task": {"$ref": "a2a-v0.3.0.schema.json#/definitions/MessageSendParams"}
       },
       "additionalProperties": false
     }

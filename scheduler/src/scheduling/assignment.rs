@@ -4,14 +4,15 @@ use uuid::Uuid;
 use crate::db::{DbPool, executions, workflows};
 use crate::error::SchedulerError;
 use crate::queue::TaskAssignment;
+use crate::task_preparation;
 use crate::validation::SchemaValidator;
 use common::dag::WorkflowDAG;
 
-/// Build TaskAssignment with registry metadata (T009)
+/// Build TaskAssignment with registry metadata
 ///
 /// Extracts node from DAG, retrieves workflow metadata from database,
-/// builds registry fields, auto-generates contextId if missing (FR-030),
-/// and validates task against A2A schema (FR-010).
+/// builds registry fields, auto-generates contextId if missing,
+/// and validates task against A2A schema before queueing.
 pub async fn build_task_assignment(
     pool: &DbPool,
     validator: &SchemaValidator,
@@ -19,22 +20,16 @@ pub async fn build_task_assignment(
     node_id: &str,
     dag: &WorkflowDAG,
 ) -> Result<TaskAssignment, SchedulerError> {
-    // Get node from DAG
     let node = dag
         .tasks
         .get(node_id)
         .ok_or_else(|| SchedulerError::NotFound(format!("Node not found in DAG: {node_id}")))?;
 
-    // Parse execution_id as UUID
     let exec_uuid = Uuid::parse_str(execution_id)
         .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid execution ID: {e}")))?;
 
-    // Get execution from database to retrieve workflow version metadata
     let execution = executions::get_by_id(pool, &exec_uuid).await?;
-
-    // Build registry fields based on workflow metadata
     let (registry_id, version, ref_str) = if let Some(namespace) = execution.workflow_namespace {
-        // Get workflow to retrieve name for building full registry ID
         let workflow = workflows::get_by_id(pool, &execution.workflow_id).await?;
 
         let ver = execution
@@ -50,13 +45,13 @@ pub async fn build_task_assignment(
         (None, None, None)
     };
 
-    // Build task payload (ensure contextId present per FR-030)
     let mut task = node.task.clone();
     if task.get("contextId").is_none() {
         task["contextId"] = json!(Uuid::new_v4().to_string());
     }
 
-    // Validate task against A2A schema (FR-010)
+    task_preparation::inject_runtime_message_fields(&mut task);
+
     validator.validate_task(&task)?;
 
     Ok(TaskAssignment {

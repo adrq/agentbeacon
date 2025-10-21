@@ -14,4 +14,4 @@ def test_stdio_contract_exposes_prompt_and_task(
     assert envelope["body"]["workflowRegistryId"].startswith("team/")
     assert envelope["body"]["workflowRef"].endswith(":latest")
 
-    validate_payload("a2a-task", task_payload)
+    validate_payload("message-send-params", task_payload)

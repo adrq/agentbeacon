@@ -39,7 +39,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 64,
-      "pattern": "^[a-z0-9_-]+$",
+      "pattern": "^[a-zA-Z0-9_-]+$",
       "description": "Slug identifier used for dependency references."
     },
     "TaskDefinition": {
@@ -54,35 +54,8 @@
           "description": "Agent identifier defined in repository configuration."
         },
         "task": {
-          "type": "object",
-          "description": "Payload delivered to the selected agent. For A2A agents, conforms to A2A v0.3.0 protocol with required 'history' field.",
-          "required": ["history"],
-          "properties": {
-            "history": {
-              "type": "array",
-              "minItems": 1,
-              "items": { "$ref": "a2a-v0.3.0.schema.json#/definitions/Message" },
-              "description": "Message history per A2A spec. First message is the user prompt."
-            },
-            "artifacts": {
-              "type": "array",
-              "items": { "$ref": "a2a-v0.3.0.schema.json#/definitions/Artifact" },
-              "description": "Optional artifacts passed to agent."
-            },
-            "contextId": {
-              "type": "string",
-              "description": "Optional context ID for grouping related tasks."
-            },
-            "metadata": {
-              "type": "object",
-              "additionalProperties": true,
-              "description": "Protocol-specific metadata forwarded to agent."
-            }
-          }
-        },
-        "inputs": {
-          "$ref": "#/$defs/TaskInputs",
-          "description": "Declarative inputs required before the task is executed."
+          "$ref": "a2a-v0.3.0.schema.json#/definitions/MessageSendParams",
+          "description": "Payload delivered to the selected agent. For A2A agents, conforms to A2A v0.3.0 MessageSendParams structure."
         },
         "depends_on": {
           "type": "array",
@@ -97,35 +70,6 @@
       },
       "unevaluatedProperties": false
     },
-    "TaskInputs": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "artifacts": {
-          "type": "array",
-          "description": "Artifacts that must be available before the task runs.",
-          "items": { "$ref": "#/$defs/InputArtifactReference" },
-          "uniqueItems": true,
-          "minItems": 1
-        }
-      }
-    },
-    "InputArtifactReference": {
-      "type": "object",
-      "description": "Reference to an artifact emitted by an upstream task.",
-      "required": ["from", "artifactId"],
-      "additionalProperties": false,
-      "properties": {
-        "from": {
-          "$ref": "#/$defs/Identifier",
-          "description": "Identifier of the upstream task that produced the artifact."
-        },
-        "artifactId": {
-          "$ref": "#/$defs/Identifier",
-          "description": "Artifact identifier declared on the producing task."
-        }
-      }
-    },
     "ExecutionPolicy": {
       "type": "object",
       "additionalProperties": false,
@@ -138,6 +82,11 @@
         "retry": {
           "$ref": "#/$defs/RetryPolicy",
           "description": "Retry policy that overrides the workflow default."
+        },
+        "permission": {
+          "type": "string",
+          "enum": ["allow", "deny", "ask"],
+          "description": "Permission policy for task execution. Controls whether task can execute without approval. Defaults to 'ask' when omitted. Currently validated and stored but not enforced by scheduler or worker."
         }
       }
     },

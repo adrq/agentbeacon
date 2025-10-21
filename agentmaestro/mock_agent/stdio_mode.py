@@ -37,29 +37,25 @@ class StdioHandler:
 
     def process_input(self, input_text: str) -> Dict[str, Any]:
         """Process input and return A2A-compliant response."""
-        # Try to parse as JSON first
         try:
             json_input = json.loads(input_text)
             if isinstance(json_input, dict) and "request" in json_input:
-                # Handle wrapped JSON request
                 request_data = json_input["request"]
                 if "prompt" in request_data:
                     text_content = request_data["prompt"]
                 elif "task" in request_data:
-                    # Extract text from canonical A2A task format
                     task = request_data["task"]
-                    if isinstance(task, dict) and "history" in task:
-                        # Extract first text part from first message
-                        history = task["history"]
-                        if history and len(history) > 0:
-                            first_message = history[0]
-                            if (
-                                "parts" in first_message
-                                and len(first_message["parts"]) > 0
-                            ):
-                                first_part = first_message["parts"][0]
-                                if first_part.get("kind") == "text":
-                                    text_content = first_part.get("text", "")
+                    if isinstance(task, dict):
+                        if "message" in task:
+                            message = task["message"]
+                            if isinstance(message, dict) and "parts" in message:
+                                parts = message["parts"]
+                                if parts and len(parts) > 0:
+                                    first_part = parts[0]
+                                    if first_part.get("kind") == "text":
+                                        text_content = first_part.get("text", "")
+                                    else:
+                                        text_content = str(task)
                                 else:
                                     text_content = str(task)
                             else:
@@ -73,26 +69,19 @@ class StdioHandler:
             else:
                 text_content = str(json_input)
         except json.JSONDecodeError:
-            # Handle as plain text
             text_content = input_text
 
-        # Check for custom response first
         if text_content in self.custom_responses:
             custom_response = self.custom_responses[text_content]
-            # Handle special HANG value in config
             if custom_response == "HANG":
-                # This will hang for 1 hour like special commands
                 import time
 
                 time.sleep(3600)
                 response_text = "This should never be reached"
             else:
                 response_text = custom_response
-        # Check for special commands
         elif self.special_commands.is_special_command(text_content):
             result = self.special_commands.handle_command(text_content, stdio_mode=True)
-
-            # Handle stdio failure mode
             if result == "STDIO_FAILURE":
                 return {
                     "taskStatus": {
@@ -112,12 +101,10 @@ class StdioHandler:
                     }
                 }
 
-            # For stdio mode, still return Mock response format as tests expect
             response_text = f"Mock response: {text_content}"
         else:
             response_text = f"Mock response: {text_content}"
 
-        # Return A2A-compliant response format
         response = {
             "taskStatus": {
                 "state": "completed",
@@ -133,7 +120,6 @@ class StdioHandler:
             ],
         }
 
-        # Log task completion after successful response creation, before returning
         log_task_completion(input_text)
 
         return response

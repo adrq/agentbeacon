@@ -28,24 +28,24 @@ tasks:
   - id: test-task-1
     agent: mock-agent
     task:
-      history:
-        - role: user
-          messageId: "msg-test-task-1"
-          kind: message
-          parts:
-            - kind: text
-              text: Analyze the processed data
+      message:
+        role: user
+        messageId: "msg-test-task-1"
+        kind: message
+        parts:
+          - kind: text
+            text: Analyze the processed data
   - id: test-task-2
     agent: mock-agent
     depends_on: [test-task-1]
     task:
-      history:
-        - role: user
-          messageId: "msg-test-task-2"
-          kind: message
-          parts:
-            - kind: text
-              text: Analyze the processed data
+      message:
+        role: user
+        messageId: "msg-test-task-2"
+        kind: message
+        parts:
+          - kind: text
+            text: Analyze the processed data
 """.strip()
 
         register_response = requests.post(
@@ -152,7 +152,7 @@ tasks:
         assert task["workflowRegistryId"], "workflowRegistryId should be present"
         assert task["workflowVersion"], "workflowVersion should be present"
         assert isinstance(task.get("protocolMetadata", {}), dict)
-        contract_schema_helpers.validate_payload("a2a-task", task["task"])
+        contract_schema_helpers.validate_payload("message-send-params", task["task"])
         assert "prompt" not in task["task"], (
             "Canonical task payload should omit legacy prompt"
         )
@@ -221,7 +221,9 @@ tasks:
         assert second_task["workflowRegistryId"], "workflowRegistryId should be present"
         assert second_task["workflowVersion"], "workflowVersion should be present"
         assert isinstance(second_task.get("protocolMetadata", {}), dict)
-        contract_schema_helpers.validate_payload("a2a-task", second_task["task"])
+        contract_schema_helpers.validate_payload(
+            "message-send-params", second_task["task"]
+        )
         assert "prompt" not in second_task["task"], (
             "Canonical task payload should omit legacy prompt"
         )

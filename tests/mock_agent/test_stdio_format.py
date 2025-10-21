@@ -91,15 +91,13 @@ def test_stdio_plain_text_with_fail_command(mock_agent_stdio):
 def test_stdio_json_input_formats(mock_agent_stdio):
     """Test JSON input parsing with various formats and error handling."""
     canonical_task = {
-        "history": [
-            {
-                "kind": "message",
-                "messageId": "stdin-001",
-                "role": "user",
-                "parts": [{"kind": "text", "text": "Test prompt"}],
-            }
-        ],
-        "contextId": "stdin-context",
+        "message": {
+            "kind": "message",
+            "messageId": "stdin-001",
+            "role": "user",
+            "parts": [{"kind": "text", "text": "Test prompt"}],
+        },
+        "configuration": {},
         "metadata": {"priority": "normal"},
     }
 

@@ -153,20 +153,18 @@ def test_worker_handles_malformed_task_data():
             build_canonical_task(
                 node_id="malformed-1",
                 agent="",
-                task_body={"messages": []},
+                task_body={},
                 validate_task=False,
             ),
             build_canonical_task(
                 node_id="malformed-2",
                 task_body={
-                    "messages": [
-                        {
-                            "messageId": "malformed-2-msg",
-                            "kind": "message",
-                            "role": "user",
-                            # Intentionally omit parts to trigger validation failure downstream
-                        }
-                    ]
+                    "message": {
+                        "messageId": "malformed-2-msg",
+                        "kind": "message",
+                        "role": "user",
+                        # Intentionally omit required 'parts' field
+                    }
                 },
                 validate_task=False,
             ),

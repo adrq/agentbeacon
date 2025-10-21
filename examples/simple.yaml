@@ -1,5 +1,5 @@
 name: simple_pipeline
-description: Basic sequential workflow aligned with the A2A schema.
+description: Basic sequential workflow aligned with the A2A MessageSendParams schema.
 config:
   api_keys: development
 on_error: stop_all
@@ -8,47 +8,41 @@ tasks:
     agent: demo-agent
     execution:
       timeout: 300
+      permission: allow
     task:
-      contextId: code_overview
+      message:
+        messageId: msg-analyze-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Analyze the codebase structure and identify key components.
+      configuration:
+        blocking: true
+        historyLength: 5
       metadata:
         category: architecture
-      history:
-        - messageId: msg-analyze-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Analyze the codebase structure and identify key components.
-      artifacts:
-        - artifactId: analysis_notes
-          parts:
-            - kind: text
-              text: Detailed analysis notes will be stored here.
+        example: test
+        nested:
+          value: 123
+          array: [1, 2, 3]
+          nullValue: null
   - id: summarize
     agent: demo-agent
     depends_on:
       - analyze
-    inputs:
-      artifacts:
-        - from: analyze
-          artifactId: analysis_notes
     execution:
       timeout: 180
+      permission: ask
     task:
-      contextId: code_overview
-      history:
-        - messageId: msg-summarize-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Summarize the findings from the analysis notes artifact in three bullet points.
-            - kind: text
-              text: "Artifact reference: analysis_notes"
-      artifacts:
-        - artifactId: summary
-          parts:
-            - kind: text
-              text: Concise summary of the analysis.
+      message:
+        messageId: msg-summarize-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Summarize the findings from the analysis notes in three bullet points.
+      metadata:
+        previousTask: analyze

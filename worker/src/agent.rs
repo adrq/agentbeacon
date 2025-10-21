@@ -53,6 +53,14 @@ pub struct A2aError {
     pub data: Option<serde_json::Value>,
 }
 
+/// Execute A2A task with comprehensive error handling and logging
+///
+/// This is the primary entry point for worker task execution. It wraps the core
+/// A2A protocol execution with standardized error handling, timing metrics, and
+/// structured logging.
+///
+/// Returns TaskResult with either completed/failed status from the agent, or
+/// a failed status if the protocol exchange itself fails.
 pub async fn execute_a2a_task(
     client: &reqwest::Client,
     agents_config: &AgentsConfig,
@@ -108,6 +116,17 @@ pub async fn execute_a2a_task(
     result
 }
 
+/// Core A2A protocol execution flow
+///
+/// Implements the full A2A protocol sequence:
+/// 1. Fetch agent card from /.well-known/agent-card.json to discover RPC URL
+/// 2. Send message/send request with task payload
+/// 3. Validate request against A2A schema before sending
+/// 4. Poll task status using tasks/get until terminal state reached
+/// 5. Handle special states (input-required, auth-required) as failures in headless execution
+///
+/// Returns early for terminal states (completed/failed/cancelled/rejected) or after
+/// encountering states requiring user interaction that cannot be satisfied in automated workflows.
 async fn execute_a2a_task_inner(
     client: &reqwest::Client,
     agents_config: &AgentsConfig,
@@ -163,7 +182,6 @@ async fn execute_a2a_task_inner(
 
     let rpc_url = agent_card.url.clone();
 
-    // Publish rpc_url as soon as known
     {
         let mut meta = metadata.lock().await;
         meta.rpc_url = Some(rpc_url.clone());
@@ -171,51 +189,7 @@ async fn execute_a2a_task_inner(
 
     let request_id = format!("{}:{}", task.execution_id, task.node_id);
 
-    // Extract history array from task payload
-    // Task payload format: {"history": [Message, ...]}
-    // Per A2A spec and scheduler contract: newest messages appended to END of array
-    let history = task
-        .task
-        .get("history")
-        .and_then(|h| h.as_array())
-        .ok_or_else(|| anyhow::anyhow!("task payload missing 'history' array"))?;
-
-    if history.is_empty() {
-        return Err(anyhow::anyhow!("task payload has empty history array"));
-    }
-
-    // Extract the latest message (last in array) for sending
-    let mut message = history
-        .last()
-        .ok_or_else(|| anyhow::anyhow!("history array is empty"))?
-        .clone();
-
-    // If this is a continuation (history > 1), extract taskId from earlier messages
-    // Per A2A spec §6.4 & §9.2-§9.4: message.taskId indicates continuation
-    // Use reverse iteration to get LATEST taskId (handles multi-task conversations)
-    if history.len() > 1 {
-        // Look for taskId in agent responses only (role="agent")
-        if let Some(task_id) = history
-            .iter()
-            .rev() // Get latest taskId in case of multi-task conversations
-            .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("agent"))
-            .filter_map(|m| m.get("taskId").and_then(|v| v.as_str()))
-            .next()
-        // Now gets LAST match due to .rev()
-        {
-            tracing::debug!(
-                task_id = task_id,
-                history_length = history.len(),
-                "Continuing conversation with taskId from latest agent response"
-            );
-            message["taskId"] = serde_json::Value::String(task_id.to_string());
-        }
-    }
-
-    // Wrap in MessageSendParams structure per A2A spec
-    let params = serde_json::json!({
-        "message": message
-    });
+    let params = task.task.clone();
 
     let a2a_request = A2aRequest {
         jsonrpc: "2.0".to_string(),
@@ -224,7 +198,6 @@ async fn execute_a2a_task_inner(
         id: request_id.clone(),
     };
 
-    // Validate outbound A2A request against schema before sending
     let request_value = serde_json::to_value(&a2a_request)
         .context("failed to serialize A2A request for validation")?;
 
@@ -292,23 +265,16 @@ async fn execute_a2a_task_inner(
         .result
         .ok_or_else(|| anyhow::anyhow!("A2A response missing both result and error"))?;
 
-    // Extract A2A Task fields from response
-    // A2A Task object has: id, contextId, status: {state, message?, timestamp?}, artifacts?, history?, metadata?
-
-    // Extract task_id for polling
     let task_id = result_value
         .get("id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("A2A Task missing 'id' field"))?
         .to_string();
 
-    // Publish task_id as soon as message/send returns
     {
         let mut meta = metadata.lock().await;
         meta.task_id = Some(task_id.clone());
     }
-
-    // Extract and deserialize TaskStatus directly from A2A response
     let mut task_status: A2ATaskStatus = serde_json::from_value(
         result_value
             .get("status")
@@ -317,7 +283,6 @@ async fn execute_a2a_task_inner(
     )
     .context("failed to deserialize A2A TaskStatus")?;
 
-    // Extract artifacts if present, deserializing directly to A2A format
     let mut artifacts = if let Some(artifacts_value) = result_value.get("artifacts") {
         let artifacts_list: Vec<A2AArtifact> = serde_json::from_value(artifacts_value.clone())
             .context("failed to deserialize A2A artifacts")?;
@@ -330,10 +295,7 @@ async fn execute_a2a_task_inner(
         None
     };
 
-    // Check if response state is terminal or pseudo-terminal for headless execution
     let state_str = task_status.state.as_str();
-
-    // Handle states that require user interaction (can't be satisfied in headless mode)
     if matches!(state_str, "input-required" | "auth-required") {
         tracing::warn!(
             state = state_str,
@@ -350,11 +312,9 @@ async fn execute_a2a_task_inner(
         });
     }
 
-    // Check if response state is terminal
     let is_terminal = matches!(state_str, "completed" | "failed" | "cancelled" | "rejected");
 
     if is_terminal {
-        // Task finished, return immediately
         return Ok(TaskResult {
             execution_id: task.execution_id.clone(),
             node_id: task.node_id.clone(),
@@ -363,24 +323,18 @@ async fn execute_a2a_task_inner(
         });
     }
 
-    // Non-terminal state (submitted, working, unknown) - must poll until terminal
     tracing::debug!(
         state = %task_status.state,
         task_id = %task_id,
         "Received non-terminal state, starting polling loop"
     );
 
-    // Polling configuration
     const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
     loop {
-        // Sleep before next poll (cancellation-friendly)
         tokio::time::sleep(POLL_INTERVAL).await;
 
-        // Call tasks/get to fetch updated status
         let updated_task = poll_task_status(client, &rpc_url, &task_id).await?;
-
-        // Extract updated status
         task_status = serde_json::from_value(
             updated_task
                 .get("status")
@@ -391,7 +345,6 @@ async fn execute_a2a_task_inner(
 
         let state_str = task_status.state.as_str();
 
-        // Handle states requiring user interaction (headless execution constraint)
         if matches!(state_str, "input-required" | "auth-required") {
             tracing::warn!(
                 state = state_str,
@@ -408,11 +361,9 @@ async fn execute_a2a_task_inner(
             });
         }
 
-        // Check if terminal
         let is_terminal = matches!(state_str, "completed" | "failed" | "cancelled" | "rejected");
 
         if is_terminal {
-            // Extract final artifacts
             artifacts = if let Some(artifacts_value) = updated_task.get("artifacts") {
                 let artifacts_list: Vec<A2AArtifact> =
                     serde_json::from_value(artifacts_value.clone())
@@ -434,7 +385,6 @@ async fn execute_a2a_task_inner(
             });
         }
 
-        // Log progress for non-terminal states
         tracing::debug!(
             state = %task_status.state,
             task_id = %task_id,
@@ -443,6 +393,9 @@ async fn execute_a2a_task_inner(
     }
 }
 
+/// Poll agent for task status using tasks/get RPC method
+///
+/// Returns the complete Task object from A2A response including updated status and artifacts.
 async fn poll_task_status(
     client: &reqwest::Client,
     rpc_url: &str,
@@ -487,6 +440,10 @@ async fn poll_task_status(
         .ok_or_else(|| anyhow::anyhow!("tasks/get response missing result"))
 }
 
+/// Best-effort task cancellation using tasks/cancel RPC method
+///
+/// Uses short timeout (2s) and ignores errors since cancellation may fail if agent
+/// has already completed or doesn't support cancellation. Used during worker shutdown.
 pub async fn cancel_a2a_task(client: &reqwest::Client, rpc_url: &str, task_id: &str) -> Result<()> {
     let request = A2aRequest {
         jsonrpc: "2.0".to_string(),
@@ -495,7 +452,6 @@ pub async fn cancel_a2a_task(client: &reqwest::Client, rpc_url: &str, task_id: &
         id: Uuid::new_v4().to_string(),
     };
 
-    // Best-effort cancel with short timeout, don't fail if agent rejects
     let _ = client
         .post(rpc_url)
         .json(&request)

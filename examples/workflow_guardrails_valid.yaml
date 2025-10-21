@@ -1,5 +1,5 @@
 name: guardrails_valid
-description: Valid workflow demonstrating proper DAG guardrails with artifacts
+description: Valid workflow demonstrating proper DAG guardrails using MessageSendParams
 config:
   api_keys: development
 on_error: stop_all
@@ -7,58 +7,39 @@ tasks:
   - id: draft_welcome
     agent: demo-agent
     task:
-      contextId: doc_workflow
-      history:
-        - messageId: msg-draft-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Draft a welcome message for the project documentation.
-      artifacts:
-        - artifactId: welcome_note
-          parts:
-            - kind: text
-              text: Welcome to AgentMaestro!
+      message:
+        messageId: msg-draft-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Draft a welcome message for the project documentation.
   - id: summarize_plan
     agent: demo-agent
     depends_on:
       - draft_welcome
-    inputs:
-      artifacts:
-        - from: draft_welcome
-          artifactId: welcome_note
     task:
-      contextId: doc_workflow
-      history:
-        - messageId: msg-summarize-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Summarize the welcome note into a single sentence.
-      artifacts:
-        - artifactId: plan_summary
-          parts:
-            - kind: text
-              text: Summary of the plan.
+      message:
+        messageId: msg-summarize-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Summarize the welcome note into a single sentence.
   - id: finalize_doc
     agent: demo-agent
     depends_on:
       - summarize_plan
-    inputs:
-      artifacts:
-        - from: summarize_plan
-          artifactId: plan_summary
+    execution:
+      permission: allow
     task:
-      contextId: doc_workflow
-      history:
-        - messageId: msg-finalize-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Finalize the documentation using the plan summary.
+      message:
+        messageId: msg-finalize-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Finalize the documentation using the plan summary.

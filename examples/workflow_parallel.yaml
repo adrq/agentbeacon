@@ -1,59 +1,43 @@
 name: parallel_research
-description: Showcases parallel information gathering with a merge step.
+description: Showcases parallel information gathering with a merge step using MessageSendParams.
 on_error: continue_branches
 tasks:
   - id: gather_requirements
     agent: mock-a2a-analyst
     task:
-      history:
-        - messageId: msg-requirements-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                List three user pain points from the latest product feedback notes.
-      artifacts:
-        - artifactId: requirements_notes
-          parts:
-            - kind: text
-              text: Pending synthesis
+      message:
+        messageId: msg-requirements-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              List three user pain points from the latest product feedback notes.
   - id: collect_metrics
     agent: mock-a2a-analyst
     task:
-      history:
-        - messageId: msg-metrics-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: Retrieve the latest weekly engagement metrics from the analytics dashboard export.
-      artifacts:
-        - artifactId: engagement_report
-          parts:
-            - kind: text
-              text: Placeholder for CSV attachment
+      message:
+        messageId: msg-metrics-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: Retrieve the latest weekly engagement metrics from the analytics dashboard export.
   - id: compile_brief
     agent: mock-a2a-editor
     depends_on:
       - gather_requirements
       - collect_metrics
-    inputs:
-      artifacts:
-        - from: gather_requirements
-          artifactId: requirements_notes
-        - from: collect_metrics
-          artifactId: engagement_report
+    execution:
+      permission: allow
     task:
+      message:
+        messageId: msg-brief-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Merge the requirements and engagement insights into an executive brief with three bullet points.
       metadata:
         audience: leadership
-      history:
-        - messageId: msg-brief-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Merge the requirements and engagement insights into an executive brief with three bullet points.
-            - kind: text
-              text: "Artifacts to summarise: requirements_notes, engagement_report"

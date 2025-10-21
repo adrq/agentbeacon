@@ -21,7 +21,7 @@ def test_scheduler_sync_contract(load_json_asset, validate_payload) -> None:
         "protocolMetadata must be an object (may be empty)"
     )
 
-    validate_payload("a2a-task", payload["task"])
+    validate_payload("message-send-params", payload["task"])
 
     assert payload["agent"], "agent binding must be provided"
     assert payload["workflowRegistryId"], "workflowRegistryId must be present"

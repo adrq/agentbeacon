@@ -9,40 +9,37 @@ tasks:
     depends_on:
       - task_b
     task:
-      contextId: cycle_test
-      history:
-        - messageId: msg-a-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Task A depends on Task B.
+      message:
+        messageId: msg-a-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Task A depends on Task B.
   - id: task_b
     agent: demo-agent
     depends_on:
       - task_c
     task:
-      contextId: cycle_test
-      history:
-        - messageId: msg-b-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Task B depends on Task C.
+      message:
+        messageId: msg-b-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Task B depends on Task C.
   - id: task_c
     agent: demo-agent
     depends_on:
       - task_a
     task:
-      contextId: cycle_test
-      history:
-        - messageId: msg-c-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: |
-                Task C depends on Task A (creates cycle).
+      message:
+        messageId: msg-c-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: |
+              Task C depends on Task A (creates cycle).

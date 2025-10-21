@@ -26,6 +26,8 @@ SCHEMA_NAME_MAP: Dict[str, str] = {
     "a2a-task.schema": "a2a-v0.3.0.schema.json",
     "a2a": "a2a-v0.3.0.schema.json",
     "a2a-v0.3.0": "a2a-v0.3.0.schema.json",
+    "message-send-params": "a2a-v0.3.0.schema.json#/definitions/MessageSendParams",
+    "MessageSendParams": "a2a-v0.3.0.schema.json#/definitions/MessageSendParams",
 }
 
 
@@ -41,8 +43,41 @@ def resolve_docs_path(relative_path: str) -> Path:
 
 @lru_cache(maxsize=None)
 def load_schema(schema_name: str) -> Dict[str, Any]:
-    """Load a JSON schema from docs/ and cache the parsed dictionary."""
+    """Load a JSON schema from docs/ and cache the parsed dictionary.
 
+    Supports JSON Pointer fragments (e.g., "file.json#/definitions/Type").
+    When a fragment is provided, the sub-schema is wrapped with the full schema's
+    definitions and $schema metadata to preserve $ref resolution.
+    """
+
+    candidate = SCHEMA_NAME_MAP.get(schema_name, schema_name)
+
+    # Check for fragment reference (e.g., "file.json#/definitions/Type")
+    if "#" in candidate:
+        base_path, fragment = candidate.split("#", 1)
+        path = DOCS_ROOT / base_path
+        if not path.exists():
+            raise FileNotFoundError(f"Docs asset not found: {base_path}")
+
+        with path.open("r", encoding="utf-8") as handle:
+            full_schema = json.load(handle)
+
+        # Navigate to the target sub-schema
+        fragment_parts = [p for p in fragment.split("/") if p]
+        sub_schema = full_schema
+        for part in fragment_parts:
+            sub_schema = sub_schema[part]
+
+        # Preserve definitions block and $schema for $ref resolution
+        wrapped_schema = dict(sub_schema)
+        if "definitions" in full_schema:
+            wrapped_schema["definitions"] = full_schema["definitions"]
+        if "$schema" in full_schema:
+            wrapped_schema["$schema"] = full_schema["$schema"]
+
+        return wrapped_schema
+
+    # Existing code for non-fragment references
     path = resolve_docs_path(schema_name)
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -124,7 +159,7 @@ def build_canonical_task(
             "role": "user",
             "parts": [{"kind": "text", "text": message_text}],
         }
-        task_body = {"history": [message]}
+        task_body = {"message": message}
 
     payload = {
         "nodeId": node_id,
@@ -137,12 +172,17 @@ def build_canonical_task(
     }
 
     if artifacts:
+        if validate_task:
+            raise ValueError(
+                "MessageSendParams does not support artifacts field. "
+                "Set validate_task=False if testing invalid payloads."
+            )
         payload["task"] = dict(payload["task"], artifacts=artifacts)
 
     if protocol_metadata is not None:
         payload["protocolMetadata"] = protocol_metadata
 
     if validate_task:
-        validate_payload("a2a-task", payload["task"])
+        validate_payload("message-send-params", payload["task"])
 
     return payload

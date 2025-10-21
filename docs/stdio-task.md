@@ -13,20 +13,18 @@ The worker emits a single line of UTF-8 JSON terminated by `\n`. The JSON struct
     "workflowRef": "team/refactor-auth:latest",
     "agent": "mock-a2a-writer",
     "task": {
-      "history": [
-        {
-          "messageId": "msg-stdin-1",
-          "kind": "message",
-          "role": "user",
-          "parts": [
-            {
-              "kind": "text",
-              "text": "Compose a welcome message introducing AgentMaestro to a new teammate."
-            }
-          ]
-        }
-      ],
-      "contextId": "session-42",
+      "message": {
+        "messageId": "550e8400-e29b-41d4-a716-446655440000",
+        "kind": "message",
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Compose a welcome message introducing AgentMaestro to a new teammate."
+          }
+        ]
+      },
+      "configuration": {},
       "metadata": {"priority": "normal"}
     },
     "prompt": "Compose a welcome message introducing AgentMaestro to a new teammate.",
@@ -36,6 +34,6 @@ The worker emits a single line of UTF-8 JSON terminated by `\n`. The JSON struct
 ```
 
 ## Notes
-- Optional fields (`contextId`, `metadata`, `artifacts`) remain inside `body.task`; adapters that do not need them may ignore the segments.
-- `prompt` is derived from the first `TextPart` in `task.messages` purely for legacy stdio agents; it must not diverge from the canonical structured content.
+- Optional fields (`configuration`, `metadata`) remain inside `body.task`; adapters that do not need them may ignore the segments.
+- `prompt` is derived from the first `TextPart` in `task.message.parts` purely for legacy stdio agents; it must not diverge from the canonical structured content.
 - `version` allows future framing adjustments without altering the shared task contract.

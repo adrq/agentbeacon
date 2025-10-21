@@ -82,7 +82,11 @@ impl Scheduler {
         }
     }
 
-    /// Register a new execution with the scheduler
+    /// Register new workflow execution with scheduler
+    ///
+    /// Creates ActiveExecution tracking structure and initializes state to Pending.
+    /// Must be called before queue_entry_nodes(). The execution remains registered
+    /// until all tasks reach terminal states (completed, failed, or blocked).
     pub async fn register_execution(
         &self,
         execution_id: String,
@@ -121,75 +125,64 @@ impl Scheduler {
         }
     }
 
-    /// Handle task result from worker (event-driven scheduling with retry support)
+    /// Process task completion/failure with event-driven scheduling
+    ///
+    /// Core scheduler logic that:
+    /// - Updates execution state (Pending → Running on first result)
+    /// - Handles retries with configurable backoff (checks retry policy, schedules delayed retry)
+    /// - Implements partial failure isolation (failed tasks block descendants but independent branches continue)
+    /// - Triggers event-driven scheduling (queues newly-ready downstream tasks)
+    ///
+    /// Thread-safe through RwLock on active_executions map.
     pub async fn handle_task_result(
         &self,
         execution_id: &str,
         node_id: &str,
         success: bool,
     ) -> Result<(), SchedulerError> {
-        // Get execution from active map
         let mut executions = self.active_executions.write().await;
         let execution = executions.get_mut(execution_id).ok_or_else(|| {
             SchedulerError::NotFound(format!("Execution not found: {execution_id}"))
         })?;
 
-        // Update execution status if needed
         if execution.status == ExecutionStatus::Pending {
             execution.status = ExecutionStatus::Running;
         }
 
-        // Get current retry count for this task
         let retry_count = execution.retry_counts.get(node_id).copied().unwrap_or(0);
-
-        // Handle task failure with retry logic
         if !success {
-            // Get task from DAG
             let task =
                 execution.dag.tasks.get(node_id).ok_or_else(|| {
                     SchedulerError::NotFound(format!("Task not found: {node_id}"))
                 })?;
 
-            // Check if task has retry policy
             if let Some(exec_policy) = &task.execution {
                 if let Some(retry_policy) = &exec_policy.retry {
-                    // Convert DAG retry policy to scheduler retry policy
                     let scheduler_retry = Self::dag_retry_to_scheduler_retry(retry_policy);
 
-                    // Check if we should retry
                     if scheduler_retry.should_retry(retry_count) {
-                        // Calculate delay for next retry
                         if let Some(delay) = scheduler_retry.calculate_next_delay(retry_count) {
-                            // Increment retry count
                             execution
                                 .retry_counts
                                 .insert(node_id.to_string(), retry_count + 1);
 
-                            // Remove from queued set to allow re-queueing
                             execution.queued.remove(node_id);
 
-                            // Mark as retrying to prevent duplicate queueing during delay window
                             execution.retrying.insert(node_id.to_string());
-
-                            // Update database with retry count BEFORE spawning async task
                             let exec_uuid = Uuid::parse_str(execution_id).map_err(|e| {
                                 SchedulerError::ValidationFailed(format!(
                                     "Invalid execution ID: {e}"
                                 ))
                             })?;
 
-                            // Fetch current execution to preserve existing task states
                             let db_execution =
                                 crate::db::executions::get_by_id(&self.db_pool, &exec_uuid).await?;
 
-                            // Clone existing task_states and merge updates
                             let mut task_states = db_execution
                                 .task_states
                                 .as_object()
                                 .cloned()
                                 .unwrap_or_else(serde_json::Map::new);
-
-                            // Update only the retrying node
                             task_states.insert(
                                 node_id.to_string(),
                                 json!({
@@ -207,7 +200,6 @@ impl Scheduler {
                             )
                             .await?;
 
-                            // Clone values needed for async operations
                             let execution_id = execution_id.to_string();
                             let node_id = node_id.to_string();
                             let db_pool = self.db_pool.clone();
@@ -215,16 +207,12 @@ impl Scheduler {
                             let dag = execution.dag.clone();
                             let task_queue = self.task_queue.clone();
                             let scheduler = self.clone();
-
-                            // Spawn retry task with delay
                             tokio::spawn(async move {
                                 tokio::time::sleep(delay).await;
 
-                                // Verify execution still active before re-queuing
                                 let exec_uuid = match uuid::Uuid::parse_str(&execution_id) {
                                     Ok(uuid) => uuid,
                                     Err(_) => {
-                                        // Invalid ID - clear retrying flag anyway
                                         scheduler.clear_retrying(&execution_id, &node_id).await;
                                         return;
                                     }
@@ -235,10 +223,7 @@ impl Scheduler {
                                         if exec.status != "completed"
                                             && exec.status != "failed" =>
                                     {
-                                        // Clear retrying flag before re-queueing
                                         scheduler.clear_retrying(&execution_id, &node_id).await;
-
-                                        // Execution still active - proceed with retry
                                         if let Ok(assignment) =
                                             crate::scheduling::assignment::build_task_assignment(
                                                 &db_pool,
@@ -253,7 +238,6 @@ impl Scheduler {
                                         }
                                     }
                                     _ => {
-                                        // Execution finished or not found - clear retrying flag and skip retry
                                         scheduler.clear_retrying(&execution_id, &node_id).await;
                                         tracing::debug!(
                                             "Skipping retry for {}/{} - execution no longer active",
@@ -270,20 +254,16 @@ impl Scheduler {
                 }
             }
 
-            // No retry policy or retries exhausted - mark as failed and apply partial failure logic
             execution.failed.insert(node_id.to_string());
-
-            // Find all nodes blocked by this failure (FR-031) - O(N) using BFS
             let blocked_tasks =
                 crate::scheduling::partial_failure::find_all_descendants(node_id, &execution.dag);
             execution.blocked.extend(blocked_tasks);
 
-            // Determine workflow status: partial_failure if independent branches exist
             let has_independent_branches = execution.dag.tasks.len()
                 > execution.completed.len() + execution.failed.len() + execution.blocked.len();
 
             let workflow_status = if has_independent_branches {
-                execution.status = ExecutionStatus::Running; // Keep running for independent branches
+                execution.status = ExecutionStatus::Running;
                 "partial_failure"
             } else {
                 execution.status = ExecutionStatus::Failed;
@@ -294,17 +274,13 @@ impl Scheduler {
                 SchedulerError::ValidationFailed(format!("Invalid execution ID: {e}"))
             })?;
 
-            // Fetch current execution to preserve existing task states
             let db_execution = crate::db::executions::get_by_id(&self.db_pool, &exec_uuid).await?;
 
-            // Clone existing task_states and merge updates
             let mut task_states = db_execution
                 .task_states
                 .as_object()
                 .cloned()
                 .unwrap_or_else(serde_json::Map::new);
-
-            // Update only the node that just failed (preserve other nodes' metadata)
             task_states.insert(
                 node_id.to_string(),
                 json!({
@@ -314,7 +290,6 @@ impl Scheduler {
                 }),
             );
 
-            // Update only NEWLY blocked nodes (descendants of this failure)
             let newly_blocked =
                 crate::scheduling::partial_failure::find_all_descendants(node_id, &execution.dag);
             for task_id in &newly_blocked {
@@ -335,13 +310,10 @@ impl Scheduler {
             )
             .await?;
 
-            // If there are independent branches, continue queueing them
             if has_independent_branches {
-                // Find ready nodes that are NOT blocked
                 let ready_nodes = execution.dag.ready_nodes(&execution.completed);
 
                 for ready_node_id in ready_nodes {
-                    // Skip if already queued, retrying, failed, or blocked
                     if execution.queued.contains(&ready_node_id)
                         || execution.retrying.contains(&ready_node_id)
                         || execution.failed.contains(&ready_node_id)
@@ -367,24 +339,18 @@ impl Scheduler {
             return Ok(());
         }
 
-        // Task succeeded - mark as completed
         execution.completed.insert(node_id.to_string());
 
-        // Update database execution state
         let exec_uuid = Uuid::parse_str(execution_id)
             .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid execution ID: {e}")))?;
 
-        // Fetch current execution to preserve existing task states (e.g., "assigned" from worker_sync)
         let db_execution = crate::db::executions::get_by_id(&self.db_pool, &exec_uuid).await?;
 
-        // Clone existing task_states and merge updates (preserve other nodes)
         let mut task_states = db_execution
             .task_states
             .as_object()
             .cloned()
             .unwrap_or_else(serde_json::Map::new);
-
-        // Update only the node that just completed (preserve other nodes' metadata)
         task_states.insert(
             node_id.to_string(),
             json!({
@@ -408,12 +374,9 @@ impl Scheduler {
         )
         .await?;
 
-        // Find newly-ready tasks (event-driven scheduling)
         let ready_nodes = execution.dag.ready_nodes(&execution.completed);
 
-        // Queue ready tasks (filter out already-queued, retrying, blocked, and failed tasks)
         for ready_node_id in ready_nodes {
-            // Skip if already queued, retrying, blocked, or failed
             if execution.queued.contains(&ready_node_id)
                 || execution.retrying.contains(&ready_node_id)
                 || execution.blocked.contains(&ready_node_id)
@@ -431,19 +394,15 @@ impl Scheduler {
             )
             .await?;
 
-            // Push to task queue (write-through: persists to DB + in-memory)
             self.task_queue.push(assignment).await?;
 
-            // Mark as queued
             execution.queued.insert(ready_node_id.clone());
         }
 
-        // Check if execution is complete (all tasks are completed, failed, or blocked)
         let total_accounted =
             execution.completed.len() + execution.failed.len() + execution.blocked.len();
 
         if total_accounted == execution.dag.tasks.len() {
-            // Set final status based on failures
             if execution.failed.is_empty() {
                 execution.status = ExecutionStatus::Completed;
             } else if !execution.blocked.is_empty() || !execution.completed.is_empty() {
@@ -457,10 +416,11 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Clear retrying flag when retry is about to be queued
+    /// Clear retrying flag when retry task is about to be re-queued
     ///
-    /// Called by spawned retry tasks before re-queueing to allow the task
-    /// to be queued again and prevent it from being stuck in retrying state.
+    /// Called by delayed retry tasks after backoff period expires. Removes the task
+    /// from the retrying set to allow it to be queued again and prevent it from being
+    /// stuck in limbo between retry delay and actual re-queueing.
     pub async fn clear_retrying(&self, execution_id: &str, node_id: &str) {
         let mut executions = self.active_executions.write().await;
         if let Some(execution) = executions.get_mut(execution_id) {
@@ -528,7 +488,11 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Queue entry nodes for a newly registered execution
+    /// Queue workflow entry nodes (tasks with no dependencies) to begin execution
+    ///
+    /// Must be called after register_execution() to start workflow processing.
+    /// Entry nodes are immediately eligible for worker assignment since they have
+    /// no upstream dependencies to wait for.
     pub async fn queue_entry_nodes(&self, execution_id: &str) -> Result<(), SchedulerError> {
         // Need write lock to update queued set
         let mut executions = self.active_executions.write().await;
@@ -617,37 +581,37 @@ tasks:
   - id: task-a
     agent: mock-agent
     task:
-      history:
-        - messageId: msg-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task A"
+      message:
+        messageId: msg-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task A"
 
   - id: task-b
     agent: mock-agent
     depends_on: [task-a]
     task:
-      history:
-        - messageId: msg-2
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task B"
+      message:
+        messageId: msg-2
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task B"
 
   - id: task-c
     agent: mock-agent
     depends_on: [task-b]
     task:
-      history:
-        - messageId: msg-3
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task C"
+      message:
+        messageId: msg-3
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task C"
 "#;
         WorkflowDAG::from_workflow(yaml).expect("Failed to create linear workflow")
     }
@@ -660,37 +624,37 @@ tasks:
   - id: task-a
     agent: mock-agent
     task:
-      history:
-        - messageId: msg-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task A"
+      message:
+        messageId: msg-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task A"
 
   - id: task-b
     agent: mock-agent
     depends_on: [task-a]
     task:
-      history:
-        - messageId: msg-2
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task B"
+      message:
+        messageId: msg-2
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task B"
 
   - id: task-c
     agent: mock-agent
     depends_on: [task-a]
     task:
-      history:
-        - messageId: msg-3
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task C"
+      message:
+        messageId: msg-3
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task C"
 "#;
         WorkflowDAG::from_workflow(yaml).expect("Failed to create parallel workflow")
     }
@@ -703,49 +667,49 @@ tasks:
   - id: task-a
     agent: mock-agent
     task:
-      history:
-        - messageId: msg-1
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task A"
+      message:
+        messageId: msg-1
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task A"
 
   - id: task-b
     agent: mock-agent
     depends_on: [task-a]
     task:
-      history:
-        - messageId: msg-2
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task B"
+      message:
+        messageId: msg-2
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task B"
 
   - id: task-c
     agent: mock-agent
     depends_on: [task-a]
     task:
-      history:
-        - messageId: msg-3
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task C"
+      message:
+        messageId: msg-3
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task C"
 
   - id: task-d
     agent: mock-agent
     depends_on: [task-b, task-c]
     task:
-      history:
-        - messageId: msg-4
-          kind: message
-          role: user
-          parts:
-            - kind: text
-              text: "Task D"
+      message:
+        messageId: msg-4
+        kind: message
+        role: user
+        parts:
+          - kind: text
+            text: "Task D"
 "#;
         WorkflowDAG::from_workflow(yaml).expect("Failed to create diamond workflow")
     }

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::SchedulerError;
 
-/// InMemoryRetriever for cross-schema $ref resolution (T019 requirement)
+/// InMemoryRetriever for cross-schema $ref resolution
 ///
 /// Enables workflow-schema.json to reference a2a-v0.3.0.schema.json definitions
 /// without requiring filesystem access during validation.
@@ -74,7 +74,7 @@ impl SchemaValidator {
         // Create custom retriever for cross-schema $ref resolution
         let retriever = InMemoryRetriever::new();
 
-        // Compile schema ONCE at startup with custom retriever (T019 requirement)
+        // Compile schema ONCE at startup with custom retriever
         let compiled = jsonschema::options()
             .with_retriever(retriever)
             .build(&workflow_schema)
@@ -85,17 +85,31 @@ impl SchemaValidator {
         Ok(SchemaValidator { compiled })
     }
 
-    /// Validate workflow YAML against workflow-schema.json
+    /// Validate workflow YAML against schema with runtime field injection support
+    ///
+    /// Two-phase validation approach:
+    /// 1. Parse YAML → JSON and inject temporary messageId/kind values for schema validation
+    /// 2. Validate injected workflow against schema (catches structure errors)
+    /// 3. Run DAG guardrails (duplicate IDs, cycles, missing dependencies)
+    ///
+    /// Returns ORIGINAL workflow JSON without injected fields - runtime injection
+    /// happens later during task assignment via task_preparation module.
     pub fn validate_workflow_yaml(&self, yaml_content: &str) -> Result<JsonValue, SchedulerError> {
         // Parse YAML to JSON
         let workflow_json: JsonValue = serde_yaml::from_str(yaml_content)
             .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid YAML syntax: {e}")))?;
 
+        // Clone workflow for validation injection
+        let mut workflow_for_validation = workflow_json.clone();
+
+        // Inject temporary messageId/kind values for validation
+        Self::inject_validation_fields(&mut workflow_for_validation);
+
         // Validate using pre-compiled schema (no recompilation on each call)
         // Use iter_errors() to get all validation errors for detailed feedback
         let validation_errors: Vec<String> = self
             .compiled
-            .iter_errors(&workflow_json)
+            .iter_errors(&workflow_for_validation)
             .map(|e| format!("  - {e}"))
             .collect();
 
@@ -106,13 +120,44 @@ impl SchemaValidator {
             )));
         }
 
-        // Perform DAG validation (guardrails)
+        // Perform DAG validation (guardrails) on original data
         let dag_errors = self.validate_dag_guardrails(&workflow_json);
         if !dag_errors.is_empty() {
             return Err(SchedulerError::DagValidationFailed(dag_errors));
         }
 
+        // Return ORIGINAL unmodified workflow
         Ok(workflow_json)
+    }
+
+    /// Inject temporary messageId/kind values for validation
+    /// Mutates the workflow JSON to add missing fields
+    fn inject_validation_fields(workflow: &mut JsonValue) {
+        if let Some(tasks) = workflow.get_mut("tasks").and_then(|t| t.as_array_mut()) {
+            for task in tasks {
+                if let Some(task_obj) = task.get_mut("task").and_then(|t| t.as_object_mut()) {
+                    // Handle MessageSendParams structure (task.message)
+                    if let Some(message) =
+                        task_obj.get_mut("message").and_then(|m| m.as_object_mut())
+                    {
+                        // Inject messageId if absent
+                        if !message.contains_key("messageId") {
+                            message.insert(
+                                "messageId".to_string(),
+                                JsonValue::String("temp".to_string()),
+                            );
+                        }
+                        // Inject kind if absent
+                        if !message.contains_key("kind") {
+                            message.insert(
+                                "kind".to_string(),
+                                JsonValue::String("message".to_string()),
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Validate DAG guardrails (Phase 1 implementation)
@@ -132,39 +177,31 @@ impl SchemaValidator {
         // Check dependencies (existence, cycles, self-references)
         self.check_dependencies(tasks, &mut errors);
 
-        // Check artifact constraints
-        self.check_artifacts(tasks, &mut errors);
-
         errors
     }
 
-    /// Validate task payload against A2A v0.3.0 schema (FR-010)
+    /// Lightweight sanity check for task structure after runtime field injection.
+    ///
+    /// Note: Full schema validation already occurred in validate_workflow() before
+    /// runtime field injection. This method provides a minimal safety check to catch
+    /// potential bugs in the injection logic, but should not duplicate schema validation.
+    ///
+    /// If this check fails, it indicates a bug in task_preparation module, not a
+    /// workflow authoring error.
     pub fn validate_task(&self, task: &JsonValue) -> Result<(), SchedulerError> {
-        // For now, skip strict schema validation in tests
-        // TODO: Implement proper A2A Task schema validation with cross-reference resolution
-        // The challenge is that Task schema has $ref to other definitions in the A2A schema
-        // and we need to provide the full schema context for validation to work.
-
-        // Basic validation: ensure task has required fields
+        // Sanity check: task must be an object
         if !task.is_object() {
             return Err(SchedulerError::ValidationFailed(
-                "Task must be a JSON object".to_string(),
+                "Internal error: Task is not a JSON object after injection".to_string(),
             ));
         }
 
-        let obj = task.as_object().unwrap();
-
-        // Check for required field: history
-        if !obj.contains_key("history") {
-            return Err(SchedulerError::ValidationFailed(
-                "Task must have 'history' field".to_string(),
-            ));
-        }
-
+        // Note: No need to check for "message" field here - schema validation already
+        // ensured it exists, and injection doesn't modify the structure.
         Ok(())
     }
 
-    /// Check for duplicate task IDs (FR-001)
+    /// Check for duplicate task IDs
     fn check_duplicate_task_ids(&self, tasks: &[JsonValue], errors: &mut Vec<String>) {
         let mut seen_ids = HashSet::new();
 
@@ -249,92 +286,5 @@ impl SchemaValidator {
 
         rec_stack.remove(node);
         false
-    }
-
-    /// Check artifact constraints
-    fn check_artifacts(&self, tasks: &[JsonValue], errors: &mut Vec<String>) {
-        // Build artifact producer map
-        let mut artifact_producers: HashMap<String, String> = HashMap::new();
-        let mut task_dependencies: HashMap<String, HashSet<String>> = HashMap::new();
-
-        // First pass: collect all artifact producers and dependencies
-        for task in tasks {
-            let task_id = match task.get("id").and_then(|v| v.as_str()) {
-                Some(id) => id.to_string(),
-                None => continue,
-            };
-
-            // Collect depends_on relationships
-            if let Some(depends_on) = task.get("depends_on").and_then(|v| v.as_array()) {
-                let deps: HashSet<String> = depends_on
-                    .iter()
-                    .filter_map(|d| d.as_str().map(String::from))
-                    .collect();
-                task_dependencies.insert(task_id.clone(), deps);
-            }
-
-            // Collect artifact outputs from task.artifacts (A2A protocol)
-            if let Some(task_block) = task.get("task").and_then(|v| v.as_object()) {
-                if let Some(artifacts) = task_block.get("artifacts").and_then(|v| v.as_array()) {
-                    for artifact in artifacts {
-                        if let Some(artifact_id) =
-                            artifact.get("artifactId").and_then(|v| v.as_str())
-                        {
-                            // Check for duplicate artifact producers
-                            if let Some(existing_producer) = artifact_producers.get(artifact_id) {
-                                errors.push(format!(
-                                    "Artifact '{artifact_id}' is declared by both task '{existing_producer}' and task '{task_id}'"
-                                ));
-                            } else {
-                                artifact_producers.insert(artifact_id.to_string(), task_id.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Second pass: validate artifact inputs
-        for task in tasks {
-            let task_id = match task.get("id").and_then(|v| v.as_str()) {
-                Some(id) => id,
-                None => continue,
-            };
-
-            if let Some(inputs) = task.get("inputs").and_then(|v| v.as_object()) {
-                if let Some(artifact_refs) = inputs.get("artifacts").and_then(|v| v.as_array()) {
-                    for artifact_ref in artifact_refs {
-                        let from_task = artifact_ref.get("from").and_then(|v| v.as_str());
-                        let artifact_id = artifact_ref.get("artifactId").and_then(|v| v.as_str());
-
-                        if let (Some(from), Some(artifact)) = (from_task, artifact_id) {
-                            // Check if artifact producer exists
-                            if let Some(producer) = artifact_producers.get(artifact) {
-                                // Verify producer matches the 'from' field
-                                if producer != from {
-                                    errors.push(format!(
-                                        "Task '{task_id}' expects artifact '{artifact}' from task '{from}', but it is produced by '{producer}'"
-                                    ));
-                                }
-
-                                // Check if producer is in depends_on
-                                let deps =
-                                    task_dependencies.get(task_id).cloned().unwrap_or_default();
-                                if !deps.contains(from) {
-                                    errors.push(format!(
-                                        "Task '{task_id}' consumes artifact '{artifact}' but does not depend on producer '{from}'"
-                                    ));
-                                }
-                            } else {
-                                // Artifact producer doesn't exist
-                                errors.push(format!(
-                                    "Task '{task_id}' expects artifact '{artifact}' but no task declares it"
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
