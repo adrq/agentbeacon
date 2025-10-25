@@ -3,7 +3,7 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::signal;
-use tracing::info;
+use tracing::{info, warn};
 
 use scheduler::{
     app::{AppState, create_router},
@@ -96,8 +96,31 @@ async fn bootstrap(cli: Cli) -> Result<()> {
     let scheduler = Scheduler::new(db_pool.clone(), task_queue.clone(), validator.clone());
     info!("Scheduler initialized");
 
+    // Build base URL for agent card
+    let base_url = format!("http://localhost:{}", cli.port);
+
+    // Parse public URL from environment (for load balancer/reverse proxy scenarios)
+    let public_url = std::env::var("PUBLIC_URL").ok().and_then(|url| {
+        let trimmed = url.trim();
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            Some(trimmed.to_string())
+        } else {
+            warn!(
+                public_url = %trimmed,
+                "PUBLIC_URL must start with http:// or https://; ignoring invalid value"
+            );
+            None
+        }
+    });
+
+    if let Some(ref url) = public_url {
+        info!(public_url = %url, "Using PUBLIC_URL for agent card");
+    }
+
     // Build application state and router
-    let app_state = AppState::new(db_pool, validator, task_queue, scheduler);
+    let app_state = AppState::new(
+        db_pool, validator, task_queue, scheduler, base_url, public_url,
+    );
     let app = create_router(app_state, dev_mode, cli.port);
 
     // Bind to port

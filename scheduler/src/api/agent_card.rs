@@ -63,12 +63,13 @@ pub struct AgentCard {
 
 impl AgentCard {
     /// Create A2A v0.3.0 compliant agent card for scheduler
-    pub fn new() -> Self {
+    pub fn new(base_url: &str) -> Self {
+        let rpc_url = format!("{}/rpc", base_url.trim_end_matches('/'));
         Self {
             name: "AgentMaestro Scheduler".to_string(),
             version: "1.0.0".to_string(),
             protocol_version: "0.3.0".to_string(),
-            url: "http://localhost:9456/rpc".to_string(),
+            url: rpc_url.clone(),
             description: "AgentMaestro scheduler for AI agent workflow orchestration with DAG-based task scheduling and workflow registry support".to_string(),
             preferred_transport: "JSONRPC".to_string(),
             default_input_modes: vec![
@@ -99,7 +100,7 @@ impl AgentCard {
                 output_modes: vec!["application/json".to_string()],
             }],
             additional_interfaces: Some(vec![AdditionalInterface {
-                url: "http://localhost:9456/rpc".to_string(),
+                url: rpc_url,
                 transport: "JSONRPC".to_string(),
             }]),
         }
@@ -108,7 +109,7 @@ impl AgentCard {
 
 impl Default for AgentCard {
     fn default() -> Self {
-        Self::new()
+        Self::new("http://localhost:9456")
     }
 }
 
@@ -116,8 +117,14 @@ impl Default for AgentCard {
 ///
 /// Returns A2A v0.3.0 compliant agent card with all required fields.
 /// Endpoint: GET /.well-known/agent-card.json
-async fn agent_card_handler() -> impl IntoResponse {
-    let card = AgentCard::new();
+///
+/// URL priority: PUBLIC_URL env → X-Forwarded-Host header → localhost:port
+async fn agent_card_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let base_url = state.resolve_base_url(&headers);
+    let card = AgentCard::new(&base_url);
     Json(card)
 }
 
@@ -132,7 +139,7 @@ mod tests {
 
     #[test]
     fn test_agent_card_has_all_required_fields() {
-        let card = AgentCard::new();
+        let card = AgentCard::new("http://localhost:9456");
 
         // Verify all 10 A2A v0.3.0 required fields
         assert_eq!(card.name, "AgentMaestro Scheduler");
@@ -149,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_agent_card_declares_required_methods() {
-        let card = AgentCard::new();
+        let card = AgentCard::new("http://localhost:9456");
 
         assert!(
             card.capabilities
@@ -161,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_agent_card_serializes_to_json() {
-        let card = AgentCard::new();
+        let card = AgentCard::new("http://localhost:9456");
         let json = serde_json::to_value(&card).expect("Failed to serialize");
 
         // Check camelCase field names
@@ -174,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_agent_card_matches_contract_structure() {
-        let card = AgentCard::new();
+        let card = AgentCard::new("http://localhost:9456");
         let json = serde_json::to_value(&card).expect("Failed to serialize");
 
         // Verify structure matches contract specification
@@ -196,5 +203,38 @@ mod tests {
         assert!(skill.get("description").is_some());
         assert!(skill.get("inputModes").is_some());
         assert!(skill.get("outputModes").is_some());
+    }
+
+    #[test]
+    fn test_agent_card_uses_dynamic_base_url() {
+        // Test with different base URLs
+        let card1 = AgentCard::new("http://localhost:9456");
+        assert_eq!(card1.url, "http://localhost:9456/rpc");
+        assert_eq!(
+            card1.additional_interfaces.as_ref().unwrap()[0].url,
+            "http://localhost:9456/rpc"
+        );
+
+        let card2 = AgentCard::new("http://localhost:19456");
+        assert_eq!(card2.url, "http://localhost:19456/rpc");
+        assert_eq!(
+            card2.additional_interfaces.as_ref().unwrap()[0].url,
+            "http://localhost:19456/rpc"
+        );
+
+        let card3 = AgentCard::new("https://example.com:8080");
+        assert_eq!(card3.url, "https://example.com:8080/rpc");
+        assert_eq!(
+            card3.additional_interfaces.as_ref().unwrap()[0].url,
+            "https://example.com:8080/rpc"
+        );
+
+        // Test with trailing slash
+        let card4 = AgentCard::new("http://localhost:9456/");
+        assert_eq!(card4.url, "http://localhost:9456/rpc");
+        assert_eq!(
+            card4.additional_interfaces.as_ref().unwrap()[0].url,
+            "http://localhost:9456/rpc"
+        );
     }
 }

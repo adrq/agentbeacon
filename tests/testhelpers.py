@@ -638,7 +638,7 @@ def wait_for_port(
 
 
 def start_scheduler(
-    port: int, base_dir: Path = None, db_url: str = None
+    port: int, base_dir: Path = None, db_url: str = None, env: dict = None
 ) -> tuple[subprocess.Popen, str | None]:
     """Start the scheduler binary with specified configuration.
 
@@ -646,6 +646,7 @@ def start_scheduler(
         port: Port number for scheduler to listen on
         base_dir: Base directory for the project (defaults to test file parent directory)
         db_url: Database URL (SQLite or PostgreSQL). Creates temp SQLite if None.
+        env: Additional environment variables to pass to scheduler
 
     Returns:
         tuple: (scheduler_process, temp_db_path)
@@ -665,6 +666,11 @@ def start_scheduler(
         temp_db_path = temp_db.name
         db_url = f"sqlite:{temp_db_path}?mode=rwc"
 
+    # Prepare environment
+    scheduler_env = os.environ.copy()
+    if env:
+        scheduler_env.update(env)
+
     scheduler_process = subprocess.Popen(
         [
             "./bin/agentmaestro-scheduler",
@@ -677,6 +683,7 @@ def start_scheduler(
         stderr=subprocess.PIPE,
         text=True,
         cwd=base_dir,
+        env=scheduler_env,
     )
 
     # Wait for scheduler ready
@@ -693,12 +700,13 @@ def start_scheduler(
 
 
 @contextmanager
-def scheduler_context(port: int = None, db_url: str = None):
+def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
     """Context manager for scheduler startup and cleanup.
 
     Args:
         port: Port number (allocates one if None)
         db_url: Database URL (creates temp SQLite if None)
+        env: Additional environment variables to pass to scheduler
 
     Yields:
         dict: Contains 'process', 'url', 'port', 'db_path'
@@ -710,7 +718,9 @@ def scheduler_context(port: int = None, db_url: str = None):
     temp_db_path = None
 
     try:
-        scheduler_process, temp_db_path = start_scheduler(allocated_port, db_url=db_url)
+        scheduler_process, temp_db_path = start_scheduler(
+            allocated_port, db_url=db_url, env=env
+        )
         yield {
             "process": scheduler_process,
             "url": f"http://localhost:{allocated_port}",
