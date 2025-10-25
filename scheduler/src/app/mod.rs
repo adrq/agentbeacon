@@ -53,12 +53,6 @@ impl AppState {
     /// When X-Forwarded-* headers contain comma-separated lists (common in multi-proxy
     /// setups), this method extracts the first (leftmost) value, which represents the
     /// original client-facing host.
-    ///
-    /// # Example
-    /// ```rust
-    /// let base_url = state.resolve_base_url(&headers);
-    /// // Returns: "https://api.example.com" or "http://localhost:9456"
-    /// ```
     pub fn resolve_base_url(&self, headers: &axum::http::HeaderMap) -> String {
         // Priority 1: PUBLIC_URL environment variable
         if let Some(ref public_url) = self.public_url {
