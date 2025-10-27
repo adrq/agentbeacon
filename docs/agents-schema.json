@@ -110,7 +110,7 @@
             "properties": {
               "config": {
                 "type": "object",
-                "required": ["command", "args"],
+                "required": ["command"],
                 "additionalProperties": false,
                 "properties": {
                   "command": {
@@ -125,9 +125,17 @@
                     },
                     "description": "Command line arguments passed to the executable."
                   },
-                  "working_dir": {
-                    "type": "string",
-                    "description": "Working directory for the ACP agent process (optional)."
+                  "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Timeout in seconds for ACP operations (optional)."
+                  },
+                  "env": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Environment variables for the subprocess (optional)."
                   }
                 }
               }
