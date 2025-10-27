@@ -21,6 +21,9 @@ class SpecialCommands:
             or text.startswith("DELAY_")
             or text == "FAIL_NODE"
             or text == "FAIL_ONCE"
+            or text == "EXIT_1"
+            or text == "INVALID_JSONRPC"
+            or text == "STREAM_CHUNKS"
         )
 
     def handle_command(self, text: str, stdio_mode: bool = False) -> Optional[str]:
@@ -38,7 +41,10 @@ class SpecialCommands:
                 delay_part = text[6:]  # Remove "DELAY_"
                 delay_value = int(delay_part)
 
-                # If >= 100, interpret as milliseconds; otherwise as seconds
+                # Heuristic: values >= 100 are milliseconds, < 100 are seconds.
+                # This allows "DELAY_1" (1 second) and "DELAY_150" (150ms) to work intuitively
+                # without requiring a suffix like "DELAY_1s" or "DELAY_150ms".
+                # The threshold of 100 was chosen because delays >= 100 seconds are rare in tests.
                 if delay_value >= 100:
                     delay_seconds = delay_value / 1000.0
                     time.sleep(delay_seconds)
@@ -67,6 +73,18 @@ class SpecialCommands:
                     else:
                         sys.exit(1)
             return "FAIL_ONCE command executed successfully"
+
+        elif text == "EXIT_1":
+            # Exit with code 1 to simulate subprocess failure
+            sys.exit(1)
+
+        elif text == "INVALID_JSONRPC":
+            # Return marker for invalid JSON-RPC response
+            return "INVALID_JSONRPC"
+
+        elif text == "STREAM_CHUNKS":
+            # Return marker for streaming multiple chunks
+            return "STREAM_CHUNKS"
 
         return None
 
@@ -107,5 +125,17 @@ class SpecialCommands:
                 if random.random() < 0.5:
                     sys.exit(1)
             return "FAIL_ONCE command executed successfully"
+
+        elif text == "EXIT_1":
+            # Exit with code 1 to simulate subprocess failure
+            sys.exit(1)
+
+        elif text == "INVALID_JSONRPC":
+            # Return marker for invalid JSON-RPC response
+            return "INVALID_JSONRPC"
+
+        elif text == "STREAM_CHUNKS":
+            # Return marker for streaming multiple chunks
+            return "STREAM_CHUNKS"
 
         return None

@@ -107,17 +107,23 @@ def mock_agent_acp():
         bufsize=1,
     )
 
-    # Give process a moment to start
+    # Give process a moment to start and set up stdio pipes before tests begin sending.
+    # Without this delay, the first JSON-RPC request may arrive before the stdin handler
+    # is ready, causing the request to be lost or the readline() to block indefinitely.
     time.sleep(0.2)
 
     yield proc
 
     # Cleanup
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    if proc.poll() is None:  # Process still running
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    else:
+        # Process already dead, collect exit code
         proc.wait()
 
 
