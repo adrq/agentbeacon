@@ -1,3 +1,4 @@
+mod acp;
 mod agent;
 mod cli;
 mod config;
