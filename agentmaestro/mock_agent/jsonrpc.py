@@ -18,12 +18,22 @@ from .file_logger import log_task_completion
 class JSONRPCDispatcher:
     """Handles JSON-RPC requests for both A2A and ACP protocols."""
 
-    def __init__(self, task_store: TaskStore, custom_responses: Dict[str, str] = None):
+    def __init__(
+        self,
+        task_store: TaskStore,
+        custom_responses: Dict[str, str] = None,
+        protocol_version: int = 1,
+        hang_initialize: bool = False,
+    ):
         self.task_store = task_store
         self.special_commands = SpecialCommands()
         self.custom_responses = custom_responses or {}
         self.acp_sessions: Dict[str, dict] = {}
         self.acp_initialized = False
+        self.protocol_version = protocol_version
+        self.hang_initialize = hang_initialize
+        self.captured_initialize_calls: list = []
+        self.captured_session_new_calls: list = []
 
     def _serialize_task(
         self, task: Task, history_length: Optional[int] = None
@@ -207,7 +217,9 @@ class JSONRPCDispatcher:
             elif method == "session/new":
                 return self._handle_acp_session_new(request_id, params)
             elif method == "session/prompt":
-                return self._handle_acp_session_prompt(request_id, params)
+                # In async ACP mode, session/prompt is handled by _handle_prompt in acp_mode.py
+                # Return None to let the async handler take care of it
+                return None
             elif method == "session/cancel":
                 return None
             else:
@@ -540,6 +552,15 @@ class JSONRPCDispatcher:
         self, request_id: Any, params: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Handle ACP initialize request."""
+        import time
+
+        self.captured_initialize_calls.append(
+            {"params": params.copy(), "request_id": request_id}
+        )
+
+        if self.hang_initialize:
+            time.sleep(3600)  # Sleep for 1 hour (will be killed by timeout)
+
         protocol_version = params.get("protocolVersion")
         if protocol_version != 1:
             return self._error_response(request_id, -32602, "Invalid params")
@@ -549,7 +570,7 @@ class JSONRPCDispatcher:
         return self._success_response(
             request_id,
             {
-                "protocolVersion": 1,
+                "protocolVersion": self.protocol_version,
                 "agentCapabilities": {
                     "loadSession": False,
                     "promptCapabilities": {"embeddedContext": True},
@@ -563,6 +584,10 @@ class JSONRPCDispatcher:
         self, request_id: Any, params: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Handle ACP session/new request."""
+        self.captured_session_new_calls.append(
+            {"params": params.copy(), "request_id": request_id}
+        )
+
         if not self.acp_initialized:
             return self._error_response(request_id, -32603, "Internal error")
 
@@ -586,37 +611,24 @@ class JSONRPCDispatcher:
             return self._error_response(request_id, -32602, "Invalid session")
 
         prompt_parts = params.get("prompt", [])
-
-        # Extract text from prompt
         text_content = ""
         for part in prompt_parts:
             if part.get("type") == "text":
                 text_content += part.get("text", "")
 
-        # Check custom responses first, then special commands
         if text_content in self.custom_responses:
             custom_response = self.custom_responses[text_content]
             if custom_response == "HANG":
                 import time
 
-                # In ACP mode, HANG uses blocking sleep (not async) because session/prompt
-                # is synchronous in this context. The async cancellation is handled at the
-                # ACPHandler level via polling, not here. Using time.sleep allows the cancel
-                # polling loop in acp_mode.py to detect and interrupt this operation.
-                time.sleep(3600)  # Hang for 1 hour
-            # For other custom responses, we just continue (no special handling needed for ACP)
+                time.sleep(3600)
         elif self.special_commands.is_special_command(text_content):
             result = self.special_commands.handle_command(text_content)
 
-            # Handle special command results
             if result == "INVALID_JSONRPC":
-                # Return malformed JSON-RPC response (missing required fields)
                 return {"this_is": "invalid", "missing": "jsonrpc_fields"}
             elif result == "STREAM_CHUNKS":
-                # Send multiple session/update notifications before final response
-                # This needs to be handled in acp_mode.py, not here
                 pass
-            # Note: EXIT_1 and FAIL_NODE will exit the process directly
 
         return self._success_response(request_id, {"stopReason": "end_turn"})
 

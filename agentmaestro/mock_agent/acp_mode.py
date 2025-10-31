@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import os
+import signal
 import sys
 from typing import Any, Dict
 
@@ -9,18 +11,28 @@ from .task_store import TaskStore
 from .jsonrpc import JSONRPCDispatcher
 from .file_logger import log_task_completion
 
-# Polling interval for checking cancellation flags during command execution
 CANCELLATION_POLL_INTERVAL = 0.1
 
 
 class ACPHandler:
     """Handler for ACP (Agent Client Protocol) mode communication."""
 
-    def __init__(self, custom_responses: Dict[str, str] = None):
+    def __init__(
+        self,
+        custom_responses: Dict[str, str] = None,
+        protocol_version: int = 1,
+        hang_initialize: bool = False,
+    ):
         self.task_store = TaskStore()
-        self.jsonrpc_dispatcher = JSONRPCDispatcher(self.task_store, custom_responses)
+        self.jsonrpc_dispatcher = JSONRPCDispatcher(
+            self.task_store,
+            custom_responses,
+            protocol_version=protocol_version,
+            hang_initialize=hang_initialize,
+        )
         self.custom_responses = custom_responses or {}
         self.active_prompts = {}
+        self.pending_requests: Dict[str, asyncio.Future] = {}
 
     async def run(self):
         """Main ACP processing loop with async I/O."""
@@ -44,7 +56,12 @@ class ACPHandler:
 
                 try:
                     request = json.loads(line_str)
-                    await self._handle_request(request)
+                    try:
+                        await self._handle_request(request)
+                    except Exception:
+                        import traceback
+
+                        traceback.print_exc(file=sys.stderr)
                 except json.JSONDecodeError:
                     error_response = {
                         "jsonrpc": "2.0",
@@ -54,9 +71,16 @@ class ACPHandler:
                     print(json.dumps(error_response), flush=True)
         except (EOFError, KeyboardInterrupt):
             pass
+        finally:
+            self._save_captured_messages()
 
     async def _handle_request(self, request: Dict[str, Any]):
-        """Handle incoming request/notification asynchronously."""
+        """Handle incoming request/notification/response asynchronously."""
+        # Check if this is a response (has result or error, and id)
+        if ("result" in request or "error" in request) and "id" in request:
+            await self._handle_response(request)
+            return
+
         method = request.get("method")
 
         if method == "session/cancel":
@@ -67,6 +91,27 @@ class ACPHandler:
             response = self.jsonrpc_dispatcher.handle_request(request)
             if response is not None:
                 print(json.dumps(response), flush=True)
+
+    async def _handle_response(self, response: Dict[str, Any]):
+        """Handle incoming response to agent-initiated requests."""
+        request_id = response.get("id")
+        if request_id and request_id in self.pending_requests:
+            future = self.pending_requests.pop(request_id)
+            if not future.done():
+                future.set_result(response)
+
+    def _save_captured_messages(self):
+        """Save captured protocol messages to temp file for test verification."""
+        try:
+            captured_data = {
+                "initialize_calls": self.jsonrpc_dispatcher.captured_initialize_calls,
+                "session_new_calls": self.jsonrpc_dispatcher.captured_session_new_calls,
+            }
+            output_path = "/tmp/mock_agent_captured_messages.json"
+            with open(output_path, "w") as f:
+                json.dump(captured_data, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save captured messages: {e}", file=sys.stderr)
 
     async def _handle_cancel(self, request: Dict[str, Any]):
         """Handle session/cancel notification.
@@ -144,14 +189,26 @@ class ACPHandler:
 
             should_notify = True
             if special.is_special_command(text_content):
-                should_notify = text_content.strip().upper() == "STREAM_CHUNKS"
+                cmd_upper = text_content.strip().upper()
+                should_notify = cmd_upper in [
+                    "STREAM_CHUNKS",
+                    "REQUEST_PERMISSION",
+                    "SEND_PLAN",
+                    "SEND_TOOL_CALL",
+                    "SEND_MODE_UPDATE",
+                    "SEND_COMMANDS_UPDATE",
+                ]
 
             stop_reason = "end_turn"
 
             if special.is_special_command(text_content):
+                cmd_upper = text_content.strip().upper()
+                if cmd_upper in ["FAIL_NODE", "EXIT_1"]:
+                    os.kill(os.getpid(), signal.SIGKILL)
+
                 if not self.active_prompts[session_id]["cancelled"]:
                     if should_notify:
-                        self._send_notification(request, special)
+                        await self._send_notification(request, special)
 
                 try:
                     cmd_task = asyncio.create_task(
@@ -184,9 +241,8 @@ class ACPHandler:
                 response = self.jsonrpc_dispatcher.handle_request(request)
 
                 if not self.active_prompts[session_id]["cancelled"]:
-                    if response and "result" in response:
-                        if should_notify:
-                            self._send_notification(request, special)
+                    if should_notify:
+                        await self._send_notification(request, special)
 
                 if self.active_prompts[session_id]["cancelled"]:
                     response = {
@@ -223,7 +279,9 @@ class ACPHandler:
             if session_id in self.active_prompts:
                 del self.active_prompts[session_id]
 
-    def _send_notification(self, original_request: Dict[str, Any], special_commands):
+    async def _send_notification(
+        self, original_request: Dict[str, Any], special_commands
+    ):
         """Send session update notification for ACP session/prompt.
 
         Args:
@@ -258,7 +316,117 @@ class ACPHandler:
                             },
                         }
                         print(json.dumps(notification), flush=True)
-                return
+                    return
+                elif prompt_text.strip().upper() == "REQUEST_PERMISSION":
+                    request_id = f"perm-{session_id}"
+                    permission_request = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "session/request_permission",
+                        "params": {
+                            "sessionId": session_id,
+                            "toolCallId": "test-tool-123",
+                            "toolCall": {
+                                "toolCallId": "test-tool-123",
+                                "title": "Test tool",
+                                "kind": "read",
+                            },
+                            "options": [
+                                {
+                                    "optionId": "allow-once",
+                                    "name": "Allow once",
+                                    "kind": "allow_once",
+                                },
+                                {
+                                    "optionId": "deny",
+                                    "name": "Deny",
+                                    "kind": "reject_once",
+                                },
+                            ],
+                        },
+                    }
+
+                    future = asyncio.Future()
+                    self.pending_requests[request_id] = future
+
+                    print(json.dumps(permission_request), flush=True)
+
+                    try:
+                        _response = await asyncio.wait_for(future, timeout=5.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+                    return
+                elif prompt_text.strip().upper() == "SEND_PLAN":
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "plan",
+                                "entries": [
+                                    {
+                                        "id": "step-1",
+                                        "title": "Analyze requirements",
+                                        "status": "completed",
+                                    },
+                                    {
+                                        "id": "step-2",
+                                        "title": "Implement feature",
+                                        "status": "in_progress",
+                                    },
+                                ],
+                            },
+                        },
+                    }
+                    print(json.dumps(notification), flush=True)
+                    return
+                elif prompt_text.strip().upper() == "SEND_TOOL_CALL":
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "tool_call",
+                                "toolCallId": "tool-123",
+                                "title": "Read file config.json",
+                            },
+                        },
+                    }
+                    print(json.dumps(notification), flush=True)
+                    return
+                elif prompt_text.strip().upper() == "SEND_MODE_UPDATE":
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "current_mode_update",
+                                "currentModeId": "code",
+                            },
+                        },
+                    }
+                    print(json.dumps(notification), flush=True)
+                    return
+                elif prompt_text.strip().upper() == "SEND_COMMANDS_UPDATE":
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "available_commands_update",
+                                "availableCommands": [
+                                    {"name": "/test", "description": "Run tests"}
+                                ],
+                            },
+                        },
+                    }
+                    print(json.dumps(notification), flush=True)
+                    return
 
             if prompt_text in self.custom_responses:
                 response_text = self.custom_responses[prompt_text]
@@ -282,7 +450,11 @@ class ACPHandler:
             print(json.dumps(notification), flush=True)
 
 
-def start_acp_mode(custom_responses: Dict[str, str] = None):
+def start_acp_mode(
+    custom_responses: Dict[str, str] = None,
+    protocol_version: int = 1,
+    hang_initialize: bool = False,
+):
     """Start ACP mode handler (async)."""
-    handler = ACPHandler(custom_responses)
+    handler = ACPHandler(custom_responses, protocol_version, hang_initialize)
     asyncio.run(handler.run())  # Run async event loop

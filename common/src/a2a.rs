@@ -120,10 +120,10 @@ impl A2ATaskStatus {
         }
     }
 
-    /// Create a cancelled task status with optional reason
-    pub fn cancelled(reason: String) -> Self {
+    /// Create a canceled task status with optional reason
+    pub fn canceled(reason: String) -> Self {
         Self {
-            state: "cancelled".to_string(),
+            state: "canceled".to_string(),
             message: Some(Message {
                 message_id: uuid::Uuid::new_v4().to_string(),
                 kind: "message".to_string(),

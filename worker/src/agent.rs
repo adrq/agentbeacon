@@ -1,3 +1,4 @@
+use crate::acp;
 use crate::config::{AgentConfig, AgentsConfig};
 use crate::sync::{TaskAssignment, TaskResult};
 use anyhow::{Context, Result};
@@ -11,8 +12,13 @@ use uuid::Uuid;
 // Shared metadata that async task populates during execution
 #[derive(Clone, Default)]
 pub struct A2ATaskMetadata {
+    // A2A-specific metadata
     pub task_id: Option<String>,
     pub rpc_url: Option<String>,
+
+    // ACP-specific metadata for cancellation support
+    pub acp_session_id: Option<String>,
+    pub acp_cancel_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,4 +466,41 @@ pub async fn cancel_a2a_task(client: &reqwest::Client, rpc_url: &str, task_id: &
         .await;
 
     Ok(())
+}
+
+/// Execute task with protocol-specific dispatcher
+///
+/// Determines protocol type from agent configuration and dispatches to
+/// appropriate executor (A2A or ACP). Returns unified TaskResult format.
+pub async fn execute_task(
+    client: &reqwest::Client,
+    agents_config: &AgentsConfig,
+    task: &TaskAssignment,
+    metadata: Arc<Mutex<A2ATaskMetadata>>,
+) -> TaskResult {
+    let agent_config = match agents_config.agents.get(&task.agent) {
+        Some(config) => config,
+        None => {
+            return TaskResult {
+                execution_id: task.execution_id.clone(),
+                node_id: task.node_id.clone(),
+                task_status: A2ATaskStatus::failed(format!(
+                    "agent '{}' not found in configuration",
+                    task.agent
+                )),
+                artifacts: None,
+            };
+        }
+    };
+
+    match agent_config {
+        AgentConfig::A2a { .. } => execute_a2a_task(client, agents_config, task, metadata).await,
+        AgentConfig::Acp { config } => acp::execute_acp_task(config, task, metadata).await,
+        AgentConfig::Stdio { .. } => TaskResult {
+            execution_id: task.execution_id.clone(),
+            node_id: task.node_id.clone(),
+            task_status: A2ATaskStatus::failed("stdio agent not yet implemented".to_string()),
+            artifacts: None,
+        },
+    }
 }

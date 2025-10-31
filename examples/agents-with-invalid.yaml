@@ -39,11 +39,12 @@ agents:
       command: "uv"
       args: ["run", "mock-agent", "--mode", "acp"]
 
-  test-acp-agent-version2:
+  test-acp-agent-timeout:
     type: acp
     config:
       command: "uv"
-      args: ["run", "mock-agent", "--mode", "acp", "--protocol-version", "2"]
+      args: ["run", "mock-agent", "--mode", "acp", "--hang-initialize"]
+      timeout: 2  # Short timeout for initialize timeout testing
 
   minimal-acp-agent:
     type: acp
@@ -59,3 +60,9 @@ agents:
       timeout: 60
       env:
         TEST_VAR: "test_value"
+
+  invalid-acp-agent:
+    type: acp
+    config:
+      command: ""
+      args: []

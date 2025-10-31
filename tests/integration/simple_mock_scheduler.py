@@ -86,7 +86,7 @@ class Part(BaseModel):
 
     kind: Literal["text", "file", "data"]
     text: Optional[str] = None
-    data: Optional[str] = None
+    data: Optional[Union[str, Dict[str, Any]]] = None
     mimeType: Optional[str] = None
 
     class Config:

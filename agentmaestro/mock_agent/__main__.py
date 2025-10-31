@@ -11,6 +11,12 @@ from .config import load_responses
 
 def main():
     """Main entry point for mock-agent console script."""
+    import os
+
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    sys.stdout = os.fdopen(sys.stdout.fileno(), "w", buffering=1)
+    sys.stderr = os.fdopen(sys.stderr.fileno(), "w", buffering=1)
+
     parser = argparse.ArgumentParser(description="Mock A2A agent for testing")
     parser.add_argument(
         "--mode",
@@ -25,23 +31,34 @@ def main():
         help="Port for A2A HTTP server (default: 8080)",
     )
     parser.add_argument("--config", type=str, help="Custom response file path")
+    parser.add_argument(
+        "--protocol-version",
+        type=int,
+        default=1,
+        help="ACP protocol version to return in initialize (default: 1)",
+    )
+    parser.add_argument(
+        "--hang-initialize",
+        action="store_true",
+        help="Hang indefinitely during ACP initialize (for timeout testing)",
+    )
 
     args = parser.parse_args()
 
-    # Load custom responses from config file
     custom_responses = load_responses(args.config)
-
-    # Print startup message to stderr
     print(f"Mock agent starting in {args.mode} mode", file=sys.stderr)
 
     try:
-        # Dispatch to appropriate mode handler
         if args.mode == "stdio":
             start_stdio_mode(custom_responses)
         elif args.mode == "a2a":
             start_a2a_server(args.port, custom_responses)
         elif args.mode == "acp":
-            start_acp_mode(custom_responses)
+            start_acp_mode(
+                custom_responses,
+                protocol_version=args.protocol_version,
+                hang_initialize=args.hang_initialize,
+            )
         else:
             print(f"Unknown mode: {args.mode}", file=sys.stderr)
             return 1

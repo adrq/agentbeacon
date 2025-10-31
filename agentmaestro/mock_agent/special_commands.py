@@ -24,6 +24,11 @@ class SpecialCommands:
             or text == "EXIT_1"
             or text == "INVALID_JSONRPC"
             or text == "STREAM_CHUNKS"
+            or text == "REQUEST_PERMISSION"
+            or text == "SEND_PLAN"
+            or text == "SEND_TOOL_CALL"
+            or text == "SEND_MODE_UPDATE"
+            or text == "SEND_COMMANDS_UPDATE"
         )
 
     def handle_command(self, text: str, stdio_mode: bool = False) -> Optional[str]:
@@ -31,14 +36,12 @@ class SpecialCommands:
         text = text.strip().upper()
 
         if text == "HANG":
-            # Sleep for 1 hour for testing long-running tasks
             time.sleep(3600)
             return "Hang command completed after 1 hour"
 
         elif text.startswith("DELAY_"):
-            # Extract delay value - small numbers are seconds, large numbers are milliseconds
             try:
-                delay_part = text[6:]  # Remove "DELAY_"
+                delay_part = text[6:]
                 delay_value = int(delay_part)
 
                 # Heuristic: values >= 100 are milliseconds, < 100 are seconds.
@@ -57,14 +60,11 @@ class SpecialCommands:
 
         elif text == "FAIL_NODE":
             if stdio_mode:
-                # In stdio mode, return failure indicator instead of exiting
                 return "STDIO_FAILURE"
             else:
-                # Exit with code 1 to simulate process failure
                 sys.exit(1)
 
         elif text == "FAIL_ONCE":
-            # 50% failure rate for testing intermittent failures
             if not self._fail_once_state:
                 self._fail_once_state = True
                 if random.random() < 0.5:
@@ -75,16 +75,28 @@ class SpecialCommands:
             return "FAIL_ONCE command executed successfully"
 
         elif text == "EXIT_1":
-            # Exit with code 1 to simulate subprocess failure
             sys.exit(1)
 
         elif text == "INVALID_JSONRPC":
-            # Return marker for invalid JSON-RPC response
             return "INVALID_JSONRPC"
 
         elif text == "STREAM_CHUNKS":
-            # Return marker for streaming multiple chunks
             return "STREAM_CHUNKS"
+
+        elif text == "REQUEST_PERMISSION":
+            return "REQUEST_PERMISSION"
+
+        elif text == "SEND_PLAN":
+            return "SEND_PLAN"
+
+        elif text == "SEND_TOOL_CALL":
+            return "SEND_TOOL_CALL"
+
+        elif text == "SEND_MODE_UPDATE":
+            return "SEND_MODE_UPDATE"
+
+        elif text == "SEND_COMMANDS_UPDATE":
+            return "SEND_COMMANDS_UPDATE"
 
         return None
 
@@ -93,17 +105,14 @@ class SpecialCommands:
         text = text.strip().upper()
 
         if text == "HANG":
-            # Sleep for 1 hour asynchronously
             await asyncio.sleep(3600)
             return "Hang command completed after 1 hour"
 
         elif text.startswith("DELAY_"):
-            # Extract delay value - small numbers are seconds, large numbers are milliseconds
             try:
-                delay_part = text[6:]  # Remove "DELAY_"
+                delay_part = text[6:]
                 delay_value = int(delay_part)
 
-                # If >= 100, interpret as milliseconds; otherwise as seconds
                 if delay_value >= 100:
                     delay_seconds = delay_value / 1000.0
                     await asyncio.sleep(delay_seconds)
@@ -115,11 +124,9 @@ class SpecialCommands:
                 return f"Invalid delay command: {text}"
 
         elif text == "FAIL_NODE":
-            # Exit with code 1 to simulate process failure
             sys.exit(1)
 
         elif text == "FAIL_ONCE":
-            # 50% failure rate for testing intermittent failures
             if not self._fail_once_state:
                 self._fail_once_state = True
                 if random.random() < 0.5:
@@ -127,15 +134,27 @@ class SpecialCommands:
             return "FAIL_ONCE command executed successfully"
 
         elif text == "EXIT_1":
-            # Exit with code 1 to simulate subprocess failure
             sys.exit(1)
 
         elif text == "INVALID_JSONRPC":
-            # Return marker for invalid JSON-RPC response
             return "INVALID_JSONRPC"
 
         elif text == "STREAM_CHUNKS":
-            # Return marker for streaming multiple chunks
             return "STREAM_CHUNKS"
+
+        elif text == "REQUEST_PERMISSION":
+            return "REQUEST_PERMISSION"
+
+        elif text == "SEND_PLAN":
+            return "SEND_PLAN"
+
+        elif text == "SEND_TOOL_CALL":
+            return "SEND_TOOL_CALL"
+
+        elif text == "SEND_MODE_UPDATE":
+            return "SEND_MODE_UPDATE"
+
+        elif text == "SEND_COMMANDS_UPDATE":
+            return "SEND_COMMANDS_UPDATE"
 
         return None

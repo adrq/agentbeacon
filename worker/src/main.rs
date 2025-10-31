@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
-use crate::agent::{A2ATaskMetadata, cancel_a2a_task, execute_a2a_task};
+use crate::agent::{A2ATaskMetadata, cancel_a2a_task, execute_task};
 use crate::cli::Args;
 use crate::config::{AgentsConfig, load_agents_config};
 use crate::sync::{
@@ -330,17 +330,22 @@ async fn handle_sync_tick(
                             "Processing cancel command"
                         );
 
-                        // 1. Try to cancel remote A2A task if we have metadata (best-effort)
+                        // 1. Try to cancel remote A2A task OR local ACP task (best-effort)
                         // CRITICAL: Copy values out while holding lock, then release BEFORE network call
                         // Holding lock during await would block async task from updating metadata
-                        let (task_id, rpc_url) = {
+                        let (task_id, rpc_url, acp_session_id, acp_cancel_tx) = {
                             let meta = task_exec.metadata.lock().await;
-                            (meta.task_id.clone(), meta.rpc_url.clone())
+                            (
+                                meta.task_id.clone(),
+                                meta.rpc_url.clone(),
+                                meta.acp_session_id.clone(),
+                                meta.acp_cancel_tx.clone(),
+                            )
                             // Lock guard dropped here - lock released immediately
                         };
 
                         if let (Some(task_id), Some(rpc_url)) = (task_id, rpc_url) {
-                            // Lock is already released - safe to make blocking network call
+                            // A2A agent - propagate cancellation via HTTP
                             tracing::info!(
                                 task_id = %task_id,
                                 "Propagating cancellation to remote A2A agent"
@@ -353,26 +358,83 @@ async fn handle_sync_tick(
                                     "Failed to cancel remote A2A task - agent may continue running"
                                 );
                             }
+                        } else if let (Some(session_id), Some(cancel_tx)) =
+                            (acp_session_id, acp_cancel_tx)
+                        {
+                            // ACP agent - trigger graceful cancellation via channel
+                            tracing::info!(
+                                session_id = %session_id,
+                                "Triggering graceful cancellation for ACP agent"
+                            );
+
+                            if let Err(e) = crate::acp::cancel_acp_task(&cancel_tx).await {
+                                // Failed to send cancel signal - fall through to abort
+                                tracing::warn!(
+                                    session_id = %session_id,
+                                    error = %e,
+                                    "Failed to trigger ACP cancellation - will abort immediately"
+                                );
+                            } else {
+                                // Signal sent successfully - wait for graceful completion
+                                // Executor will send session/cancel and wait up to 10s for agent response
+                                // Give it 15s total (10s grace + 5s buffer) before forcing abort
+                                let completion_timeout = std::time::Duration::from_secs(15);
+
+                                // Take the task out to await it
+                                if let Some(mut task) = state.current_task.take() {
+                                    match tokio::time::timeout(completion_timeout, &mut task.handle)
+                                        .await
+                                    {
+                                        Ok(Ok(result)) => {
+                                            // Task completed gracefully with proper cancellation result
+                                            tracing::info!(
+                                                session_id = %session_id,
+                                                "ACP task completed gracefully after cancellation"
+                                            );
+                                            state.pending_result = Some(result);
+                                            // Don't report synthetic canceled status - use executor's result
+                                            return Ok(());
+                                        }
+                                        Ok(Err(e)) => {
+                                            // Task panicked during cancellation
+                                            tracing::error!(
+                                                session_id = %session_id,
+                                                error = %e,
+                                                "Task panicked during cancellation"
+                                            );
+                                        }
+                                        Err(_) => {
+                                            // Timeout - executor didn't complete gracefully, force abort
+                                            tracing::warn!(
+                                                session_id = %session_id,
+                                                "Cancellation grace period exceeded (15s), forcing abort"
+                                            );
+                                            task.handle.abort();
+                                        }
+                                    }
+                                    // Put task back for cleanup if we didn't return early
+                                    state.current_task = Some(task);
+                                }
+                            }
                         } else {
-                            // Task is still fetching agent card or waiting for message/send
+                            // Task is still initializing or metadata not yet available
                             tracing::debug!(
-                                "Cannot propagate cancel to A2A agent - metadata not yet available \
-                                 (task will be aborted locally)"
+                                "Cannot propagate cancel - metadata not yet available (task will be aborted locally)"
                             );
                         }
 
-                        // 2. Abort local JoinHandle (drops async task including any pending sleep)
+                        // 2. Abort local JoinHandle (for A2A or failed ACP cancellation)
                         if let Some(watchdog) = state.cancel_current_task() {
                             if let Err(e) = watchdog.await {
                                 tracing::error!("Watchdog task panicked: {}", e);
                             }
                         }
 
-                        // 3. Report cancellation to scheduler
+                        // 3. Report cancellation to scheduler (only if we didn't return early with graceful result)
                         state.pending_result = Some(crate::sync::TaskResult {
                             execution_id,
                             node_id,
-                            task_status: common::A2ATaskStatus::cancelled(
+                            task_status: common::A2ATaskStatus::canceled(
                                 "Task cancelled by scheduler".to_string(),
                             ),
                             artifacts: None,
@@ -415,9 +477,10 @@ fn spawn_task(
     let metadata = Arc::new(Mutex::new(A2ATaskMetadata::default()));
     let metadata_clone = metadata.clone();
 
-    let handle = tokio::spawn(async move {
-        execute_a2a_task(&client, &agents_config, &task, metadata_clone).await
-    });
+    let handle =
+        tokio::spawn(
+            async move { execute_task(&client, &agents_config, &task, metadata_clone).await },
+        );
 
     state.current_task = Some(TaskExecution {
         execution_id,

@@ -135,6 +135,47 @@ DEFAULT_WORKFLOW_VERSION = "test-version-001"
 DEFAULT_WORKFLOW_REF = f"{DEFAULT_WORKFLOW_REGISTRY_ID}:latest"
 
 
+def build_acp_task(
+    *,
+    node_id: str,
+    text: str,
+    cwd: str,
+    agent: str = "test-acp-agent",
+    execution_id: Optional[str] = None,
+    workflow_registry_id: str = DEFAULT_WORKFLOW_REGISTRY_ID,
+    workflow_version: str = DEFAULT_WORKFLOW_VERSION,
+    workflow_ref: str = DEFAULT_WORKFLOW_REF,
+    protocol_metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Construct an ACP task assignment with required metadata.cwd field.
+
+    ACP tasks use the A2A MessageSendParams.metadata extension field to pass
+    the cwd parameter required by the ACP protocol. This keeps validation enabled
+    while conforming to both A2A and ACP protocol requirements.
+    """
+    message_id = f"{node_id}-msg-{uuid.uuid4()}"
+    message = {
+        "messageId": message_id,
+        "kind": "message",
+        "role": "user",
+        "parts": [{"kind": "text", "text": text}],
+    }
+
+    task_body = {"message": message, "metadata": {"cwd": cwd}}
+
+    return build_canonical_task(
+        node_id=node_id,
+        agent=agent,
+        execution_id=execution_id,
+        workflow_registry_id=workflow_registry_id,
+        workflow_version=workflow_version,
+        workflow_ref=workflow_ref,
+        protocol_metadata=protocol_metadata,
+        task_body=task_body,
+        validate_task=True,  # Keep validation enabled - metadata is valid per A2A schema
+    )
+
+
 def build_canonical_task(
     *,
     node_id: str,

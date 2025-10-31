@@ -738,7 +738,10 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
 
 
 def start_worker(
-    orchestrator_url: str, interval: str = "1s", base_dir: Path = None
+    orchestrator_url: str,
+    interval: str = "1s",
+    base_dir: Path = None,
+    agents_config: str = None,
 ) -> subprocess.Popen:
     """Start the worker binary with specified configuration.
 
@@ -746,6 +749,7 @@ def start_worker(
         orchestrator_url: URL of the orchestrator to connect to
         interval: Polling interval (default: "1s")
         base_dir: Base directory for the project (defaults to test file parent directory)
+        agents_config: Path to agents config file (default: examples/agents.yaml)
 
     Returns:
         subprocess.Popen: The worker process
@@ -760,14 +764,19 @@ def start_worker(
     # Copy current environment so worker subprocess inherits pytest context
     worker_env = os.environ.copy()
 
+    cmd = [
+        "./bin/agentmaestro-worker",
+        "--scheduler-url",
+        orchestrator_url,
+        "--interval",
+        interval,
+    ]
+
+    if agents_config:
+        cmd.extend(["--agents-config", agents_config])
+
     worker_process = subprocess.Popen(
-        [
-            "./bin/agentmaestro-worker",
-            "--scheduler-url",
-            orchestrator_url,
-            "--interval",
-            interval,
-        ],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

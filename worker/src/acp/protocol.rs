@@ -86,8 +86,6 @@ pub struct SessionPromptResult {
     #[serde(rename = "stopReason")]
     pub stop_reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -100,10 +98,56 @@ pub struct SessionUpdateParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct SessionUpdate {
-    #[serde(rename = "sessionUpdate")]
-    pub session_update: String,
-    pub content: serde_json::Value,
+#[serde(tag = "sessionUpdate", rename_all = "snake_case")]
+pub enum SessionUpdate {
+    #[serde(rename = "user_message_chunk")]
+    UserMessageChunk { content: serde_json::Value },
+
+    #[serde(rename = "agent_message_chunk")]
+    AgentMessageChunk { content: serde_json::Value },
+
+    #[serde(rename = "agent_thought_chunk")]
+    AgentThoughtChunk { content: serde_json::Value },
+
+    #[serde(rename = "tool_call")]
+    ToolCall {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<serde_json::Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
+
+    #[serde(rename = "tool_call_update")]
+    ToolCallUpdate {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<serde_json::Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+    },
+
+    #[serde(rename = "plan")]
+    Plan { entries: Vec<serde_json::Value> },
+
+    #[serde(rename = "available_commands_update")]
+    AvailableCommandsUpdate {
+        #[serde(rename = "availableCommands")]
+        available_commands: Vec<serde_json::Value>,
+    },
+
+    #[serde(rename = "current_mode_update")]
+    CurrentModeUpdate {
+        #[serde(rename = "currentModeId")]
+        current_mode_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -162,6 +206,66 @@ mod tests {
         let params: SessionUpdateParams = serde_json::from_str(json_str).unwrap();
 
         assert_eq!(params.session_id, "sess-abc123");
-        assert_eq!(params.update.session_update, "agent_message_chunk");
+        match &params.update {
+            SessionUpdate::AgentMessageChunk { content } => {
+                assert_eq!(
+                    content.get("text").and_then(|t| t.as_str()),
+                    Some("Partial response text...")
+                );
+            }
+            _ => panic!("Expected AgentMessageChunk variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_update_plan_without_content() {
+        let json_str = r#"{
+            "sessionId": "sess-456",
+            "update": {
+                "sessionUpdate": "plan",
+                "entries": [
+                    {"id": "step-1", "title": "Analyze requirements"}
+                ]
+            }
+        }"#;
+
+        let params: SessionUpdateParams = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(params.session_id, "sess-456");
+        match &params.update {
+            SessionUpdate::Plan { entries } => {
+                assert_eq!(entries.len(), 1);
+            }
+            _ => panic!("Expected Plan variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_update_tool_call_without_content() {
+        let json_str = r#"{
+            "sessionId": "sess-789",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tool-123",
+                "title": "Read file"
+            }
+        }"#;
+
+        let params: SessionUpdateParams = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(params.session_id, "sess-789");
+        match &params.update {
+            SessionUpdate::ToolCall {
+                tool_call_id,
+                title,
+                content,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "tool-123");
+                assert_eq!(title, "Read file");
+                assert!(content.is_none());
+            }
+            _ => panic!("Expected ToolCall variant"),
+        }
     }
 }

@@ -43,10 +43,8 @@ pub struct StdioConfig {
 pub struct AcpConfig {
     pub command: String,
     #[serde(default)]
-    #[allow(dead_code)]
     pub args: Vec<String>,
     pub timeout: Option<u64>,
-    #[allow(dead_code)]
     pub env: Option<HashMap<String, String>>,
 }
 
