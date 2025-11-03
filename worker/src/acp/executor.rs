@@ -46,6 +46,7 @@ pub async fn execute_acp_task(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(
+                event = "task_failed",
                 execution_id = %task.execution_id,
                 error = %e,
                 "ACP task failed"
@@ -109,20 +110,32 @@ async fn execute_acp_task_inner(
 
     // Execute ACP protocol sequence
     // 1. Initialize
-    tracing::debug!("Sending initialize request");
+    tracing::info!(
+        event = "initialize_sent",
+        agent = %acp_config.command,
+        timeout_secs = init_timeout.as_secs(),
+        "Sending ACP initialize request"
+    );
     let init_result = timeout(
         init_timeout,
         send_initialize(&mut client, &mut notification_rx),
     )
     .await
     .context("initialize timed out")??;
-    tracing::debug!(
+    tracing::info!(
+        event = "initialize_completed",
         protocol_version = init_result.protocol_version,
-        "Received initialize response"
+        "ACP initialize completed successfully"
     );
 
     // Verify protocol version
     if init_result.protocol_version != 1 {
+        tracing::error!(
+            event = "protocol_version_error",
+            protocol_version = init_result.protocol_version,
+            expected = 1,
+            "Unsupported ACP protocol version"
+        );
         // Kill subprocess before returning error
         let _ = child.kill().await;
         return Err(anyhow::anyhow!(
@@ -132,14 +145,23 @@ async fn execute_acp_task_inner(
     }
 
     // 2. Session/new
-    tracing::debug!("Sending session/new request");
+    tracing::info!(
+        event = "session_new_sent",
+        cwd = %cwd,
+        "Sending ACP session/new request"
+    );
     let session_id = timeout(
         init_timeout,
         send_session_new(&mut client, &mut notification_rx, &cwd),
     )
     .await
     .context("session/new timed out")??;
-    tracing::debug!(session_id = %session_id, "Received session/new response");
+    tracing::info!(
+        event = "session_created",
+        session_id = %session_id,
+        cwd = %cwd,
+        "ACP session created successfully"
+    );
 
     // Populate ACP metadata for cancellation support
     {
@@ -151,9 +173,12 @@ async fn execute_acp_task_inner(
     }
 
     // 3. Session/prompt (no timeout, but monitors cancellation channel)
-    tracing::debug!("Preparing to send session/prompt");
+    tracing::info!(
+        event = "prompt_sent",
+        session_id = %session_id,
+        "Sending ACP session/prompt request"
+    );
     let mut update_history: Vec<Message> = Vec::new();
-    tracing::debug!("Calling send_session_prompt");
     let prompt_result = send_session_prompt(
         &mut client,
         &mut notification_rx,
@@ -163,9 +188,12 @@ async fn execute_acp_task_inner(
         &mut update_history,
     )
     .await?;
-    tracing::debug!(
-        "send_session_prompt completed with stopReason={}",
-        prompt_result.stop_reason
+    tracing::info!(
+        event = "prompt_completed",
+        session_id = %session_id,
+        stop_reason = %prompt_result.stop_reason,
+        update_count = update_history.len(),
+        "ACP session/prompt completed"
     );
 
     // Close stdin to signal subprocess that no more input is coming
@@ -254,10 +282,18 @@ async fn terminate_subprocess(child: &mut Child) {
             tracing::debug!("Subprocess exited gracefully");
         }
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "Error waiting for subprocess to exit");
+            tracing::warn!(
+                event = "subprocess_exit_error",
+                error = %e,
+                "Error waiting for subprocess to exit"
+            );
         }
         Err(_) => {
-            tracing::warn!("Subprocess did not exit within timeout, sending SIGTERM");
+            tracing::warn!(
+                event = "subprocess_timeout",
+                timeout_secs = term_timeout.as_secs(),
+                "Subprocess did not exit within timeout, sending SIGTERM"
+            );
             let _ = child.kill().await;
         }
     }
@@ -285,6 +321,12 @@ async fn send_initialize(
         match msg {
             JsonRpcMessage::Response(resp) if resp.id == request_id => {
                 if let Some(error) = resp.error {
+                    tracing::error!(
+                        event = "initialize_error",
+                        code = error.code,
+                        message = %error.message,
+                        "ACP initialize returned error"
+                    );
                     return Err(anyhow::anyhow!(
                         "initialize error: {} (code: {})",
                         error.message,
@@ -306,10 +348,21 @@ async fn send_initialize(
             }
             JsonRpcMessage::Request(req) => {
                 // Ignore agent requests during initialize (unexpected)
-                tracing::warn!(method = %req.method, "Unexpected agent request during initialize");
+                tracing::warn!(
+                    event = "unexpected_request",
+                    method = %req.method,
+                    phase = "initialize",
+                    "Unexpected agent request during initialize"
+                );
             }
             JsonRpcMessage::ParseError(line) => {
                 // Malformed JSON-RPC response - fail task immediately
+                tracing::error!(
+                    event = "parse_error",
+                    phase = "initialize",
+                    line = %line,
+                    "Malformed JSON-RPC response during initialize"
+                );
                 return Err(anyhow::anyhow!(
                     "malformed JSON-RPC response during initialize: {line}"
                 ));
@@ -317,6 +370,11 @@ async fn send_initialize(
         }
     }
 
+    tracing::error!(
+        event = "subprocess_closed",
+        phase = "initialize",
+        "Subprocess closed before initialize response"
+    );
     Err(anyhow::anyhow!(
         "subprocess closed before initialize response"
     ))
@@ -342,6 +400,12 @@ async fn send_session_new(
         match msg {
             JsonRpcMessage::Response(resp) if resp.id == request_id => {
                 if let Some(error) = resp.error {
+                    tracing::error!(
+                        event = "session_new_error",
+                        code = error.code,
+                        message = %error.message,
+                        "ACP session/new returned error"
+                    );
                     return Err(anyhow::anyhow!(
                         "session/new error: {} (code: {})",
                         error.message,
@@ -363,10 +427,21 @@ async fn send_session_new(
             }
             JsonRpcMessage::Request(req) => {
                 // Ignore agent requests during session/new (unexpected)
-                tracing::warn!(method = %req.method, "Unexpected agent request during session/new");
+                tracing::warn!(
+                    event = "unexpected_request",
+                    method = %req.method,
+                    phase = "session_new",
+                    "Unexpected agent request during session/new"
+                );
             }
             JsonRpcMessage::ParseError(line) => {
                 // Malformed JSON-RPC response - fail task immediately
+                tracing::error!(
+                    event = "parse_error",
+                    phase = "session_new",
+                    line = %line,
+                    "Malformed JSON-RPC response during session/new"
+                );
                 return Err(anyhow::anyhow!(
                     "malformed JSON-RPC response during session/new: {line}"
                 ));
@@ -374,6 +449,11 @@ async fn send_session_new(
         }
     }
 
+    tracing::error!(
+        event = "subprocess_closed",
+        phase = "session_new",
+        "Subprocess closed before session/new response"
+    );
     Err(anyhow::anyhow!(
         "subprocess closed before session/new response"
     ))
@@ -391,10 +471,7 @@ fn translate_a2a_parts_to_acp_content(parts: &[Value]) -> Result<Vec<Value>> {
 
             match kind {
                 "text" => {
-                    let text = part
-                        .get("text")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("");
+                    let text = part.get("text").and_then(|t| t.as_str()).unwrap_or("");
                     Ok(serde_json::json!({
                         "type": "text",
                         "text": text
@@ -403,14 +480,26 @@ fn translate_a2a_parts_to_acp_content(parts: &[Value]) -> Result<Vec<Value>> {
                 "data" => {
                     // A2A data parts don't map cleanly to ACP ContentBlock
                     // Skip data parts as they're typically metadata, not user-facing content
-                    tracing::warn!("Skipping A2A data part in ACP prompt (not supported)");
+                    tracing::warn!(
+                        event = "unsupported_part_type",
+                        part_kind = "data",
+                        "Skipping A2A data part in ACP prompt (not supported)"
+                    );
                     Ok(serde_json::json!(null))
                 }
                 "file" => {
                     // A2A file parts could map to ACP resource ContentBlocks
                     // For now, convert to text representation with warning
-                    let mime_type = part.get("mimeType").and_then(|m| m.as_str()).unwrap_or("application/octet-stream");
-                    tracing::warn!(mime_type = %mime_type, "A2A file part not fully supported in ACP - converting to text note");
+                    let mime_type = part
+                        .get("mimeType")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("application/octet-stream");
+                    tracing::warn!(
+                        event = "unsupported_part_type",
+                        part_kind = "file",
+                        mime_type = %mime_type,
+                        "A2A file part not fully supported in ACP - converting to text note"
+                    );
                     Ok(serde_json::json!({
                         "type": "text",
                         "text": format!("[File attachment: {}]", mime_type)
@@ -501,12 +590,23 @@ async fn send_session_prompt(
                     }
                     Some(JsonRpcMessage::ParseError(line)) => {
                         // Malformed JSON-RPC response - fail task immediately
+                        tracing::error!(
+                            event = "parse_error",
+                            phase = "session_prompt",
+                            line = %line,
+                            "Malformed JSON-RPC response during session/prompt"
+                        );
                         return Err(anyhow::anyhow!(
                             "malformed JSON-RPC response during session/prompt: {line}"
                         ));
                     }
                     None => {
                         // Channel closed - subprocess died without sending response
+                        tracing::error!(
+                            event = "subprocess_closed",
+                            phase = "session_prompt",
+                            "Subprocess closed before session/prompt response"
+                        );
                         return Err(anyhow::anyhow!(
                             "subprocess closed before session/prompt response"
                         ));
@@ -540,7 +640,12 @@ async fn send_session_prompt(
                                 // Continue processing session/update per ACP spec
                                 if notif.method == "session/update" {
                                     if let Err(e) = handle_session_update(&notif.params, update_history) {
-                                        tracing::warn!(error = %e, "Failed to process session/update during cancellation");
+                                        tracing::warn!(
+                                            event = "session_update_error",
+                                            phase = "cancellation",
+                                            error = %e,
+                                            "Failed to process session/update during cancellation"
+                                        );
                                     }
                                 }
                             }
@@ -548,12 +653,22 @@ async fn send_session_prompt(
                                 // MUST respond to permission requests with cancelled outcome per ACP spec
                                 if req.method == "session/request_permission" {
                                     if let Err(e) = handle_permission_request_cancelled(client, &req.id).await {
-                                        tracing::warn!(error = %e, "Failed to respond to permission request during cancellation");
+                                        tracing::warn!(
+                                            event = "permission_response_error",
+                                            phase = "cancellation",
+                                            error = %e,
+                                            "Failed to respond to permission request during cancellation"
+                                        );
                                     }
                                 } else {
                                     // Other requests - send error response
                                     if let Err(e) = client.send_error_response(req.id, -32601, "Method not found".to_string()).await {
-                                        tracing::warn!(error = %e, "Failed to send error response during cancellation");
+                                        tracing::warn!(
+                                            event = "error_response_failed",
+                                            phase = "cancellation",
+                                            error = %e,
+                                            "Failed to send error response during cancellation"
+                                        );
                                     }
                                 }
                             }
@@ -581,7 +696,11 @@ async fn send_session_prompt(
                     }
                     Ok(None) | Err(_) => {
                         // Agent didn't respond or timed out - force cancellation
-                        tracing::warn!("Agent did not respond to session/cancel within grace period");
+                        tracing::warn!(
+                            event = "cancellation_timeout",
+                            grace_period_secs = CANCEL_GRACE_PERIOD_SECS,
+                            "Agent did not respond to session/cancel within grace period"
+                        );
                         return Ok(SessionPromptResult {
                             stop_reason: "cancelled".to_string(),
                             error: Some("Agent did not acknowledge cancellation".to_string()),
@@ -679,12 +798,9 @@ async fn handle_permission_request(
         .and_then(|t| t.as_str())
         .unwrap_or("unknown");
 
-    let tool = params.get("toolCall").or_else(|| params.get("tool"));
-
-    // Log warning with tool ID
+    // Log warning with tool ID (not full tool payload per observability contract)
     tracing::warn!(
         toolCallId = tool_call_id,
-        tool = ?tool,
         "Auto-approved session/request_permission"
     );
 
@@ -983,7 +1099,11 @@ async fn read_jsonrpc_lines(stdout: ChildStdout, tx: mpsc::UnboundedSender<JsonR
             }
         } else {
             // Malformed JSON-RPC - propagate error to protocol handlers to fail task
-            tracing::warn!(line = %line, "Failed to parse JSON-RPC message");
+            tracing::warn!(
+                event = "jsonrpc_parse_error",
+                line = %line,
+                "Failed to parse JSON-RPC message"
+            );
             if tx.send(JsonRpcMessage::ParseError(line.clone())).is_err() {
                 break;
             }

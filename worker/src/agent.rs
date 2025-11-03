@@ -481,7 +481,17 @@ pub async fn execute_task(
     let agent_config = match agents_config.agents.get(&task.agent) {
         Some(config) => config,
         None => {
-            return TaskResult {
+            let available_agents: Vec<_> = agents_config.agents.keys().collect();
+            tracing::error!(
+                execution_id = %task.execution_id,
+                node_id = %task.node_id,
+                agent = %task.agent,
+                available_agents = ?available_agents,
+                "Agent '{}' not found in configuration. Available agents: {:?}",
+                task.agent,
+                available_agents
+            );
+            let result = TaskResult {
                 execution_id: task.execution_id.clone(),
                 node_id: task.node_id.clone(),
                 task_status: A2ATaskStatus::failed(format!(
@@ -490,17 +500,33 @@ pub async fn execute_task(
                 )),
                 artifacts: None,
             };
+            tracing::error!(
+                execution_id = %result.execution_id,
+                node_id = %result.node_id,
+                state = %result.task_status.state,
+                "Task failed: agent not found"
+            );
+            return result;
         }
     };
 
     match agent_config {
         AgentConfig::A2a { .. } => execute_a2a_task(client, agents_config, task, metadata).await,
         AgentConfig::Acp { config } => acp::execute_acp_task(config, task, metadata).await,
-        AgentConfig::Stdio { .. } => TaskResult {
-            execution_id: task.execution_id.clone(),
-            node_id: task.node_id.clone(),
-            task_status: A2ATaskStatus::failed("stdio agent not yet implemented".to_string()),
-            artifacts: None,
-        },
+        AgentConfig::Stdio { .. } => {
+            let result = TaskResult {
+                execution_id: task.execution_id.clone(),
+                node_id: task.node_id.clone(),
+                task_status: A2ATaskStatus::failed("stdio agent not yet implemented".to_string()),
+                artifacts: None,
+            };
+            tracing::error!(
+                execution_id = %result.execution_id,
+                node_id = %result.node_id,
+                state = %result.task_status.state,
+                "Task failed: stdio agent not yet implemented"
+            );
+            result
+        }
     }
 }

@@ -155,6 +155,17 @@ class ACPHandler:
                 print(json.dumps(error_response), flush=True)
             return
 
+        # Validate session exists
+        if session_id not in self.jsonrpc_dispatcher.acp_sessions:
+            if request_id is not None:
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32602, "message": "Invalid session"},
+                }
+                print(json.dumps(error_response), flush=True)
+            return
+
         # Track session state BEFORE spawning the task to avoid race conditions.
         # The cancel handler (_handle_cancel) may fire immediately after the task starts,
         # so the session entry must exist before create_task() to ensure cancellation works.
