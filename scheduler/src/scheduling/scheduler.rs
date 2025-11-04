@@ -142,7 +142,7 @@ impl Scheduler {
     ) -> Result<(), SchedulerError> {
         let mut executions = self.active_executions.write().await;
         let execution = executions.get_mut(execution_id).ok_or_else(|| {
-            SchedulerError::NotFound(format!("Execution not found: {execution_id}"))
+            SchedulerError::NotFound(format!("execution not found: {execution_id}"))
         })?;
 
         if execution.status == ExecutionStatus::Pending {
@@ -153,7 +153,7 @@ impl Scheduler {
         if !success {
             let task =
                 execution.dag.tasks.get(node_id).ok_or_else(|| {
-                    SchedulerError::NotFound(format!("Task not found: {node_id}"))
+                    SchedulerError::NotFound(format!("task not found: {node_id}"))
                 })?;
 
             if let Some(exec_policy) = &task.execution {
@@ -171,7 +171,7 @@ impl Scheduler {
                             execution.retrying.insert(node_id.to_string());
                             let exec_uuid = Uuid::parse_str(execution_id).map_err(|e| {
                                 SchedulerError::ValidationFailed(format!(
-                                    "Invalid execution ID: {e}"
+                                    "parse execution ID failed: {e}"
                                 ))
                             })?;
 
@@ -271,7 +271,7 @@ impl Scheduler {
             };
 
             let exec_uuid = Uuid::parse_str(execution_id).map_err(|e| {
-                SchedulerError::ValidationFailed(format!("Invalid execution ID: {e}"))
+                SchedulerError::ValidationFailed(format!("parse execution ID failed: {e}"))
             })?;
 
             let db_execution = crate::db::executions::get_by_id(&self.db_pool, &exec_uuid).await?;
@@ -341,8 +341,9 @@ impl Scheduler {
 
         execution.completed.insert(node_id.to_string());
 
-        let exec_uuid = Uuid::parse_str(execution_id)
-            .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid execution ID: {e}")))?;
+        let exec_uuid = Uuid::parse_str(execution_id).map_err(|e| {
+            SchedulerError::ValidationFailed(format!("parse execution ID failed: {e}"))
+        })?;
 
         let db_execution = crate::db::executions::get_by_id(&self.db_pool, &exec_uuid).await?;
 
@@ -448,15 +449,16 @@ impl Scheduler {
         // Verify execution exists
         if !executions.contains_key(execution_id) {
             return Err(SchedulerError::NotFound(format!(
-                "Execution not found: {execution_id}"
+                "execution not found: {execution_id}"
             )));
         }
 
         // Keep lock held during DB operations to prevent interleaving
         // (lock will be released when function returns)
 
-        let exec_uuid = Uuid::parse_str(execution_id)
-            .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid execution ID: {e}")))?;
+        let exec_uuid = Uuid::parse_str(execution_id).map_err(|e| {
+            SchedulerError::ValidationFailed(format!("parse execution ID failed: {e}"))
+        })?;
 
         // Fetch current execution to preserve existing task states
         let db_execution = crate::db::executions::get_by_id(&self.db_pool, &exec_uuid).await?;
@@ -497,7 +499,7 @@ impl Scheduler {
         // Need write lock to update queued set
         let mut executions = self.active_executions.write().await;
         let execution = executions.get_mut(execution_id).ok_or_else(|| {
-            SchedulerError::NotFound(format!("Execution not found: {execution_id}"))
+            SchedulerError::NotFound(format!("execution not found: {execution_id}"))
         })?;
 
         let entry_nodes = execution.dag.entry_nodes();

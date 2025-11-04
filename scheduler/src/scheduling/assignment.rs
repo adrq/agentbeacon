@@ -23,10 +23,10 @@ pub async fn build_task_assignment(
     let node = dag
         .tasks
         .get(node_id)
-        .ok_or_else(|| SchedulerError::NotFound(format!("Node not found in DAG: {node_id}")))?;
+        .ok_or_else(|| SchedulerError::NotFound(format!("node not found in DAG: {node_id}")))?;
 
     let exec_uuid = Uuid::parse_str(execution_id)
-        .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid execution ID: {e}")))?;
+        .map_err(|e| SchedulerError::ValidationFailed(format!("parse execution ID failed: {e}")))?;
 
     let execution = executions::get_by_id(pool, &exec_uuid).await?;
     let (registry_id, version, ref_str) = if let Some(namespace) = execution.workflow_namespace {

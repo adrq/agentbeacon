@@ -184,7 +184,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         for stmt in statements {
             pool.as_ref().execute(stmt).await.map_err(|e| {
                 SchedulerError::Database(format!(
-                    "Failed to run migration v{} statement: {e}\nStatement: {}",
+                    "run migration failed: v{} statement: {e}\nStatement: {}",
                     version,
                     &stmt[..std::cmp::min(200, stmt.len())]
                 ))
@@ -201,7 +201,7 @@ pub async fn get_current_version(pool: &DbPool) -> Result<i32, SchedulerError> {
     let result = sqlx::query_scalar::<_, i32>("SELECT MAX(version) FROM schema_migrations")
         .fetch_optional(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to check migration version: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("check migration version failed: {e}")))?;
 
     Ok(result.unwrap_or(0))
 }

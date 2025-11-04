@@ -82,7 +82,7 @@ pub async fn register_workflow(
         .validator
         .validate_workflow_yaml(&req.workflow_yaml)
         .map_err(|e| {
-            SchedulerError::ValidationFailed(format!("Workflow schema validation failed: {e}"))
+            SchedulerError::ValidationFailed(format!("workflow schema validation failed: {e}"))
         })?;
 
     // Calculate content hash (SHA-256 of normalized YAML)
@@ -134,7 +134,7 @@ pub async fn get_workflow(
     let wf = workflow_version::get_by_ref(&state.db_pool, &namespace, &name, &version)
         .await?
         .ok_or_else(|| {
-            SchedulerError::NotFound(format!("Workflow {namespace}:{name}@{version} not found"))
+            SchedulerError::NotFound(format!("workflow not found: {namespace}:{name}@{version}"))
         })?;
 
     Ok(Json(WorkflowVersionResponse {

@@ -97,7 +97,7 @@ async fn list_executions(
 ) -> Result<Json<Vec<ExecutionResponse>>, SchedulerError> {
     let workflow_id = if let Some(wf_id_str) = query.workflow_registry_id {
         let uuid = Uuid::parse_str(&wf_id_str).map_err(|_| {
-            SchedulerError::ValidationFailed(format!("Invalid workflow_id UUID: {wf_id_str}"))
+            SchedulerError::ValidationFailed(format!("parse workflow_id UUID failed: {wf_id_str}"))
         })?;
         Some(uuid)
     } else {
@@ -122,7 +122,7 @@ async fn get_execution(
     Path(id): Path<String>,
 ) -> Result<Json<ExecutionDetailResponse>, SchedulerError> {
     let uuid = Uuid::parse_str(&id)
-        .map_err(|_| SchedulerError::ValidationFailed(format!("Invalid UUID: {id}")))?;
+        .map_err(|_| SchedulerError::ValidationFailed(format!("parse UUID failed: {id}")))?;
 
     let execution = db::executions::get_by_id(&state.db_pool, &uuid).await?;
     let events = db::execution_events::list_by_execution(&state.db_pool, &uuid).await?;
@@ -157,19 +157,20 @@ async fn create_execution(
     let workflow = db::workflows::get_by_id(&state.db_pool, &workflow_id).await?;
 
     // Parse workflow YAML to extract task IDs
-    let workflow_json: JsonValue = serde_yaml::from_str(&workflow.yaml_content)
-        .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid workflow YAML: {e}")))?;
+    let workflow_json: JsonValue = serde_yaml::from_str(&workflow.yaml_content).map_err(|e| {
+        SchedulerError::ValidationFailed(format!("parse workflow YAML failed: {e}"))
+    })?;
 
     // Extract tasks array and initialize task_states
     let tasks = workflow_json["tasks"].as_array().ok_or_else(|| {
-        SchedulerError::ValidationFailed("Workflow missing tasks array".to_string())
+        SchedulerError::ValidationFailed("workflow missing tasks array".to_string())
     })?;
 
     let mut task_states = json!({});
     for task in tasks {
         let task_id = task["id"]
             .as_str()
-            .ok_or_else(|| SchedulerError::ValidationFailed("Task missing id field".to_string()))?;
+            .ok_or_else(|| SchedulerError::ValidationFailed("task missing id field".to_string()))?;
 
         task_states[task_id] = json!({
             "status": "pending",

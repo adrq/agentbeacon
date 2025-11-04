@@ -213,16 +213,14 @@ pub async fn create(database_url: &str) -> Result<DbPool, SchedulerError> {
             .max_connections(1)
             .connect(database_url)
             .await
-            .map_err(|e| SchedulerError::Database(format!("Failed to connect to SQLite: {e}")))?;
+            .map_err(|e| SchedulerError::Database(format!("connect to SQLite failed: {e}")))?;
 
         // Enable foreign key constraints (disabled by default in SQLite)
         // This is critical for CASCADE behavior and referential integrity
         sqlx::query("PRAGMA foreign_keys = ON")
             .execute(&pool)
             .await
-            .map_err(|e| {
-                SchedulerError::Database(format!("Failed to enable foreign keys in SQLite: {e}"))
-            })?;
+            .map_err(|e| SchedulerError::Database(format!("enable foreign keys failed: {e}")))?;
 
         pool
     } else {
@@ -234,9 +232,7 @@ pub async fn create(database_url: &str) -> Result<DbPool, SchedulerError> {
             .max_lifetime(Duration::from_secs(1800))
             .connect(database_url)
             .await
-            .map_err(|e| {
-                SchedulerError::Database(format!("Failed to connect to PostgreSQL: {e}"))
-            })?
+            .map_err(|e| SchedulerError::Database(format!("connect to PostgreSQL failed: {e}")))?
     };
 
     Ok(DbPool::new(pool, db_type))

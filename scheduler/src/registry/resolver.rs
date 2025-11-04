@@ -12,7 +12,7 @@ pub fn parse_workflow_ref(workflow_ref: &str) -> Result<(String, String, String)
         2 => (parts[0], parts[1]),
         _ => {
             return Err(SchedulerError::ValidationFailed(format!(
-                "Invalid workflow reference format: '{workflow_ref}'. Expected 'namespace/name:version'"
+                "parse workflow reference failed: invalid format '{workflow_ref}'. Expected 'namespace/name:version'"
             )));
         }
     };
@@ -21,7 +21,7 @@ pub fn parse_workflow_ref(workflow_ref: &str) -> Result<(String, String, String)
     let ns_parts: Vec<&str> = namespace_name.split('/').collect();
     if ns_parts.len() != 2 {
         return Err(SchedulerError::ValidationFailed(format!(
-            "Invalid workflow reference format: '{workflow_ref}'. Expected 'namespace/name:version'"
+            "parse workflow reference failed: invalid format '{workflow_ref}'. Expected 'namespace/name:version'"
         )));
     }
 
@@ -35,7 +35,7 @@ pub fn parse_workflow_ref(workflow_ref: &str) -> Result<(String, String, String)
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
     {
         return Err(SchedulerError::ValidationFailed(format!(
-            "Invalid namespace '{namespace}'. Must match pattern ^[a-z0-9_-]+$"
+            "validation failed: invalid namespace '{namespace}'. Must match pattern ^[a-z0-9_-]+$"
         )));
     }
 
@@ -62,7 +62,7 @@ pub async fn resolve_workflow_ref(
             if versions.is_empty() {
                 // No workflow found at all (FR-035)
                 Err(SchedulerError::NotFound(format!(
-                    "No workflow found for reference: {workflow_ref}"
+                    "workflow not found: {workflow_ref}"
                 )))
             } else if version == "latest" {
                 // No is_latest=true version found (FR-040)
@@ -72,7 +72,7 @@ pub async fn resolve_workflow_ref(
                     .collect::<Vec<_>>()
                     .join(", ");
                 Err(SchedulerError::ValidationFailed(format!(
-                    "Ambiguous workflow reference: '{workflow_ref}'. Multiple versions found but no version marked as 'latest'. Available versions: {available}. Please specify version explicitly (e.g., '{namespace}/{name}:v1.0.0')"
+                    "resolve workflow reference failed: ambiguous '{workflow_ref}'. Multiple versions found but no version marked as 'latest'. Available versions: {available}. Please specify version explicitly (e.g., '{namespace}/{name}:v1.0.0')"
                 )))
             } else {
                 // Specific version not found but others exist
@@ -82,7 +82,7 @@ pub async fn resolve_workflow_ref(
                     .collect::<Vec<_>>()
                     .join(", ");
                 Err(SchedulerError::NotFound(format!(
-                    "Workflow version '{workflow_ref}' not found. Available versions: {available}"
+                    "workflow version not found: '{workflow_ref}'. Available versions: {available}"
                 )))
             }
         }
@@ -125,7 +125,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Invalid workflow reference format")
+                .contains("parse workflow reference failed")
         );
     }
 
@@ -137,7 +137,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Invalid workflow reference format")
+                .contains("parse workflow reference failed")
         );
     }
 
@@ -149,7 +149,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Invalid namespace")
+                .contains("invalid namespace")
         );
     }
 
@@ -167,7 +167,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Invalid namespace")
+                .contains("invalid namespace")
         );
     }
 

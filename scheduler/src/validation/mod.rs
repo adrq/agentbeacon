@@ -45,7 +45,7 @@ impl Retrieve for InMemoryRetriever {
         self.schemas
             .get(filename)
             .cloned()
-            .ok_or_else(|| format!("Schema not found: {filename} (from URI: {uri_str})").into())
+            .ok_or_else(|| format!("schema not found: {filename} (from URI: {uri_str})").into())
     }
 }
 
@@ -61,7 +61,7 @@ impl SchemaValidator {
         let workflow_schema_str = include_str!("../../../docs/workflow-schema.json");
         let workflow_schema: JsonValue =
             serde_json::from_str(workflow_schema_str).map_err(|e| {
-                SchedulerError::SchemaCompilation(format!("Failed to parse workflow schema: {e}"))
+                SchedulerError::SchemaCompilation(format!("parse workflow schema failed: {e}"))
             })?;
 
         // Validate that schema is well-formed
@@ -79,7 +79,7 @@ impl SchemaValidator {
             .with_retriever(retriever)
             .build(&workflow_schema)
             .map_err(|e| {
-                SchedulerError::SchemaCompilation(format!("Failed to compile workflow schema: {e}"))
+                SchedulerError::SchemaCompilation(format!("compile workflow schema failed: {e}"))
             })?;
 
         Ok(SchemaValidator { compiled })
@@ -96,8 +96,9 @@ impl SchemaValidator {
     /// happens later during task assignment via task_preparation module.
     pub fn validate_workflow_yaml(&self, yaml_content: &str) -> Result<JsonValue, SchedulerError> {
         // Parse YAML to JSON
-        let workflow_json: JsonValue = serde_yaml::from_str(yaml_content)
-            .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid YAML syntax: {e}")))?;
+        let workflow_json: JsonValue = serde_yaml::from_str(yaml_content).map_err(|e| {
+            SchedulerError::ValidationFailed(format!("parse YAML syntax failed: {e}"))
+        })?;
 
         // Clone workflow for validation injection
         let mut workflow_for_validation = workflow_json.clone();
@@ -208,7 +209,9 @@ impl SchemaValidator {
         for task in tasks {
             if let Some(id) = task.get("id").and_then(|v| v.as_str()) {
                 if !seen_ids.insert(id) {
-                    errors.push(format!("Task id '{id}' is declared more than once"));
+                    errors.push(format!(
+                        "validation failed: task id '{id}' is declared more than once"
+                    ));
                 }
             }
         }
@@ -236,13 +239,15 @@ impl SchemaValidator {
             for dep in deps {
                 // Check for self-dependency
                 if dep == task_id {
-                    errors.push(format!("Task '{task_id}' cannot depend on itself"));
+                    errors.push(format!(
+                        "validation failed: task '{task_id}' cannot depend on itself"
+                    ));
                 }
 
                 // Check if dependency exists
                 if !task_ids.contains(dep) {
                     errors.push(format!(
-                        "Task '{task_id}' depends on '{dep}' which does not exist"
+                        "validation failed: task '{task_id}' depends on '{dep}' which does not exist"
                     ));
                 }
             }

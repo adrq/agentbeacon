@@ -120,7 +120,7 @@ impl Orchestrator {
 
         loop {
             if Instant::now() > deadline {
-                anyhow::bail!("scheduler health check timeout - not ready after 30 seconds");
+                anyhow::bail!("health check failed: scheduler timeout after 30 seconds");
             }
 
             if let Ok(resp) = client.get(&health_url).send().await {

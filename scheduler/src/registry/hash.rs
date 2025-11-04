@@ -11,12 +11,12 @@ use crate::error::SchedulerError;
 pub fn calculate_content_hash(yaml: &str) -> Result<String, SchedulerError> {
     // Parse YAML to normalize structure
     let workflow: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| {
-        SchedulerError::ValidationFailed(format!("Failed to parse YAML for hashing: {e}"))
+        SchedulerError::ValidationFailed(format!("parse YAML for hashing failed: {e}"))
     })?;
 
     // Re-serialize to canonical form
     let canonical = serde_yaml::to_string(&workflow).map_err(|e| {
-        SchedulerError::ValidationFailed(format!("Failed to serialize YAML for hashing: {e}"))
+        SchedulerError::ValidationFailed(format!("serialize YAML for hashing failed: {e}"))
     })?;
 
     // Calculate SHA-256 hash
@@ -106,7 +106,7 @@ tasks:
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Failed to parse YAML")
+                .contains("parse YAML for hashing failed")
         );
     }
 

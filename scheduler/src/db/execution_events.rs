@@ -30,7 +30,7 @@ pub async fn create(
 ) -> Result<i64, SchedulerError> {
     // Serialize metadata to JSON string
     let metadata_json = serde_json::to_string(&metadata)
-        .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid metadata JSON: {e}")))?;
+        .map_err(|e| SchedulerError::ValidationFailed(format!("serialize metadata failed: {e}")))?;
 
     let query = pool.prepare_query(
         r#"
@@ -48,7 +48,7 @@ pub async fn create(
         .bind(metadata_json)
         .fetch_one(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to create execution event: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("create execution event failed: {e}")))?;
 
     let id: i64 = row.get("id");
     Ok(id)
@@ -78,7 +78,7 @@ pub async fn list_by_execution(
         .bind(execution_id.to_string())
         .fetch_all(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to list execution events: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("list execution events failed: {e}")))?;
 
     let events: Result<Vec<ExecutionEvent>, SchedulerError> = rows
         .into_iter()
@@ -134,28 +134,29 @@ pub async fn list_recent(
         .bind(limit)
         .fetch_all(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to list recent events: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("list recent events failed: {e}")))?;
 
     let events: Result<Vec<ExecutionEvent>, SchedulerError> = rows
         .into_iter()
         .map(|row| {
             let metadata_str: String = row.get("metadata");
-            let metadata: JsonValue = serde_json::from_str(&metadata_str)
-                .map_err(|e| SchedulerError::Database(format!("Invalid metadata JSON: {e}")))?;
+            let metadata: JsonValue = serde_json::from_str(&metadata_str).map_err(|e| {
+                SchedulerError::Database(format!("deserialize metadata failed: {e}"))
+            })?;
 
             let timestamp_str: String = row.get("timestamp");
 
             Ok(ExecutionEvent {
                 id: row.get("id"),
                 execution_id: Uuid::parse_str(row.get("execution_id")).map_err(|e| {
-                    SchedulerError::Database(format!("Invalid execution_id UUID in database: {e}"))
+                    SchedulerError::Database(format!("parse execution_id UUID failed: {e}"))
                 })?,
                 event_type: row.get("event_type"),
                 task_id: row.get("task_id"),
                 message: row.get("message"),
                 metadata,
                 timestamp: DateTime::parse_from_rfc3339(&timestamp_str)
-                    .map_err(|e| SchedulerError::Database(format!("Invalid timestamp: {e}")))?
+                    .map_err(|e| SchedulerError::Database(format!("parse timestamp failed: {e}")))?
                     .with_timezone(&Utc),
             })
         })

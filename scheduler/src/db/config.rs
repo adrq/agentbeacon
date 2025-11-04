@@ -41,9 +41,9 @@ pub async fn get(pool: &DbPool, name: &str) -> Result<Config, SchedulerError> {
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => {
-                SchedulerError::NotFound(format!("Config not found: {name}"))
+                SchedulerError::NotFound(format!("config not found: {name}"))
             }
-            _ => SchedulerError::Database(format!("Failed to fetch config: {e}")),
+            _ => SchedulerError::Database(format!("fetch config failed: {e}")),
         })?;
 
     let created_at_str: String = row.get("created_at");
@@ -53,10 +53,14 @@ pub async fn get(pool: &DbPool, name: &str) -> Result<Config, SchedulerError> {
         name: row.get("name"),
         value: row.get("value"),
         created_at: DateTime::parse_from_rfc3339(&created_at_str)
-            .map_err(|e| SchedulerError::Database(format!("Invalid created_at timestamp: {e}")))?
+            .map_err(|e| {
+                SchedulerError::Database(format!("parse created_at timestamp failed: {e}"))
+            })?
             .with_timezone(&Utc),
         updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
-            .map_err(|e| SchedulerError::Database(format!("Invalid updated_at timestamp: {e}")))?
+            .map_err(|e| {
+                SchedulerError::Database(format!("parse updated_at timestamp failed: {e}"))
+            })?
             .with_timezone(&Utc),
     })
 }
@@ -84,7 +88,7 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Config>, SchedulerError> {
     let rows = sqlx::query(&query)
         .fetch_all(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to list config: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("list config failed: {e}")))?;
 
     let configs: Result<Vec<Config>, SchedulerError> = rows
         .into_iter()
@@ -97,12 +101,12 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Config>, SchedulerError> {
                 value: row.get("value"),
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map_err(|e| {
-                        SchedulerError::Database(format!("Invalid created_at timestamp: {e}"))
+                        SchedulerError::Database(format!("parse created_at timestamp failed: {e}"))
                     })?
                     .with_timezone(&Utc),
                 updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
                     .map_err(|e| {
-                        SchedulerError::Database(format!("Invalid updated_at timestamp: {e}"))
+                        SchedulerError::Database(format!("parse updated_at timestamp failed: {e}"))
                     })?
                     .with_timezone(&Utc),
             })
@@ -150,7 +154,7 @@ pub async fn upsert(pool: &DbPool, name: &str, value: &str) -> Result<(), Schedu
         .bind(value)
         .execute(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to upsert config: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("upsert config failed: {e}")))?;
 
     Ok(())
 }

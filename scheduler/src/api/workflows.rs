@@ -66,7 +66,7 @@ async fn get_workflow(
     Path(id): Path<String>,
 ) -> Result<Json<WorkflowResponse>, SchedulerError> {
     let uuid = Uuid::parse_str(&id)
-        .map_err(|_| SchedulerError::ValidationFailed(format!("Invalid UUID: {id}")))?;
+        .map_err(|_| SchedulerError::ValidationFailed(format!("parse UUID failed: {id}")))?;
 
     let workflow = db::workflows::get_by_id(&state.db_pool, &uuid).await?;
     Ok(Json(workflow.into()))
@@ -95,7 +95,7 @@ async fn create_workflow(
     let name = workflow_json["name"]
         .as_str()
         .ok_or_else(|| {
-            SchedulerError::ValidationFailed("Missing required field 'name'".to_string())
+            SchedulerError::ValidationFailed("missing required field 'name'".to_string())
         })?
         .to_string();
 

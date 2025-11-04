@@ -140,13 +140,15 @@ async fn execute_a2a_task_inner(
     metadata: Arc<Mutex<A2ATaskMetadata>>,
 ) -> Result<TaskResult> {
     if task.agent.is_empty() {
-        return Err(anyhow::anyhow!("agent '' not found in configuration"));
+        return Err(anyhow::anyhow!(
+            "find agent failed: agent '' not found (empty agent name)"
+        ));
     }
 
     let agent_config = agents_config.agents.get(&task.agent).ok_or_else(|| {
         let available_agents: Vec<_> = agents_config.agents.keys().collect();
         anyhow::anyhow!(
-            "agent '{}' not found in configuration. Available agents: {:?}",
+            "find agent failed: agent '{}' not found. Available agents: {:?}",
             task.agent,
             available_agents
         )
@@ -156,7 +158,7 @@ async fn execute_a2a_task_inner(
         AgentConfig::A2a { config } => &config.url,
         _ => {
             return Err(anyhow::anyhow!(
-                "agent '{}' is not an A2A agent (only A2A supported in Phase 1)",
+                "validation failed: agent '{}' is not an A2A agent (only A2A supported in Phase 1)",
                 task.agent
             ));
         }
@@ -176,7 +178,7 @@ async fn execute_a2a_task_inner(
 
     if !card_response.status().is_success() {
         return Err(anyhow::anyhow!(
-            "agent card request failed with status: {}",
+            "fetch agent card failed: status {}",
             card_response.status()
         ));
     }
@@ -267,14 +269,14 @@ async fn execute_a2a_task_inner(
         });
     }
 
-    let result_value = a2a_response
-        .result
-        .ok_or_else(|| anyhow::anyhow!("A2A response missing both result and error"))?;
+    let result_value = a2a_response.result.ok_or_else(|| {
+        anyhow::anyhow!("parse A2A response failed: missing both result and error")
+    })?;
 
     let task_id = result_value
         .get("id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("A2A Task missing 'id' field"))?
+        .ok_or_else(|| anyhow::anyhow!("parse A2A task failed: missing 'id' field"))?
         .to_string();
 
     {
@@ -284,7 +286,7 @@ async fn execute_a2a_task_inner(
     let mut task_status: A2ATaskStatus = serde_json::from_value(
         result_value
             .get("status")
-            .ok_or_else(|| anyhow::anyhow!("A2A Task missing 'status' field"))?
+            .ok_or_else(|| anyhow::anyhow!("parse A2A task failed: missing 'status' field"))?
             .clone(),
     )
     .context("failed to deserialize A2A TaskStatus")?;
@@ -344,7 +346,7 @@ async fn execute_a2a_task_inner(
         task_status = serde_json::from_value(
             updated_task
                 .get("status")
-                .ok_or_else(|| anyhow::anyhow!("A2A Task missing 'status' field"))?
+                .ok_or_else(|| anyhow::anyhow!("parse A2A task failed: missing 'status' field"))?
                 .clone(),
         )
         .context("failed to deserialize A2A TaskStatus")?;
@@ -443,7 +445,7 @@ async fn poll_task_status(
 
     a2a_response
         .result
-        .ok_or_else(|| anyhow::anyhow!("tasks/get response missing result"))
+        .ok_or_else(|| anyhow::anyhow!("parse tasks/get response failed: missing result"))
 }
 
 /// Best-effort task cancellation using tasks/cancel RPC method

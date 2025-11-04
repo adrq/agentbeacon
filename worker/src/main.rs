@@ -150,7 +150,7 @@ async fn shutdown_signal() {
 async fn validate_startup(args: &Args) -> Result<()> {
     if !args.agents_config.exists() {
         return Err(anyhow::anyhow!(
-            "agents config file not found: {}",
+            "load agents config failed: file not found {}",
             args.agents_config.display()
         ));
     }

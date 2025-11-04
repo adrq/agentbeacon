@@ -81,7 +81,7 @@ pub async fn create(pool: &DbPool, wf: &WorkflowVersion) -> Result<(), Scheduler
     result.map_err(|e| {
         if e.to_string().contains("UNIQUE") || e.to_string().contains("unique") {
             SchedulerError::Conflict(format!(
-                "Workflow version {}:{}@{} already exists",
+                "workflow version already exists: {}:{}@{}",
                 wf.namespace, wf.name, wf.version
             ))
         } else {

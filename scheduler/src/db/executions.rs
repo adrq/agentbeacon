@@ -34,8 +34,9 @@ pub async fn create(
     let status = "pending";
 
     // Serialize task_states to JSON string for storage
-    let task_states_json = serde_json::to_string(&task_states)
-        .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid task_states JSON: {e}")))?;
+    let task_states_json = serde_json::to_string(&task_states).map_err(|e| {
+        SchedulerError::ValidationFailed(format!("serialize task_states failed: {e}"))
+    })?;
 
     let query = pool.prepare_query(
         r#"
@@ -53,7 +54,7 @@ pub async fn create(
         .bind(workflow_version)
         .execute(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to create execution: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("create execution failed: {e}")))?;
 
     Ok(id)
 }
@@ -83,16 +84,15 @@ pub async fn get_by_id(pool: &DbPool, id: &Uuid) -> Result<Execution, SchedulerE
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => {
-                SchedulerError::NotFound(format!("Execution not found: {id}"))
+                SchedulerError::NotFound(format!("execution not found: {id}"))
             }
-            _ => SchedulerError::Database(format!("Failed to fetch execution: {e}")),
+            _ => SchedulerError::Database(format!("fetch execution failed: {e}")),
         })?;
 
     // Deserialize task_states from JSON string
     let task_states_str: String = row.get("task_states");
-    let task_states: JsonValue = serde_json::from_str(&task_states_str).map_err(|e| {
-        SchedulerError::Database(format!("Invalid task_states JSON in database: {e}"))
-    })?;
+    let task_states: JsonValue = serde_json::from_str(&task_states_str)
+        .map_err(|e| SchedulerError::Database(format!("deserialize task_states failed: {e}")))?;
 
     let created_at_str: String = row.get("created_at");
     let updated_at_str: String = row.get("updated_at");
@@ -100,17 +100,20 @@ pub async fn get_by_id(pool: &DbPool, id: &Uuid) -> Result<Execution, SchedulerE
 
     Ok(Execution {
         id: Uuid::parse_str(row.get("id"))
-            .map_err(|e| SchedulerError::Database(format!("Invalid UUID in database: {e}")))?,
-        workflow_id: Uuid::parse_str(row.get("workflow_id")).map_err(|e| {
-            SchedulerError::Database(format!("Invalid workflow_id UUID in database: {e}"))
-        })?,
+            .map_err(|e| SchedulerError::Database(format!("parse execution UUID failed: {e}")))?,
+        workflow_id: Uuid::parse_str(row.get("workflow_id"))
+            .map_err(|e| SchedulerError::Database(format!("parse workflow_id UUID failed: {e}")))?,
         status: row.get("status"),
         task_states,
         created_at: DateTime::parse_from_rfc3339(&created_at_str)
-            .map_err(|e| SchedulerError::Database(format!("Invalid created_at timestamp: {e}")))?
+            .map_err(|e| {
+                SchedulerError::Database(format!("parse created_at timestamp failed: {e}"))
+            })?
             .with_timezone(&Utc),
         updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
-            .map_err(|e| SchedulerError::Database(format!("Invalid updated_at timestamp: {e}")))?
+            .map_err(|e| {
+                SchedulerError::Database(format!("parse updated_at timestamp failed: {e}"))
+            })?
             .with_timezone(&Utc),
         completed_at: completed_at_str.and_then(|s| {
             DateTime::parse_from_rfc3339(&s)
@@ -165,14 +168,15 @@ pub async fn list(
     let rows = sqlx_query
         .fetch_all(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to list executions: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("list executions failed: {e}")))?;
 
     let executions: Result<Vec<Execution>, SchedulerError> = rows
         .into_iter()
         .map(|row| {
             let task_states_str: String = row.get("task_states");
-            let task_states: JsonValue = serde_json::from_str(&task_states_str)
-                .map_err(|e| SchedulerError::Database(format!("Invalid task_states JSON: {e}")))?;
+            let task_states: JsonValue = serde_json::from_str(&task_states_str).map_err(|e| {
+                SchedulerError::Database(format!("deserialize task_states failed: {e}"))
+            })?;
 
             let created_at_str: String = row.get("created_at");
             let updated_at_str: String = row.get("updated_at");
@@ -180,21 +184,21 @@ pub async fn list(
 
             Ok(Execution {
                 id: Uuid::parse_str(row.get("id")).map_err(|e| {
-                    SchedulerError::Database(format!("Invalid UUID in database: {e}"))
+                    SchedulerError::Database(format!("parse execution UUID failed: {e}"))
                 })?,
                 workflow_id: Uuid::parse_str(row.get("workflow_id")).map_err(|e| {
-                    SchedulerError::Database(format!("Invalid workflow_id UUID in database: {e}"))
+                    SchedulerError::Database(format!("parse workflow_id UUID failed: {e}"))
                 })?,
                 status: row.get("status"),
                 task_states,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map_err(|e| {
-                        SchedulerError::Database(format!("Invalid created_at timestamp: {e}"))
+                        SchedulerError::Database(format!("parse created_at timestamp failed: {e}"))
                     })?
                     .with_timezone(&Utc),
                 updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
                     .map_err(|e| {
-                        SchedulerError::Database(format!("Invalid updated_at timestamp: {e}"))
+                        SchedulerError::Database(format!("parse updated_at timestamp failed: {e}"))
                     })?
                     .with_timezone(&Utc),
                 completed_at: completed_at_str.and_then(|s| {
@@ -219,8 +223,9 @@ pub async fn update_status(
     task_states: &JsonValue,
 ) -> Result<(), SchedulerError> {
     // Serialize task_states to JSON string
-    let task_states_json = serde_json::to_string(task_states)
-        .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid task_states JSON: {e}")))?;
+    let task_states_json = serde_json::to_string(task_states).map_err(|e| {
+        SchedulerError::ValidationFailed(format!("serialize task_states failed: {e}"))
+    })?;
 
     // Determine if this is a terminal state - use CURRENT_TIMESTAMP if so, NULL otherwise
     let is_terminal = matches!(status, "completed" | "failed" | "cancelled");
@@ -249,11 +254,11 @@ pub async fn update_status(
         .bind(id.to_string())
         .execute(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to update execution: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("update execution failed: {e}")))?;
 
     if result.rows_affected() == 0 {
         return Err(SchedulerError::NotFound(format!(
-            "Execution not found: {id}"
+            "execution not found: {id}"
         )));
     }
 

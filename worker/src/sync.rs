@@ -123,7 +123,7 @@ pub async fn perform_sync(
 
     if !response.status().is_success() {
         return Err(anyhow::anyhow!(
-            "sync request failed with status: {}",
+            "send sync request failed: status {}",
             response.status()
         ));
     }
@@ -139,7 +139,7 @@ pub async fn perform_sync(
             error = ?e,
             "Sync response failed schema validation"
         );
-        return Err(anyhow::anyhow!("sync response validation failed: {e:?}"));
+        return Err(anyhow::anyhow!("validate sync response failed: {e:?}"));
     }
 
     let sync_response: SyncResponse =

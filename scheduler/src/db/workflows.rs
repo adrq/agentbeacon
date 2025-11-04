@@ -33,7 +33,7 @@ pub async fn create(pool: &DbPool, workflow: &Workflow) -> Result<(), SchedulerE
         .bind(&workflow.yaml_content)
         .execute(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to create workflow: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("create workflow failed: {e}")))?;
 
     Ok(())
 }
@@ -61,7 +61,7 @@ pub async fn get_by_id(pool: &DbPool, id: &Uuid) -> Result<Workflow, SchedulerEr
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => SchedulerError::WorkflowNotFound(id.to_string()),
-            _ => SchedulerError::Database(format!("Failed to fetch workflow: {e}")),
+            _ => SchedulerError::Database(format!("fetch workflow failed: {e}")),
         })?;
 
     let created_at_str: String = row.get("created_at");
@@ -69,15 +69,19 @@ pub async fn get_by_id(pool: &DbPool, id: &Uuid) -> Result<Workflow, SchedulerEr
 
     Ok(Workflow {
         id: Uuid::parse_str(row.get("id"))
-            .map_err(|e| SchedulerError::Database(format!("Invalid UUID in database: {e}")))?,
+            .map_err(|e| SchedulerError::Database(format!("parse UUID failed: {e}")))?,
         name: row.get("name"),
         description: row.get("description"),
         yaml_content: row.get("yaml_content"),
         created_at: DateTime::parse_from_rfc3339(&created_at_str)
-            .map_err(|e| SchedulerError::Database(format!("Invalid created_at timestamp: {e}")))?
+            .map_err(|e| {
+                SchedulerError::Database(format!("parse created_at timestamp failed: {e}"))
+            })?
             .with_timezone(&Utc),
         updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
-            .map_err(|e| SchedulerError::Database(format!("Invalid updated_at timestamp: {e}")))?
+            .map_err(|e| {
+                SchedulerError::Database(format!("parse updated_at timestamp failed: {e}"))
+            })?
             .with_timezone(&Utc),
     })
 }
@@ -105,7 +109,7 @@ pub async fn get_by_name(pool: &DbPool, name: &str) -> Result<Workflow, Schedule
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => SchedulerError::WorkflowNotFound(name.to_string()),
-            _ => SchedulerError::Database(format!("Failed to fetch workflow: {e}")),
+            _ => SchedulerError::Database(format!("fetch workflow failed: {e}")),
         })?;
 
     let created_at_str: String = row.get("created_at");
@@ -113,15 +117,19 @@ pub async fn get_by_name(pool: &DbPool, name: &str) -> Result<Workflow, Schedule
 
     Ok(Workflow {
         id: Uuid::parse_str(row.get("id"))
-            .map_err(|e| SchedulerError::Database(format!("Invalid UUID in database: {e}")))?,
+            .map_err(|e| SchedulerError::Database(format!("parse UUID failed: {e}")))?,
         name: row.get("name"),
         description: row.get("description"),
         yaml_content: row.get("yaml_content"),
         created_at: DateTime::parse_from_rfc3339(&created_at_str)
-            .map_err(|e| SchedulerError::Database(format!("Invalid created_at timestamp: {e}")))?
+            .map_err(|e| {
+                SchedulerError::Database(format!("parse created_at timestamp failed: {e}"))
+            })?
             .with_timezone(&Utc),
         updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
-            .map_err(|e| SchedulerError::Database(format!("Invalid updated_at timestamp: {e}")))?
+            .map_err(|e| {
+                SchedulerError::Database(format!("parse updated_at timestamp failed: {e}"))
+            })?
             .with_timezone(&Utc),
     })
 }
@@ -133,7 +141,7 @@ pub async fn get_by_name(pool: &DbPool, name: &str) -> Result<Workflow, Schedule
 pub async fn update(pool: &DbPool, id: &Uuid, yaml_content: &str) -> Result<(), SchedulerError> {
     // Parse YAML to extract description (ensures database stays in sync)
     let parsed: serde_yaml::Value = serde_yaml::from_str(yaml_content)
-        .map_err(|e| SchedulerError::ValidationFailed(format!("Invalid YAML: {e}")))?;
+        .map_err(|e| SchedulerError::ValidationFailed(format!("parse YAML failed: {e}")))?;
 
     let description = parsed
         .get("description")
@@ -154,7 +162,7 @@ pub async fn update(pool: &DbPool, id: &Uuid, yaml_content: &str) -> Result<(), 
         .bind(id.to_string())
         .execute(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to update workflow: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("update workflow failed: {e}")))?;
 
     if result.rows_affected() == 0 {
         return Err(SchedulerError::WorkflowNotFound(id.to_string()));
@@ -203,7 +211,7 @@ pub async fn list(
 
         sqlx::query(&query).fetch_all(pool.as_ref()).await
     }
-    .map_err(|e| SchedulerError::Database(format!("Failed to list workflows: {e}")))?;
+    .map_err(|e| SchedulerError::Database(format!("list workflows failed: {e}")))?;
 
     let workflows: Result<Vec<Workflow>, SchedulerError> = rows
         .into_iter()
@@ -212,20 +220,19 @@ pub async fn list(
             let updated_at_str: String = row.get("updated_at");
 
             Ok(Workflow {
-                id: Uuid::parse_str(row.get("id")).map_err(|e| {
-                    SchedulerError::Database(format!("Invalid UUID in database: {e}"))
-                })?,
+                id: Uuid::parse_str(row.get("id"))
+                    .map_err(|e| SchedulerError::Database(format!("parse UUID failed: {e}")))?,
                 name: row.get("name"),
                 description: row.get("description"),
                 yaml_content: row.get("yaml_content"),
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map_err(|e| {
-                        SchedulerError::Database(format!("Invalid created_at timestamp: {e}"))
+                        SchedulerError::Database(format!("parse created_at timestamp failed: {e}"))
                     })?
                     .with_timezone(&Utc),
                 updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
                     .map_err(|e| {
-                        SchedulerError::Database(format!("Invalid updated_at timestamp: {e}"))
+                        SchedulerError::Database(format!("parse updated_at timestamp failed: {e}"))
                     })?
                     .with_timezone(&Utc),
             })
@@ -274,7 +281,7 @@ pub async fn upsert(pool: &DbPool, workflow: &Workflow) -> Result<(), SchedulerE
         .bind(&workflow.yaml_content)
         .execute(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to upsert workflow: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("upsert workflow failed: {e}")))?;
 
     Ok(())
 }
@@ -294,7 +301,7 @@ pub async fn delete(pool: &DbPool, id: &Uuid) -> Result<(), SchedulerError> {
         .bind(id.to_string())
         .execute(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to delete workflow: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("delete workflow failed: {e}")))?;
 
     if result.rows_affected() == 0 {
         return Err(SchedulerError::WorkflowNotFound(id.to_string()));

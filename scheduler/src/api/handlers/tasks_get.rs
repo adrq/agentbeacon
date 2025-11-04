@@ -41,7 +41,7 @@ pub async fn handle_tasks_get(
             return JsonRpcResponse::error(
                 id,
                 JsonRpcError::invalid_params(Some(json!({
-                    "error": format!("Failed to parse params: {e}")
+                    "error": format!("parse params failed: {e}")
                 }))),
             );
         }
@@ -54,7 +54,7 @@ pub async fn handle_tasks_get(
             return JsonRpcResponse::error(
                 id,
                 JsonRpcError::invalid_params(Some(json!({
-                    "error": format!("Invalid execution ID format: {e}")
+                    "error": format!("parse execution ID failed: {e}")
                 }))),
             );
         }
@@ -68,7 +68,7 @@ pub async fn handle_tasks_get(
             return JsonRpcResponse::error(
                 id,
                 JsonRpcError::invalid_params(Some(json!({
-                    "error": format!("Execution not found: {}", params.execution_id)
+                    "error": format!("execution not found: {}", params.execution_id)
                 }))),
             );
         }

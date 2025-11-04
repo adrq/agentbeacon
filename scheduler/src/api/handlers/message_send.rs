@@ -150,7 +150,7 @@ pub async fn handle_message_send(
             return JsonRpcResponse::error(
                 id,
                 JsonRpcError::invalid_params(Some(json!({
-                    "error": format!("Failed to parse MessageSendParams: {e}")
+                    "error": format!("parse MessageSendParams failed: {e}")
                 }))),
             );
         }
@@ -163,7 +163,7 @@ pub async fn handle_message_send(
             return JsonRpcResponse::error(
                 id,
                 JsonRpcError::invalid_params(Some(json!({
-                    "error": format!("Failed to extract workflow params: {e}")
+                    "error": format!("extract workflow params failed: {e}")
                 }))),
             );
         }
@@ -200,7 +200,7 @@ pub async fn handle_message_send(
                     return JsonRpcResponse::error(
                         id,
                         JsonRpcError::invalid_params(Some(json!({
-                            "error": format!("Invalid workflowRef: {e}")
+                            "error": format!("parse workflowRef failed: {e}")
                         }))),
                     );
                 }
@@ -216,7 +216,7 @@ pub async fn handle_message_send(
                         return JsonRpcResponse::error(
                             id,
                             JsonRpcError::invalid_params(Some(json!({
-                                "error": format!("Workflow not found in registry: {}", ref_str)
+                                "error": format!("workflow not found in registry: {}", ref_str)
                             }))),
                         );
                     }
@@ -245,7 +245,7 @@ pub async fn handle_message_send(
             return JsonRpcResponse::error(
                 id,
                 JsonRpcError::invalid_params(Some(json!({
-                    "error": format!("Workflow schema validation failed: {e}")
+                    "error": format!("workflow schema validation failed: {e}")
                 }))),
             );
         }
@@ -268,7 +268,7 @@ pub async fn handle_message_send(
             return JsonRpcResponse::error(
                 id,
                 JsonRpcError::invalid_params(Some(json!({
-                    "error": format!("Invalid workflow structure: {e}")
+                    "error": format!("parse workflow structure failed: {e}")
                 }))),
             );
         }

@@ -9,7 +9,7 @@ pub async fn insert_pending_task(
     task: &TaskAssignment,
 ) -> Result<(), SchedulerError> {
     let task_json = serde_json::to_string(task)
-        .map_err(|e| SchedulerError::Database(format!("Failed to serialize task: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("serialize task failed: {e}")))?;
 
     let query = if pool.is_postgres() {
         "INSERT INTO pending_tasks (execution_id, node_id, task_assignment) VALUES ($1, $2, $3)"
@@ -25,7 +25,7 @@ pub async fn insert_pending_task(
         .await
         .map_err(|e| {
             SchedulerError::Database(format!(
-                "Failed to insert pending task {}/{}: {}",
+                "insert pending task failed: {}/{}: {}",
                 task.execution_id, task.node_id, e
             ))
         })?;
@@ -52,7 +52,7 @@ pub async fn delete_pending_task(
         .await
         .map_err(|e| {
             SchedulerError::Database(format!(
-                "Failed to delete pending task {execution_id}/{node_id}: {e}"
+                "delete pending task failed: {execution_id}/{node_id}: {e}"
             ))
         })?;
 
@@ -66,12 +66,12 @@ pub async fn list_pending_tasks(pool: &DbPool) -> Result<Vec<TaskAssignment>, Sc
     let rows: Vec<(String,)> = sqlx::query_as(query)
         .fetch_all(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to list pending tasks: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("list pending tasks failed: {e}")))?;
 
     let mut tasks = Vec::new();
     for (task_json,) in rows {
         let task: TaskAssignment = serde_json::from_str(&task_json)
-            .map_err(|e| SchedulerError::Database(format!("Failed to deserialize task: {e}")))?;
+            .map_err(|e| SchedulerError::Database(format!("deserialize task failed: {e}")))?;
         tasks.push(task);
     }
 
@@ -93,7 +93,7 @@ pub async fn pop_pending_task_transactional(
     let mut tx = pool
         .begin()
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to begin transaction: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("begin transaction failed: {e}")))?;
 
     // SELECT first task with row-level locking
     let select_query = if pool.is_postgres() {
@@ -114,22 +114,22 @@ pub async fn pop_pending_task_transactional(
     let row = sqlx::query(select_query)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to select task: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("select task failed: {e}")))?;
 
     if let Some(row) = row {
         let execution_id: String = row
             .try_get("execution_id")
-            .map_err(|e| SchedulerError::Database(format!("Failed to get execution_id: {e}")))?;
+            .map_err(|e| SchedulerError::Database(format!("get execution_id failed: {e}")))?;
         let node_id: String = row
             .try_get("node_id")
-            .map_err(|e| SchedulerError::Database(format!("Failed to get node_id: {e}")))?;
+            .map_err(|e| SchedulerError::Database(format!("get node_id failed: {e}")))?;
         let task_json: String = row
             .try_get("task_assignment")
-            .map_err(|e| SchedulerError::Database(format!("Failed to get task_assignment: {e}")))?;
+            .map_err(|e| SchedulerError::Database(format!("get task_assignment failed: {e}")))?;
 
         // Parse TaskAssignment before deleting (fail early if corrupted)
         let task: TaskAssignment = serde_json::from_str(&task_json)
-            .map_err(|e| SchedulerError::Database(format!("Failed to deserialize task: {e}")))?;
+            .map_err(|e| SchedulerError::Database(format!("deserialize task failed: {e}")))?;
 
         // Delete within same transaction
         let delete_query = if pool.is_postgres() {
@@ -153,7 +153,7 @@ pub async fn pop_pending_task_transactional(
         if result.rows_affected() == 0 {
             // Task was already deleted by another worker - rollback and return None
             tx.rollback().await.map_err(|e| {
-                SchedulerError::Database(format!("Failed to rollback transaction: {e}"))
+                SchedulerError::Database(format!("rollback transaction failed: {e}"))
             })?;
             return Ok(None);
         }
@@ -161,14 +161,14 @@ pub async fn pop_pending_task_transactional(
         // Commit transaction (if this fails, transaction auto-rolls back)
         tx.commit()
             .await
-            .map_err(|e| SchedulerError::Database(format!("Failed to commit transaction: {e}")))?;
+            .map_err(|e| SchedulerError::Database(format!("commit transaction failed: {e}")))?;
 
         Ok(Some(task))
     } else {
         // No tasks in queue - rollback (no-op, but explicit)
-        tx.rollback().await.map_err(|e| {
-            SchedulerError::Database(format!("Failed to rollback transaction: {e}"))
-        })?;
+        tx.rollback()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("rollback transaction failed: {e}")))?;
 
         Ok(None)
     }
@@ -179,11 +179,11 @@ pub async fn count_pending_tasks(pool: &DbPool) -> Result<usize, SchedulerError>
     let row = sqlx::query("SELECT COUNT(*) as count FROM pending_tasks")
         .fetch_one(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("Failed to count pending tasks: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("count pending tasks failed: {e}")))?;
 
     let count: i64 = row
         .try_get("count")
-        .map_err(|e| SchedulerError::Database(format!("Failed to get count: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("get count failed: {e}")))?;
 
     Ok(count as usize)
 }
