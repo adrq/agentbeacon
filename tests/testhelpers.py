@@ -977,18 +977,17 @@ def register_workflow(
 
 
 def get_a2a_endpoint(scheduler_url: str) -> str:
-    """Discover A2A endpoint from agent card with proper port handling.
+    """Discover A2A endpoint from agent card.
 
     Args:
         scheduler_url: Base URL of the scheduler (e.g., "http://localhost:19456")
 
     Returns:
-        str: A2A endpoint URL with correct port for tests
+        str: A2A endpoint URL from agent card
 
     Raises:
         AssertionError: If agent card is not available or invalid
     """
-
     agent_card_response = requests.get(
         f"{scheduler_url}/.well-known/agent-card.json", timeout=5
     )
@@ -999,21 +998,7 @@ def get_a2a_endpoint(scheduler_url: str) -> str:
     agent_card = agent_card_response.json()
     assert "url" in agent_card, f"Agent card should have url field: {agent_card}"
 
-    a2a_url = agent_card["url"]
-
-    # Handle port replacement for tests
-    if "localhost:9456" in a2a_url:
-        # Agent card has hardcoded port 9456, replace with actual test port
-        test_port = scheduler_url.split(":")[-1]
-        a2a_endpoint = a2a_url.replace("localhost:9456", f"localhost:{test_port}")
-    elif a2a_url.startswith("/"):
-        # Relative URL - prepend base scheduler URL
-        a2a_endpoint = scheduler_url + a2a_url
-    else:
-        # Absolute URL - use as-is
-        a2a_endpoint = a2a_url
-
-    return a2a_endpoint
+    return agent_card["url"]
 
 
 def submit_workflow_via_a2a(
@@ -1123,7 +1108,11 @@ def poll_a2a_task_status(
 
 
 def start_orchestrator(
-    port: int, workers: int = 2, db_url: str = None, base_dir: Path = None
+    port: int,
+    workers: int = 2,
+    db_url: str = None,
+    base_dir: Path = None,
+    worker_poll_interval: str = None,
 ) -> subprocess.Popen:
     """Start the orchestrator binary with specified configuration.
 
@@ -1132,6 +1121,7 @@ def start_orchestrator(
         workers: Number of worker processes to spawn
         db_url: Complete database URL (creates temp SQLite URL if None)
         base_dir: Base directory for the project (defaults to test file parent directory)
+        worker_poll_interval: Worker sync polling interval (e.g., '1s', '500ms'). If None, workers use default (5s)
 
     Returns:
         subprocess.Popen: The orchestrator process
@@ -1148,14 +1138,19 @@ def start_orchestrator(
     env = os.environ.copy()
     env["DATABASE_URL"] = db_url
 
+    cmd = [
+        "./bin/agentmaestro",
+        "--workers",
+        str(workers),
+        "--scheduler-port",
+        str(port),
+    ]
+
+    if worker_poll_interval is not None:
+        cmd.extend(["--worker-poll-interval", worker_poll_interval])
+
     orchestrator_proc = subprocess.Popen(
-        [
-            "./bin/agentmaestro",
-            "--workers",
-            str(workers),
-            "--scheduler-port",
-            str(port),
-        ],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -1171,6 +1166,7 @@ def orchestrator_context(
     db_url: str = None,
     port: int = None,
     test_name: str = None,
+    worker_poll_interval: str = None,
 ):
     """Context manager for orchestrator with PID-tracked process management.
 
@@ -1187,6 +1183,7 @@ def orchestrator_context(
         db_url: Database URL (creates temp SQLite if None)
         port: Port number (allocates one if None)
         test_name: Test name for debugging (auto-detected if None)
+        worker_poll_interval: Worker sync polling interval (e.g., '1s', '500ms'). If None, workers use default (5s)
 
     Yields:
         dict: Contains orchestrator info and PID tracker:
@@ -1237,7 +1234,11 @@ def orchestrator_context(
     try:
         # Start orchestrator
         orchestrator_proc = start_orchestrator(
-            allocated_port, workers=workers, db_url=db_url, base_dir=base_dir
+            allocated_port,
+            workers=workers,
+            db_url=db_url,
+            base_dir=base_dir,
+            worker_poll_interval=worker_poll_interval,
         )
 
         # Register orchestrator PID

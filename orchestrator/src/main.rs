@@ -63,6 +63,10 @@ struct Args {
     /// Port for the scheduler to listen on
     #[arg(long, default_value_t = 9456)]
     scheduler_port: u16,
+
+    /// Worker sync polling interval (e.g., '1s', '500ms'). If not specified, workers use their default (5s)
+    #[arg(long)]
+    worker_poll_interval: Option<String>,
 }
 
 /// Information about a managed child process
@@ -81,15 +85,17 @@ struct ProcessHandle {
 struct Orchestrator {
     workers: usize,
     scheduler_port: u16,
+    worker_poll_interval: Option<String>,
     processes: Arc<RwLock<HashMap<String, ProcessHandle>>>,
     shutting_down: Arc<RwLock<bool>>,
 }
 
 impl Orchestrator {
-    fn new(workers: usize, scheduler_port: u16) -> Self {
+    fn new(workers: usize, scheduler_port: u16, worker_poll_interval: Option<String>) -> Self {
         Self {
             workers,
             scheduler_port,
+            worker_poll_interval,
             processes: Arc::new(RwLock::new(HashMap::new())),
             shutting_down: Arc::new(RwLock::new(false)),
         }
@@ -152,10 +158,13 @@ impl Orchestrator {
         let scheduler_url = format!("http://localhost:{}", self.scheduler_port);
 
         let mut cmd = Command::new("./bin/agentmaestro-worker");
-        cmd.arg("--scheduler-url")
-            .arg(&scheduler_url)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.arg("--scheduler-url").arg(&scheduler_url);
+
+        if let Some(interval) = &self.worker_poll_interval {
+            cmd.arg("--interval").arg(interval);
+        }
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         self.start_process(name, cmd, false).await
     }
@@ -309,6 +318,11 @@ impl Orchestrator {
             let scheduler_url = format!("http://localhost:{}", self.scheduler_port);
             let mut cmd = Command::new("./bin/agentmaestro-worker");
             cmd.arg("--scheduler-url").arg(&scheduler_url);
+
+            if let Some(interval) = &self.worker_poll_interval {
+                cmd.arg("--interval").arg(interval);
+            }
+
             cmd
         };
 
@@ -411,7 +425,8 @@ async fn main() -> Result<()> {
     );
 
     // Create orchestrator
-    let orchestrator = Orchestrator::new(args.workers, args.scheduler_port);
+    let orchestrator =
+        Orchestrator::new(args.workers, args.scheduler_port, args.worker_poll_interval);
 
     // Start all processes
     orchestrator.start().await?;

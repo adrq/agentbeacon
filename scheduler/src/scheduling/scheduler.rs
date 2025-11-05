@@ -109,6 +109,19 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Fetch error message for a failed task from database task_states
+    async fn fetch_task_error(db_pool: &DbPool, exec_uuid: &Uuid, task_id: &str) -> Option<String> {
+        match crate::db::executions::get_by_id(db_pool, exec_uuid).await {
+            Ok(execution) => execution
+                .task_states
+                .get(task_id)
+                .and_then(|state| state.get("error"))
+                .and_then(|err| err.as_str())
+                .map(|s| s.to_string()),
+            Err(_) => None,
+        }
+    }
+
     /// Convert DAG retry policy to scheduler retry policy
     fn dag_retry_to_scheduler_retry(dag_retry: &common::dag::RetryPolicy) -> RetryPolicy {
         let strategy = match dag_retry.backoff {
@@ -139,6 +152,7 @@ impl Scheduler {
         execution_id: &str,
         node_id: &str,
         success: bool,
+        error_message: Option<String>,
     ) -> Result<(), SchedulerError> {
         let mut executions = self.active_executions.write().await;
         let execution = executions.get_mut(execution_id).ok_or_else(|| {
@@ -174,6 +188,31 @@ impl Scheduler {
                                     "parse execution ID failed: {e}"
                                 ))
                             })?;
+
+                            // Log task_retrying event
+                            if let Err(e) = crate::db::execution_events::create(
+                                &self.db_pool,
+                                &exec_uuid,
+                                "task_retrying",
+                                Some(node_id),
+                                &format!(
+                                    "Retrying task after failure (attempt {})",
+                                    retry_count + 1
+                                ),
+                                json!({
+                                    "attempt": retry_count + 1,
+                                    "max_retries": scheduler_retry.max_attempts.saturating_sub(1)
+                                }),
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    "Failed to log task_retrying event for {}/{}: {}",
+                                    execution_id,
+                                    node_id,
+                                    e
+                                );
+                            }
 
                             let db_execution =
                                 crate::db::executions::get_by_id(&self.db_pool, &exec_uuid).await?;
@@ -274,6 +313,28 @@ impl Scheduler {
                 SchedulerError::ValidationFailed(format!("parse execution ID failed: {e}"))
             })?;
 
+            // Log task_failed event
+            let error_detail = error_message
+                .clone()
+                .unwrap_or_else(|| "Task failed after retries exhausted".to_string());
+            if let Err(e) = crate::db::execution_events::create(
+                &self.db_pool,
+                &exec_uuid,
+                "task_failed",
+                Some(node_id),
+                "Task failed",
+                json!({"error": error_detail}),
+            )
+            .await
+            {
+                tracing::warn!(
+                    "Failed to log task_failed event for {}/{}: {}",
+                    execution_id,
+                    node_id,
+                    e
+                );
+            }
+
             let db_execution = crate::db::executions::get_by_id(&self.db_pool, &exec_uuid).await?;
 
             let mut task_states = db_execution
@@ -287,6 +348,7 @@ impl Scheduler {
                     "status": "failed",
                     "retry_count": execution.retry_counts.get(node_id).copied().unwrap_or(0),
                     "failed_at": chrono::Utc::now().to_rfc3339(),
+                    "error": error_message.clone().unwrap_or_else(|| "Unknown error".to_string())
                 }),
             );
 
@@ -309,6 +371,32 @@ impl Scheduler {
                 &json!(task_states),
             )
             .await?;
+
+            // Log execution_failed event if execution is fully failed
+            if !has_independent_branches {
+                let error_detail = error_message
+                    .clone()
+                    .unwrap_or_else(|| "Task failure caused workflow to fail".to_string());
+                if let Err(e) = crate::db::execution_events::create(
+                    &self.db_pool,
+                    &exec_uuid,
+                    "execution_failed",
+                    None,
+                    "Workflow execution failed",
+                    json!({
+                        "failed_task": node_id,
+                        "error": error_detail
+                    }),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "Failed to log execution_failed event for {}: {}",
+                        execution_id,
+                        e
+                    );
+                }
+            }
 
             if has_independent_branches {
                 let ready_nodes = execution.dag.ready_nodes(&execution.completed);
@@ -344,6 +432,25 @@ impl Scheduler {
         let exec_uuid = Uuid::parse_str(execution_id).map_err(|e| {
             SchedulerError::ValidationFailed(format!("parse execution ID failed: {e}"))
         })?;
+
+        // Log task_completed event
+        if let Err(e) = crate::db::execution_events::create(
+            &self.db_pool,
+            &exec_uuid,
+            "task_completed",
+            Some(node_id),
+            "Task completed successfully",
+            json!({}),
+        )
+        .await
+        {
+            tracing::warn!(
+                "Failed to log task_completed event for {}/{}: {}",
+                execution_id,
+                node_id,
+                e
+            );
+        }
 
         let db_execution = crate::db::executions::get_by_id(&self.db_pool, &exec_uuid).await?;
 
@@ -406,11 +513,102 @@ impl Scheduler {
         if total_accounted == execution.dag.tasks.len() {
             if execution.failed.is_empty() {
                 execution.status = ExecutionStatus::Completed;
+
+                // Log execution_completed event
+                let created_at = crate::db::executions::get_by_id(&self.db_pool, &exec_uuid)
+                    .await?
+                    .created_at;
+                let duration_ms =
+                    (chrono::Utc::now().signed_duration_since(created_at)).num_milliseconds();
+
+                if let Err(e) = crate::db::execution_events::create(
+                    &self.db_pool,
+                    &exec_uuid,
+                    "execution_completed",
+                    None,
+                    "Workflow execution completed successfully",
+                    json!({
+                        "total_tasks": execution.dag.tasks.len(),
+                        "duration_ms": duration_ms
+                    }),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "Failed to log execution_completed event for {}: {}",
+                        execution_id,
+                        e
+                    );
+                }
             } else if !execution.blocked.is_empty() || !execution.completed.is_empty() {
                 // Has failures but also has completed/blocked tasks = partial failure
                 execution.status = ExecutionStatus::Failed; // Keep as partial in-memory
+
+                // Log execution_failed event
+                let failed_task = execution.failed.iter().next().cloned().unwrap_or_default();
+
+                // Fetch actual error from failed task's task_states
+                let error_detail = if !failed_task.is_empty() {
+                    Self::fetch_task_error(&self.db_pool, &exec_uuid, &failed_task)
+                        .await
+                        .unwrap_or_else(|| "Task failure caused workflow to fail".to_string())
+                } else {
+                    "Task failure caused workflow to fail".to_string()
+                };
+
+                if let Err(e) = crate::db::execution_events::create(
+                    &self.db_pool,
+                    &exec_uuid,
+                    "execution_failed",
+                    None,
+                    "Workflow execution failed",
+                    json!({
+                        "failed_task": failed_task,
+                        "error": error_detail
+                    }),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "Failed to log execution_failed event for {}: {}",
+                        execution_id,
+                        e
+                    );
+                }
             } else {
                 execution.status = ExecutionStatus::Failed;
+
+                // Log execution_failed event
+                let failed_task = execution.failed.iter().next().cloned().unwrap_or_default();
+
+                // Fetch actual error from failed task's task_states
+                let error_detail = if !failed_task.is_empty() {
+                    Self::fetch_task_error(&self.db_pool, &exec_uuid, &failed_task)
+                        .await
+                        .unwrap_or_else(|| "Task failure caused workflow to fail".to_string())
+                } else {
+                    "Task failure caused workflow to fail".to_string()
+                };
+
+                if let Err(e) = crate::db::execution_events::create(
+                    &self.db_pool,
+                    &exec_uuid,
+                    "execution_failed",
+                    None,
+                    "Workflow execution failed",
+                    json!({
+                        "failed_task": failed_task,
+                        "error": error_detail
+                    }),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "Failed to log execution_failed event for {}: {}",
+                        execution_id,
+                        e
+                    );
+                }
             }
         }
 
@@ -486,6 +684,25 @@ impl Scheduler {
             &json!(task_states),
         )
         .await?;
+
+        // Log task_assigned event
+        if let Err(e) = crate::db::execution_events::create(
+            &self.db_pool,
+            &exec_uuid,
+            "task_assigned",
+            Some(node_id),
+            "Task assigned to worker",
+            json!({}),
+        )
+        .await
+        {
+            tracing::warn!(
+                "Failed to log task_assigned event for {}/{}: {}",
+                execution_id,
+                node_id,
+                e
+            );
+        }
 
         Ok(())
     }
@@ -758,7 +975,7 @@ tasks:
 
         // Simulate task-a completion
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-a", true)
+            .handle_task_result(&execution_id.to_string(), "task-a", true, None)
             .await
             .expect("Failed to handle task-a result");
 
@@ -781,7 +998,7 @@ tasks:
 
         // Simulate task-b completion
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-b", true)
+            .handle_task_result(&execution_id.to_string(), "task-b", true, None)
             .await
             .expect("Failed to handle task-b result");
 
@@ -804,7 +1021,7 @@ tasks:
 
         // Simulate task-c completion
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-c", true)
+            .handle_task_result(&execution_id.to_string(), "task-c", true, None)
             .await
             .expect("Failed to handle task-c result");
 
@@ -853,7 +1070,7 @@ tasks:
 
         // Simulate task-a completion
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-a", true)
+            .handle_task_result(&execution_id.to_string(), "task-a", true, None)
             .await
             .expect("Failed to handle task-a result");
 
@@ -891,13 +1108,13 @@ tasks:
 
         // Complete task-b
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-b", true)
+            .handle_task_result(&execution_id.to_string(), "task-b", true, None)
             .await
             .expect("Failed to handle task-b result");
 
         // Complete task-c
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-c", true)
+            .handle_task_result(&execution_id.to_string(), "task-c", true, None)
             .await
             .expect("Failed to handle task-c result");
 
@@ -943,7 +1160,7 @@ tasks:
 
         // Simulate task-a completion
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-a", true)
+            .handle_task_result(&execution_id.to_string(), "task-a", true, None)
             .await
             .expect("Failed to handle task-a result");
 
@@ -976,7 +1193,7 @@ tasks:
 
         // Complete task-b
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-b", true)
+            .handle_task_result(&execution_id.to_string(), "task-b", true, None)
             .await
             .expect("Failed to handle task-b result");
 
@@ -985,7 +1202,7 @@ tasks:
 
         // Complete task-c
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-c", true)
+            .handle_task_result(&execution_id.to_string(), "task-c", true, None)
             .await
             .expect("Failed to handle task-c result");
 
@@ -1008,7 +1225,7 @@ tasks:
 
         // Complete task-d
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-d", true)
+            .handle_task_result(&execution_id.to_string(), "task-d", true, None)
             .await
             .expect("Failed to handle task-d result");
 
@@ -1105,7 +1322,7 @@ tasks:
 
         // Now complete task-a (should trigger task-b and task-c queueing)
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-a", true)
+            .handle_task_result(&execution_id.to_string(), "task-a", true, None)
             .await
             .expect("Failed to handle task-a result");
 
@@ -1165,7 +1382,7 @@ tasks:
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-a", true)
+            .handle_task_result(&execution_id.to_string(), "task-a", true, None)
             .await
             .expect("Failed to handle task-a result");
 
@@ -1200,7 +1417,7 @@ tasks:
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         scheduler
-            .handle_task_result(&execution_id.to_string(), "task-b", true)
+            .handle_task_result(&execution_id.to_string(), "task-b", true, None)
             .await
             .expect("Failed to handle task-b result");
 
@@ -1267,7 +1484,7 @@ tasks:
                 } else {
                     // Odd threads: complete task-a (triggers scheduling)
                     let _ = scheduler_clone
-                        .handle_task_result(&exec_id, "task-a", true)
+                        .handle_task_result(&exec_id, "task-a", true, None)
                         .await;
                 }
             });

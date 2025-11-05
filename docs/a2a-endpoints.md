@@ -1,8 +1,5 @@
 # A2A Server Endpoints Contract
 
-**Feature**: Week 5 - A2A Server
-**Date**: 2025-10-05
-
 ## Overview
 Defines the A2A Protocol v0.3.0 server endpoints exposed by the scheduler for external workflow submission and status queries.
 
@@ -62,7 +59,7 @@ Content-Type: application/json
 ```
 
 ### Requirements
-- FR-001: Must expose agent card endpoint
+- Must expose agent card endpoint
 - Must validate against `docs/a2a-v0.3.0.schema.json#/definitions/AgentCard`
 - Must include all A2A v0.3.0 required fields
 - Must declare supported JSON-RPC methods
@@ -133,7 +130,7 @@ All requests/responses follow JSON-RPC 2.0 specification:
 - `-32603`: Internal error
 
 ### Requirements
-- FR-002: Must expose JSON-RPC 2.0 endpoint
+- Must expose JSON-RPC 2.0 endpoint
 - Must validate JSON-RPC 2.0 format
 - Must return proper error codes
 - Must include request ID in response
@@ -152,15 +149,25 @@ All requests/responses follow JSON-RPC 2.0 specification:
 ### Purpose
 Non-blocking workflow submission with immediate execution ID return.
 
-### Request
+### Request (A2A v0.3.0 Compliant)
 ```json
 {
   "jsonrpc": "2.0",
   "method": "message/send",
   "params": {
-    "workflowYaml": "name: Example\ntasks:\n  - id: task-1...",
-    "workflowRef": null,
-    "contextId": "session-123"
+    "message": {
+      "role": "user",
+      "parts": [
+        {
+          "kind": "data",
+          "data": {
+            "workflowYaml": "name: Example\ntasks:\n  - id: task-1..."
+          }
+        }
+      ],
+      "messageId": "msg-uuid-123",
+      "kind": "message"
+    }
   },
   "id": "req-1"
 }
@@ -168,11 +175,53 @@ Non-blocking workflow submission with immediate execution ID return.
 
 ### Parameters
 
+Per A2A v0.3.0 spec, `params` MUST contain a `MessageSendParams` object:
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `workflowYaml` | String | Conditional | Inline workflow YAML (XOR with workflowRef) |
-| `workflowRef` | String | Conditional | Registry reference (e.g., "team/auth:v1.2.3") |
-| `contextId` | String | No | Optional context grouping identifier |
+| `params.message` | Message | Yes | A2A Message object (required by spec) |
+| `params.message.role` | String | Yes | Must be "user" for client requests |
+| `params.message.parts` | Array[Part] | Yes | Array of message parts |
+| `params.message.messageId` | String | Yes | Unique message identifier (UUID) |
+| `params.message.kind` | String | Yes | Must be "message" |
+| `params.message.contextId` | String | No | Optional context grouping identifier |
+| `params.configuration` | Object | No | Optional MessageSendConfiguration |
+| `params.metadata` | Object | No | Optional extension metadata |
+
+### Workflow Submission Formats
+
+AgentMaestro supports two formats for workflow submission in `message.parts[0].data`:
+
+**Format A - Direct (RECOMMENDED):**
+```json
+{
+  "kind": "data",
+  "data": {
+    "workflowYaml": "name: Example\ntasks: [...]",
+    "workflowRef": "team/auth:v1.2.3"
+  }
+}
+```
+
+**Format B - Nested (LEGACY - supported for backward compatibility):**
+```json
+{
+  "kind": "data",
+  "data": {
+    "data": {
+      "workflowYaml": "name: Example\ntasks: [...]",
+      "workflowRef": "team/auth:v1.2.3"
+    }
+  }
+}
+```
+
+Both formats are supported. **Use Format A (direct) for new code.**
+
+**Workflow Selection:**
+- Exactly one of `workflowYaml` or `workflowRef` must be provided (XOR constraint)
+- `workflowYaml`: Inline workflow YAML string
+- `workflowRef`: Registry reference (format: "namespace/name:version" or "namespace/name" defaults to ":latest")
 
 ### Success Response
 ```json
@@ -286,13 +335,13 @@ Non-blocking workflow submission with immediate execution ID return.
 ```
 
 ### Requirements
-- FR-003: Must support message/send method
-- FR-005: Must accept both workflowYaml and workflowRef
-- FR-006: Must validate workflow against schema
-- FR-014: Must detect circular dependencies
-- FR-035: Must reject missing workflowRef with descriptive error
-- FR-037: Must reject empty DAG workflows
-- FR-040: Must reject ambiguous version references
+- Must support message/send method
+- Must accept both workflowYaml and workflowRef
+- Must validate workflow against schema
+- Must detect circular dependencies
+- Must reject missing workflowRef with descriptive error
+- Must reject empty DAG workflows
+- Must reject ambiguous version references
 
 ### Test Scenarios
 1. ✅ Inline workflow YAML submission returns execution ID
@@ -393,9 +442,9 @@ Query execution status by execution ID.
 ```
 
 ### Requirements
-- FR-004: Must support tasks/get method
-- FR-019: Must return both workflow-level and node-level status
-- FR-036: Must return JSON-RPC error for nonexistent execution
+- Must support tasks/get method
+- Must return both workflow-level and node-level status
+- Must return JSON-RPC error for nonexistent execution
 - Must include timestamps (created, updated, completed)
 - Must include per-task status breakdown
 
@@ -412,12 +461,9 @@ Query execution status by execution ID.
 
 ## Contract Test Requirements
 
-**Note**: Test scenarios below define WHAT to validate. Python integration tests will be implemented POST-Week 5 per TDD exemption (approved 2025-10-05).
-
 ### Positive Test Scenarios
 
 **Test Scenario: Agent Card Accessibility**
-- **Requirement**: FR-001
 - **Given**: Scheduler is running on localhost:9456
 - **When**: HTTP GET request to `/.well-known/agent-card.json`
 - **Then**:
@@ -426,7 +472,6 @@ Query execution status by execution ID.
   - Response body validates against A2A v0.3.0 AgentCard schema
 
 **Test Scenario: Agent Card Structure**
-- **Requirement**: FR-001
 - **Given**: Agent card is fetched successfully
 - **When**: Parsing the JSON response
 - **Then**:
@@ -436,18 +481,42 @@ Query execution status by execution ID.
   - `capabilities.methods` array includes "tasks/get"
 
 **Test Scenario: Workflow Submission with Inline YAML**
-- **Requirement**: FR-003
 - **Given**: Valid workflow YAML definition
-- **When**: JSON-RPC call to `message/send` with `workflowYaml` parameter
+- **When**: JSON-RPC call to `message/send` with A2A Message containing DataPart with `workflowYaml` field
+  ```json
+  {
+    "method": "message/send",
+    "params": {
+      "message": {
+        "role": "user",
+        "parts": [{"kind": "data", "data": {"workflowYaml": "yaml string"}}],
+        "messageId": "uuid",
+        "kind": "message"
+      }
+    }
+  }
+  ```
 - **Then**:
   - Response contains `result.executionId` (UUID format)
   - Response contains `result.status` equal to "pending"
   - Execution is created in database
 
 **Test Scenario: Workflow Submission by Registry Reference**
-- **Requirement**: FR-005
 - **Given**: Workflow "team/test:v1.0.0" is registered in workflow_version table
-- **When**: JSON-RPC call to `message/send` with `workflowRef` parameter set to "team/test:v1.0.0"
+- **When**: JSON-RPC call to `message/send` with A2A Message containing DataPart with `workflowRef` field set to "team/test:v1.0.0"
+  ```json
+  {
+    "method": "message/send",
+    "params": {
+      "message": {
+        "role": "user",
+        "parts": [{"kind": "data", "data": {"workflowRef": "team/test:v1.0.0"}}],
+        "messageId": "uuid",
+        "kind": "message"
+      }
+    }
+  }
+  ```
 - **Then**:
   - Response contains `result.executionId`
   - Workflow YAML is resolved from registry
@@ -456,7 +525,6 @@ Query execution status by execution ID.
 ### Negative Test Scenarios
 
 **Test Scenario: Invalid YAML Rejection**
-- **Requirement**: FR-006
 - **Given**: Malformed YAML string (syntax error)
 - **When**: JSON-RPC call to `message/send` with invalid `workflowYaml`
 - **Then**:
@@ -465,7 +533,6 @@ Query execution status by execution ID.
   - Error message describes YAML syntax issue with line number
 
 **Test Scenario: Circular Dependency Detection**
-- **Requirement**: FR-014
 - **Given**: Workflow YAML where task A depends_on task B and task B depends_on task A
 - **When**: JSON-RPC call to `message/send` with circular workflow
 - **Then**:
@@ -474,7 +541,6 @@ Query execution status by execution ID.
   - Workflow is NOT created in database
 
 **Test Scenario: Missing Workflow Reference Error**
-- **Requirement**: FR-035
 - **Given**: WorkflowRef "nonexistent/workflow:v1.0.0" does NOT exist in registry
 - **When**: JSON-RPC call to `message/send` with missing `workflowRef`
 - **Then**:
@@ -483,7 +549,6 @@ Query execution status by execution ID.
   - Error message includes "not found" and the specific reference attempted
 
 **Test Scenario: Ambiguous Version Error**
-- **Requirement**: FR-040
 - **Given**:
   - Workflow "team/test:v1.0.0" exists in registry
   - Workflow "team/test:v2.0.0" exists in registry
@@ -544,8 +609,8 @@ Return execution state + task breakdown
 
 ## Security Considerations
 
-**Week 5 MVP:**
-- No authentication (NFR-005: localhost-only assumption)
+**Current MVP:**
+- No authentication (localhost-only assumption)
 - No rate limiting
 - No input sanitization beyond schema validation
 

@@ -108,7 +108,7 @@ pub async fn handle_worker_sync(
                 return Ok(Json(WorkerSyncResponse::TaskAssigned { task }));
             }
             Ok(None) => {
-                // Queue is empty - return no_action (FR-039)
+                // Queue is empty - return no_action
                 return Ok(Json(WorkerSyncResponse::NoAction));
             }
             Err(e) => {
@@ -122,6 +122,23 @@ pub async fn handle_worker_sync(
     Ok(Json(WorkerSyncResponse::NoAction))
 }
 
+/// Extract error message from A2A TaskStatus message field
+fn extract_error_message(task_status: &TaskStatus) -> Option<String> {
+    if task_status.state != "failed" {
+        return None;
+    }
+
+    // Extract text from A2A message.parts[0].text
+    task_status.message.as_ref().and_then(|msg| {
+        msg.get("parts")
+            .and_then(|parts| parts.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|part| part.get("text"))
+            .and_then(|text| text.as_str())
+            .map(|s| s.to_string())
+    })
+}
+
 /// Handle task result from worker
 async fn handle_task_result(
     state: &AppState,
@@ -130,18 +147,27 @@ async fn handle_task_result(
     // Determine success based on task status state
     let success = task_result.task_status.state == "completed";
 
+    // Extract error message from worker response (for failed tasks)
+    let error_message = extract_error_message(&task_result.task_status);
+
     tracing::info!(
         execution_id = %task_result.execution_id,
         node_id = %task_result.node_id,
         success = success,
         state = %task_result.task_status.state,
+        error = ?error_message,
         "Received task result from worker"
     );
 
     // Update scheduler with task result (triggers event-driven scheduling)
     state
         .scheduler
-        .handle_task_result(&task_result.execution_id, &task_result.node_id, success)
+        .handle_task_result(
+            &task_result.execution_id,
+            &task_result.node_id,
+            success,
+            error_message,
+        )
         .await?;
 
     tracing::info!(

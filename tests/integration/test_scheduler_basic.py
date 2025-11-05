@@ -85,21 +85,7 @@ tasks:
 
         agent_card = agent_card_response.json()
         assert "url" in agent_card, f"Agent card should have url field: {agent_card}"
-
-        # Handle URLs from agent card (may have wrong port for test)
-        a2a_url = agent_card["url"]
-
-        # For tests, replace the port in the agent card URL with our actual test port
-        if "localhost:9456" in a2a_url:
-            # Agent card has hardcoded port 9456, replace with our test port
-            test_port = scheduler_url.split(":")[-1]
-            a2a_endpoint = a2a_url.replace("localhost:9456", f"localhost:{test_port}")
-        elif a2a_url.startswith("/"):
-            # Relative URL - prepend base scheduler URL
-            a2a_endpoint = scheduler_url + a2a_url
-        else:
-            # Absolute URL - use as-is
-            a2a_endpoint = a2a_url
+        a2a_endpoint = agent_card["url"]
 
         # Start workflow execution via A2A JSON-RPC (following spec properly)
         # Per A2A spec: contextId is server-generated, not client-provided
@@ -186,29 +172,22 @@ tasks:
         assert result_sync.status_code == 200
 
         # Sync for second task (should be test-task-2 after dependency satisfied)
-        # The result_sync response above might already contain the next task
-        second_sync_data = result_sync.json()
+        # Scheduler always returns NoAction after result submission, so poll for next task
+        second_task = None
+        for attempt in range(10):  # Try for up to 5 seconds (10 * 0.5s)
+            second_sync = requests.post(
+                f"{scheduler_url}/api/worker/sync",
+                json={"status": "idle"},
+                timeout=5,
+            )
+            assert second_sync.status_code == 200
 
-        # If task_assigned, use it; otherwise sync again
-        if second_sync_data.get("type") == "task_assigned":
-            second_task = second_sync_data["task"]
-        else:
-            # Allow brief delay for async task submission after first task completion
-            second_task = None
-            for attempt in range(10):  # Try for up to 5 seconds (10 * 0.5s)
-                second_sync = requests.post(
-                    f"{scheduler_url}/api/worker/sync",
-                    json={"status": "idle"},
-                    timeout=5,
-                )
-                assert second_sync.status_code == 200
+            second_sync_data = second_sync.json()
+            if second_sync_data.get("type") == "task_assigned":
+                second_task = second_sync_data["task"]
+                break
 
-                second_sync_data = second_sync.json()
-                if second_sync_data.get("type") == "task_assigned":
-                    second_task = second_sync_data["task"]
-                    break
-
-                time.sleep(0.5)
+            time.sleep(0.2)
 
         assert second_task is not None, (
             "Should return test-task-2 after test-task-1 completion"
@@ -403,4 +382,248 @@ nodes:
         error_message = error_data["error"].lower()
         assert "validation" in error_message or "schema" in error_message, (
             f"Error should mention validation/schema failure: {error_data['error']}"
+        )
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_scheduler_retry_logic(test_database):
+    """Test scheduler retry logic with failing task that eventually succeeds."""
+    with scheduler_context(db_url=test_database) as scheduler:
+        scheduler_url = scheduler["url"]
+
+        # Register workflow with retry policy
+        workflow_yaml = """
+name: retry-test
+description: Test workflow with retry configuration
+tasks:
+  - id: flaky-task
+    agent: mock-agent
+    execution:
+      retry:
+        attempts: 3
+        backoff: fixed
+        delay_seconds: 1
+    task:
+      message:
+        role: user
+        messageId: "msg-retry-test"
+        kind: message
+        parts:
+          - kind: text
+            text: Execute flaky task
+""".strip()
+
+        register_response = requests.post(
+            f"{scheduler_url}/api/registry/workflows",
+            json={
+                "namespace": "test",
+                "name": "retry-test",
+                "version": "1.0.0",
+                "isLatest": True,
+                "workflowYaml": workflow_yaml,
+            },
+            timeout=10,
+        )
+        assert register_response.status_code == 201
+        response_data = register_response.json()
+        workflow_ref = response_data["workflowRegistryId"]
+
+        # Get Agent Card to discover proper A2A endpoint (per A2A protocol)
+        agent_card_response = requests.get(
+            f"{scheduler_url}/.well-known/agent-card.json", timeout=5
+        )
+        assert agent_card_response.status_code == 200, (
+            f"Failed to get agent card: {agent_card_response.text}"
+        )
+
+        agent_card = agent_card_response.json()
+        assert "url" in agent_card, f"Agent card should have url field: {agent_card}"
+        a2a_endpoint = agent_card["url"]
+
+        # Start workflow execution via A2A JSON-RPC (following spec properly)
+        message = {
+            "role": "user",
+            "parts": [
+                {"kind": "data", "data": {"data": {"workflowRef": workflow_ref}}}
+            ],
+            "messageId": str(uuid.uuid4()),
+            "kind": "message",
+        }
+
+        jsonrpc_request = {
+            "jsonrpc": "2.0",
+            "method": "message/send",
+            "params": {"message": message},
+            "id": str(uuid.uuid4()),
+        }
+
+        # Send JSON-RPC request to start workflow execution using discovered endpoint
+        execute_response = requests.post(a2a_endpoint, json=jsonrpc_request, timeout=10)
+        assert execute_response.status_code == 200, (
+            f"Workflow execution failed: {execute_response.text}"
+        )
+
+        execute_data = execute_response.json()
+        assert "result" in execute_data, f"Should return result: {execute_data}"
+        assert execute_data.get("error") is None, (
+            f"Should not have error: {execute_data}"
+        )
+
+        # Sync as idle worker to get first task
+        sync_response = requests.post(
+            f"{scheduler_url}/api/worker/sync",
+            json={"status": "idle"},
+            timeout=5,
+        )
+        assert sync_response.status_code == 200
+
+        sync_data = sync_response.json()
+        assert sync_data["type"] == "task_assigned", f"Should assign task: {sync_data}"
+        assert "task" in sync_data
+
+        task = sync_data["task"]
+        execution_id = task["executionId"]
+        assert task["nodeId"] == "flaky-task"
+
+        # Simulate first failure
+        result1 = requests.post(
+            f"{scheduler_url}/api/worker/sync",
+            json={
+                "status": "idle",
+                "taskResult": {
+                    "executionId": execution_id,
+                    "nodeId": "flaky-task",
+                    "taskStatus": {
+                        "state": "failed",
+                        "message": {
+                            "messageId": str(uuid.uuid4()),
+                            "kind": "message",
+                            "role": "agent",
+                            "parts": [
+                                {
+                                    "kind": "text",
+                                    "text": "Simulated task failure - attempt 1",
+                                }
+                            ],
+                        },
+                        "timestamp": "2025-11-04T10:00:00Z",
+                    },
+                    "artifacts": [],
+                },
+            },
+            timeout=5,
+        )
+        assert result1.status_code == 200
+
+        # Poll for retry assignment (scheduler should retry after delay)
+        retry_task = None
+        for attempt in range(20):  # Up to 4 seconds (20 * 0.2s)
+            sync2 = requests.post(
+                f"{scheduler_url}/api/worker/sync",
+                json={"status": "idle"},
+                timeout=5,
+            )
+            assert sync2.status_code == 200
+            sync2_data = sync2.json()
+            if sync2_data.get("type") == "task_assigned":
+                retry_task = sync2_data["task"]
+                break
+            time.sleep(0.2)
+
+        assert retry_task is not None, "Scheduler should retry failed task"
+        assert retry_task["nodeId"] == "flaky-task"
+        assert retry_task["executionId"] == execution_id
+
+        # Simulate second failure
+        result2 = requests.post(
+            f"{scheduler_url}/api/worker/sync",
+            json={
+                "status": "idle",
+                "taskResult": {
+                    "executionId": execution_id,
+                    "nodeId": "flaky-task",
+                    "taskStatus": {
+                        "state": "failed",
+                        "message": {
+                            "messageId": str(uuid.uuid4()),
+                            "kind": "message",
+                            "role": "agent",
+                            "parts": [
+                                {
+                                    "kind": "text",
+                                    "text": "Simulated task failure - attempt 2",
+                                }
+                            ],
+                        },
+                        "timestamp": "2025-11-04T10:00:05Z",
+                    },
+                    "artifacts": [],
+                },
+            },
+            timeout=5,
+        )
+        assert result2.status_code == 200
+
+        # Poll for second retry assignment
+        retry_task_2 = None
+        for attempt in range(20):
+            sync3 = requests.post(
+                f"{scheduler_url}/api/worker/sync",
+                json={"status": "idle"},
+                timeout=5,
+            )
+            assert sync3.status_code == 200
+            sync3_data = sync3.json()
+            if sync3_data.get("type") == "task_assigned":
+                retry_task_2 = sync3_data["task"]
+                break
+            time.sleep(0.2)
+
+        assert retry_task_2 is not None, (
+            "Scheduler should retry failed task second time"
+        )
+        assert retry_task_2["nodeId"] == "flaky-task"
+
+        # Simulate success on third attempt
+        result3 = requests.post(
+            f"{scheduler_url}/api/worker/sync",
+            json={
+                "status": "idle",
+                "taskResult": {
+                    "executionId": execution_id,
+                    "nodeId": "flaky-task",
+                    "taskStatus": {
+                        "state": "completed",
+                        "timestamp": "2025-11-04T10:00:10Z",
+                    },
+                    "artifacts": [
+                        {
+                            "artifactId": str(uuid.uuid4()),
+                            "name": "output",
+                            "description": "Output",
+                            "parts": [{"text": "Success on retry"}],
+                        }
+                    ],
+                },
+            },
+            timeout=5,
+        )
+        assert result3.status_code == 200
+
+        # Poll until workflow completes
+        workflow_complete = False
+        for attempt in range(10):
+            sync_final = requests.post(
+                f"{scheduler_url}/api/worker/sync",
+                json={"status": "idle"},
+                timeout=5,
+            )
+            assert sync_final.status_code == 200
+            if sync_final.json().get("type") == "no_action":
+                workflow_complete = True
+                break
+            time.sleep(0.2)
+
+        assert workflow_complete, (
+            "Workflow should complete after task succeeds on retry"
         )

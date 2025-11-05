@@ -238,7 +238,7 @@ pub async fn handle_message_send(
             (workflow_yaml_inline.unwrap(), None, None, None)
         };
 
-    // Validate workflow against schema (FR-006)
+    // Validate workflow against schema
     let workflow_json = match state.validator.validate_workflow_yaml(&workflow_yaml) {
         Ok(json) => json,
         Err(e) => {
@@ -261,7 +261,7 @@ pub async fn handle_message_send(
     // Use registry name if available, otherwise use YAML name
     let workflow_name_final = workflow_name.unwrap_or(workflow_name_from_yaml);
 
-    // Build WorkflowDAG and detect cycles (FR-014)
+    // Build WorkflowDAG and detect cycles
     let dag = match WorkflowDAG::from_workflow(&workflow_yaml) {
         Ok(dag) => dag,
         Err(e) => {
@@ -337,6 +337,20 @@ pub async fn handle_message_send(
             id,
             JsonRpcError::internal_error(format!("Failed to queue entry nodes: {e}")),
         );
+    }
+
+    // Log execution_started event
+    if let Err(e) = crate::db::execution_events::create(
+        &state.db_pool,
+        &execution_id,
+        "execution_started",
+        None,
+        "Workflow execution started",
+        json!({}),
+    )
+    .await
+    {
+        tracing::warn!("Failed to log execution_started event: {e}");
     }
 
     // Return A2A Task response (non-blocking)
