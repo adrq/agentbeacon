@@ -12,7 +12,7 @@
 export type Screen = 'Dashboard' | 'TemplateGallery' | 'WorkflowEditor' | 'RunDetails';
 export type Theme = 'light' | 'dark';
 export type WorkflowStatus = 'running' | 'idle';
-export type RunStatus = 'running' | 'success' | 'failed';
+export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
 
 // ============================================================================
 // Data Models
@@ -28,7 +28,7 @@ export interface WorkflowCard {
     completedToday: number;
   };
   version: string;
-  lastStatus?: 'success' | 'failed';
+  lastStatus?: 'completed' | 'failed';
   lastFailedTime?: string;
 }
 

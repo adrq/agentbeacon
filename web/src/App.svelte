@@ -3,7 +3,7 @@
   import { theme as themeStore, currentScreen, routeParams } from './lib/stores/appState';
   import { router } from './lib/router';
   import type { Theme } from './lib/types';
-  import ThemeToggle from './lib/components/ThemeToggle.svelte';
+  import AppHeader from './lib/components/AppHeader.svelte';
   import Dashboard from './routes/Dashboard.svelte';
   import TemplateGallery from './routes/TemplateGallery.svelte';
   import WorkflowEditorScreen from './routes/WorkflowEditorScreen.svelte';
@@ -51,8 +51,7 @@
   }
 
   function handleDashboardNavigateToRunDetails(event: CustomEvent<{ runId: string }>) {
-    // Always navigate to hard-coded placeholder run ID
-    router.navigate('/run/run-demo');
+    router.navigate(`/run/${event.detail.runId}`);
   }
 
   // Navigation handlers - TemplateGallery
@@ -83,9 +82,7 @@
 </script>
 
 <div class="app-shell" class:dark={theme === 'dark'}>
-  <div class="theme-toggle-container">
-    <ThemeToggle on:themeChange={handleThemeChange} />
-  </div>
+  <AppHeader {theme} on:themeChange={handleThemeChange} />
 
   <main class="app-main">
     {#if $currentScreen === 'Dashboard'}
@@ -134,24 +131,10 @@
     color: #e2e8f0;
   }
 
-  .theme-toggle-container {
-    position: fixed;
-    top: 1rem;
-    right: 1rem;
-    z-index: 1000;
-  }
-
   .app-main {
     flex: 1;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-  }
-
-  @media (max-width: 480px) {
-    .theme-toggle-container {
-      top: 0.5rem;
-      right: 0.5rem;
-    }
   }
 </style>

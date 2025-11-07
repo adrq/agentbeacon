@@ -6,8 +6,10 @@
   export let theme: Theme;
 
   function getStatusIcon(status: RunStatus): string {
-    return status === 'running' ? '🔄' :
-           status === 'success' ? '✅' :
+    return status === 'pending' ? '⏸️' :
+           status === 'running' ? '🔄' :
+           status === 'completed' ? '✅' :
+           status === 'canceled' ? '🚫' :
            status === 'failed' ? '❌' : '📝';
   }
 
@@ -68,12 +70,22 @@
     color: #93c5fd;
   }
 
-  .status-badge.success {
+  .status-badge.pending {
+    background: #e0e7ff;
+    color: #4338ca;
+  }
+
+  .status-badge.dark.pending {
+    background: #312e81;
+    color: #a5b4fc;
+  }
+
+  .status-badge.completed {
     background: #d1fae5;
     color: #065f46;
   }
 
-  .status-badge.dark.success {
+  .status-badge.dark.completed {
     background: #064e3b;
     color: #6ee7b7;
   }
@@ -86,5 +98,15 @@
   .status-badge.dark.failed {
     background: #7f1d1d;
     color: #fca5a5;
+  }
+
+  .status-badge.canceled {
+    background: #f1f5f9;
+    color: #475569;
+  }
+
+  .status-badge.dark.canceled {
+    background: #334155;
+    color: #cbd5e1;
   }
 </style>

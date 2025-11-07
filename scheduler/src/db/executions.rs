@@ -12,7 +12,7 @@ use crate::error::SchedulerError;
 pub struct Execution {
     pub id: Uuid,
     pub workflow_id: Uuid,
-    pub status: String,         // pending|running|completed|failed|cancelled
+    pub status: String,         // pending|running|completed|failed|canceled
     pub task_states: JsonValue, // JSON object mapping task IDs to states
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -228,7 +228,7 @@ pub async fn update_status(
     })?;
 
     // Determine if this is a terminal state - use CURRENT_TIMESTAMP if so, NULL otherwise
-    let is_terminal = matches!(status, "completed" | "failed" | "cancelled");
+    let is_terminal = matches!(status, "completed" | "failed" | "canceled");
 
     let query = if is_terminal {
         pool.prepare_query(

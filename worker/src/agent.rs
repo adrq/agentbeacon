@@ -131,7 +131,7 @@ pub async fn execute_a2a_task(
 /// 4. Poll task status using tasks/get until terminal state reached
 /// 5. Handle special states (input-required, auth-required) as failures in headless execution
 ///
-/// Returns early for terminal states (completed/failed/cancelled/rejected) or after
+/// Returns early for terminal states (completed/failed/canceled/rejected) or after
 /// encountering states requiring user interaction that cannot be satisfied in automated workflows.
 async fn execute_a2a_task_inner(
     client: &reqwest::Client,
@@ -320,7 +320,7 @@ async fn execute_a2a_task_inner(
         });
     }
 
-    let is_terminal = matches!(state_str, "completed" | "failed" | "cancelled" | "rejected");
+    let is_terminal = matches!(state_str, "completed" | "failed" | "canceled" | "rejected");
 
     if is_terminal {
         return Ok(TaskResult {
@@ -369,7 +369,7 @@ async fn execute_a2a_task_inner(
             });
         }
 
-        let is_terminal = matches!(state_str, "completed" | "failed" | "cancelled" | "rejected");
+        let is_terminal = matches!(state_str, "completed" | "failed" | "canceled" | "rejected");
 
         if is_terminal {
             artifacts = if let Some(artifacts_value) = updated_task.get("artifacts") {

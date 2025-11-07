@@ -67,12 +67,11 @@
   </div>
 
   <!-- Draggable divider -->
-  <div
+  <button
     class="divider"
     on:mousedown={handleDividerMouseDown}
-    role="separator"
-    aria-orientation="vertical"
-  ></div>
+    aria-label="Resize panels"
+  ></button>
 
   <div style="width: {100 - leftPanelWidth}%; min-width: {minWidth}%;" class="right-panel">
     <slot name="right" />

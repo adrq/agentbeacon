@@ -10,6 +10,14 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:9456',
         changeOrigin: true
+      },
+      '/.well-known': {
+        target: 'http://localhost:9456',
+        changeOrigin: true
+      },
+      '/rpc': {
+        target: 'http://localhost:9456',
+        changeOrigin: true
       }
     }
   },

@@ -15,9 +15,11 @@
 
   function getStatusIcon(status: string): string {
     switch (status) {
+      case 'pending': return '⏸️';
       case 'running': return '🔄';
-      case 'success': return '✅';
+      case 'completed': return '✅';
       case 'failed': return '❌';
+      case 'canceled': return '🚫';
       default: return '📝';
     }
   }
@@ -55,13 +57,16 @@
   {/if}
 
   <div class="entry-actions">
-    {#if entry.status === 'running'}
+    {#if entry.status === 'pending'}
+      <button class="btn-action" on:click={() => dispatch('viewDetails')}>View Details</button>
+      <button class="btn-action" on:click={() => dispatch('stop')}>Cancel</button>
+    {:else if entry.status === 'running'}
       <button class="btn-action" on:click={() => dispatch('viewDetails')}>View Details</button>
       <button class="btn-action" on:click={() => dispatch('stop')}>Stop</button>
-    {:else if entry.status === 'success'}
+    {:else if entry.status === 'completed'}
       <button class="btn-action" on:click={() => dispatch('viewResults')}>View Results</button>
       <button class="btn-action" on:click={() => dispatch('rerun')}>Rerun</button>
-    {:else if entry.status === 'failed'}
+    {:else if entry.status === 'failed' || entry.status === 'canceled'}
       <button class="btn-action" on:click={() => dispatch('debug')}>Debug</button>
       <button class="btn-action" on:click={() => dispatch('rerun')}>Rerun</button>
     {/if}

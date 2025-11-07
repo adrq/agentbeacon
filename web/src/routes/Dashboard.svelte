@@ -1,10 +1,14 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { createEventDispatcher } from 'svelte';
-  import type { Theme } from '../lib/types';
+  import type { Theme, ActivityEntry as ActivityEntryType } from '../lib/types';
+  import type { Execution } from '../lib/api';
+  import { AgentMaestroAPI } from '../lib/api';
   import ScreenHeader from '../lib/components/ScreenHeader.svelte';
   import WorkflowCard from '../lib/components/WorkflowCard.svelte';
   import ActivityEntry from '../lib/components/ActivityEntry.svelte';
-  import { workflowCards, activityEntries } from '../lib/stores/placeholderData';
+  import WorkflowTriggerModal from '../lib/components/WorkflowTriggerModal.svelte';
+  import { workflowCards } from '../lib/stores/placeholderData';
 
   export let theme: Theme;
 
@@ -14,8 +18,14 @@
     navigateToRunDetails: { runId: string };
   }>();
 
+  const api = new AgentMaestroAPI();
+
   let viewMode: 'grid' | 'list' = 'grid';
   let searchQuery = '';
+  let modalOpen = false;
+  let executions: Execution[] = [];
+  let loadingExecutions = false;
+  let activityEntries: ActivityEntryType[] = [];
 
   function handleNewFromTemplate() {
     dispatch('navigateToTemplateGallery');
@@ -32,6 +42,85 @@
   function toggleViewMode() {
     viewMode = viewMode === 'grid' ? 'list' : 'grid';
   }
+
+  function extractWorkflowName(yamlString: string): string {
+    try {
+      const nameMatch = yamlString.match(/^\s*name:\s*["']?([^"'\n]+)["']?/m);
+      return nameMatch ? nameMatch[1].trim() : 'Workflow';
+    } catch {
+      return 'Workflow';
+    }
+  }
+
+  function formatRelativeTime(timestamp: string): string {
+    try {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffMs = now.getTime() - date.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+
+      if (diffMins < 1) return 'just now';
+      if (diffMins < 60) return `${diffMins}m ago`;
+
+      const diffHours = Math.floor(diffMins / 60);
+      if (diffHours < 24) return `${diffHours}h ago`;
+
+      const diffDays = Math.floor(diffHours / 24);
+      return `${diffDays}d ago`;
+    } catch {
+      return timestamp;
+    }
+  }
+
+  function calculateDuration(start: string, end?: string): string | undefined {
+    if (!end) return undefined;
+
+    try {
+      const startDate = new Date(start);
+      const endDate = new Date(end);
+      const diffMs = endDate.getTime() - startDate.getTime();
+      const diffSecs = Math.floor(diffMs / 1000);
+
+      if (diffSecs < 60) return `${diffSecs}s`;
+
+      const mins = Math.floor(diffSecs / 60);
+      const secs = diffSecs % 60;
+      return `${mins}m ${secs}s`;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function transformExecutionToActivity(execution: Execution): ActivityEntryType {
+    const workflowName = extractWorkflowName(execution.workflow_id || '');
+    const runNumber = parseInt(execution.id.slice(-4), 16) || 0;
+
+    return {
+      id: execution.id,
+      workflowName,
+      runNumber,
+      status: execution.status,
+      startedAt: formatRelativeTime(execution.created_at),
+      version: 'v1.0.0', // TODO: Get from execution when available
+      duration: calculateDuration(execution.created_at, execution.completed_at),
+      progress: undefined,
+      output: undefined,
+      error: undefined
+    };
+  }
+
+  onMount(async () => {
+    loadingExecutions = true;
+    try {
+      executions = await api.getExecutions();
+      activityEntries = executions.slice(0, 10).map(transformExecutionToActivity);
+    } catch (error) {
+      console.error('Failed to fetch executions:', error);
+      activityEntries = [];
+    } finally {
+      loadingExecutions = false;
+    }
+  });
 </script>
 
 <div class="dashboard" class:dark={theme === 'dark'}>
@@ -41,11 +130,20 @@
     on:navigate
   >
     <div slot="actions" class="header-actions">
+      <button
+        class="btn-new-execution"
+        data-testid="new-execution-button"
+        on:click={() => modalOpen = true}
+      >
+        New Execution
+      </button>
       <button class="btn-new-template" on:click={handleNewFromTemplate}>
         New from Template
       </button>
     </div>
   </ScreenHeader>
+
+  <WorkflowTriggerModal bind:open={modalOpen} />
 
   <div class="dashboard-content">
     <div class="toolbar">
@@ -97,17 +195,25 @@
         <button type="button" class="see-all-link" on:click={() => {}}>See All</button>
       </div>
       <div class="activity-list">
-        {#each activityEntries as entry (entry.id)}
-          <ActivityEntry
-            {entry}
-            {theme}
-            on:viewDetails={() => handleActivityViewDetails(entry.id)}
-            on:viewResults={() => handleActivityViewDetails(entry.id)}
-            on:debug={() => console.log('Debug:', entry.id)}
-            on:stop={() => console.log('Stop:', entry.id)}
-            on:rerun={() => console.log('Rerun:', entry.id)}
-          />
-        {/each}
+        {#if loadingExecutions}
+          <div class="empty-state">Loading executions...</div>
+        {:else if activityEntries.length === 0}
+          <div class="empty-state">
+            No recent activity. Use 'New Execution' to run workflows with inline YAML.
+          </div>
+        {:else}
+          {#each activityEntries as entry (entry.id)}
+            <ActivityEntry
+              {entry}
+              {theme}
+              on:viewDetails={() => handleActivityViewDetails(entry.id)}
+              on:viewResults={() => handleActivityViewDetails(entry.id)}
+              on:debug={() => handleActivityViewDetails(entry.id)}
+              on:stop={() => console.log('Stop:', entry.id)}
+              on:rerun={() => console.log('Rerun:', entry.id)}
+            />
+          {/each}
+        {/if}
       </div>
     </section>
   </div>
@@ -138,6 +244,22 @@
     display: flex;
     gap: 0.75rem;
     align-items: center;
+  }
+
+  .btn-new-execution {
+    padding: 0.5rem 1rem;
+    background: #10b981;
+    color: #ffffff;
+    border: none;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+  }
+
+  .btn-new-execution:hover {
+    background: #059669;
   }
 
   .btn-new-template {

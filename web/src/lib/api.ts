@@ -12,10 +12,36 @@ export interface Workflow {
 export interface Execution {
   id: string;
   workflow_id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  node_states?: any;
-  started_at: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
+  task_states: any;
+  created_at: string;
+  updated_at: string;
   completed_at?: string;
+}
+
+export interface ExecutionEvent {
+  id: number;
+  execution_id: string;
+  event_type: string;
+  task_id?: string;
+  message: string;
+  metadata: any;
+  timestamp: string;
+}
+
+export interface ExecutionDetail {
+  id: string;
+  workflow_id: string;
+  workflow_definition: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
+  task_states: any;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+  started_at?: string;
+  version?: string;
+  agent_name?: string;
+  events: ExecutionEvent[];
 }
 
 export interface Config {
@@ -228,6 +254,10 @@ export class AgentMaestroAPI {
     return this.fetchJSON<Execution>(`/executions/${id}`);
   }
 
+  async getExecutionDetail(id: string): Promise<ExecutionDetail> {
+    return this.fetchJSON<ExecutionDetail>(`/executions/${id}`);
+  }
+
   async startExecution(workflowId: string): Promise<Execution> {
     return this.fetchJSON<Execution>('/executions', {
       method: 'POST',
@@ -279,6 +309,70 @@ export class AgentMaestroAPI {
     } catch (error) {
       return { status: 'error', ok: false };
     }
+  }
+
+  // Agent card operations
+  async fetchAgentCard(): Promise<{ url: string }> {
+    // Agent card is at root level, not under /api
+    const response = await fetch('/.well-known/agent-card.json');
+    if (!response.ok) {
+      throw new Error(`Failed to fetch agent card: ${response.status} ${response.statusText}`);
+    }
+    return await response.json();
+  }
+
+  // Workflow execution trigger via A2A protocol
+  async triggerWorkflowExecution(workflowYaml: string): Promise<string> {
+    // Use proxied /rpc endpoint instead of agent-card URL to avoid CORS issues in dev
+    const response = await fetch('/rpc', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'message/send',
+        params: {
+          message: {
+            role: 'user',
+            messageId: `ui-${Date.now()}`,
+            kind: 'message',
+            parts: [
+              {
+                kind: 'data',
+                data: {
+                  workflowYaml: workflowYaml,
+                },
+              },
+            ],
+          },
+        },
+        id: Date.now(),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to trigger workflow: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+
+    if (data.error) {
+      // Extract detailed error message from nested error data if available
+      // Try multiple nested paths: data.error, data.detail, or message
+      const detailedError =
+        data.error.data?.error ||
+        data.error.data?.detail ||
+        data.error.message ||
+        'Workflow execution failed';
+      throw new Error(detailedError);
+    }
+
+    if (!data.result || !data.result.id) {
+      throw new Error('Invalid response: missing execution id');
+    }
+
+    return data.result.id;
   }
 }
 

@@ -1,13 +1,15 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   import type { Theme, RouteParams, BreadcrumbSegment, NodeStatus } from '../lib/types';
+  import type { ExecutionDetail, ExecutionEvent } from '../lib/api';
+  import { api } from '../lib/api';
   import ScreenHeader from '../lib/components/ScreenHeader.svelte';
   import TabNavigation from '../lib/components/TabNavigation.svelte';
   import SplitPanel from '../lib/components/SplitPanel.svelte';
   import DAGVisualization from '../lib/components/DAGVisualization.svelte';
   import OutputPanel from '../lib/components/OutputPanel.svelte';
   import DiffViewer from '../lib/components/DiffViewer.svelte';
-  import { sampleYAML } from '../lib/stores/placeholderData';
 
   export let theme: Theme;
   export let params: RouteParams;
@@ -17,30 +19,109 @@
   }>();
 
   let activeTabIndex = 0;
-
   const tabs = ['🎯 Execution', '📝 Diff', '📋 Logs', '📦 Artifacts'];
+
+  // Real execution data
+  let execution: ExecutionDetail | null = null;
+  let executionState: NodeStatus = {};
+  let logMessages: string[] = [];
+  let workflowYaml = '';
+  let errorMessage = '';
+
+  let pollingInterval: number | undefined;
 
   const breadcrumbs: BreadcrumbSegment[] = [
     { label: '🎭 Fix Frontend Tests', path: '/editor/workflow-demo' },
     { label: 'Run #24', path: '/run/run-demo' }
   ];
 
-  // Placeholder execution state for DAG
-  const executionState: NodeStatus = {
-    'analyze': 'completed',
-    'fix_tests': 'running',
-    'validate': 'waiting'
-  };
+  async function fetchExecution() {
+    if (!params.runId) return;
 
-  // Placeholder log messages
-  const logMessages = [
-    '[12:34:56] ℹ️ Starting workflow execution...',
-    '[12:34:57] ✅ Node "analyze" completed successfully',
-    '[12:34:58] 🔄 Node "fix_tests" running...',
-    '[12:35:02] ℹ️ Processing authentication test failures...',
-    '[12:35:15] ℹ️ Applying fixes to src/tests/auth.test.js...',
-    '[12:35:28] 🔄 Still running fix_tests...'
-  ];
+    try {
+      const data = await api.getExecutionDetail(params.runId);
+      execution = data;
+
+      // Update execution state for DAG
+      executionState = data.task_states || {};
+
+      // Update logs from events
+      logMessages = data.events.map(formatEvent);
+
+      // Extract workflow YAML
+      workflowYaml = data.workflow_definition || '';
+
+      // Clear error on success
+      if (errorMessage) {
+        errorMessage = '';
+      }
+
+      // Stop polling if terminal state
+      if (data.status === 'completed' || data.status === 'failed' || data.status === 'canceled') {
+        stopPolling();
+      }
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Failed to fetch execution';
+      // Continue polling even on error
+    }
+  }
+
+  function formatEvent(event: ExecutionEvent): string {
+    const timestamp = new Date(event.timestamp).toLocaleTimeString();
+    const taskInfo = event.task_id ? ` [${event.task_id}]` : '';
+    return `[${timestamp}]${taskInfo} ${event.message}`;
+  }
+
+  function startPolling() {
+    if (pollingInterval) return;
+    pollingInterval = window.setInterval(fetchExecution, 2000);
+  }
+
+  function stopPolling() {
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+      pollingInterval = undefined;
+    }
+  }
+
+  onMount(async () => {
+    await fetchExecution();
+
+    // Start polling if execution is active
+    if (execution && (execution.status === 'pending' || execution.status === 'running')) {
+      startPolling();
+    }
+  });
+
+  onDestroy(() => {
+    stopPolling();
+  });
+
+  function formatTime(timestamp: string): string {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+
+    if (hours > 0) return `${hours}h ago`;
+    if (minutes > 0) return `${minutes}m ago`;
+    return `${seconds}s ago`;
+  }
+
+  function formatDuration(startedAt: string, completedAt?: string): string {
+    const start = new Date(startedAt);
+    const end = completedAt ? new Date(completedAt) : new Date();
+    const diff = end.getTime() - start.getTime();
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+  }
 
   // Placeholder diff content
   const beforeCode = `describe('Authentication', () => {
@@ -138,28 +219,50 @@
     </div>
   </ScreenHeader>
 
-  <div class="status-bar">
-    <div class="status-item status-badge">
-      <span class="status-icon">🔄</span>
-      <span class="status-text">Running (2m 34s)</span>
+  {#if errorMessage}
+    <div class="error-banner" data-testid="error-indicator">
+      <span class="error-icon">⚠️</span>
+      <span class="error-text">{errorMessage}</span>
     </div>
-    <div class="status-item">
-      <span class="label">Version:</span>
-      <span class="value">v1.2.0</span>
+  {/if}
+
+  {#if execution}
+    <div class="status-bar">
+      <div class="status-item status-badge">
+        <span class="status-icon">
+          {#if execution.status === 'running'}🔄
+          {:else if execution.status === 'completed'}✅
+          {:else if execution.status === 'failed'}❌
+          {:else if execution.status === 'canceled'}⏹️
+          {:else}⏸️{/if}
+        </span>
+        <span class="status-text">
+          {execution.status.charAt(0).toUpperCase() + execution.status.slice(1)}
+          {#if execution.started_at}
+            ({formatDuration(execution.started_at, execution.completed_at)})
+          {/if}
+        </span>
+      </div>
+      {#if execution.started_at}
+        <div class="status-item">
+          <span class="label">Started:</span>
+          <span class="value">{formatTime(execution.started_at)}</span>
+        </div>
+      {/if}
+      {#if execution.version}
+        <div class="status-item">
+          <span class="label">Version:</span>
+          <span class="value">{execution.version}</span>
+        </div>
+      {/if}
+      {#if execution.agent_name}
+        <div class="status-item">
+          <span class="label">Agent:</span>
+          <span class="value">{execution.agent_name}</span>
+        </div>
+      {/if}
     </div>
-    <div class="status-item">
-      <span class="label">Started:</span>
-      <span class="value">2 minutes ago</span>
-    </div>
-    <div class="status-item">
-      <span class="label">Agent:</span>
-      <span class="value">Claude + Cursor</span>
-    </div>
-    <div class="status-item">
-      <span class="label">Input:</span>
-      <span class="value">Focus on authentication tests</span>
-    </div>
-  </div>
+  {/if}
 
   <div class="details-content">
     <TabNavigation
@@ -178,7 +281,7 @@
               <div class="dag-container">
                 <h3 class="panel-title">DAG Progress</h3>
                 <DAGVisualization
-                  workflow={sampleYAML}
+                  workflow={workflowYaml}
                   isValid={true}
                   {theme}
                   {executionState}
@@ -190,7 +293,8 @@
               <div class="logs-container">
                 <h3 class="panel-title">Live Logs</h3>
                 <OutputPanel
-                  isExecuting={true}
+                  isExecuting={execution?.status === 'pending' || execution?.status === 'running'}
+                  status={execution?.status}
                   logs={logMessages}
                 />
               </div>
@@ -216,7 +320,8 @@
         <!-- Logs Tab -->
         <div class="logs-tab">
           <OutputPanel
-            isExecuting={true}
+            isExecuting={execution?.status === 'pending' || execution?.status === 'running'}
+            status={execution?.status}
             logs={logMessages}
           />
         </div>
@@ -301,6 +406,32 @@
   .run-details.dark .btn-stop:hover {
     background: #991b1b;
     border-color: #dc2626;
+  }
+
+  .error-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1.5rem;
+    background: #fef2f2;
+    border-bottom: 1px solid #fecaca;
+    color: #991b1b;
+  }
+
+  .run-details.dark .error-banner {
+    background: #7f1d1d;
+    border-bottom-color: #991b1b;
+    color: #fca5a5;
+  }
+
+  .error-icon {
+    font-size: 1.25rem;
+  }
+
+  .error-text {
+    flex: 1;
+    font-size: 0.875rem;
+    font-weight: 500;
   }
 
   .status-bar {

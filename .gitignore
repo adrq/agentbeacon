@@ -72,6 +72,11 @@ dist/
 build/
 coverage/
 
+# Playwright test artifacts (web/)
+web/test-results/
+web/playwright-report/
+web/playwright/.cache/
+
 # Environment variables
 .env
 .env.local

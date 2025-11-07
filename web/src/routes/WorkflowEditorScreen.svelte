@@ -12,7 +12,7 @@
   import { sampleYAML, runEntries, versionEntries } from '../lib/stores/placeholderData';
 
   export let theme: Theme;
-  export let params: RouteParams;
+  export const params: RouteParams = {};
 
   const dispatch = createEventDispatcher<{
     navigateToDashboard: void;

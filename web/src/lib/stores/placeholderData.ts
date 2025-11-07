@@ -42,7 +42,7 @@ export const workflowCards: WorkflowCard[] = [
     status: 'idle',
     runStats: { runningCount: 0, completedToday: 2 },
     version: 'v1.0.0',
-    lastStatus: 'success'
+    lastStatus: 'completed'
   },
   {
     id: 'workflow-4',
@@ -75,7 +75,7 @@ export const activityEntries: ActivityEntry[] = [
     id: 'run-18',
     workflowName: 'Implement User Stories',
     runNumber: 18,
-    status: 'success',
+    status: 'completed',
     startedAt: '1h ago',
     version: 'v2.0.1',
     duration: '12min',
@@ -154,7 +154,7 @@ export const runEntries: RunEntry[] = [
   },
   {
     runNumber: 23,
-    status: 'success',
+    status: 'completed',
     version: 'v1.2.0',
     startedAt: '1h ago',
     duration: '12min',

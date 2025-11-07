@@ -1,6 +1,9 @@
 <script lang="ts">
+  import type { RunStatus } from '../types';
+
   export let isExecuting: boolean = false;
   export let logs: string[] | undefined = undefined;
+  export let status: RunStatus | undefined = undefined;
 
   let outputElement: HTMLDivElement;
 
@@ -29,6 +32,18 @@
           <div class="pulse-dot"></div>
           Executing...
         </div>
+      {:else if status === 'completed'}
+        <div class="status-indicator completed">
+          ✅ Completed
+        </div>
+      {:else if status === 'failed'}
+        <div class="status-indicator failed">
+          ❌ Failed
+        </div>
+      {:else if status === 'canceled'}
+        <div class="status-indicator canceled">
+          🚫 Canceled
+        </div>
       {:else}
         <div class="status-indicator idle">
           ⏸️ Idle
@@ -54,8 +69,13 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background: var(--output-bg);
+    background: #1f2937;
     color: #e5e7eb;
+  }
+
+  :global(.light) .output-panel {
+    background: #f9fafb;
+    color: #1f2937;
   }
 
   .output-header {
@@ -67,11 +87,20 @@
     background: #1f2937;
   }
 
+  :global(.light) .output-header {
+    background: #f3f4f6;
+    border-bottom-color: #e5e7eb;
+  }
+
   .output-header h3 {
     margin: 0;
     font-size: 1rem;
     font-weight: 600;
     color: #f9fafb;
+  }
+
+  :global(.light) .output-header h3 {
+    color: #1f2937;
   }
 
   .header-controls {
@@ -86,6 +115,18 @@
     gap: 0.5rem;
     font-size: 0.75rem;
     color: #10b981;
+  }
+
+  .status-indicator.completed {
+    color: #10b981;
+  }
+
+  .status-indicator.failed {
+    color: #ef4444;
+  }
+
+  .status-indicator.canceled {
+    color: #6b7280;
   }
 
   .status-indicator.idle {
@@ -107,7 +148,11 @@
     font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
     font-size: 0.75rem;
     line-height: 1.5;
-    background: var(--output-bg);
+    background: #111827;
+  }
+
+  :global(.light) .output-content {
+    background: #ffffff;
   }
 
   .log-entry {
@@ -122,6 +167,10 @@
     color: #e5e7eb;
     flex: 1;
     word-wrap: break-word;
+  }
+
+  :global(.light) .log-message {
+    color: #374151;
   }
 
   @keyframes pulse {
@@ -142,12 +191,24 @@
     background: #1f2937;
   }
 
+  :global(.light) .output-content::-webkit-scrollbar-track {
+    background: #f3f4f6;
+  }
+
   .output-content::-webkit-scrollbar-thumb {
     background: #4b5563;
     border-radius: 3px;
   }
 
+  :global(.light) .output-content::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+  }
+
   .output-content::-webkit-scrollbar-thumb:hover {
     background: #6b7280;
+  }
+
+  :global(.light) .output-content::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
   }
 </style>

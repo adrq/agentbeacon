@@ -21,6 +21,7 @@
   </div>
   <div class="header-actions">
     <slot name="actions" />
+    <slot name="theme-toggle" />
   </div>
 </header>
 
