@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
-#[command(name = "agentmaestro-worker")]
-#[command(about = "AgentMaestro distributed task execution worker")]
+#[command(name = "agentbeacon-worker")]
+#[command(about = "AgentBeacon distributed task execution worker")]
 pub struct Args {
     /// Scheduler URL for syncing and task retrieval
     #[arg(long, env = "SCHEDULER_URL")]

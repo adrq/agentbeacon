@@ -1,6 +1,6 @@
-//! AgentMaestro Orchestrator - Process supervisor for scheduler and worker processes
+//! AgentBeacon Orchestrator - Process supervisor for scheduler and worker processes
 //!
-//! This binary manages the lifecycle of the AgentMaestro system by spawning and
+//! This binary manages the lifecycle of the AgentBeacon system by spawning and
 //! monitoring the scheduler and worker processes. It provides:
 //! - Colored log aggregation with TTY detection
 //! - Memory-safe line-by-line log streaming (O(max_line_length))
@@ -53,8 +53,8 @@ fn get_color(name: &str) -> &'static str {
 
 /// Command-line arguments
 #[derive(Parser, Debug)]
-#[command(name = "agentmaestro")]
-#[command(about = "AgentMaestro Orchestrator - Process supervisor", long_about = None)]
+#[command(name = "agentbeacon")]
+#[command(about = "AgentBeacon Orchestrator - Process supervisor", long_about = None)]
 struct Args {
     /// Number of worker processes to spawn
     #[arg(long, default_value_t = 2)]
@@ -129,11 +129,11 @@ impl Orchestrator {
                 anyhow::bail!("health check failed: scheduler timeout after 30 seconds");
             }
 
-            if let Ok(resp) = client.get(&health_url).send().await {
-                if resp.status().is_success() {
-                    println!("Orchestrator ready - all processes started and scheduler responding");
-                    return Ok(());
-                }
+            if let Ok(resp) = client.get(&health_url).send().await
+                && resp.status().is_success()
+            {
+                println!("Orchestrator ready - all processes started and scheduler responding");
+                return Ok(());
             }
 
             sleep(Duration::from_millis(100)).await;
@@ -143,7 +143,7 @@ impl Orchestrator {
     /// Start the scheduler process
     async fn start_scheduler(&self) -> Result<()> {
         let name = "scheduler".to_string();
-        let mut cmd = Command::new("./bin/agentmaestro-scheduler");
+        let mut cmd = Command::new("./bin/agentbeacon-scheduler");
         cmd.arg("--port")
             .arg(self.scheduler_port.to_string())
             .stdout(Stdio::piped())
@@ -157,7 +157,7 @@ impl Orchestrator {
         let name = format!("worker-{id}");
         let scheduler_url = format!("http://localhost:{}", self.scheduler_port);
 
-        let mut cmd = Command::new("./bin/agentmaestro-worker");
+        let mut cmd = Command::new("./bin/agentbeacon-worker");
         cmd.arg("--scheduler-url").arg(&scheduler_url);
 
         if let Some(interval) = &self.worker_poll_interval {
@@ -311,12 +311,12 @@ impl Orchestrator {
         color: &'static str,
     ) -> Result<()> {
         let mut cmd = if is_scheduler {
-            let mut cmd = Command::new("./bin/agentmaestro-scheduler");
+            let mut cmd = Command::new("./bin/agentbeacon-scheduler");
             cmd.arg("--port").arg(self.scheduler_port.to_string());
             cmd
         } else {
             let scheduler_url = format!("http://localhost:{}", self.scheduler_port);
-            let mut cmd = Command::new("./bin/agentmaestro-worker");
+            let mut cmd = Command::new("./bin/agentbeacon-worker");
             cmd.arg("--scheduler-url").arg(&scheduler_url);
 
             if let Some(interval) = &self.worker_poll_interval {
@@ -418,7 +418,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Print startup banner
-    println!("AgentMaestro Orchestrator starting...");
+    println!("AgentBeacon Orchestrator starting...");
     println!(
         "Configuration: {} workers, scheduler port {}",
         args.workers, args.scheduler_port

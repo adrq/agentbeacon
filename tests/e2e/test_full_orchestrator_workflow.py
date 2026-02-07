@@ -13,6 +13,10 @@ Uses PID-based process tracking to avoid conflicts with separately running insta
 Run with: uv run pytest tests/e2e/test_full_orchestrator_workflow.py -v
 """
 
+import pytest
+
+pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
+
 import re
 import signal
 import subprocess

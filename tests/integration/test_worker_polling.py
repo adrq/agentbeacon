@@ -26,11 +26,11 @@ def test_worker_respects_polling_interval():
     # Use faster interval for testing to reduce test time
 
     test_port = 19457  # Unique port for this test
-    worker_binary = "./bin/agentmaestro-worker"
+    worker_binary = "./bin/agentbeacon-worker"
     processes = []
 
     try:
-        # Start A2A mock agent (required for Rust worker Phase 1)
+        # Start A2A mock agent
         agent_proc = start_and_wait_for_a2a_agent(
             18765, Path(__file__).parent.parent.parent
         )
@@ -179,11 +179,11 @@ def test_worker_shutdown_on_signal():
     # This test will fail until signal handling is properly implemented
 
     test_port = 19458  # Unique port
-    worker_binary = "./bin/agentmaestro-worker"
+    worker_binary = "./bin/agentbeacon-worker"
     processes = []
 
     try:
-        # Start A2A mock agent (required for Rust worker Phase 1)
+        # Start A2A mock agent
         agent_proc = start_and_wait_for_a2a_agent(
             18765, Path(__file__).parent.parent.parent
         )

@@ -178,7 +178,7 @@ class TempDatabase:
 class ProcessTracker:
     """Track and manage test-spawned processes for isolation from external instances.
 
-    Provides PID-based process tracking to avoid conflicts when AgentMaestro
+    Provides PID-based process tracking to avoid conflicts when AgentBeacon
     is running separately outside of tests.
 
     Example:
@@ -357,7 +357,7 @@ class ProcessTracker:
                         child_pid = child.pid
 
                         if (
-                            "agentmaestro-scheduler" in cmdline
+                            "agentbeacon-scheduler" in cmdline
                             and found_scheduler is None
                         ):
                             self.register_child_pid(
@@ -369,7 +369,7 @@ class ProcessTracker:
                             found_scheduler = child_pid
 
                         elif (
-                            "agentmaestro-worker" in cmdline
+                            "agentbeacon-worker" in cmdline
                             and child_pid not in found_workers
                         ):
                             self.register_child_pid(
@@ -405,9 +405,9 @@ class ProcessTracker:
             process_type: Optional type to check ("scheduler", "worker", etc.)
         """
         patterns = {
-            "scheduler": "agentmaestro-scheduler",
-            "worker": "agentmaestro-worker",
-            "orchestrator": "agentmaestro",
+            "scheduler": "agentbeacon-scheduler",
+            "worker": "agentbeacon-worker",
+            "orchestrator": "agentbeacon",
         }
 
         search_patterns = (
@@ -426,7 +426,7 @@ class ProcessTracker:
 
         if external_found:
             print(
-                f"\n⚠️  WARNING [{self._test_name}]: Found external agentmaestro processes "
+                f"\n⚠️  WARNING [{self._test_name}]: Found external agentbeacon processes "
                 f"(not spawned by this test):"
             )
             for pid, cmdline in external_found:
@@ -673,7 +673,7 @@ def start_scheduler(
 
     scheduler_process = subprocess.Popen(
         [
-            "./bin/agentmaestro-scheduler",
+            "./bin/agentbeacon-scheduler",
             "--port",
             str(port),
             "--db-url",
@@ -765,7 +765,7 @@ def start_worker(
     worker_env = os.environ.copy()
 
     cmd = [
-        "./bin/agentmaestro-worker",
+        "./bin/agentbeacon-worker",
         "--scheduler-url",
         orchestrator_url,
         "--interval",
@@ -820,7 +820,7 @@ def start_worker_with_retry_config(
 
     worker_process = subprocess.Popen(
         [
-            "./bin/agentmaestro-worker",
+            "./bin/agentbeacon-worker",
             "--scheduler-url",
             scheduler_url,
             "--interval",
@@ -1139,7 +1139,7 @@ def start_orchestrator(
     env["DATABASE_URL"] = db_url
 
     cmd = [
-        "./bin/agentmaestro",
+        "./bin/agentbeacon",
         "--workers",
         str(workers),
         "--scheduler-port",

@@ -48,7 +48,7 @@ def test_debug_acp_with_logs():
             # Start worker with debug logging and capture output
             base_dir = Path(__file__).parent.parent.parent
             worker_cmd = [
-                "./bin/agentmaestro-worker",
+                "./bin/agentbeacon-worker",
                 "--scheduler-url",
                 f"http://localhost:{mock_orchestrator_port}",
                 "--interval",
@@ -59,7 +59,7 @@ def test_debug_acp_with_logs():
             import os
 
             worker_env = os.environ.copy()
-            worker_env["RUST_LOG"] = "agentmaestro_worker=debug,worker=debug"
+            worker_env["RUST_LOG"] = "agentbeacon_worker=debug,worker=debug"
 
             worker_proc = subprocess.Popen(
                 worker_cmd,

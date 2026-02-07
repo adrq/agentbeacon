@@ -4,8 +4,4 @@ pub mod assets;
 pub mod db;
 pub mod error;
 pub mod queue;
-pub mod registry;
-pub mod scheduling;
-pub mod task_preparation;
 pub mod telemetry;
-pub mod validation;

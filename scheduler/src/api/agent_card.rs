@@ -66,14 +66,14 @@ impl AgentCard {
     pub fn new(base_url: &str) -> Self {
         let rpc_url = format!("{}/rpc", base_url.trim_end_matches('/'));
         Self {
-            name: "AgentMaestro Scheduler".to_string(),
+            name: "AgentBeacon Scheduler".to_string(),
             version: "1.0.0".to_string(),
             protocol_version: "0.3.0".to_string(),
             url: rpc_url.clone(),
-            description: "AgentMaestro scheduler for AI agent workflow orchestration with DAG-based task scheduling and workflow registry support".to_string(),
+            description: "Multi-agent orchestrator".to_string(),
             preferred_transport: "JSONRPC".to_string(),
             default_input_modes: vec![
-                "application/x-yaml".to_string(),
+                "application/json".to_string(),
                 "text/plain".to_string(),
             ],
             default_output_modes: vec!["application/json".to_string()],
@@ -82,19 +82,17 @@ impl AgentCard {
                 push_notifications: false,
                 methods: vec!["message/send".to_string(), "tasks/get".to_string()],
                 features: vec![
-                    "workflow-orchestration".to_string(),
-                    "dag-scheduling".to_string(),
-                    "workflow-registry".to_string(),
-                    "namespace-support".to_string(),
-                    "fifo-task-assignment".to_string(),
+                    "agent-coordination".to_string(),
+                    "session-management".to_string(),
+                    "task-queue".to_string(),
                 ],
             },
             skills: vec![Skill {
-                id: "workflow-orchestration".to_string(),
-                name: "Workflow Orchestration".to_string(),
-                description: "Submit and execute multi-agent AI workflows via DAG scheduling. Supports both inline YAML and registry-based workflow references with versioning and namespace organization.".to_string(),
+                id: "agent-coordination".to_string(),
+                name: "Agent Coordination".to_string(),
+                description: "Coordinate multiple AI agents via master-agent delegation with session-based execution tracking.".to_string(),
                 input_modes: vec![
-                    "application/x-yaml".to_string(),
+                    "application/json".to_string(),
                     "text/plain".to_string(),
                 ],
                 output_modes: vec!["application/json".to_string()],
@@ -142,7 +140,7 @@ mod tests {
         let card = AgentCard::new("http://localhost:9456");
 
         // Verify all 10 A2A v0.3.0 required fields
-        assert_eq!(card.name, "AgentMaestro Scheduler");
+        assert_eq!(card.name, "AgentBeacon Scheduler");
         assert_eq!(card.version, "1.0.0");
         assert_eq!(card.protocol_version, "0.3.0");
         assert_eq!(card.url, "http://localhost:9456/rpc");

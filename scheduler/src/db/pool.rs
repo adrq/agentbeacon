@@ -153,13 +153,13 @@ fn convert_placeholders_to_postgres(query: &str) -> String {
     let mut param_num = 1;
 
     for token in tokens {
-        if let Token::Placeholder(ref s) = token {
-            if s == "?" {
-                // Convert ? to $N for PostgreSQL
-                result.push_str(&format!("${param_num}"));
-                param_num += 1;
-                continue;
-            }
+        if let Token::Placeholder(ref s) = token
+            && s == "?"
+        {
+            // Convert ? to $N for PostgreSQL
+            result.push_str(&format!("${param_num}"));
+            param_num += 1;
+            continue;
         }
         // Preserve all other tokens (string literals, keywords, etc.)
         result.push_str(&token.to_string());

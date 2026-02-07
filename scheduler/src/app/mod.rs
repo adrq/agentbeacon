@@ -6,8 +6,6 @@ use tracing::warn;
 use crate::assets::Assets;
 use crate::db::DbPool;
 use crate::queue::TaskQueue;
-use crate::scheduling::scheduler::Scheduler;
-use crate::validation::SchemaValidator;
 
 /// Port used by Vite dev server in development mode
 const VITE_DEV_PORT: u16 = 5173;
@@ -16,9 +14,7 @@ const VITE_DEV_PORT: u16 = 5173;
 #[derive(Clone)]
 pub struct AppState {
     pub db_pool: DbPool,
-    pub validator: Arc<SchemaValidator>,
     pub task_queue: Arc<TaskQueue>,
-    pub scheduler: Arc<Scheduler>,
     pub base_url: String,
     pub public_url: Option<String>,
 }
@@ -26,17 +22,13 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         db_pool: DbPool,
-        validator: Arc<SchemaValidator>,
         task_queue: Arc<TaskQueue>,
-        scheduler: Scheduler,
         base_url: String,
         public_url: Option<String>,
     ) -> Self {
         Self {
             db_pool,
-            validator,
             task_queue,
-            scheduler: Arc::new(scheduler),
             base_url,
             public_url,
         }
@@ -63,21 +55,20 @@ impl AppState {
         if let (Some(host), Some(proto)) = (
             headers.get("x-forwarded-host"),
             headers.get("x-forwarded-proto"),
-        ) {
-            if let (Ok(host_str), Ok(proto_str)) = (host.to_str(), proto.to_str()) {
-                // In multi-proxy setups, these headers contain comma-separated lists.
-                // Take the first (leftmost) value which is the original client value.
-                let host_value = host_str.split(',').next().unwrap_or("").trim();
-                let proto_value = proto_str
-                    .split(',')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_lowercase();
+        ) && let (Ok(host_str), Ok(proto_str)) = (host.to_str(), proto.to_str())
+        {
+            // In multi-proxy setups, these headers contain comma-separated lists.
+            // Take the first (leftmost) value which is the original client value.
+            let host_value = host_str.split(',').next().unwrap_or("").trim();
+            let proto_value = proto_str
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
 
-                if !host_value.is_empty() && !proto_value.is_empty() {
-                    return format!("{proto_value}://{host_value}");
-                }
+            if !host_value.is_empty() && !proto_value.is_empty() {
+                return format!("{proto_value}://{host_value}");
             }
         }
 

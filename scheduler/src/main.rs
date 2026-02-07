@@ -9,14 +9,12 @@ use scheduler::{
     app::{AppState, create_router},
     db,
     queue::TaskQueue,
-    scheduling::scheduler::Scheduler,
     telemetry,
-    validation::SchemaValidator,
 };
 
-/// AgentMaestro Scheduler - Workflow orchestration and execution tracking
+/// AgentBeacon Scheduler - Agent orchestration and execution tracking
 #[derive(Parser, Debug)]
-#[command(name = "agentmaestro-scheduler")]
+#[command(name = "agentbeacon-scheduler")]
 #[command(version = "1.0.0")]
 #[command(about = "Rust scheduler with database layer and REST API", long_about = None)]
 struct Cli {
@@ -43,7 +41,7 @@ async fn main() -> Result<()> {
     // Register SQLx Any drivers (required for SQLx 0.8+ with Pool<Any>)
     sqlx::any::install_default_drivers();
 
-    info!("AgentMaestro Scheduler starting...");
+    info!("AgentBeacon Scheduler starting...");
     info!("Configuration: port={}, db_url={}", cli.port, cli.db_url);
 
     // Run bootstrap and startup flow
@@ -74,14 +72,6 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .context("Failed to run database migrations")?;
     info!("Database migrations completed successfully");
 
-    // Compile schema validator (fail-fast on errors per FR-VAL-011)
-    info!("Compiling schema validator...");
-    let validator = Arc::new(
-        SchemaValidator::new()
-            .context("FATAL: Schema compilation failed - cannot start scheduler")?,
-    );
-    info!("Schema validator compiled successfully");
-
     // Create task queue (database-only, no rebuild needed)
     info!("Initializing task queue...");
     let task_queue = Arc::new(TaskQueue::new(db_pool.clone()));
@@ -90,11 +80,6 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .await
         .context("Failed to get task queue length")?;
     info!("Task queue initialized with {queue_len} pending tasks");
-
-    // Create scheduler
-    info!("Initializing scheduler...");
-    let scheduler = Scheduler::new(db_pool.clone(), task_queue.clone(), validator.clone());
-    info!("Scheduler initialized");
 
     // Build base URL for agent card
     let base_url = format!("http://localhost:{}", cli.port);
@@ -118,9 +103,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
     }
 
     // Build application state and router
-    let app_state = AppState::new(
-        db_pool, validator, task_queue, scheduler, base_url, public_url,
-    );
+    let app_state = AppState::new(db_pool, task_queue, base_url, public_url);
     let app = create_router(app_state, dev_mode, cli.port);
 
     // Bind to port
@@ -149,7 +132,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .await
         .context("Server error")?;
 
-    info!("AgentMaestro Scheduler shut down gracefully");
+    info!("AgentBeacon Scheduler shut down gracefully");
     Ok(())
 }
 

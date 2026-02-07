@@ -55,10 +55,10 @@ impl AcpConfig {
         if self.command.is_empty() {
             anyhow::bail!("ACP agent command cannot be empty");
         }
-        if let Some(timeout) = self.timeout {
-            if timeout == 0 {
-                anyhow::bail!("ACP agent timeout must be greater than 0");
-            }
+        if let Some(timeout) = self.timeout
+            && timeout == 0
+        {
+            anyhow::bail!("ACP agent timeout must be greater than 0");
         }
         Ok(())
     }

@@ -158,7 +158,7 @@ async fn execute_a2a_task_inner(
         AgentConfig::A2a { config } => &config.url,
         _ => {
             return Err(anyhow::anyhow!(
-                "validation failed: agent '{}' is not an A2A agent (only A2A supported in Phase 1)",
+                "validation failed: agent '{}' is not an A2A agent (only A2A currently supported)",
                 task.agent
             ));
         }

@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 import requests
 
+pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
+
 from tests.testhelpers import scheduler_context
 
 ROOT = Path(__file__).resolve().parents[2]

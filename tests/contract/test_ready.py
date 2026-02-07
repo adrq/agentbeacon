@@ -26,7 +26,7 @@ class TestSchedulerReadyEndpoint:
         """Set up test environment."""
         # Use a unique port for each test to avoid conflicts
         self.test_port = 19458  # Different from other tests
-        self.scheduler_binary = "./bin/agentmaestro-scheduler"
+        self.scheduler_binary = "./bin/agentbeacon-scheduler"
         self.temp_dir = tempfile.mkdtemp()
         self.processes = []
 

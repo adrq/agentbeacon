@@ -56,19 +56,21 @@ pub enum WorkerSyncResponse {
 }
 
 /// Handle worker sync endpoint
+///
+/// Simplified: no Scheduler to dispatch to. If a worker reports a
+/// task_result, log it and ignore. If idle, try to pop from queue. Otherwise NoAction.
 pub async fn handle_worker_sync(
     State(state): State<AppState>,
     Json(request): Json<WorkerSyncRequest>,
 ) -> Result<Json<WorkerSyncResponse>, StatusCode> {
-    // Handle task result if present
+    // Handle task result if present — log and acknowledge
     if let Some(task_result) = request.task_result {
-        handle_task_result(&state, task_result).await.map_err(|e| {
-            eprintln!("Error handling task result: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-        // When a worker submits a result, acknowledge with NoAction
-        // Don't assign new task in same request (prevents race condition)
+        tracing::info!(
+            execution_id = %task_result.execution_id,
+            node_id = %task_result.node_id,
+            state = %task_result.task_status.state,
+            "Received task result from worker (no scheduler to dispatch to)"
+        );
         return Ok(Json(WorkerSyncResponse::NoAction));
     }
 
@@ -76,105 +78,18 @@ pub async fn handle_worker_sync(
     if request.status == "idle" {
         match state.task_queue.pop().await {
             Ok(Some(task)) => {
-                // Update task state to "assigned" via scheduler (serializes with handle_task_result)
-                // CRITICAL: This must succeed, otherwise we violate atomicity (task popped but not tracked)
-                if let Err(e) = state
-                    .scheduler
-                    .mark_task_assigned(&task.execution_id, &task.node_id)
-                    .await
-                {
-                    eprintln!("Error marking task as assigned: {e}");
-
-                    // ATOMICITY FIX: Push task back to queue to prevent orphaning
-                    if let Err(push_err) = state.task_queue.push(task.clone()).await {
-                        eprintln!(
-                            "CRITICAL: Failed to push task back to queue after mark_assigned failure: {push_err}"
-                        );
-                        eprintln!(
-                            "Task {}/{} may be orphaned - manual recovery required",
-                            task.execution_id, task.node_id
-                        );
-                    } else {
-                        eprintln!(
-                            "Task {}/{} pushed back to queue for retry",
-                            task.execution_id, task.node_id
-                        );
-                    }
-
-                    // Return error to worker (do not assign task)
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-
                 return Ok(Json(WorkerSyncResponse::TaskAssigned { task }));
             }
             Ok(None) => {
-                // Queue is empty - return no_action
                 return Ok(Json(WorkerSyncResponse::NoAction));
             }
             Err(e) => {
-                eprintln!("Error popping task from queue: {e}");
+                tracing::error!("pop task from queue failed: {e}");
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
     }
 
-    // Worker is working - just heartbeat acknowledgment
+    // Worker is working — heartbeat acknowledgment
     Ok(Json(WorkerSyncResponse::NoAction))
-}
-
-/// Extract error message from A2A TaskStatus message field
-fn extract_error_message(task_status: &TaskStatus) -> Option<String> {
-    if task_status.state != "failed" {
-        return None;
-    }
-
-    // Extract text from A2A message.parts[0].text
-    task_status.message.as_ref().and_then(|msg| {
-        msg.get("parts")
-            .and_then(|parts| parts.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|part| part.get("text"))
-            .and_then(|text| text.as_str())
-            .map(|s| s.to_string())
-    })
-}
-
-/// Handle task result from worker
-async fn handle_task_result(
-    state: &AppState,
-    task_result: TaskResult,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Determine success based on task status state
-    let success = task_result.task_status.state == "completed";
-
-    // Extract error message from worker response (for failed tasks)
-    let error_message = extract_error_message(&task_result.task_status);
-
-    tracing::info!(
-        execution_id = %task_result.execution_id,
-        node_id = %task_result.node_id,
-        success = success,
-        state = %task_result.task_status.state,
-        error = ?error_message,
-        "Received task result from worker"
-    );
-
-    // Update scheduler with task result (triggers event-driven scheduling)
-    state
-        .scheduler
-        .handle_task_result(
-            &task_result.execution_id,
-            &task_result.node_id,
-            success,
-            error_message,
-        )
-        .await?;
-
-    tracing::info!(
-        execution_id = %task_result.execution_id,
-        node_id = %task_result.node_id,
-        "Task result processed successfully"
-    );
-
-    Ok(())
 }

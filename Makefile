@@ -23,24 +23,24 @@ build-rust-workspace:
 install-bins: build-rust-workspace
 	@echo "Installing Rust binaries to bin/..."
 	@mkdir -p bin
-	cp target/release/orchestrator bin/agentmaestro
-	cp target/release/agentmaestro-scheduler bin/
-	cp target/release/agentmaestro-worker bin/
+	cp target/release/orchestrator bin/agentbeacon
+	cp target/release/agentbeacon-scheduler bin/
+	cp target/release/agentbeacon-worker bin/
 	@echo "Rust binaries installed to bin/"
 
 # Build only the Rust scheduler binary
 build-scheduler:
 	@echo "Building Rust scheduler..."
-	cargo build --release --bin agentmaestro-scheduler
+	cargo build --release --bin agentbeacon-scheduler
 	@mkdir -p bin
-	cp target/release/agentmaestro-scheduler bin/
+	cp target/release/agentbeacon-scheduler bin/
 
 # Build only the Rust worker binary
 build-worker:
 	@echo "Building Rust worker..."
-	cargo build --release --bin agentmaestro-worker
+	cargo build --release --bin agentbeacon-worker
 	@mkdir -p bin
-	cp target/release/agentmaestro-worker bin/
+	cp target/release/agentbeacon-worker bin/
 
 # Run Rust unit tests with both SQLite and PostgreSQL
 test:
@@ -48,9 +48,9 @@ test:
 	cargo test -- test-threads=1
 	@echo ""
 	@echo "=== Running Rust tests with PostgreSQL ==="
-	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentmaestro_test cargo test -- --test-threads=1
+	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test cargo test -- --test-threads=1
 	@echo ""
-	@echo "✅ All tests passed with both backends"
+	@echo "All tests passed with both backends"
 
 test-sqlite:
 	@echo "Running Rust tests with SQLite..."
@@ -58,7 +58,7 @@ test-sqlite:
 
 test-postgres:
 	@echo "Running Rust tests with PostgreSQL..."
-	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentmaestro_test cargo test -- --test-threads=1
+	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test cargo test -- --test-threads=1
 
 # Build Rust binaries and run Python integration tests
 test-int: build
@@ -69,17 +69,16 @@ test-all: test test-int
 
 # Run target
 run: build
-	@echo "Starting agentmaestro server..."
-	./bin/agentmaestro
+	@echo "Starting AgentBeacon server..."
+	./bin/agentbeacon
 
-# Clean build artifacts (both Rust and Go)
+# Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf bin/*
 	rm -rf dist/*
 	cd web && rm -rf dist/
 	cargo clean
-
 
 # Run pre-commit hooks on all staged files
 pre-commit:
@@ -89,7 +88,7 @@ pre-commit:
 # Development mode - run scheduler in dev mode
 dev-backend:
 	@echo "Starting Rust scheduler in development mode..."
-	DEV_MODE=1 cargo run --bin agentmaestro-scheduler
+	DEV_MODE=1 cargo run --bin agentbeacon-scheduler
 
 # Development mode - run frontend dev server
 dev-frontend:

@@ -13,7 +13,7 @@ def create_agent_card(base_url: str, port: int = 8080) -> AgentCard:
         preferred_transport="JSONRPC",
         url=f"{base_url}/rpc",
         version="1.0.0",
-        description="Mock agent for testing AgentMaestro workflows",
+        description="Mock agent for testing AgentBeacon workflows",
         capabilities=AgentCapabilities(streaming=False, push_notifications=False),
         default_input_modes=["application/json", "text/plain"],
         default_output_modes=["application/json", "text/plain"],
@@ -21,7 +21,7 @@ def create_agent_card(base_url: str, port: int = 8080) -> AgentCard:
             AgentSkill(
                 id="mock-testing",
                 name="Mock Testing",
-                description="Provides mock responses for testing AgentMaestro workflows",
+                description="Provides mock responses for testing AgentBeacon workflows",
                 tags=["testing", "mock", "development"],
             )
         ],

@@ -51,7 +51,7 @@ def test_worker_complete_task_execution_cycle():
             f"Mock scheduler did not start on port {mock_orchestrator_port}"
         )
 
-        # Start A2A mock agent (required for Rust worker Phase 1)
+        # Start A2A mock agent
         agent_proc = start_and_wait_for_a2a_agent(
             18765, Path(__file__).parent.parent.parent
         )
@@ -182,7 +182,7 @@ def test_worker_handles_task_with_output():
     processes = []
 
     try:
-        # Start A2A mock agent (required for Rust worker Phase 1)
+        # Start A2A mock agent
         agent_proc = start_and_wait_for_a2a_agent(
             18765, Path(__file__).parent.parent.parent
         )
@@ -276,7 +276,7 @@ def test_multiple_task_execution_sequence():
     processes = []
 
     try:
-        # Start A2A mock agent (required for Rust worker Phase 1)
+        # Start A2A mock agent
         agent_proc = start_and_wait_for_a2a_agent(
             18765, Path(__file__).parent.parent.parent
         )
@@ -433,7 +433,7 @@ def test_worker_uses_agents_yaml_config():
     processes = []
 
     try:
-        # Start A2A mock agent with custom config for test-config-agent (required for Rust worker Phase 1)
+        # Start A2A mock agent with custom config for test-config-agent
         config_agent_proc = start_and_wait_for_a2a_agent(
             port=18766,
             base_dir=Path(__file__).parent.parent.parent,
@@ -534,7 +534,7 @@ def test_mixed_bracketed_and_plain_text_compatibility():
     processes = []
 
     try:
-        # Start A2A mock agent (required for Rust worker Phase 1)
+        # Start A2A mock agent
         agent_proc = start_and_wait_for_a2a_agent(
             18765, Path(__file__).parent.parent.parent
         )

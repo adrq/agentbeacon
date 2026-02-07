@@ -1,4 +1,4 @@
-"""Simple FastAPI mock orchestrator for AgentMaestro worker testing.
+"""Simple FastAPI mock orchestrator for AgentBeacon worker testing.
 
 Based on FastAPI basic example pattern: https://fastapi.tiangolo.com/#create-it
 """

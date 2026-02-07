@@ -37,7 +37,7 @@ def test_worker_handles_agent_process_failure():
     # Test for stdio-based worker that expects Python mock-agent failure
 
     mock_orchestrator_port = 19466
-    worker_binary = "./bin/agentmaestro-worker"
+    worker_binary = "./bin/agentbeacon-worker"
     processes = []
 
     try:
@@ -128,11 +128,11 @@ def test_worker_handles_malformed_task_data():
     # Test how worker properly fails tasks with missing required fields and provides helpful errors
 
     mock_orchestrator_port = 19468
-    worker_binary = "./bin/agentmaestro-worker"
+    worker_binary = "./bin/agentbeacon-worker"
     processes = []
 
     try:
-        # Start A2A mock agent (required for Rust worker Phase 1)
+        # Start A2A mock agent
         agent_proc = start_and_wait_for_a2a_agent(
             18765, Path(__file__).parent.parent.parent
         )
@@ -233,11 +233,11 @@ def test_worker_surfaces_adapter_rejection():
     # Use FAIL_NODE command to force the mock-agent stdio adapter to reject the task payload
 
     mock_orchestrator_port = 19472
-    worker_binary = "./bin/agentmaestro-worker"
+    worker_binary = "./bin/agentbeacon-worker"
     processes = []
 
     try:
-        # Start A2A mock agent (required for Rust worker Phase 1)
+        # Start A2A mock agent
         agent_proc = start_and_wait_for_a2a_agent(
             18765, Path(__file__).parent.parent.parent
         )
@@ -429,11 +429,11 @@ def test_worker_fails_on_unknown_agent():
     # Test that worker rejects unknown agents and provides helpful error message
 
     mock_orchestrator_port = 19470
-    worker_binary = "./bin/agentmaestro-worker"
+    worker_binary = "./bin/agentbeacon-worker"
     processes = []
 
     try:
-        # Start A2A mock agent (required for Rust worker Phase 1)
+        # Start A2A mock agent
         agent_proc = start_and_wait_for_a2a_agent(
             18765, Path(__file__).parent.parent.parent
         )

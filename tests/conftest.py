@@ -45,7 +45,7 @@ def test_database(request):
         # Hardcoded default, optional env override
         base_url = os.environ.get(
             "POSTGRES_TEST_URL",
-            "postgres://postgres:postgres@127.0.0.1/agentmaestro_test",
+            "postgres://postgres:postgres@127.0.0.1/agentbeacon_test",
         )
         yield base_url
         # Cleanup is now handled by cleanup_postgres_database fixture
@@ -59,7 +59,7 @@ def cleanup_postgres_database(request):
     """Clean PostgreSQL database after each test for idempotency.
 
     SQLite tests use temporary files and are already isolated.
-    PostgreSQL tests share agentmaestro_test database and need cleanup.
+    PostgreSQL tests share agentbeacon_test database and need cleanup.
 
     Truncates all application tables while preserving schema_migrations
     to maintain migration history.
@@ -87,12 +87,14 @@ def cleanup_postgres_database(request):
             # Truncate all tables in reverse dependency order
             # CASCADE handles any remaining foreign key constraints
             tables = [
-                "execution_events",  # Child of executions
-                "pending_tasks",  # Child of executions
-                "executions",  # Child of workflows
-                "workflows",  # Standalone
-                "workflow_version",  # Standalone (registry)
-                "config",  # Standalone (API keys)
+                "events",        # Child of sessions
+                "artifacts",     # Child of workspaces/sessions
+                "task_queue",    # Child of executions/sessions
+                "sessions",      # Child of executions
+                "executions",    # Child of workspaces
+                "agents",        # Standalone
+                "workspaces",    # Standalone
+                "config",        # Standalone
             ]
 
             # Note: schema_migrations is NOT truncated to preserve migration history

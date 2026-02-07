@@ -1,0 +1,118 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::Row;
+
+use super::{DbPool, TimestampColumn};
+use crate::error::SchedulerError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event {
+    pub id: i64,
+    pub execution_id: String,
+    pub session_id: Option<String>, // nullable for execution-level events
+    pub event_type: String,         // "message" | "state_change"
+    pub payload: String,            // JSON
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn insert(
+    pool: &DbPool,
+    execution_id: &str,
+    session_id: Option<&str>,
+    event_type: &str,
+    payload: &str,
+) -> Result<i64, SchedulerError> {
+    if pool.is_postgres() {
+        let row = sqlx::query(
+            "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(execution_id)
+        .bind(session_id)
+        .bind(event_type)
+        .bind(payload)
+        .fetch_one(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("insert event failed: {e}")))?;
+
+        let id: i64 = row
+            .try_get("id")
+            .map_err(|e| SchedulerError::Database(format!("get id failed: {e}")))?;
+        Ok(id)
+    } else {
+        sqlx::query(
+            "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, ?, ?)",
+        )
+        .bind(execution_id)
+        .bind(session_id)
+        .bind(event_type)
+        .bind(payload)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("insert event failed: {e}")))?;
+
+        let id_row = sqlx::query("SELECT last_insert_rowid() as id")
+            .fetch_one(pool.as_ref())
+            .await
+            .map_err(|e| SchedulerError::Database(format!("get last insert id failed: {e}")))?;
+
+        let id: i64 = id_row
+            .try_get("id")
+            .map_err(|e| SchedulerError::Database(format!("get id failed: {e}")))?;
+        Ok(id)
+    }
+}
+
+pub async fn list_by_execution(
+    pool: &DbPool,
+    execution_id: &str,
+) -> Result<Vec<Event>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+
+    let sql = format!(
+        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at FROM events WHERE execution_id = ? ORDER BY created_at ASC",
+        created_fmt
+    );
+
+    let rows = sqlx::query(&pool.prepare_query(&sql))
+        .bind(execution_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list events failed: {e}")))?;
+
+    rows.into_iter().map(parse_event_row).collect()
+}
+
+pub async fn list_by_session(
+    pool: &DbPool,
+    session_id: &str,
+) -> Result<Vec<Event>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+
+    let sql = format!(
+        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at FROM events WHERE session_id = ? ORDER BY created_at ASC",
+        created_fmt
+    );
+
+    let rows = sqlx::query(&pool.prepare_query(&sql))
+        .bind(session_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list events failed: {e}")))?;
+
+    rows.into_iter().map(parse_event_row).collect()
+}
+
+fn parse_event_row(row: sqlx::any::AnyRow) -> Result<Event, SchedulerError> {
+    let created_at_str: String = row.get("created_at");
+
+    Ok(Event {
+        id: row.get("id"),
+        execution_id: row.get("execution_id"),
+        session_id: row.get("session_id"),
+        event_type: row.get("event_type"),
+        payload: row.get("payload"),
+        created_at: DateTime::parse_from_rfc3339(&created_at_str)
+            .map_err(|e| SchedulerError::Database(format!("parse created_at failed: {e}")))?
+            .with_timezone(&Utc),
+    })
+}

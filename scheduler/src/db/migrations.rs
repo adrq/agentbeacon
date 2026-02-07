@@ -5,8 +5,6 @@ use crate::error::SchedulerError;
 
 /// Embedded migration files
 const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");
-const MIGRATION_0002: &str = include_str!("../../migrations/0002_add_workflow_registry.sql");
-const MIGRATION_0003: &str = include_str!("../../migrations/0003_add_pending_tasks.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -128,11 +126,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     let current_version = get_current_version(pool).await.unwrap_or(0);
 
     // List of all migrations in order
-    let migrations = vec![
-        (MIGRATION_0001, 1),
-        (MIGRATION_0002, 2),
-        (MIGRATION_0003, 3),
-    ];
+    let migrations = vec![(MIGRATION_0001, 1)];
 
     // Process each migration
     for (migration_sql, version) in migrations {

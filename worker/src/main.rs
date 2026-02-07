@@ -424,10 +424,10 @@ async fn handle_sync_tick(
                         }
 
                         // 2. Abort local JoinHandle (for A2A or failed ACP cancellation)
-                        if let Some(watchdog) = state.cancel_current_task() {
-                            if let Err(e) = watchdog.await {
-                                tracing::error!("Watchdog task panicked: {}", e);
-                            }
+                        if let Some(watchdog) = state.cancel_current_task()
+                            && let Err(e) = watchdog.await
+                        {
+                            tracing::error!("Watchdog task panicked: {}", e);
                         }
 
                         // 3. Report cancellation to scheduler (only if we didn't return early with graceful result)

@@ -638,15 +638,15 @@ async fn send_session_prompt(
                             }
                             JsonRpcMessage::Notification(notif) => {
                                 // Continue processing session/update per ACP spec
-                                if notif.method == "session/update" {
-                                    if let Err(e) = handle_session_update(&notif.params, update_history) {
-                                        tracing::warn!(
-                                            event = "session_update_error",
-                                            phase = "cancellation",
-                                            error = %e,
-                                            "Failed to process session/update during cancellation"
-                                        );
-                                    }
+                                if notif.method == "session/update"
+                                    && let Err(e) = handle_session_update(&notif.params, update_history)
+                                {
+                                    tracing::warn!(
+                                        event = "session_update_error",
+                                        phase = "cancellation",
+                                        error = %e,
+                                        "Failed to process session/update during cancellation"
+                                    );
                                 }
                             }
                             JsonRpcMessage::Request(req) => {
