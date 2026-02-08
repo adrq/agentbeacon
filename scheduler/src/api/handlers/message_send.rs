@@ -15,7 +15,7 @@ pub async fn handle_message_send(
     JsonRpcResponse::error(
         id,
         JsonRpcError::internal_error(
-            "not implemented — A2A message/send being redesigned for session model".to_string(),
+            "not implemented — A2A message/send being redesigned for session model",
         ),
     )
 }

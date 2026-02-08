@@ -107,6 +107,89 @@ pub async fn pop(pool: &DbPool) -> Result<Option<TaskAssignment>, SchedulerError
     }
 }
 
+/// Pop oldest task for a specific session (per-session inbox)
+pub async fn pop_by_session(
+    pool: &DbPool,
+    session_id: &str,
+) -> Result<Option<TaskAssignment>, SchedulerError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin transaction failed: {e}")))?;
+
+    let select_query = if pool.is_postgres() {
+        "SELECT id, execution_id, session_id, task_payload
+         FROM task_queue WHERE session_id = $1
+         ORDER BY queued_at ASC
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED"
+    } else {
+        "SELECT id, execution_id, session_id, task_payload
+         FROM task_queue WHERE session_id = ?
+         ORDER BY queued_at ASC
+         LIMIT 1"
+    };
+
+    let row = sqlx::query(select_query)
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("select task by session failed: {e}")))?;
+
+    if let Some(row) = row {
+        let row_id: i64 = row
+            .try_get("id")
+            .map_err(|e| SchedulerError::Database(format!("get id failed: {e}")))?;
+        let execution_id: String = row
+            .try_get("execution_id")
+            .map_err(|e| SchedulerError::Database(format!("get execution_id failed: {e}")))?;
+        let sid: String = row
+            .try_get("session_id")
+            .map_err(|e| SchedulerError::Database(format!("get session_id failed: {e}")))?;
+        let payload_json: String = row
+            .try_get("task_payload")
+            .map_err(|e| SchedulerError::Database(format!("get task_payload failed: {e}")))?;
+
+        let task_payload: serde_json::Value = serde_json::from_str(&payload_json).map_err(|e| {
+            SchedulerError::Database(format!("deserialize task_payload failed: {e}"))
+        })?;
+
+        let delete_query = if pool.is_postgres() {
+            "DELETE FROM task_queue WHERE id = $1"
+        } else {
+            "DELETE FROM task_queue WHERE id = ?"
+        };
+
+        let result = sqlx::query(delete_query)
+            .bind(row_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("delete task failed: {e}")))?;
+
+        if result.rows_affected() == 0 {
+            tx.rollback().await.map_err(|e| {
+                SchedulerError::Database(format!("rollback transaction failed: {e}"))
+            })?;
+            return Ok(None);
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("commit transaction failed: {e}")))?;
+
+        Ok(Some(TaskAssignment {
+            execution_id,
+            session_id: sid,
+            task_payload,
+        }))
+    } else {
+        tx.rollback()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("rollback transaction failed: {e}")))?;
+        Ok(None)
+    }
+}
+
 /// Count tasks in queue
 pub async fn count(pool: &DbPool) -> Result<usize, SchedulerError> {
     let row = sqlx::query("SELECT COUNT(*) as count FROM task_queue")

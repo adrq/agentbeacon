@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 use crate::db::DbPool;
 use crate::error::SchedulerError;
@@ -17,23 +18,46 @@ pub struct TaskAssignment {
 /// Uses the database as the single source of truth. All operations are transactional,
 /// providing ACID guarantees. Performance: 1-5ms per operation is negligible compared
 /// to typical task execution times (10-60 seconds for AI agents).
+///
+/// The `notify` field wakes long-poll waiters (e.g. `next_instruction`) on every push,
+/// so they can check their session's inbox without busy-polling.
 pub struct TaskQueue {
     db_pool: DbPool,
+    notify: Notify,
 }
 
 impl TaskQueue {
     pub fn new(db_pool: DbPool) -> Self {
-        Self { db_pool }
+        Self {
+            db_pool,
+            notify: Notify::new(),
+        }
     }
 
-    /// Push task to queue (persisted to database)
+    /// Push task to queue (persisted to database), then wake all waiters
     pub async fn push(&self, task: TaskAssignment) -> Result<(), SchedulerError> {
-        crate::db::task_queue::insert(&self.db_pool, &task).await
+        crate::db::task_queue::insert(&self.db_pool, &task).await?;
+        self.notify.notify_waiters();
+        Ok(())
     }
 
-    /// Pop oldest task from queue (FIFO)
+    /// Pop oldest task from queue (FIFO, global)
     pub async fn pop(&self) -> Result<Option<TaskAssignment>, SchedulerError> {
         crate::db::task_queue::pop(&self.db_pool).await
+    }
+
+    /// Pop oldest task for a specific session (per-session inbox)
+    pub async fn pop_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<TaskAssignment>, SchedulerError> {
+        crate::db::task_queue::pop_by_session(&self.db_pool, session_id).await
+    }
+
+    /// Returns a future that completes when the next push occurs.
+    /// Callers should call this before checking the queue to avoid race conditions.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.notify.notified()
     }
 
     /// Get current queue length

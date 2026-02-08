@@ -76,6 +76,8 @@ CREATE TABLE sessions (
     agent_session_id TEXT,
     status TEXT NOT NULL DEFAULT 'submitted'
         CHECK (status IN ('submitted', 'working', 'input-required', 'completed', 'failed', 'canceled')),
+    coordination_mode TEXT NOT NULL DEFAULT 'sdk'
+        CHECK (coordination_mode IN ('sdk', 'mcp_poll')),
     metadata TEXT NOT NULL DEFAULT '{}',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -136,6 +138,7 @@ CREATE TABLE task_queue (
 );
 
 CREATE INDEX idx_task_queue_queued ON task_queue(queued_at ASC);
+CREATE INDEX idx_task_queue_session_queued ON task_queue(session_id, queued_at ASC);
 
 -- Record migration
 INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, CURRENT_TIMESTAMP);

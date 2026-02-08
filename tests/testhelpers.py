@@ -16,6 +16,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Set, List, Dict, Any
 
+import sqlite3
+
+import httpx
 import psutil
 import requests
 import re
@@ -28,14 +31,14 @@ class PortManager:
     """Thread-safe port allocation manager for test isolation.
 
     Allocates ports from different ranges for different process types:
-    - Scheduler: 19456-19500
+    - Scheduler: 19456-19700
     - Agents: 18700-18799
 
     Provides socket-based availability checking to avoid conflicts.
     """
 
     SCHEDULER_MIN_PORT = 19456
-    SCHEDULER_MAX_PORT = 19500
+    SCHEDULER_MAX_PORT = 19700
     AGENT_MIN_PORT = 18700
     AGENT_MAX_PORT = 18799
 
@@ -1290,6 +1293,176 @@ def orchestrator_context(
         # Release port
         if port_manager:
             port_manager.release_port(allocated_port)
+
+
+def seed_test_agent(
+    db_path: str,
+    name: str = "test-agent",
+    agent_type: str = "claude_sdk",
+    agent_id: str = None,
+    enabled: bool = True,
+) -> str:
+    """Insert a test agent directly into SQLite.
+
+    Args:
+        db_path: Path to SQLite database file (not URL)
+        name: Agent name
+        agent_type: Agent type (claude_sdk, codex_sdk, acp, etc.)
+        agent_id: Agent ID (generated UUID if None)
+        enabled: Whether agent is enabled
+
+    Returns:
+        str: Agent ID
+    """
+    if agent_id is None:
+        agent_id = str(uuid.uuid4())
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, ?, '{}', ?)",
+            (agent_id, name, agent_type, 1 if enabled else 0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return agent_id
+
+
+def create_execution_via_api(
+    scheduler_url: str, agent_id: str, prompt: str, title: str = None
+) -> tuple:
+    """POST /api/executions, return (execution_id, session_id).
+
+    Args:
+        scheduler_url: Base URL of the scheduler
+        agent_id: Agent ID to assign the execution to
+        prompt: User prompt text
+        title: Optional execution title
+
+    Returns:
+        tuple: (execution_id, session_id)
+    """
+    payload = {"agent_id": agent_id, "prompt": prompt}
+    if title is not None:
+        payload["title"] = title
+
+    resp = httpx.post(f"{scheduler_url}/api/executions", json=payload, timeout=5)
+    assert resp.status_code == 201, (
+        f"create execution failed: {resp.status_code} {resp.text}"
+    )
+    data = resp.json()
+    return data["execution_id"], data["session_id"]
+
+
+def mcp_call(
+    scheduler_url: str,
+    session_id: str,
+    method: str,
+    params: dict = None,
+    rpc_id: int = 1,
+) -> dict:
+    """POST /mcp with Bearer auth, return parsed JSON-RPC response.
+
+    Args:
+        scheduler_url: Base URL of the scheduler
+        session_id: Session ID used as Bearer token
+        method: JSON-RPC method name
+        params: Optional method parameters
+        rpc_id: JSON-RPC request ID
+
+    Returns:
+        dict: Parsed JSON-RPC response body
+    """
+    body = {"jsonrpc": "2.0", "method": method, "id": rpc_id}
+    if params is not None:
+        body["params"] = params
+
+    resp = httpx.post(
+        f"{scheduler_url}/mcp",
+        json=body,
+        headers={
+            "Authorization": f"Bearer {session_id}",
+            "MCP-Protocol-Version": "2025-11-25",
+            "Accept": "application/json, text/event-stream",
+        },
+        timeout=5,
+    )
+    if resp.text:
+        return resp.json()
+    return {}
+
+
+def mcp_raw(
+    scheduler_url: str, session_id: str, method: str, params: dict = None, rpc_id=1
+) -> httpx.Response:
+    """POST /mcp with Bearer auth, return raw httpx.Response.
+
+    Args:
+        scheduler_url: Base URL of the scheduler
+        session_id: Session ID used as Bearer token
+        method: JSON-RPC method name
+        params: Optional method parameters
+        rpc_id: JSON-RPC request ID (None for notifications)
+
+    Returns:
+        httpx.Response: Raw HTTP response
+    """
+    body = {"jsonrpc": "2.0", "method": method}
+    if rpc_id is not None:
+        body["id"] = rpc_id
+    if params is not None:
+        body["params"] = params
+
+    return httpx.post(
+        f"{scheduler_url}/mcp",
+        json=body,
+        headers={
+            "Authorization": f"Bearer {session_id}",
+            "MCP-Protocol-Version": "2025-11-25",
+            "Accept": "application/json, text/event-stream",
+        },
+        timeout=5,
+    )
+
+
+def mcp_tools_list(scheduler_url: str, session_id: str) -> list:
+    """Call tools/list, return list of tool name strings.
+
+    Args:
+        scheduler_url: Base URL of the scheduler
+        session_id: Session ID used as Bearer token
+
+    Returns:
+        list: Tool name strings
+    """
+    resp = mcp_call(scheduler_url, session_id, "tools/list")
+    tools = resp.get("result", {}).get("tools", [])
+    return [t["name"] for t in tools]
+
+
+def mcp_tools_call(
+    scheduler_url: str, session_id: str, tool_name: str, arguments: dict
+) -> dict:
+    """Call tools/call, return result content.
+
+    Args:
+        scheduler_url: Base URL of the scheduler
+        session_id: Session ID used as Bearer token
+        tool_name: Name of the tool to call
+        arguments: Tool arguments
+
+    Returns:
+        dict: The result object from the JSON-RPC response
+    """
+    resp = mcp_call(
+        scheduler_url,
+        session_id,
+        "tools/call",
+        params={"name": tool_name, "arguments": arguments},
+    )
+    return resp.get("result", {})
 
 
 def count_processes_by_name(name_pattern: str) -> int:

@@ -51,11 +51,11 @@ impl JsonRpcError {
     }
 
     /// Invalid Request (-32600)
-    pub fn invalid_request(data: Option<JsonValue>) -> Self {
+    pub fn invalid_request(message: &str) -> Self {
         Self {
             code: -32600,
-            message: "Invalid Request".to_string(),
-            data,
+            message: message.to_string(),
+            data: None,
         }
     }
 
@@ -63,26 +63,26 @@ impl JsonRpcError {
     pub fn method_not_found(method: &str) -> Self {
         Self {
             code: -32601,
-            message: "Method not found".to_string(),
-            data: Some(json!({"method": method})),
+            message: format!("Method not found: {method}"),
+            data: None,
         }
     }
 
     /// Invalid params (-32602)
-    pub fn invalid_params(data: Option<JsonValue>) -> Self {
+    pub fn invalid_params(message: &str) -> Self {
         Self {
             code: -32602,
-            message: "Invalid params".to_string(),
-            data,
+            message: message.to_string(),
+            data: None,
         }
     }
 
     /// Internal error (-32603)
-    pub fn internal_error(message: String) -> Self {
+    pub fn internal_error(message: &str) -> Self {
         Self {
             code: -32603,
-            message: "Internal error".to_string(),
-            data: Some(json!({"detail": message})),
+            message: message.to_string(),
+            data: None,
         }
     }
 }
@@ -135,9 +135,7 @@ async fn handle_jsonrpc(
     if request.jsonrpc != "2.0" {
         return Err(JsonRpcResponse::error(
             request.id,
-            JsonRpcError::invalid_request(Some(json!({
-                "error": "jsonrpc field must be '2.0'"
-            }))),
+            JsonRpcError::invalid_request("jsonrpc field must be '2.0'"),
         ));
     }
 
