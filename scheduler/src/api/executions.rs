@@ -139,6 +139,7 @@ async fn create_execution_handler(
 ) -> Result<impl IntoResponse, SchedulerError> {
     let result = execution::create_execution(
         &state.db_pool,
+        &state.task_queue,
         &req.agent_id,
         &req.prompt,
         req.workspace_id.as_deref(),

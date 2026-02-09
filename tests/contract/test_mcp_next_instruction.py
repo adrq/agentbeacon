@@ -1,33 +1,31 @@
 """Contract tests for MCP next_instruction tool."""
 
 import json
-import sqlite3
 import threading
 import time
 import uuid
 
 import httpx
+import pytest
 
 from tests.testhelpers import (
     create_execution_via_api,
+    db_conn,
     mcp_tools_call,
     scheduler_context,
 )
 
 
-def _seed_agent_with_poll_timeout(db_path, name="test-agent", poll_timeout_ms=1000):
+def _seed_agent_with_poll_timeout(db_url, name="test-agent", poll_timeout_ms=1000):
     """Seed an agent with a custom poll_timeout_ms in config."""
     agent_id = str(uuid.uuid4())
     config = json.dumps({"poll_timeout_ms": poll_timeout_ms})
-    conn = sqlite3.connect(db_path)
-    try:
+    with db_conn(db_url) as conn:
         conn.execute(
-            "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, 'claude_sdk', ?, 1)",
-            (agent_id, name, config),
+            "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, 'claude_sdk', ?, ?)",
+            (agent_id, name, config, True),
         )
         conn.commit()
-    finally:
-        conn.close()
     return agent_id
 
 
@@ -67,23 +65,27 @@ def _call_next_instruction(url, token, timeout=10):
 def _create_child_session(ctx, agent_id, master_id, exec_id, status="submitted"):
     """Create a child session directly in DB."""
     child_id = str(uuid.uuid4())
-    conn = sqlite3.connect(ctx["db_path"])
-    conn.execute(
-        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, ?)",
-        (child_id, exec_id, master_id, agent_id, status),
-    )
-    conn.commit()
-    conn.close()
+    with db_conn(ctx["db_url"]) as conn:
+        conn.execute(
+            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, ?)",
+            (child_id, exec_id, master_id, agent_id, status),
+        )
+        conn.commit()
     return child_id
 
 
-def test_next_instruction_timeout_returns_timed_out():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_next_instruction_timeout_returns_timed_out(test_database):
     """Empty inbox → blocks for poll_timeout_ms then returns timed_out: true."""
-    with scheduler_context() as ctx:
-        agent_id = _seed_agent_with_poll_timeout(ctx["db_path"], poll_timeout_ms=1000)
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = _seed_agent_with_poll_timeout(ctx["db_url"], poll_timeout_ms=1000)
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        # Inbox is empty (create_execution doesn't enqueue tasks)
+        # Drain the initial task enqueued by create_execution
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
+            conn.commit()
+
         start = time.monotonic()
         payload = _call_next_instruction(ctx["url"], session_id, timeout=10)
         elapsed = time.monotonic() - start
@@ -94,39 +96,32 @@ def test_next_instruction_timeout_returns_timed_out():
         )
 
 
-def test_next_instruction_returns_queued_task_immediately():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_next_instruction_returns_queued_task_immediately(test_database):
     """Task already in inbox → returns immediately without waiting."""
-    with scheduler_context() as ctx:
-        agent_id = _seed_agent_with_poll_timeout(ctx["db_path"], poll_timeout_ms=5000)
-        exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = _seed_agent_with_poll_timeout(ctx["db_url"], poll_timeout_ms=5000)
+        _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        # Manually enqueue a task so the inbox is non-empty
-        conn = sqlite3.connect(ctx["db_path"])
-        payload = json.dumps({"kind": "test_task", "message": "hello"})
-        conn.execute(
-            "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
-            (exec_id, session_id, payload),
-        )
-        conn.commit()
-        conn.close()
-
+        # create_execution enqueues initial task — next_instruction should return it immediately
         start = time.monotonic()
         result = _call_next_instruction(ctx["url"], session_id, timeout=10)
         elapsed = time.monotonic() - start
 
         assert "task" in result
-        assert result["task"]["kind"] == "test_task"
+        assert result["task"]["agent_id"] == agent_id
         assert elapsed < 2.0, f"Should return immediately, took {elapsed:.2f}s"
 
 
-def test_child_next_instruction_gets_initial_prompt():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_child_next_instruction_gets_initial_prompt(test_database):
     """Child session: delegate puts task in child inbox → child next_instruction gets it."""
-    with scheduler_context() as ctx:
+    with scheduler_context(db_url=test_database) as ctx:
         master_agent_id = _seed_agent_with_poll_timeout(
-            ctx["db_path"], name="master", poll_timeout_ms=5000
+            ctx["db_url"], name="master", poll_timeout_ms=5000
         )
         child_agent_id = _seed_agent_with_poll_timeout(
-            ctx["db_path"], name="child", poll_timeout_ms=5000
+            ctx["db_url"], name="child", poll_timeout_ms=5000
         )
         _, master_sid = create_execution_via_api(ctx["url"], master_agent_id, "plan")
 
@@ -146,24 +141,22 @@ def test_child_next_instruction_gets_initial_prompt():
         assert any(p.get("text") == "do work" for p in parts)
 
 
-def test_master_next_instruction_gets_handoff_result():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_master_next_instruction_gets_handoff_result(test_database):
     """Full round-trip: delegate → child handoff → master next_instruction gets result."""
-    with scheduler_context() as ctx:
+    with scheduler_context(db_url=test_database) as ctx:
         master_agent_id = _seed_agent_with_poll_timeout(
-            ctx["db_path"], name="master", poll_timeout_ms=5000
+            ctx["db_url"], name="master", poll_timeout_ms=5000
         )
-        _seed_agent_with_poll_timeout(
-            ctx["db_path"], name="child", poll_timeout_ms=5000
-        )
+        _seed_agent_with_poll_timeout(ctx["db_url"], name="child", poll_timeout_ms=5000)
         exec_id, master_sid = create_execution_via_api(
             ctx["url"], master_agent_id, "plan"
         )
 
         # Drain master's initial task from queue
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute("DELETE FROM task_queue WHERE session_id = ?", (master_sid,))
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute("DELETE FROM task_queue WHERE session_id = ?", (master_sid,))
+            conn.commit()
 
         # Master delegates
         delegate_result = mcp_tools_call(
@@ -175,12 +168,11 @@ def test_master_next_instruction_gets_handoff_result():
         _call_next_instruction(ctx["url"], child_sid, timeout=10)
 
         # Update child to working so handoff is valid
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute(
-            "UPDATE sessions SET status = 'working' WHERE id = ?", (child_sid,)
-        )
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "UPDATE sessions SET status = 'working' WHERE id = ?", (child_sid,)
+            )
+            conn.commit()
 
         # Child hands off
         mcp_tools_call(ctx["url"], child_sid, "handoff", {"message": "done with work"})
@@ -194,25 +186,24 @@ def test_master_next_instruction_gets_handoff_result():
         assert task["message"] == "done with work"
 
 
-def test_ask_user_blocking_then_answer_via_next_instruction():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_ask_user_blocking_then_answer_via_next_instruction(test_database):
     """Master ask_user(blocking) → user answers via REST → master next_instruction gets answer."""
-    with scheduler_context() as ctx:
-        agent_id = _seed_agent_with_poll_timeout(ctx["db_path"], poll_timeout_ms=5000)
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = _seed_agent_with_poll_timeout(ctx["db_url"], poll_timeout_ms=5000)
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
 
         # Drain initial task
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
+            conn.commit()
 
         # Update session to working
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute(
-            "UPDATE sessions SET status = 'working' WHERE id = ?", (session_id,)
-        )
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "UPDATE sessions SET status = 'working' WHERE id = ?", (session_id,)
+            )
+            conn.commit()
 
         # Master asks a blocking question
         mcp_tools_call(
@@ -237,24 +228,22 @@ def test_ask_user_blocking_then_answer_via_next_instruction():
         assert task["message"] == "use approach B"
 
 
-def test_concurrent_next_instruction_wakes_on_handoff():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_concurrent_next_instruction_wakes_on_handoff(test_database):
     """Master blocks on next_instruction in background, child handoff wakes it."""
-    with scheduler_context() as ctx:
+    with scheduler_context(db_url=test_database) as ctx:
         master_agent_id = _seed_agent_with_poll_timeout(
-            ctx["db_path"], name="master", poll_timeout_ms=10000
+            ctx["db_url"], name="master", poll_timeout_ms=10000
         )
-        _seed_agent_with_poll_timeout(
-            ctx["db_path"], name="child", poll_timeout_ms=5000
-        )
+        _seed_agent_with_poll_timeout(ctx["db_url"], name="child", poll_timeout_ms=5000)
         exec_id, master_sid = create_execution_via_api(
             ctx["url"], master_agent_id, "plan"
         )
 
         # Drain master's initial task
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute("DELETE FROM task_queue WHERE session_id = ?", (master_sid,))
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute("DELETE FROM task_queue WHERE session_id = ?", (master_sid,))
+            conn.commit()
 
         # Delegate to child
         delegate_result = mcp_tools_call(
@@ -266,12 +255,11 @@ def test_concurrent_next_instruction_wakes_on_handoff():
         _call_next_instruction(ctx["url"], child_sid, timeout=10)
 
         # Set child to working
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute(
-            "UPDATE sessions SET status = 'working' WHERE id = ?", (child_sid,)
-        )
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "UPDATE sessions SET status = 'working' WHERE id = ?", (child_sid,)
+            )
+            conn.commit()
 
         # Master blocks on next_instruction in a thread
         result_holder = [None]
@@ -303,27 +291,26 @@ def test_concurrent_next_instruction_wakes_on_handoff():
         assert payload["task"]["kind"] == "handoff_result"
 
 
-def test_coordination_mode_set_on_first_call():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_coordination_mode_set_on_first_call(test_database):
     """First next_instruction call sets coordination_mode to mcp_poll."""
-    with scheduler_context() as ctx:
-        agent_id = _seed_agent_with_poll_timeout(ctx["db_path"], poll_timeout_ms=1000)
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = _seed_agent_with_poll_timeout(ctx["db_url"], poll_timeout_ms=1000)
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
 
         # Verify initial mode is sdk
-        conn = sqlite3.connect(ctx["db_path"])
-        row = conn.execute(
-            "SELECT coordination_mode FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT coordination_mode FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
         assert row[0] == "sdk"
 
         # Call next_instruction (it'll return the queued task immediately)
         _call_next_instruction(ctx["url"], session_id, timeout=10)
 
         # Verify mode changed to mcp_poll
-        conn = sqlite3.connect(ctx["db_path"])
-        row = conn.execute(
-            "SELECT coordination_mode FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT coordination_mode FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
         assert row[0] == "mcp_poll"

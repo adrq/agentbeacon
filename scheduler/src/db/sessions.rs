@@ -181,6 +181,65 @@ pub async fn list_filtered(
     rows.into_iter().map(parse_session_row).collect()
 }
 
+pub async fn update_agent_session_id(
+    pool: &DbPool,
+    id: &str,
+    agent_session_id: &str,
+) -> Result<(), SchedulerError> {
+    let query = pool.prepare_query(
+        "UPDATE sessions SET agent_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    );
+
+    let result = sqlx::query(&query)
+        .bind(agent_session_id)
+        .bind(id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("update agent_session_id failed: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        return Err(SchedulerError::NotFound(format!("session not found: {id}")));
+    }
+
+    Ok(())
+}
+
+pub async fn find_assignable(pool: &DbPool) -> Result<Option<Session>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
+    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
+
+    let sql = format!(
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE coordination_mode = 'sdk' AND status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
+        created_fmt, updated_fmt, completed_fmt
+    );
+    let query = pool.prepare_query(&sql);
+
+    let row = sqlx::query(&query)
+        .fetch_optional(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("find assignable session failed: {e}")))?;
+
+    match row {
+        Some(r) => Ok(Some(parse_session_row(r)?)),
+        None => Ok(None),
+    }
+}
+
+pub async fn claim_assignable(pool: &DbPool, id: &str) -> Result<bool, SchedulerError> {
+    let query = pool.prepare_query(
+        "UPDATE sessions SET status = 'working', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitted' AND coordination_mode = 'sdk'",
+    );
+
+    let result = sqlx::query(&query)
+        .bind(id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("claim assignable session failed: {e}")))?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> {
     let created_at_str: String = row.get("created_at");
     let updated_at_str: String = row.get("updated_at");

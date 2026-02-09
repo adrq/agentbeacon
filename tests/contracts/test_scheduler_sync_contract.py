@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.mark.skip(reason="Phase 2a: replaced by session-based sync protocol")
 @pytest.mark.usefixtures("validate_payload", "load_json_asset")
 def test_scheduler_sync_contract(load_json_asset, validate_payload) -> None:
     payload = load_json_asset("scheduler-sync-response.md")

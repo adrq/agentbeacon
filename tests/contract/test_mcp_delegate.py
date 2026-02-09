@@ -1,11 +1,13 @@
 """Contract tests for MCP delegate tool."""
 
 import json
-import sqlite3
 import uuid
+
+import pytest
 
 from tests.testhelpers import (
     create_execution_via_api,
+    db_conn,
     mcp_call,
     mcp_tools_call,
     scheduler_context,
@@ -13,10 +15,11 @@ from tests.testhelpers import (
 )
 
 
-def test_delegate_creates_child_session():
-    with scheduler_context() as ctx:
-        master_agent_id = seed_test_agent(ctx["db_path"], name="master-agent")
-        seed_test_agent(ctx["db_path"], name="child-agent")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_delegate_creates_child_session(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        master_agent_id = seed_test_agent(ctx["db_url"], name="master-agent")
+        seed_test_agent(ctx["db_url"], name="child-agent")
 
         _, master_session_id = create_execution_via_api(
             ctx["url"], master_agent_id, "coordinate task"
@@ -37,10 +40,11 @@ def test_delegate_creates_child_session():
         assert len(child_session_id) == 36
 
 
-def test_delegate_child_session_has_correct_parent():
-    with scheduler_context() as ctx:
-        master_agent_id = seed_test_agent(ctx["db_path"], name="master-agent")
-        child_agent_id = seed_test_agent(ctx["db_path"], name="child-agent")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_delegate_child_session_has_correct_parent(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        master_agent_id = seed_test_agent(ctx["db_url"], name="master-agent")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
 
         exec_id, master_session_id = create_execution_via_api(
             ctx["url"], master_agent_id, "coordinate task"
@@ -56,12 +60,11 @@ def test_delegate_child_session_has_correct_parent():
         payload = json.loads(result["content"][0]["text"])
         child_session_id = payload["session_id"]
 
-        conn = sqlite3.connect(ctx["db_path"])
-        row = conn.execute(
-            "SELECT execution_id, parent_session_id, agent_id, status FROM sessions WHERE id = ?",
-            (child_session_id,),
-        ).fetchone()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT execution_id, parent_session_id, agent_id, status FROM sessions WHERE id = ?",
+                (child_session_id,),
+            ).fetchone()
 
         assert row is not None
         assert row[0] == exec_id
@@ -70,10 +73,11 @@ def test_delegate_child_session_has_correct_parent():
         assert row[3] == "submitted"
 
 
-def test_delegate_queues_task():
-    with scheduler_context() as ctx:
-        master_agent_id = seed_test_agent(ctx["db_path"], name="master-agent")
-        seed_test_agent(ctx["db_path"], name="child-agent")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_delegate_queues_task(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        master_agent_id = seed_test_agent(ctx["db_url"], name="master-agent")
+        seed_test_agent(ctx["db_url"], name="child-agent")
 
         _, master_session_id = create_execution_via_api(
             ctx["url"], master_agent_id, "coordinate task"
@@ -87,19 +91,19 @@ def test_delegate_queues_task():
         )
         child_session_id = json.loads(result["content"][0]["text"])["session_id"]
 
-        conn = sqlite3.connect(ctx["db_path"])
-        count = conn.execute(
-            "SELECT COUNT(*) FROM task_queue WHERE session_id = ?",
-            (child_session_id,),
-        ).fetchone()[0]
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM task_queue WHERE session_id = ?",
+                (child_session_id,),
+            ).fetchone()[0]
         assert count == 1
 
 
-def test_delegate_with_resume_session_id():
-    with scheduler_context() as ctx:
-        master_agent_id = seed_test_agent(ctx["db_path"], name="master-agent")
-        seed_test_agent(ctx["db_path"], name="child-agent")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_delegate_with_resume_session_id(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        master_agent_id = seed_test_agent(ctx["db_url"], name="master-agent")
+        seed_test_agent(ctx["db_url"], name="child-agent")
 
         _, master_session_id = create_execution_via_api(
             ctx["url"], master_agent_id, "coordinate task"
@@ -115,13 +119,12 @@ def test_delegate_with_resume_session_id():
         child_session_id = json.loads(result1["content"][0]["text"])["session_id"]
 
         # Mark child completed
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute(
-            "UPDATE sessions SET status = 'completed' WHERE id = ?",
-            (child_session_id,),
-        )
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "UPDATE sessions SET status = 'completed' WHERE id = ?",
+                (child_session_id,),
+            )
+            conn.commit()
 
         # Resume with existing session_id
         result2 = mcp_tools_call(
@@ -138,17 +141,17 @@ def test_delegate_with_resume_session_id():
         resumed_id = json.loads(result2["content"][0]["text"])["session_id"]
         assert resumed_id == child_session_id
 
-        conn = sqlite3.connect(ctx["db_path"])
-        row = conn.execute(
-            "SELECT status FROM sessions WHERE id = ?", (child_session_id,)
-        ).fetchone()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (child_session_id,)
+            ).fetchone()
         assert row[0] == "submitted"
 
 
-def test_delegate_nonexistent_agent_returns_error():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="master-agent")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_delegate_nonexistent_agent_returns_error(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="master-agent")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(
@@ -164,10 +167,11 @@ def test_delegate_nonexistent_agent_returns_error():
         assert "error" in data
 
 
-def test_delegate_disabled_agent_returns_error():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="master-agent")
-        seed_test_agent(ctx["db_path"], name="disabled-agent", enabled=False)
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_delegate_disabled_agent_returns_error(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="master-agent")
+        seed_test_agent(ctx["db_url"], name="disabled-agent", enabled=False)
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(
@@ -183,19 +187,19 @@ def test_delegate_disabled_agent_returns_error():
         assert "error" in data
 
 
-def test_child_cannot_call_delegate():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_child_cannot_call_delegate(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         exec_id, master_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         child_id = str(uuid.uuid4())
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute(
-            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
-            (child_id, exec_id, master_id, agent_id),
-        )
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+                (child_id, exec_id, master_id, agent_id),
+            )
+            conn.commit()
 
         data = mcp_call(
             ctx["url"],

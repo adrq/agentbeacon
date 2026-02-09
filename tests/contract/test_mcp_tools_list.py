@@ -1,10 +1,12 @@
 """Contract tests for MCP tools/list with role-based filtering."""
 
-import sqlite3
 import uuid
+
+import pytest
 
 from tests.testhelpers import (
     create_execution_via_api,
+    db_conn,
     mcp_call,
     mcp_tools_call,
     mcp_tools_list,
@@ -17,46 +19,49 @@ def _create_child_session(ctx, agent_id):
     """Helper: create execution + child session, return (exec_id, master_id, child_id)."""
     exec_id, master_id = create_execution_via_api(ctx["url"], agent_id, "test task")
     child_id = str(uuid.uuid4())
-    conn = sqlite3.connect(ctx["db_path"])
-    conn.execute(
-        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
-        (child_id, exec_id, master_id, agent_id),
-    )
-    conn.commit()
-    conn.close()
+    with db_conn(ctx["db_url"]) as conn:
+        conn.execute(
+            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+            (child_id, exec_id, master_id, agent_id),
+        )
+        conn.commit()
     return exec_id, master_id, child_id
 
 
-def test_master_session_gets_delegate_and_ask_user():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_master_session_gets_delegate_and_ask_user(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         tools = mcp_tools_list(ctx["url"], session_id)
         assert sorted(tools) == ["ask_user", "delegate", "next_instruction"]
 
 
-def test_master_does_not_get_handoff():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_master_does_not_get_handoff(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         tools = mcp_tools_list(ctx["url"], session_id)
         assert "handoff" not in tools
 
 
-def test_child_session_gets_handoff_and_next_instruction():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_child_session_gets_handoff_and_next_instruction(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, _, child_id = _create_child_session(ctx, agent_id)
 
         tools = mcp_tools_list(ctx["url"], child_id)
         assert sorted(tools) == ["handoff", "next_instruction"]
 
 
-def test_child_does_not_get_delegate_or_ask_user():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_child_does_not_get_delegate_or_ask_user(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, _, child_id = _create_child_session(ctx, agent_id)
 
         tools = mcp_tools_list(ctx["url"], child_id)
@@ -64,9 +69,10 @@ def test_child_does_not_get_delegate_or_ask_user():
         assert "ask_user" not in tools
 
 
-def test_tool_schemas_have_required_fields():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_tool_schemas_have_required_fields(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "tools/list")
@@ -81,9 +87,10 @@ def test_tool_schemas_have_required_fields():
             assert "required" in tool["inputSchema"]
 
 
-def test_delegate_schema_has_agent_and_prompt():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_delegate_schema_has_agent_and_prompt(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "tools/list")
@@ -96,9 +103,10 @@ def test_delegate_schema_has_agent_and_prompt():
         assert sorted(delegate["inputSchema"]["required"]) == ["agent", "prompt"]
 
 
-def test_ask_user_schema_has_question():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_ask_user_schema_has_question(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "tools/list")
@@ -110,10 +118,11 @@ def test_ask_user_schema_has_question():
         assert ask["inputSchema"]["required"] == ["question"]
 
 
-def test_tools_list_response_follows_mcp_spec_shape():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_tools_list_response_follows_mcp_spec_shape(test_database):
     """Verify the tools/list response has the right JSON-RPC + MCP shape."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "tools/list")
@@ -125,10 +134,11 @@ def test_tools_list_response_follows_mcp_spec_shape():
         assert isinstance(data["result"]["tools"], list)
 
 
-def test_tool_definitions_include_title():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_tool_definitions_include_title(test_database):
     """2025-11-25 spec: tools should include a human-readable title."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "tools/list")
@@ -140,11 +150,12 @@ def test_tool_definitions_include_title():
             assert len(tool["title"]) > 0
 
 
-def test_tools_call_success_includes_is_error_false():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_tools_call_success_includes_is_error_false(test_database):
     """MCP spec: tool call results should include isError: false on success."""
-    with scheduler_context() as ctx:
-        master_agent_id = seed_test_agent(ctx["db_path"], name="master-agent")
-        seed_test_agent(ctx["db_path"], name="child-agent")
+    with scheduler_context(db_url=test_database) as ctx:
+        master_agent_id = seed_test_agent(ctx["db_url"], name="master-agent")
+        seed_test_agent(ctx["db_url"], name="child-agent")
         _, session_id = create_execution_via_api(
             ctx["url"], master_agent_id, "test task"
         )

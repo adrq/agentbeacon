@@ -112,8 +112,10 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Agent>, SchedulerError> {
 fn parse_agent_row(row: sqlx::any::AnyRow) -> Result<Agent, SchedulerError> {
     let created_at_str: String = row.get("created_at");
     let updated_at_str: String = row.get("updated_at");
-    // SQLite stores booleans as integers
-    let enabled_int: i32 = row.get("enabled");
+    // SQLite stores booleans as integers, PostgreSQL as native bool
+    let enabled: bool = row
+        .try_get::<bool, _>("enabled")
+        .unwrap_or_else(|_| row.get::<i32, _>("enabled") != 0);
 
     Ok(Agent {
         id: row.get("id"),
@@ -122,7 +124,7 @@ fn parse_agent_row(row: sqlx::any::AnyRow) -> Result<Agent, SchedulerError> {
         agent_type: row.get("agent_type"),
         config: row.get("config"),
         sandbox_config: row.get("sandbox_config"),
-        enabled: enabled_int != 0,
+        enabled,
         created_at: DateTime::parse_from_rfc3339(&created_at_str)
             .map_err(|e| SchedulerError::Database(format!("parse created_at failed: {e}")))?
             .with_timezone(&Utc),

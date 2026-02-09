@@ -1,6 +1,5 @@
 """Contract tests for MCP endpoint auth, initialization, and transport compliance."""
 
-import sqlite3
 import uuid
 
 import httpx
@@ -8,6 +7,7 @@ import pytest
 
 from tests.testhelpers import (
     create_execution_via_api,
+    db_conn,
     mcp_call,
     mcp_raw,
     scheduler_context,
@@ -18,8 +18,9 @@ from tests.testhelpers import (
 # --- Auth tests ---
 
 
-def test_missing_bearer_header_returns_401():
-    with scheduler_context() as ctx:
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_missing_bearer_header_returns_401(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
@@ -29,60 +30,63 @@ def test_missing_bearer_header_returns_401():
         assert resp.status_code == 401
 
 
-def test_invalid_session_id_returns_401():
-    with scheduler_context() as ctx:
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_invalid_session_id_returns_401(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
         fake_token = str(uuid.uuid4())
         resp = mcp_raw(ctx["url"], fake_token, "initialize")
         assert resp.status_code == 401
 
 
-def test_terminal_session_returns_404():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_terminal_session_returns_404(test_database):
     """Completed sessions return 404 per MCP spec — session terminated, not auth failure."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute(
-            "UPDATE sessions SET status = 'completed' WHERE id = ?",
-            (session_id,),
-        )
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "UPDATE sessions SET status = 'completed' WHERE id = ?",
+                (session_id,),
+            )
+            conn.commit()
 
         resp = mcp_raw(ctx["url"], session_id, "initialize")
         assert resp.status_code == 404
 
 
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 @pytest.mark.parametrize("terminal_status", ["completed", "failed", "canceled"])
-def test_all_terminal_statuses_return_404(terminal_status):
+def test_all_terminal_statuses_return_404(test_database, terminal_status):
     """All terminal session states return 404, not 401."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute(
-            "UPDATE sessions SET status = ? WHERE id = ?",
-            (terminal_status, session_id),
-        )
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "UPDATE sessions SET status = ? WHERE id = ?",
+                (terminal_status, session_id),
+            )
+            conn.commit()
 
         resp = mcp_raw(ctx["url"], session_id, "tools/list")
         assert resp.status_code == 404
 
 
-def test_unknown_token_returns_401_not_404():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_unknown_token_returns_401_not_404(test_database):
     """Unknown tokens are auth failures (401), not session termination (404)."""
-    with scheduler_context() as ctx:
+    with scheduler_context(db_url=test_database) as ctx:
         fake_token = str(uuid.uuid4())
         resp = mcp_raw(ctx["url"], fake_token, "initialize")
         assert resp.status_code == 401
 
 
-def test_401_includes_www_authenticate_header():
-    with scheduler_context() as ctx:
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_401_includes_www_authenticate_header(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
@@ -97,9 +101,10 @@ def test_401_includes_www_authenticate_header():
 # --- Initialize tests ---
 
 
-def test_valid_master_token_returns_initialize_response():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_valid_master_token_returns_initialize_response(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "initialize")
@@ -111,31 +116,32 @@ def test_valid_master_token_returns_initialize_response():
         assert result["serverInfo"]["name"] == "agentbeacon"
 
 
-def test_valid_child_token_returns_initialize_response():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_valid_child_token_returns_initialize_response(test_database):
     """Child sessions (those with parent_session_id) should also work."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         exec_id, master_session_id = create_execution_via_api(
             ctx["url"], agent_id, "test task"
         )
 
         child_session_id = str(uuid.uuid4())
-        conn = sqlite3.connect(ctx["db_path"])
-        conn.execute(
-            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
-            (child_session_id, exec_id, master_session_id, agent_id),
-        )
-        conn.commit()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+                (child_session_id, exec_id, master_session_id, agent_id),
+            )
+            conn.commit()
 
         data = mcp_call(ctx["url"], child_session_id, "initialize")
         assert "result" in data
         assert data["result"]["protocolVersion"] == "2025-11-25"
 
 
-def test_initialize_includes_server_title():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_initialize_includes_server_title(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "initialize")
@@ -145,9 +151,10 @@ def test_initialize_includes_server_title():
         assert len(server_info["title"]) > 0
 
 
-def test_initialize_response_includes_session_id_header():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_initialize_response_includes_session_id_header(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         resp = mcp_raw(ctx["url"], session_id, "initialize")
@@ -155,10 +162,11 @@ def test_initialize_response_includes_session_id_header():
         assert "mcp-session-id" in resp.headers
 
 
-def test_initialize_version_negotiation():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_initialize_version_negotiation(test_database):
     """Server responds with its supported version regardless of client request."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         resp = httpx.post(
@@ -182,9 +190,10 @@ def test_initialize_version_negotiation():
 # --- Notification tests ---
 
 
-def test_initialized_notification_returns_202():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_initialized_notification_returns_202(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         resp = mcp_raw(ctx["url"], session_id, "notifications/initialized", rpc_id=None)
@@ -194,9 +203,10 @@ def test_initialized_notification_returns_202():
 # --- Method tests ---
 
 
-def test_unknown_method_returns_method_not_found():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_unknown_method_returns_method_not_found(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "nonexistent/method")
@@ -205,9 +215,10 @@ def test_unknown_method_returns_method_not_found():
         assert data["error"]["code"] == -32601
 
 
-def test_ping_returns_empty_result():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_ping_returns_empty_result(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "ping")
@@ -218,19 +229,22 @@ def test_ping_returns_empty_result():
 # --- Transport compliance tests ---
 
 
-def test_get_mcp_returns_405():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_get_mcp_returns_405(test_database):
     """Spec allows 405 for GET — SSE streaming deferred to Phase 2."""
-    with scheduler_context() as ctx:
+    with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.get(f"{ctx['url']}/mcp", timeout=5)
         assert resp.status_code == 405
 
 
-def test_delete_mcp_returns_405():
-    with scheduler_context() as ctx:
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_delete_mcp_returns_405(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.delete(f"{ctx['url']}/mcp", timeout=5)
         assert resp.status_code == 405
 
 
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 @pytest.mark.parametrize(
     "origin",
     [
@@ -241,9 +255,9 @@ def test_delete_mcp_returns_405():
         "https://localhost.attacker.io",
     ],
 )
-def test_invalid_origin_returns_403(origin):
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+def test_invalid_origin_returns_403(test_database, origin):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         resp = httpx.post(
@@ -259,6 +273,7 @@ def test_invalid_origin_returns_403(origin):
         assert resp.status_code == 403
 
 
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 @pytest.mark.parametrize(
     "origin",
     [
@@ -272,9 +287,9 @@ def test_invalid_origin_returns_403(origin):
         "http://[::1]:8080",
     ],
 )
-def test_valid_origin_succeeds(origin):
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+def test_valid_origin_succeeds(test_database, origin):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         resp = httpx.post(
@@ -291,19 +306,21 @@ def test_valid_origin_succeeds(origin):
         assert resp.status_code == 200
 
 
-def test_no_origin_header_succeeds():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_no_origin_header_succeeds(test_database):
     """Missing Origin is fine — only present-but-invalid triggers 403."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "initialize")
         assert "result" in data
 
 
-def test_invalid_protocol_version_returns_400():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_invalid_protocol_version_returns_400(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         resp = httpx.post(
@@ -319,9 +336,10 @@ def test_invalid_protocol_version_returns_400():
         assert resp.status_code == 400
 
 
-def test_valid_protocol_version_succeeds():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_valid_protocol_version_succeeds(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         resp = httpx.post(
@@ -340,10 +358,11 @@ def test_valid_protocol_version_succeeds():
 # --- MCP-Session-Id mismatch tests ---
 
 
-def test_mismatched_mcp_session_id_returns_400():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_mismatched_mcp_session_id_returns_400(test_database):
     """If MCP-Session-Id is present but doesn't match Bearer token, reject with 400."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         wrong_session_id = str(uuid.uuid4())
@@ -361,10 +380,11 @@ def test_mismatched_mcp_session_id_returns_400():
         assert resp.status_code == 400
 
 
-def test_matching_mcp_session_id_succeeds():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_matching_mcp_session_id_succeeds(test_database):
     """If MCP-Session-Id matches Bearer token, request proceeds normally."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         resp = httpx.post(
@@ -383,10 +403,11 @@ def test_matching_mcp_session_id_succeeds():
         assert "result" in data
 
 
-def test_absent_mcp_session_id_succeeds():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_absent_mcp_session_id_succeeds(test_database):
     """Omitting MCP-Session-Id entirely is fine (e.g. first request)."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         data = mcp_call(ctx["url"], session_id, "initialize")
@@ -396,10 +417,11 @@ def test_absent_mcp_session_id_succeeds():
 # --- Lifecycle handshake test ---
 
 
-def test_full_lifecycle_initialize_then_tools_list():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_full_lifecycle_initialize_then_tools_list(test_database):
     """Positive path: initialize → notifications/initialized → tools/list succeeds."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         # Step 1: initialize

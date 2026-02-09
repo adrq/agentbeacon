@@ -1,9 +1,10 @@
-use serde_json::json;
+use serde_json::{Value as JsonValue, json};
 use uuid::Uuid;
 
 use crate::db;
 use crate::db::DbPool;
 use crate::error::SchedulerError;
+use crate::queue::{TaskAssignment, TaskQueue};
 
 pub struct CreateExecutionResult {
     pub execution_id: String,
@@ -13,6 +14,7 @@ pub struct CreateExecutionResult {
 
 pub async fn create_execution(
     db_pool: &DbPool,
+    task_queue: &TaskQueue,
     agent_id: &str,
     prompt: &str,
     workspace_id: Option<&str>,
@@ -64,6 +66,28 @@ pub async fn create_execution(
         &serde_json::to_string(&state_event).unwrap(),
     )
     .await?;
+
+    // Enqueue initial task to session inbox
+    let agent_config: JsonValue = serde_json::from_str(&agent.config).unwrap_or_else(|_| json!({}));
+    let sandbox_config: JsonValue = agent
+        .sandbox_config
+        .as_ref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(JsonValue::Null);
+    let task_payload = json!({
+        "agent_id": agent.id,
+        "agent_type": agent.agent_type,
+        "agent_config": agent_config,
+        "sandbox_config": sandbox_config,
+        "message": input
+    });
+    task_queue
+        .push(TaskAssignment {
+            execution_id: execution_id.clone(),
+            session_id: session_id.clone(),
+            task_payload,
+        })
+        .await?;
 
     Ok(CreateExecutionResult {
         execution_id,

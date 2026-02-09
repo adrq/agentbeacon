@@ -2,17 +2,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://schemas.agentmaestro.dev/worker-sync-response.schema.json",
   "title": "Worker Sync Response",
-  "description": "Response sent by scheduler to worker during sync cycle. Part of bidirectional worker-scheduler sync protocol.",
+  "description": "Response sent by scheduler to worker during sync cycle. Session-based protocol.",
   "oneOf": [
-    {
-      "$ref": "#/definitions/NoActionResponse"
-    },
-    {
-      "$ref": "#/definitions/TaskAssignedResponse"
-    },
-    {
-      "$ref": "#/definitions/CommandResponse"
-    }
+    { "$ref": "#/definitions/NoActionResponse" },
+    { "$ref": "#/definitions/SessionAssignedResponse" },
+    { "$ref": "#/definitions/PromptDeliveryResponse" },
+    { "$ref": "#/definitions/SessionCompleteResponse" },
+    { "$ref": "#/definitions/CommandResponse" }
   ],
   "definitions": {
     "NoActionResponse": {
@@ -22,21 +18,61 @@
       "properties": {
         "type": {
           "const": "no_action",
-          "description": "No work available. Worker should continue polling."
+          "description": "No work available or heartbeat ack. Worker should continue polling."
         }
       }
     },
-    "TaskAssignedResponse": {
+    "SessionAssignedResponse": {
       "type": "object",
-      "required": ["type", "task"],
+      "required": ["type", "sessionId", "task"],
       "additionalProperties": false,
       "properties": {
         "type": {
-          "const": "task_assigned",
-          "description": "New task assignment for worker to execute."
+          "const": "session_assigned",
+          "description": "New session assignment for worker to execute."
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Scheduler session ID assigned to this worker."
         },
         "task": {
           "$ref": "#/definitions/TaskAssignment"
+        }
+      }
+    },
+    "PromptDeliveryResponse": {
+      "type": "object",
+      "required": ["type", "sessionId", "task"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "prompt_delivery",
+          "description": "New prompt/task for an existing session."
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Scheduler session ID this prompt belongs to."
+        },
+        "task": {
+          "$ref": "#/definitions/TaskAssignment"
+        }
+      }
+    },
+    "SessionCompleteResponse": {
+      "type": "object",
+      "required": ["type", "sessionId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "session_complete",
+          "description": "Session reached terminal state. Worker should release it."
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Scheduler session ID that completed."
         }
       }
     },
@@ -56,48 +92,24 @@
     },
     "TaskAssignment": {
       "type": "object",
-      "required": ["executionId", "nodeId", "agent", "task"],
-      "additionalProperties": true,
+      "required": ["executionId", "sessionId", "taskPayload"],
+      "additionalProperties": false,
       "properties": {
         "executionId": {
           "type": "string",
           "minLength": 1,
-          "description": "Workflow execution identifier for task correlation."
+          "description": "Execution identifier for task correlation."
         },
-        "nodeId": {
+        "sessionId": {
           "type": "string",
           "minLength": 1,
-          "description": "Node identifier within workflow for task correlation."
+          "description": "Session identifier this task belongs to."
         },
-        "agent": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Agent name from agents.yaml. Must match agent configuration.",
-          "pattern": "^[a-zA-Z0-9_-]+$"
-        },
-        "task": {
+        "taskPayload": {
           "type": "object",
-          "description": "Protocol-specific task payload. For A2A agents, this conforms to A2A v0.3.0 spec. Worker forwards this opaquely to the agent."
-        },
-        "workflowRegistryId": {
-          "type": "string",
-          "description": "Optional. Namespace-qualified workflow name (e.g., 'team/refactor-auth')."
-        },
-        "workflowVersion": {
-          "type": "string",
-          "description": "Optional. Immutable version key (Git commit hash or UUID)."
-        },
-        "workflowRef": {
-          "type": "string",
-          "description": "Optional. Original reference provided by caller (e.g., 'latest', 'v1.2.3')."
-        },
-        "protocolMetadata": {
-          "type": "object",
-          "description": "Optional. Scheduler hints for downstream adapters (e.g., preferred transport).",
-          "additionalProperties": true
+          "description": "Task payload containing agent_id, agent_type, agent_config, sandbox_config, and message."
         }
-      },
-      "description": "Task assignment structure. See docs/scheduler-sync-response.md for complete field descriptions."
+      }
     },
     "WorkerCommand": {
       "type": "string",
@@ -108,78 +120,55 @@
   "examples": [
     {
       "description": "No tasks available",
-      "data": {
-        "type": "no_action"
-      }
+      "data": { "type": "no_action" }
     },
     {
-      "description": "Task assignment with minimal fields",
+      "description": "Session assignment with initial task",
       "data": {
-        "type": "task_assigned",
+        "type": "session_assigned",
+        "sessionId": "sess-123",
         "task": {
-          "executionId": "exec-123",
-          "nodeId": "node-1",
-          "agent": "mock-agent",
-          "task": {
-            "history": [
-              {
-                "messageId": "msg-1",
-                "kind": "message",
-                "role": "user",
-                "parts": [
-                  {
-                    "kind": "text",
-                    "text": "Analyze code quality"
-                  }
-                ]
-              }
-            ]
+          "executionId": "exec-456",
+          "sessionId": "sess-123",
+          "taskPayload": {
+            "agent_id": "agent-1",
+            "agent_type": "claude_sdk",
+            "agent_config": {},
+            "sandbox_config": null,
+            "message": {
+              "role": "user",
+              "parts": [{ "kind": "text", "text": "Implement auth" }]
+            }
           }
         }
       }
     },
     {
-      "description": "Task assignment with workflow metadata",
+      "description": "Prompt delivery for existing session",
       "data": {
-        "type": "task_assigned",
+        "type": "prompt_delivery",
+        "sessionId": "sess-123",
         "task": {
           "executionId": "exec-456",
-          "nodeId": "node-2",
-          "agent": "example-a2a",
-          "task": {
-            "history": [
-              {
-                "messageId": "msg-2",
-                "kind": "message",
-                "role": "user",
-                "parts": [
-                  {
-                    "kind": "text",
-                    "text": "Generate test cases"
-                  }
-                ]
-              }
-            ]
-          },
-          "workflowRegistryId": "team/refactor-auth",
-          "workflowVersion": "a3f4b2c1",
-          "workflowRef": "team/refactor-auth:latest"
+          "sessionId": "sess-123",
+          "taskPayload": {
+            "kind": "handoff_result",
+            "child_session_id": "sess-789",
+            "message": "Task completed successfully"
+          }
         }
       }
     },
     {
-      "description": "Cancel command",
+      "description": "Session complete",
       "data": {
-        "type": "command",
-        "command": "cancel"
+        "type": "session_complete",
+        "sessionId": "sess-123"
       }
     },
     {
-      "description": "Shutdown command",
-      "data": {
-        "type": "command",
-        "command": "shutdown"
-      }
+      "description": "Cancel command",
+      "data": { "type": "command", "command": "cancel" }
     }
   ]
 }

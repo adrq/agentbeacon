@@ -27,7 +27,9 @@ pub struct SessionResponse {
     pub execution_id: String,
     pub parent_session_id: Option<String>,
     pub agent_id: String,
+    pub agent_session_id: Option<String>,
     pub status: String,
+    pub coordination_mode: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -39,7 +41,9 @@ impl From<db::sessions::Session> for SessionResponse {
             execution_id: s.execution_id,
             parent_session_id: s.parent_session_id,
             agent_id: s.agent_id,
+            agent_session_id: s.agent_session_id,
             status: s.status,
+            coordination_mode: s.coordination_mode,
             created_at: s.created_at.to_rfc3339(),
             updated_at: s.updated_at.to_rfc3339(),
         }
@@ -143,21 +147,22 @@ async fn post_message(
     )
     .await?;
 
-    // Read current execution status for accurate state_change event
-    let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
+    // Only master sessions propagate status changes to the execution
+    if session.parent_session_id.is_none() {
+        let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
 
-    // Transition execution to working
-    db::executions::update_status(&state.db_pool, &session.execution_id, "working").await?;
+        db::executions::update_status(&state.db_pool, &session.execution_id, "working").await?;
 
-    let exec_state_event = json!({"from": execution.status, "to": "working"});
-    db::events::insert(
-        &state.db_pool,
-        &session.execution_id,
-        None,
-        "state_change",
-        &serde_json::to_string(&exec_state_event).unwrap(),
-    )
-    .await?;
+        let exec_state_event = json!({"from": execution.status, "to": "working"});
+        db::events::insert(
+            &state.db_pool,
+            &session.execution_id,
+            None,
+            "state_change",
+            &serde_json::to_string(&exec_state_event).unwrap(),
+        )
+        .await?;
+    }
 
     // Push user answer to session's inbox for next_instruction delivery
     let answer_payload = json!({

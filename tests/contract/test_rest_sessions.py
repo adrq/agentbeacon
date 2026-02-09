@@ -1,21 +1,23 @@
 """Contract tests for REST session endpoints."""
 
 import json
-import sqlite3
 
 import httpx
+import pytest
 
 from tests.testhelpers import (
     create_execution_via_api,
+    db_conn,
     mcp_tools_call,
     scheduler_context,
     seed_test_agent,
 )
 
 
-def test_list_sessions_returns_all():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_list_sessions_returns_all(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         create_execution_via_api(ctx["url"], agent_id, "task 1")
         create_execution_via_api(ctx["url"], agent_id, "task 2")
 
@@ -25,9 +27,10 @@ def test_list_sessions_returns_all():
         assert len(data) >= 2
 
 
-def test_list_sessions_filter_by_status():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_list_sessions_filter_by_status(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
         mcp_tools_call(
@@ -48,9 +51,10 @@ def test_list_sessions_filter_by_status():
         assert data[0]["status"] == "input-required"
 
 
-def test_list_sessions_filter_by_execution_id():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_list_sessions_filter_by_execution_id(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         exec1_id, _ = create_execution_via_api(ctx["url"], agent_id, "task 1")
         create_execution_via_api(ctx["url"], agent_id, "task 2")
 
@@ -65,9 +69,10 @@ def test_list_sessions_filter_by_execution_id():
         assert data[0]["execution_id"] == exec1_id
 
 
-def test_session_events_returns_chronological():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_session_events_returns_chronological(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
         mcp_tools_call(
@@ -89,9 +94,10 @@ def test_session_events_returns_chronological():
             assert "created_at" in event
 
 
-def test_answer_input_required_session_returns_200():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_answer_input_required_session_returns_200(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
         mcp_tools_call(
@@ -109,9 +115,10 @@ def test_answer_input_required_session_returns_200():
         assert resp.status_code == 200
 
 
-def test_answer_transitions_session_to_working():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_answer_transitions_session_to_working(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
         mcp_tools_call(
@@ -127,17 +134,17 @@ def test_answer_transitions_session_to_working():
             timeout=5,
         )
 
-        conn = sqlite3.connect(ctx["db_path"])
-        row = conn.execute(
-            "SELECT status FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
         assert row[0] == "working"
 
 
-def test_answer_transitions_execution_to_working():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_answer_transitions_execution_to_working(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
         mcp_tools_call(
@@ -153,17 +160,17 @@ def test_answer_transitions_execution_to_working():
             timeout=5,
         )
 
-        conn = sqlite3.connect(ctx["db_path"])
-        row = conn.execute(
-            "SELECT status FROM executions WHERE id = ?", (exec_id,)
-        ).fetchone()
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT status FROM executions WHERE id = ?", (exec_id,)
+            ).fetchone()
         assert row[0] == "working"
 
 
-def test_answer_non_input_required_returns_409():
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_answer_non_input_required_returns_409(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
         resp = httpx.post(
@@ -174,10 +181,11 @@ def test_answer_non_input_required_returns_409():
         assert resp.status_code == 409
 
 
-def test_full_ask_answer_round_trip():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_full_ask_answer_round_trip(test_database):
     """End-to-end: ask_user -> input-required -> answer -> working -> events verified."""
-    with scheduler_context() as ctx:
-        agent_id = seed_test_agent(ctx["db_path"], name="claude-code")
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         exec_id, session_id = create_execution_via_api(
             ctx["url"], agent_id, "design auth"
         )
@@ -199,14 +207,13 @@ def test_full_ask_answer_round_trip():
         json.loads(result["content"][0]["text"])["question_id"]
 
         # 2. Verify states
-        conn = sqlite3.connect(ctx["db_path"])
-        session_status = conn.execute(
-            "SELECT status FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()[0]
-        exec_status = conn.execute(
-            "SELECT status FROM executions WHERE id = ?", (exec_id,)
-        ).fetchone()[0]
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            session_status = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()[0]
+            exec_status = conn.execute(
+                "SELECT status FROM executions WHERE id = ?", (exec_id,)
+            ).fetchone()[0]
         assert session_status == "input-required"
         assert exec_status == "input-required"
 
@@ -219,14 +226,13 @@ def test_full_ask_answer_round_trip():
         assert resp.status_code == 200
 
         # 4. Verify states transitioned back
-        conn = sqlite3.connect(ctx["db_path"])
-        session_status = conn.execute(
-            "SELECT status FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()[0]
-        exec_status = conn.execute(
-            "SELECT status FROM executions WHERE id = ?", (exec_id,)
-        ).fetchone()[0]
-        conn.close()
+        with db_conn(ctx["db_url"]) as conn:
+            session_status = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()[0]
+            exec_status = conn.execute(
+                "SELECT status FROM executions WHERE id = ?", (exec_id,)
+            ).fetchone()[0]
         assert session_status == "working"
         assert exec_status == "working"
 

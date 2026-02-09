@@ -236,12 +236,18 @@ async fn handle_delegate(
 
     // Parse agent config for task payload
     let agent_config: JsonValue = serde_json::from_str(&agent.config).unwrap_or_else(|_| json!({}));
+    let sandbox_config: JsonValue = agent
+        .sandbox_config
+        .as_ref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(JsonValue::Null);
 
     // Build task payload and enqueue
     let task_payload = json!({
         "agent_id": agent.id,
         "agent_type": agent.agent_type,
         "agent_config": agent_config,
+        "sandbox_config": sandbox_config,
         "message": {
             "role": "user",
             "parts": [{"kind": "text", "text": prompt}]
@@ -340,27 +346,27 @@ async fn handle_ask_user(
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
-        // Read current execution status for accurate state_change event
-        let execution = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
+        // Only master sessions propagate input-required to the execution
+        if auth.role == McpRole::Master {
+            let execution = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
+                .await
+                .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+
+            db::executions::update_status(&state.db_pool, &auth.execution_id, "input-required")
+                .await
+                .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+
+            let exec_state_event = json!({"from": execution.status, "to": "input-required"});
+            db::events::insert(
+                &state.db_pool,
+                &auth.execution_id,
+                None,
+                "state_change",
+                &serde_json::to_string(&exec_state_event).unwrap(),
+            )
             .await
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-        // Update execution to input-required
-        db::executions::update_status(&state.db_pool, &auth.execution_id, "input-required")
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-        // Record execution-level state_change (no session_id)
-        let exec_state_event = json!({"from": execution.status, "to": "input-required"});
-        db::events::insert(
-            &state.db_pool,
-            &auth.execution_id,
-            None,
-            "state_change",
-            &serde_json::to_string(&exec_state_event).unwrap(),
-        )
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+        }
     }
 
     let result_text = serde_json::to_string(&json!({"question_id": event_id})).unwrap();
@@ -461,7 +467,7 @@ async fn handle_next_instruction(
             }));
         }
 
-        let remaining = deadline.duration_since(tokio::time::Instant::now());
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             let result_text = serde_json::to_string(&json!({"timed_out": true})).unwrap();
             return Ok(json!({

@@ -18,6 +18,8 @@ from typing import Iterable, Set, List, Dict, Any
 
 import sqlite3
 
+import psycopg2
+
 import httpx
 import psutil
 import requests
@@ -712,7 +714,7 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
         env: Additional environment variables to pass to scheduler
 
     Yields:
-        dict: Contains 'process', 'url', 'port', 'db_path'
+        dict: Contains 'process', 'url', 'port', 'db_path', 'db_url'
             Note: db_path will be None if db_url was provided
     """
     port_manager = PortManager() if port is None else None
@@ -729,6 +731,7 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
             "url": f"http://localhost:{allocated_port}",
             "port": allocated_port,
             "db_path": temp_db_path,
+            "db_url": db_url if db_url else f"sqlite:{temp_db_path}?mode=rwc",
         }
     finally:
         # Cleanup
@@ -1295,17 +1298,63 @@ def orchestrator_context(
             port_manager.release_port(allocated_port)
 
 
+class _PgConnWrapper:
+    """Wraps psycopg2 connection to match sqlite3 API conventions.
+
+    Translates ? placeholders to %s so tests can use a single SQL dialect.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=None):
+        sql = sql.replace("?", "%s")
+        cur = self._conn.cursor()
+        cur.execute(sql, params)
+        return cur
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+
+@contextmanager
+def db_conn(db_url):
+    """Connect to SQLite or PostgreSQL based on URL scheme.
+
+    Yields a connection object with .execute(), .commit(), .close().
+    For PostgreSQL, ? placeholders are translated to %s automatically.
+    """
+    if db_url.startswith("sqlite:"):
+        path = db_url.split("sqlite:")[1].split("?")[0]
+        conn = sqlite3.connect(path)
+        try:
+            yield conn
+        finally:
+            conn.close()
+    elif db_url.startswith("postgres"):
+        raw_conn = psycopg2.connect(db_url)
+        try:
+            yield _PgConnWrapper(raw_conn)
+        finally:
+            raw_conn.close()
+    else:
+        raise ValueError(f"Unsupported db_url scheme: {db_url}")
+
+
 def seed_test_agent(
-    db_path: str,
+    db_url: str,
     name: str = "test-agent",
     agent_type: str = "claude_sdk",
     agent_id: str = None,
     enabled: bool = True,
 ) -> str:
-    """Insert a test agent directly into SQLite.
+    """Insert a test agent directly into the database.
 
     Args:
-        db_path: Path to SQLite database file (not URL)
+        db_url: Database URL (sqlite:... or postgres://...)
         name: Agent name
         agent_type: Agent type (claude_sdk, codex_sdk, acp, etc.)
         agent_id: Agent ID (generated UUID if None)
@@ -1317,15 +1366,12 @@ def seed_test_agent(
     if agent_id is None:
         agent_id = str(uuid.uuid4())
 
-    conn = sqlite3.connect(db_path)
-    try:
+    with db_conn(db_url) as conn:
         conn.execute(
             "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, ?, '{}', ?)",
-            (agent_id, name, agent_type, 1 if enabled else 0),
+            (agent_id, name, agent_type, enabled),
         )
         conn.commit()
-    finally:
-        conn.close()
 
     return agent_id
 
