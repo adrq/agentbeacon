@@ -109,7 +109,9 @@ def test_next_instruction_returns_queued_task_immediately(test_database):
         elapsed = time.monotonic() - start
 
         assert "task" in result
-        assert result["task"]["agent_id"] == agent_id
+        assert isinstance(result["task"], str)
+        assert result["task"].startswith("[user]\n\n")
+        assert "test" in result["task"]
         assert elapsed < 2.0, f"Should return immediately, took {elapsed:.2f}s"
 
 
@@ -120,7 +122,7 @@ def test_child_next_instruction_gets_initial_prompt(test_database):
         master_agent_id = _seed_agent_with_poll_timeout(
             ctx["db_url"], name="master", poll_timeout_ms=5000
         )
-        child_agent_id = _seed_agent_with_poll_timeout(
+        _ = _seed_agent_with_poll_timeout(
             ctx["db_url"], name="child", poll_timeout_ms=5000
         )
         _, master_sid = create_execution_via_api(ctx["url"], master_agent_id, "plan")
@@ -132,13 +134,11 @@ def test_child_next_instruction_gets_initial_prompt(test_database):
         content = json.loads(delegate_result["content"][0]["text"])
         child_sid = content["session_id"]
 
-        # Child calls next_instruction → gets the delegated task
+        # Child calls next_instruction → gets the delegated prompt as plain text
         payload = _call_next_instruction(ctx["url"], child_sid, timeout=10)
         assert "task" in payload
-        task = payload["task"]
-        assert task["agent_id"] == child_agent_id
-        parts = task["message"]["parts"]
-        assert any(p.get("text") == "do work" for p in parts)
+        assert isinstance(payload["task"], str)
+        assert payload["task"] == "[user]\n\ndo work"
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -177,13 +177,13 @@ def test_master_next_instruction_gets_handoff_result(test_database):
         # Child hands off
         mcp_tools_call(ctx["url"], child_sid, "handoff", {"message": "done with work"})
 
-        # Master next_instruction → should get handoff result
+        # Master next_instruction → should get handoff result as plain text
         payload = _call_next_instruction(ctx["url"], master_sid, timeout=10)
         assert "task" in payload
-        task = payload["task"]
-        assert task["kind"] == "handoff_result"
-        assert task["child_session_id"] == child_sid
-        assert task["message"] == "done with work"
+        assert isinstance(payload["task"], str)
+        assert "[delegated result from child" in payload["task"]
+        assert child_sid in payload["task"]
+        assert "done with work" in payload["task"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -210,7 +210,7 @@ def test_ask_user_blocking_then_answer_via_next_instruction(test_database):
             ctx["url"],
             session_id,
             "ask_user",
-            {"question": "which approach?", "importance": "blocking"},
+            {"questions": [{"question": "which approach?"}], "importance": "blocking"},
         )
 
         # User answers via REST
@@ -220,12 +220,12 @@ def test_ask_user_blocking_then_answer_via_next_instruction(test_database):
             timeout=5,
         )
 
-        # Master next_instruction → gets user_answer
+        # Master next_instruction → gets plain text user answer
         payload = _call_next_instruction(ctx["url"], session_id, timeout=10)
         assert "task" in payload
-        task = payload["task"]
-        assert task["kind"] == "user_answer"
-        assert task["message"] == "use approach B"
+        assert isinstance(payload["task"], str)
+        assert payload["task"].startswith("[user]\n\n")
+        assert "use approach B" in payload["task"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -288,7 +288,8 @@ def test_concurrent_next_instruction_wakes_on_handoff(test_database):
 
         payload = result_holder[0]
         assert "task" in payload
-        assert payload["task"]["kind"] == "handoff_result"
+        assert isinstance(payload["task"], str)
+        assert "[delegated result from child" in payload["task"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

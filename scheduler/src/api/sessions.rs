@@ -72,7 +72,7 @@ impl From<db::events::Event> for EventResponse {
     }
 }
 
-/// Request body for posting a message/answer
+/// Request body for posting a user message
 #[derive(Debug, Deserialize)]
 pub struct PostMessageRequest {
     pub message: String,
@@ -105,7 +105,7 @@ async fn session_events(
     Ok(Json(events.into_iter().map(Into::into).collect()))
 }
 
-/// Post a message/answer to a session (POST /api/sessions/{id}/message)
+/// Post a user message to a session (POST /api/sessions/{id}/message)
 async fn post_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -164,17 +164,14 @@ async fn post_message(
         .await?;
     }
 
-    // Push user answer to session's inbox for next_instruction delivery
-    let answer_payload = json!({
-        "kind": "user_answer",
-        "message": req.message
-    });
+    // Push user message to session's inbox for next_instruction delivery
+    let message_payload = serde_json::Value::String(format!("[user]\n\n{}", req.message));
     state
         .task_queue
         .push(TaskAssignment {
             execution_id: session.execution_id.clone(),
             session_id: id.clone(),
-            task_payload: answer_payload,
+            task_payload: message_payload,
         })
         .await?;
 

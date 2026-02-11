@@ -1,5 +1,7 @@
+use std::sync::LazyLock;
 use std::time::Duration;
 
+use jsonschema::Validator;
 use serde_json::{Value as JsonValue, json};
 use uuid::Uuid;
 
@@ -11,6 +13,31 @@ use crate::queue::TaskAssignment;
 
 const DEFAULT_POLL_TIMEOUT_MS: u64 = 50_000;
 const MAX_POLL_TIMEOUT_MS: u64 = 300_000;
+
+// Compiled JSON Schema validators for MCP tool arguments.
+// Schemas are extracted from the tool definitions served via tools/list.
+static HANDOFF_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
+    Validator::new(&handoff_schema()["inputSchema"]).expect("handoff schema must compile")
+});
+
+static DELEGATE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
+    Validator::new(&delegate_schema()["inputSchema"]).expect("delegate schema must compile")
+});
+
+static ASK_USER_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
+    Validator::new(&ask_user_schema()["inputSchema"]).expect("ask_user schema must compile")
+});
+
+fn validate_tool_args(validator: &Validator, args: &JsonValue) -> Result<(), JsonRpcError> {
+    validator.validate(args).map_err(|err| {
+        let path = err.instance_path.to_string();
+        if path.is_empty() {
+            JsonRpcError::invalid_params(&err.to_string())
+        } else {
+            JsonRpcError::invalid_params(&format!("{path}: {err}"))
+        }
+    })
+}
 
 /// Handle tools/list — returns role-filtered tool schemas
 pub fn handle_tools_list(auth: &McpSession, id: Option<JsonValue>) -> JsonRpcResponse {
@@ -73,10 +100,8 @@ async fn handle_handoff(
     state: &AppState,
     args: JsonValue,
 ) -> Result<JsonValue, JsonRpcError> {
-    let message = args
-        .get("message")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| JsonRpcError::invalid_params("missing required 'message' argument"))?;
+    validate_tool_args(&HANDOFF_VALIDATOR, &args)?;
+    let message = args["message"].as_str().unwrap();
 
     // Record message event
     let msg_payload = json!({
@@ -135,12 +160,30 @@ async fn handle_handoff(
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
+        // Look up agent name for context prefix — fallback to agent_id if lookup fails
+        // so the handoff result still reaches the master even if enrichment fails
+        let agent_name = match db::agents::get_by_id(&state.db_pool, &child_session.agent_id).await
+        {
+            Ok(agent) => agent.name,
+            Err(e) => {
+                tracing::warn!(
+                    agent_id = %child_session.agent_id,
+                    error = %e,
+                    "failed to look up agent name for handoff prefix, using agent_id"
+                );
+                child_session.agent_id.clone()
+            }
+        };
+
+        // Sanitize agent name to prevent control chars breaking the prefix format
+        let agent_name = agent_name.replace(['\r', '\n'], " ");
+        let agent_name = agent_name.trim();
+
         // Push to parent session's inbox so next_instruction can deliver it
-        let handoff_payload = json!({
-            "kind": "handoff_result",
-            "child_session_id": auth.session_id,
-            "message": message
-        });
+        let handoff_payload = serde_json::Value::String(format!(
+            "[delegated result from {} \u{00b7} session {}]\n\n{}",
+            agent_name, auth.session_id, message
+        ));
         state
             .task_queue
             .push(TaskAssignment {
@@ -163,16 +206,9 @@ async fn handle_delegate(
     state: &AppState,
     args: JsonValue,
 ) -> Result<JsonValue, JsonRpcError> {
-    let agent_name = args
-        .get("agent")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| JsonRpcError::invalid_params("missing required 'agent' argument"))?;
-
-    let prompt = args
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| JsonRpcError::invalid_params("missing required 'prompt' argument"))?;
-
+    validate_tool_args(&DELEGATE_VALIDATOR, &args)?;
+    let agent_name = args["agent"].as_str().unwrap();
+    let prompt = args["prompt"].as_str().unwrap();
     let resume_session_id = args.get("session_id").and_then(|v| v.as_str());
 
     // Look up agent by name
@@ -296,45 +332,61 @@ async fn handle_ask_user(
     state: &AppState,
     args: JsonValue,
 ) -> Result<JsonValue, JsonRpcError> {
-    let question = args
-        .get("question")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| JsonRpcError::invalid_params("missing required 'question' argument"))?;
-
-    let options = args.get("options").cloned();
+    validate_tool_args(&ASK_USER_VALIDATOR, &args)?;
+    let questions = args["questions"].as_array().unwrap();
     let importance = args
         .get("importance")
         .and_then(|v| v.as_str())
         .unwrap_or("blocking");
 
-    // Record the question as a message event
-    let event_payload = json!({
-        "role": "agent",
-        "parts": [{"kind": "data", "data": {
+    let batch_id = Uuid::new_v4().to_string();
+    let batch_size = questions.len();
+    let mut question_ids = Vec::with_capacity(batch_size);
+
+    // Create one event per question
+    for (batch_index, q) in questions.iter().enumerate() {
+        let question = q["question"].as_str().unwrap();
+        let options = q.get("options").cloned();
+        let context = q.get("context").and_then(|v| v.as_str());
+
+        let mut data = json!({
             "tool": "ask_user",
             "question": question,
-            "options": options,
-            "importance": importance
-        }}]
-    });
+            "importance": importance,
+            "batch_id": batch_id,
+            "batch_size": batch_size,
+            "batch_index": batch_index,
+        });
+        if let Some(opts) = options {
+            data["options"] = opts;
+        }
+        if let Some(ctx) = context {
+            data["context"] = json!(ctx);
+        }
+        let event_payload = json!({
+            "role": "agent",
+            "parts": [{"kind": "data", "data": data}]
+        });
 
-    let event_id = db::events::insert(
-        &state.db_pool,
-        &auth.execution_id,
-        Some(&auth.session_id),
-        "message",
-        &serde_json::to_string(&event_payload).unwrap(),
-    )
-    .await
-    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+        let event_id = db::events::insert(
+            &state.db_pool,
+            &auth.execution_id,
+            Some(&auth.session_id),
+            "message",
+            &serde_json::to_string(&event_payload).unwrap(),
+        )
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
+        question_ids.push(event_id);
+    }
+
+    // State transitions once after all events (only if blocking)
     if importance == "blocking" {
-        // Update session to input-required
         db::sessions::update_status(&state.db_pool, &auth.session_id, "input-required")
             .await
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
-        // Record session state_change
         let session_state_event = json!({"from": auth.status, "to": "input-required"});
         db::events::insert(
             &state.db_pool,
@@ -346,7 +398,6 @@ async fn handle_ask_user(
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
-        // Only master sessions propagate input-required to the execution
         if auth.role == McpRole::Master {
             let execution = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
                 .await
@@ -369,7 +420,9 @@ async fn handle_ask_user(
         }
     }
 
-    let result_text = serde_json::to_string(&json!({"question_id": event_id})).unwrap();
+    let result_text =
+        serde_json::to_string(&json!({"question_ids": question_ids, "batch_id": batch_id}))
+            .unwrap();
     Ok(json!({
         "content": [{"type": "text", "text": result_text}],
         "isError": false
@@ -460,7 +513,43 @@ async fn handle_next_instruction(
             .await
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?
         {
-            let result_text = serde_json::to_string(&json!({"task": task.task_payload})).unwrap();
+            // Unwrap bootstrap objects: MCP-poll agents only need the prompt text,
+            // not the worker-specific fields (agent_id, agent_type, agent_config).
+            let payload = if task.task_payload.is_object() {
+                if let Some(message) = task.task_payload.get("message") {
+                    let role = message
+                        .get("role")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("user");
+                    // Aggregate all text parts (not just the first)
+                    let text: String = message
+                        .get("parts")
+                        .and_then(|p| p.as_array())
+                        .map(|parts| {
+                            parts
+                                .iter()
+                                .filter(|p| p.get("kind").and_then(|k| k.as_str()) == Some("text"))
+                                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default();
+                    if text.is_empty() {
+                        // Can't extract text — serialize the object so the agent
+                        // always gets a string (consistent contract)
+                        let json_str =
+                            serde_json::to_string(&task.task_payload).unwrap_or_default();
+                        serde_json::Value::String(format!("[{role}]\n\n{json_str}"))
+                    } else {
+                        serde_json::Value::String(format!("[{role}]\n\n{text}"))
+                    }
+                } else {
+                    task.task_payload
+                }
+            } else {
+                task.task_payload
+            };
+            let result_text = serde_json::to_string(&json!({"task": payload})).unwrap();
             return Ok(json!({
                 "content": [{"type": "text", "text": result_text}],
                 "isError": false
@@ -491,24 +580,43 @@ fn ask_user_schema() -> JsonValue {
     json!({
         "name": "ask_user",
         "title": "Ask User",
-        "description": "Surface a question or notification to the user.",
+        "description": "Surface one or more questions or notifications to the user as a batch.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "The question or message to present to the user"
-                },
-                "options": {
+                "questions": {
                     "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
                     "items": {
                         "type": "object",
                         "properties": {
-                            "label": {"type": "string"},
-                            "description": {"type": "string"}
-                        }
+                            "question": {
+                                "type": "string",
+                                "description": "The question or message to present to the user"
+                            },
+                            "context": {
+                                "type": "string",
+                                "description": "Additional context to help the user answer"
+                            },
+                            "options": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 5,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {"type": "string"},
+                                        "description": {"type": "string"}
+                                    },
+                                    "required": ["label", "description"]
+                                },
+                                "description": "Optional list of choices for the user"
+                            }
+                        },
+                        "required": ["question"]
                     },
-                    "description": "Optional list of choices for the user"
+                    "description": "Array of 1-4 questions to present to the user"
                 },
                 "importance": {
                     "type": "string",
@@ -516,7 +624,7 @@ fn ask_user_schema() -> JsonValue {
                     "description": "Whether this blocks execution or is informational"
                 }
             },
-            "required": ["question"]
+            "required": ["questions"]
         }
     })
 }

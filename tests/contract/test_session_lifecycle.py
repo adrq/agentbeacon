@@ -110,9 +110,11 @@ def test_worker_sync_delivers_prompt(test_database):
         data = _worker_sync(ctx["url"])
         assert data["type"] == "session_assigned"
 
-        # Push a new task to the session inbox
+        # Push a new task to the session inbox (plain text with role prefix)
         with db_conn(ctx["db_url"]) as conn:
-            payload = json.dumps({"kind": "handoff_result", "message": "child done"})
+            payload = json.dumps(
+                "[delegated result from test-agent \u00b7 session fake-child]\n\nchild done"
+            )
             conn.execute(
                 "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
                 (exec_id, session_id, payload),
@@ -132,7 +134,8 @@ def test_worker_sync_delivers_prompt(test_database):
 
         assert data["type"] == "prompt_delivery"
         assert data["sessionId"] == session_id
-        assert data["task"]["taskPayload"]["kind"] == "handoff_result"
+        assert isinstance(data["task"]["taskPayload"], str)
+        assert "child done" in data["task"]["taskPayload"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -192,8 +195,8 @@ def test_worker_sync_long_poll_wakes(test_database):
 
         data = result_holder[0]
         assert data["type"] == "prompt_delivery"
-        assert data["task"]["taskPayload"]["kind"] == "user_answer"
-        assert data["task"]["taskPayload"]["message"] == "wake up"
+        assert isinstance(data["task"]["taskPayload"], str)
+        assert data["task"]["taskPayload"] == "[user]\n\nwake up"
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

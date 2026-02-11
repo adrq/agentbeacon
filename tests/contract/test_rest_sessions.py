@@ -37,7 +37,7 @@ def test_list_sessions_filter_by_status(test_database):
             ctx["url"],
             session_id,
             "ask_user",
-            {"question": "test?", "importance": "blocking"},
+            {"questions": [{"question": "test?"}], "importance": "blocking"},
         )
 
         resp = httpx.get(
@@ -79,7 +79,7 @@ def test_session_events_returns_chronological(test_database):
             ctx["url"],
             session_id,
             "ask_user",
-            {"question": "q1?", "importance": "fyi"},
+            {"questions": [{"question": "q1?"}], "importance": "fyi"},
         )
 
         resp = httpx.get(f"{ctx['url']}/api/sessions/{session_id}/events", timeout=5)
@@ -94,6 +94,9 @@ def test_session_events_returns_chronological(test_database):
             assert "created_at" in event
 
 
+# --- /message endpoint tests ---
+
+
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_answer_input_required_session_returns_200(test_database):
     with scheduler_context(db_url=test_database) as ctx:
@@ -104,7 +107,7 @@ def test_answer_input_required_session_returns_200(test_database):
             ctx["url"],
             session_id,
             "ask_user",
-            {"question": "JWT or cookies?", "importance": "blocking"},
+            {"questions": [{"question": "JWT or cookies?"}], "importance": "blocking"},
         )
 
         resp = httpx.post(
@@ -125,7 +128,7 @@ def test_answer_transitions_session_to_working(test_database):
             ctx["url"],
             session_id,
             "ask_user",
-            {"question": "which approach?", "importance": "blocking"},
+            {"questions": [{"question": "which approach?"}], "importance": "blocking"},
         )
 
         httpx.post(
@@ -151,7 +154,7 @@ def test_answer_transitions_execution_to_working(test_database):
             ctx["url"],
             session_id,
             "ask_user",
-            {"question": "which approach?", "importance": "blocking"},
+            {"questions": [{"question": "which approach?"}], "importance": "blocking"},
         )
 
         httpx.post(
@@ -196,15 +199,19 @@ def test_full_ask_answer_round_trip(test_database):
             session_id,
             "ask_user",
             {
-                "question": "JWT or session cookies?",
-                "options": [
-                    {"label": "JWT", "description": "Stateless tokens"},
-                    {"label": "Cookies", "description": "Server-side sessions"},
+                "questions": [
+                    {
+                        "question": "JWT or session cookies?",
+                        "options": [
+                            {"label": "JWT", "description": "Stateless tokens"},
+                            {"label": "Cookies", "description": "Server-side sessions"},
+                        ],
+                    },
                 ],
                 "importance": "blocking",
             },
         )
-        json.loads(result["content"][0]["text"])["question_id"]
+        json.loads(result["content"][0]["text"])["question_ids"]
 
         # 2. Verify states
         with db_conn(ctx["db_url"]) as conn:
@@ -242,3 +249,46 @@ def test_full_ask_answer_round_trip(test_database):
         event_types = [e["event_type"] for e in events]
         assert event_types.count("message") == 2
         assert event_types.count("state_change") >= 2
+
+        # 6. Verify user message event payload shape (no question_event_id)
+        msg_events = [e for e in events if e["event_type"] == "message"]
+        user_events = [e for e in msg_events if e["payload"].get("role") == "user"]
+        assert len(user_events) == 1
+        assert user_events[0]["payload"]["parts"][0]["kind"] == "text"
+        assert "question_event_id" not in user_events[0]["payload"]
+
+
+# --- /message endpoint: plain-text task payload tests ---
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_message_pushes_plain_text_task(test_database):
+    """POST /message pushes a plain text string (not typed JSON) to the task queue."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
+        _, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
+
+        mcp_tools_call(
+            ctx["url"],
+            session_id,
+            "ask_user",
+            {"questions": [{"question": "JWT or cookies?"}], "importance": "blocking"},
+        )
+
+        httpx.post(
+            f"{ctx['url']}/api/sessions/{session_id}/message",
+            json={"message": "JWT"},
+            timeout=5,
+        )
+
+        with db_conn(ctx["db_url"]) as conn:
+            rows = conn.execute(
+                "SELECT task_payload FROM task_queue WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+
+        # Find the user answer payload (skip the initial bootstrap task)
+        payloads = [json.loads(r[0]) for r in rows]
+        text_payloads = [p for p in payloads if isinstance(p, str)]
+        assert len(text_payloads) >= 1
+        assert text_payloads[-1] == "[user]\n\nJWT"

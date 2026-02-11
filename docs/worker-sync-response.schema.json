@@ -106,8 +106,38 @@
           "description": "Session identifier this task belongs to."
         },
         "taskPayload": {
-          "type": "object",
-          "description": "Task payload containing agent_id, agent_type, agent_config, sandbox_config, and message."
+          "description": "Bootstrap task (object with agent_id, agent_config, message) or plain text message (string with role prefix).",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["agent_id", "agent_type", "agent_config", "message"],
+              "properties": {
+                "agent_id": { "type": "string", "minLength": 1 },
+                "agent_type": { "type": "string", "enum": ["claude_sdk", "codex_sdk", "copilot_sdk", "opencode_sdk", "acp", "a2a"] },
+                "agent_config": { "type": "object" },
+                "sandbox_config": {},
+                "message": {
+                  "type": "object",
+                  "required": ["role", "parts"],
+                  "properties": {
+                    "role": { "type": "string" },
+                    "parts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["kind"],
+                        "properties": {
+                          "kind": { "type": "string" },
+                          "text": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            { "type": "string" }
+          ]
         }
       }
     },
@@ -151,11 +181,7 @@
         "task": {
           "executionId": "exec-456",
           "sessionId": "sess-123",
-          "taskPayload": {
-            "kind": "handoff_result",
-            "child_session_id": "sess-789",
-            "message": "Task completed successfully"
-          }
+          "taskPayload": "[delegated result from code-agent \u00b7 session sess-789]\n\nTask completed successfully"
         }
       }
     },

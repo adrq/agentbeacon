@@ -3,6 +3,7 @@ use axum::Router;
 use crate::app::AppState;
 
 pub mod agent_card;
+pub mod agents;
 pub mod auth;
 pub mod config;
 pub mod executions;
@@ -18,6 +19,7 @@ pub mod worker;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(health::routes())
+        .merge(agents::routes())
         .merge(executions::routes())
         .merge(config::routes())
         .merge(jsonrpc::routes())

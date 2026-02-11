@@ -104,7 +104,7 @@ def test_delegate_schema_has_agent_and_prompt(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_schema_has_question(test_database):
+def test_ask_user_schema_has_questions(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -114,8 +114,8 @@ def test_ask_user_schema_has_question(test_database):
 
         ask = tools["ask_user"]
         props = ask["inputSchema"]["properties"]
-        assert "question" in props
-        assert ask["inputSchema"]["required"] == ["question"]
+        assert "questions" in props
+        assert ask["inputSchema"]["required"] == ["questions"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
