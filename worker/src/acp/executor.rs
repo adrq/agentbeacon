@@ -164,10 +164,19 @@ pub(crate) async fn send_session_new(
     client: &mut JsonRpcClient,
     notification_rx: &mut mpsc::UnboundedReceiver<JsonRpcMessage>,
     cwd: &str,
+    scheduler_url: &str,
+    session_id: &str,
 ) -> Result<String> {
     let session_params = SessionNewParams {
         cwd: cwd.to_string(),
-        mcp_servers: vec![],
+        mcp_servers: vec![serde_json::json!({
+            "type": "http",
+            "name": "beacon-coordinator",
+            "url": format!("{}/mcp", scheduler_url.trim_end_matches('/')),
+            "headers": [
+                {"name": "Authorization", "value": format!("Bearer {}", session_id)}
+            ]
+        })],
     };
 
     let request_id = client

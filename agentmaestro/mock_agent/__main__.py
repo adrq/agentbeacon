@@ -42,6 +42,12 @@ def main():
         action="store_true",
         help="Hang indefinitely during ACP initialize (for timeout testing)",
     )
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default=None,
+        help="Run a scripted scenario instead of echo mode (e.g., 'demo')",
+    )
 
     args = parser.parse_args()
 
@@ -58,6 +64,7 @@ def main():
                 custom_responses,
                 protocol_version=args.protocol_version,
                 hang_initialize=args.hang_initialize,
+                scenario=args.scenario,
             )
         else:
             print(f"Unknown mode: {args.mode}", file=sys.stderr)

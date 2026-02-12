@@ -207,6 +207,7 @@ async fn run_session(
         agent_config,
         sandbox_config,
         cwd,
+        scheduler_url: args.scheduler_url.clone(),
     };
 
     // Start executor

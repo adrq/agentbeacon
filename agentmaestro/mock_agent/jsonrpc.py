@@ -13,6 +13,7 @@ from a2a.utils import new_text_artifact
 from .task_store import TaskStore
 from .special_commands import SpecialCommands
 from .file_logger import log_task_completion
+from .mcp_client import McpClient
 
 
 class JSONRPCDispatcher:
@@ -34,6 +35,7 @@ class JSONRPCDispatcher:
         self.hang_initialize = hang_initialize
         self.captured_initialize_calls: list = []
         self.captured_session_new_calls: list = []
+        self.mcp_client: Optional[McpClient] = None
 
     def _serialize_task(
         self, task: Task, history_length: Optional[int] = None
@@ -574,7 +576,7 @@ class JSONRPCDispatcher:
                 "agentCapabilities": {
                     "loadSession": False,
                     "promptCapabilities": {"embeddedContext": True},
-                    "mcpCapabilities": {"http": False, "sse": False},
+                    "mcpCapabilities": {"http": True, "sse": False},
                 },
                 "authMethods": [],
             },
@@ -597,6 +599,19 @@ class JSONRPCDispatcher:
             "cwd": params.get("cwd", ""),
             "created": datetime.utcnow().isoformat(),
         }
+
+        # Extract MCP server config if provided
+        for server in params.get("mcpServers", []):
+            if server.get("type") == "http":
+                url = server.get("url", "")
+                headers = {}
+                for h in server.get("headers", []):
+                    name = h.get("name")
+                    value = h.get("value")
+                    if name and value:
+                        headers[name] = value
+                self.mcp_client = McpClient(url, headers)
+                break
 
         return self._success_response(
             request_id, {"sessionId": session_id, "modes": None}

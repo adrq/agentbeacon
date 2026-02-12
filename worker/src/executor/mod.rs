@@ -11,6 +11,7 @@ pub struct SessionConfig {
     pub agent_config: serde_json::Value,
     pub sandbox_config: serde_json::Value,
     pub cwd: String,
+    pub scheduler_url: String,
 }
 
 #[allow(dead_code)]

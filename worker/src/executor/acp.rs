@@ -105,13 +105,19 @@ impl AcpAgentHandle {
         // Session/new
         let acp_session_id = tokio::time::timeout(
             init_timeout,
-            send_session_new(&mut client, &mut notification_rx, &config.cwd),
+            send_session_new(
+                &mut client,
+                &mut notification_rx,
+                &config.cwd,
+                &config.scheduler_url,
+                &config.session_id,
+            ),
         )
         .await
         .context("session/new timed out")??;
 
         tracing::info!(
-            session_id = %config.session_id,
+            execution_id = %config.execution_id,
             acp_session_id = %acp_session_id,
             "ACP agent started"
         );

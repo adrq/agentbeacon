@@ -9,6 +9,7 @@ from typing import Any, Dict
 
 from .task_store import TaskStore
 from .jsonrpc import JSONRPCDispatcher
+from .demo_scenario import DemoScenario
 from .file_logger import log_task_completion
 
 CANCELLATION_POLL_INTERVAL = 0.1
@@ -22,6 +23,7 @@ class ACPHandler:
         custom_responses: Dict[str, str] = None,
         protocol_version: int = 1,
         hang_initialize: bool = False,
+        scenario: str = None,
     ):
         self.task_store = TaskStore()
         self.jsonrpc_dispatcher = JSONRPCDispatcher(
@@ -31,6 +33,8 @@ class ACPHandler:
             hang_initialize=hang_initialize,
         )
         self.custom_responses = custom_responses or {}
+        self.scenario = scenario
+        self.demo_scenario: DemoScenario | None = None
         self.active_prompts = {}
         self.pending_requests: Dict[str, asyncio.Future] = {}
 
@@ -166,6 +170,11 @@ class ACPHandler:
                 print(json.dumps(error_response), flush=True)
             return
 
+        # Lazily initialize demo scenario on first prompt
+        if self.scenario == "demo" and self.demo_scenario is None:
+            mcp_client = self.jsonrpc_dispatcher.mcp_client
+            self.demo_scenario = DemoScenario(session_id, mcp_client)
+
         # Track session state BEFORE spawning the task to avoid race conditions.
         # The cancel handler (_handle_cancel) may fire immediately after the task starts,
         # so the session entry must exist before create_task() to ensure cancellation works.
@@ -189,6 +198,18 @@ class ACPHandler:
             for part in prompt_parts:
                 if part.get("type") == "text":
                     text_content += part.get("text", "")
+
+            # Demo scenario overrides normal dispatch
+            if self.demo_scenario is not None:
+                stop_reason = await self.demo_scenario.handle_prompt(text_content)
+                if request_id is not None:
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {"stopReason": stop_reason},
+                    }
+                    print(json.dumps(response), flush=True)
+                return
 
             special = self.jsonrpc_dispatcher.special_commands
 
@@ -465,7 +486,10 @@ def start_acp_mode(
     custom_responses: Dict[str, str] = None,
     protocol_version: int = 1,
     hang_initialize: bool = False,
+    scenario: str = None,
 ):
     """Start ACP mode handler (async)."""
-    handler = ACPHandler(custom_responses, protocol_version, hang_initialize)
-    asyncio.run(handler.run())  # Run async event loop
+    handler = ACPHandler(
+        custom_responses, protocol_version, hang_initialize, scenario=scenario
+    )
+    asyncio.run(handler.run())
