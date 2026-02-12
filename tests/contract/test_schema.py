@@ -22,12 +22,70 @@ EXPECTED_TABLES = [
 ]
 
 EXPECTED_COLUMNS = {
-    "workspaces": ["id", "name", "project_path", "default_agent_id", "settings", "created_at", "updated_at"],
-    "agents": ["id", "name", "description", "agent_type", "config", "sandbox_config", "enabled", "created_at", "updated_at"],
-    "executions": ["id", "workspace_id", "parent_execution_id", "context_id", "status", "title", "input", "metadata", "created_at", "updated_at", "completed_at"],
-    "sessions": ["id", "execution_id", "parent_session_id", "agent_id", "agent_session_id", "status", "metadata", "created_at", "updated_at", "completed_at"],
-    "events": ["id", "execution_id", "session_id", "event_type", "payload", "created_at"],
-    "artifacts": ["id", "workspace_id", "session_id", "artifact_type", "name", "description", "reference", "metadata", "created_at"],
+    "workspaces": [
+        "id",
+        "name",
+        "project_path",
+        "default_agent_id",
+        "settings",
+        "created_at",
+        "updated_at",
+    ],
+    "agents": [
+        "id",
+        "name",
+        "description",
+        "agent_type",
+        "config",
+        "sandbox_config",
+        "enabled",
+        "created_at",
+        "updated_at",
+    ],
+    "executions": [
+        "id",
+        "workspace_id",
+        "parent_execution_id",
+        "context_id",
+        "status",
+        "title",
+        "input",
+        "metadata",
+        "created_at",
+        "updated_at",
+        "completed_at",
+    ],
+    "sessions": [
+        "id",
+        "execution_id",
+        "parent_session_id",
+        "agent_id",
+        "agent_session_id",
+        "status",
+        "metadata",
+        "created_at",
+        "updated_at",
+        "completed_at",
+    ],
+    "events": [
+        "id",
+        "execution_id",
+        "session_id",
+        "event_type",
+        "payload",
+        "created_at",
+    ],
+    "artifacts": [
+        "id",
+        "workspace_id",
+        "session_id",
+        "artifact_type",
+        "name",
+        "description",
+        "reference",
+        "metadata",
+        "created_at",
+    ],
     "task_queue": ["id", "execution_id", "session_id", "task_payload", "queued_at"],
     "config": ["name", "value", "created_at", "updated_at"],
     "schema_migrations": ["version", "applied_at"],
@@ -48,7 +106,9 @@ def test_all_tables_present():
             tables = [row[0] for row in cursor.fetchall()]
 
             for expected in EXPECTED_TABLES:
-                assert expected in tables, f"Table '{expected}' not found. Present: {tables}"
+                assert expected in tables, (
+                    f"Table '{expected}' not found. Present: {tables}"
+                )
         finally:
             conn.close()
 

@@ -39,6 +39,10 @@ pub struct SessionResult {
     pub session_id: String,
     #[serde(default)]
     pub agent_session_id: Option<String>,
+    #[serde(default)]
+    pub output: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Worker sync response — tagged union
@@ -71,26 +75,114 @@ pub async fn handle_worker_sync(
     Json(request): Json<WorkerSyncRequest>,
 ) -> Result<Json<WorkerSyncResponse>, StatusCode> {
     // Step 1: Process session_result if present
-    if let Some(ref result) = request.session_result
-        && let Some(ref agent_session_id) = result.agent_session_id
-    {
-        match db::sessions::update_agent_session_id(
-            &state.db_pool,
-            &result.session_id,
-            agent_session_id,
-        )
-        .await
-        {
-            Ok(()) => {}
-            Err(crate::error::SchedulerError::NotFound(msg)) => {
-                tracing::warn!(
-                    session_id = %result.session_id,
-                    "session_result for unknown session: {msg}"
-                );
+    if let Some(ref result) = request.session_result {
+        if let Some(ref agent_session_id) = result.agent_session_id {
+            match db::sessions::update_agent_session_id(
+                &state.db_pool,
+                &result.session_id,
+                agent_session_id,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(crate::error::SchedulerError::NotFound(msg)) => {
+                    tracing::warn!(
+                        session_id = %result.session_id,
+                        "session_result for unknown session: {msg}"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("update_agent_session_id failed: {e}");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
             }
-            Err(e) => {
-                tracing::error!("update_agent_session_id failed: {e}");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        // Emit agent message event if output is present
+        if let Some(ref output) = result.output {
+            match db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
+                Ok(session) => {
+                    let payload_str = serde_json::to_string(output).unwrap();
+                    if let Err(e) = db::events::insert(
+                        &state.db_pool,
+                        &session.execution_id,
+                        Some(&result.session_id),
+                        "message",
+                        &payload_str,
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            session_id = %result.session_id,
+                            execution_id = %session.execution_id,
+                            error = %e,
+                            "failed to insert agent message event"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to emit agent message event: {e}");
+                }
+            }
+        }
+
+        // Handle error: transition session to failed and emit error event
+        if let Some(ref error_msg) = result.error {
+            tracing::warn!(
+                session_id = %result.session_id,
+                error = %error_msg,
+                "Worker reported session error"
+            );
+
+            if let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
+                // Emit error state_change event
+                if let Err(e) = db::events::insert(
+                    &state.db_pool,
+                    &session.execution_id,
+                    Some(&result.session_id),
+                    "state_change",
+                    &serde_json::to_string(&json!({
+                        "from": session.status,
+                        "to": "failed",
+                        "error": error_msg,
+                    }))
+                    .unwrap(),
+                )
+                .await
+                {
+                    tracing::error!(
+                        session_id = %result.session_id,
+                        error = %e,
+                        "failed to insert error state_change event"
+                    );
+                }
+
+                // Transition session to failed
+                if let Err(e) =
+                    db::sessions::update_status(&state.db_pool, &result.session_id, "failed").await
+                {
+                    tracing::error!(
+                        session_id = %result.session_id,
+                        error = %e,
+                        "failed to transition session to failed"
+                    );
+                }
+
+                // Only propagate to execution for master sessions
+                if session.parent_session_id.is_none()
+                    && let Err(e) = db::executions::update_status(
+                        &state.db_pool,
+                        &session.execution_id,
+                        "failed",
+                    )
+                    .await
+                {
+                    tracing::error!(
+                        execution_id = %session.execution_id,
+                        error = %e,
+                        "failed to transition execution to failed"
+                    );
+                }
             }
         }
     }

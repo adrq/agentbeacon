@@ -1,13 +1,11 @@
-"""
-T014: Async Agent Test - Worker A2A protocol async operation integration tests.
+"""Worker session lifecycle tests using mock scheduler (session protocol).
 
-This test suite verifies the Rust worker's A2A protocol compliance for asynchronous operations:
-1. Non-terminal state polling (working → completed transitions)
-2. Timeout handling for stuck tasks
-3. tasks/cancel RPC propagation to remote agents
-4. Multi-task conversation taskId selection
-
-Tests use mock agent special commands (DELAY_X, HANG) to simulate async behavior.
+Tests the worker's handling of session lifecycle events that go beyond
+a simple single-prompt cycle:
+1. Cancel command while worker is waiting for events
+2. Cancel command delivered alongside prompt result
+3. Multi-turn sessions with prompt delivery
+4. Session completion with output verification
 
 Run with: uv run pytest tests/integration/test_worker_async_agent.py -v
 """
@@ -18,316 +16,280 @@ from pathlib import Path
 import requests
 
 from tests.testhelpers import (
+    PortManager,
     cleanup_processes,
     start_mock_scheduler,
+    start_worker_with_retry_config,
     wait_for_port,
-    start_worker,
-    start_and_wait_for_a2a_agent,
-)
-from tests.contracts.schema_helpers import (
-    build_canonical_task,
 )
 
+BASE_DIR = Path(__file__).parent.parent.parent
 
-def test_worker_polls_until_terminal_state():
-    """Test worker polls tasks/get when agent returns non-terminal state.
+ACP_MOCK_CONFIG = {
+    "command": "uv",
+    "args": ["run", "python", "-m", "agentmaestro.mock_agent", "--mode", "acp"],
+    "timeout": 30,
+}
 
-    Verifies P0 fix: Worker must poll tasks/get until agent reaches terminal state.
-    Uses DELAY_5 command to simulate agent returning "working" then "completed".
+
+def _start_worker(scheduler_url):
+    return start_worker_with_retry_config(
+        scheduler_url=scheduler_url,
+        startup_attempts=10,
+        reconnect_attempts=10,
+        retry_delay_ms=100,
+        interval="500ms",
+        base_dir=BASE_DIR,
+    )
+
+
+def _enqueue_session(scheduler_url, session_id, execution_id, prompt_text):
+    """Enqueue a session assignment with ACP mock agent."""
+    task_payload = {
+        "agent_id": "mock-agent",
+        "agent_type": "acp",
+        "agent_config": ACP_MOCK_CONFIG,
+        "sandbox_config": {},
+        "message": {"parts": [{"kind": "text", "text": prompt_text}]},
+    }
+    resp = requests.post(
+        f"{scheduler_url}/test/enqueue_session",
+        json={
+            "sessionId": session_id,
+            "executionId": execution_id,
+            "taskPayload": task_payload,
+        },
+        timeout=5,
+    )
+    assert resp.status_code == 200, f"Enqueue failed: {resp.text}"
+
+
+def _enqueue_prompt(scheduler_url, session_id, execution_id, prompt_text):
+    """Enqueue a follow-up prompt delivery for an active session."""
+    resp = requests.post(
+        f"{scheduler_url}/test/enqueue_prompt",
+        json={
+            "sessionId": session_id,
+            "executionId": execution_id,
+            "taskPayload": {
+                "message": {"parts": [{"kind": "text", "text": prompt_text}]},
+            },
+        },
+        timeout=5,
+    )
+    assert resp.status_code == 200, f"Enqueue prompt failed: {resp.text}"
+
+
+def _send_command(scheduler_url, command):
+    """Queue a command (cancel/shutdown)."""
+    resp = requests.post(
+        f"{scheduler_url}/test/send_command",
+        json={"command": command},
+        timeout=5,
+    )
+    assert resp.status_code == 200, f"Send command failed: {resp.text}"
+
+
+def _mark_complete(scheduler_url, session_id):
+    requests.post(
+        f"{scheduler_url}/test/mark_complete",
+        json={"sessionId": session_id},
+        timeout=5,
+    )
+
+
+def _get_results(scheduler_url):
+    return requests.get(f"{scheduler_url}/test/results", timeout=5).json()
+
+
+def _get_sync_log(scheduler_url):
+    return requests.get(f"{scheduler_url}/test/sync_log", timeout=5).json()
+
+
+def _poll_until(predicate, timeout=30, interval=0.3):
+    start = time.time()
+    while time.time() - start < timeout:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def test_worker_completes_session_with_output():
+    """Worker processes prompt to completion and reports output in result.
+
+    Verifies the end-to-end path: prompt → ACP agent → output captured → result reported.
     """
-    mock_orchestrator_port = 19480
+    pm = PortManager()
+    port = pm.allocate_scheduler_port()
     processes = []
 
     try:
-        # Start simple mock orchestrator
-        scheduler_proc = start_mock_scheduler(
-            mock_orchestrator_port, Path(__file__).parent.parent.parent
-        )
+        scheduler_proc = start_mock_scheduler(port, BASE_DIR)
         processes.append(scheduler_proc)
+        assert wait_for_port(port, timeout=10), "Mock scheduler did not start"
+        url = f"http://localhost:{port}"
 
-        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert scheduler_ready, "Mock scheduler should start"
+        _enqueue_session(url, "sess-async-1", "exec-async-1", "test prompt for output")
 
-        # Start A2A mock agent
-        agent_proc = start_and_wait_for_a2a_agent(
-            18765, Path(__file__).parent.parent.parent
-        )
-        processes.append(agent_proc)
+        worker = _start_worker(url)
+        processes.append(worker)
 
-        # Task with DELAY_5 command: agent returns working, completes after 5s
-        async_task = build_canonical_task(
-            node_id="async-task-1",
-            execution_id="async-exec-1",
-            text="DELAY_5",
+        assert _poll_until(lambda: len(_get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
         )
 
-        # Add task to scheduler
-        response = requests.post(
-            f"http://localhost:{mock_orchestrator_port}/add_task", json=async_task
-        )
-        assert response.status_code == 200
-
-        # Start worker
-        worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-        processes.append(worker_proc)
-
-        # Wait for worker to poll and complete task (5s delay + overhead)
-        time.sleep(8)
-
-        # Check results from orchestrator
-        response = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-        assert response.status_code == 200, "Should get results from orchestrator"
-
-        results = response.json()
-        assert len(results) > 0, "Worker should have completed task"
-
+        results = _get_results(url)
         result = results[0]
-        assert result["nodeId"] == "async-task-1"
-        assert result["taskStatus"]["state"] == "completed", (
-            f"Task should complete after polling: {result}"
-        )
+        assert result["sessionId"] == "sess-async-1"
+        assert result["agentSessionId"] is not None
 
-        # Terminate worker and check logs
-        worker_proc.terminate()
-        worker_output, _ = worker_proc.communicate(timeout=5)
-
-        # Verify worker handled async task (duration indicates polling occurred)
-        # Task should take ~5 seconds, confirming worker waited for completion
-        assert "duration_ms" in worker_output, (
-            f"Worker should log task duration: {worker_output}"
+        # Verify output was captured from agent
+        assert result.get("output") is not None, (
+            f"Result should include output: {result}"
         )
-        # Verify task completed (not cancelled/failed during polling)
-        assert "Task completed successfully" in worker_output, (
-            f"Worker should complete async task: {worker_output}"
-        )
-
+        output = result["output"]
+        assert output["role"] == "agent"
+        assert len(output["parts"]) > 0
     finally:
+        _mark_complete(f"http://localhost:{port}", "sess-async-1")
+        time.sleep(0.5)
         cleanup_processes(processes)
+        pm.release_port(port)
 
 
-def test_worker_polls_indefinitely_until_cancel():
-    """Test worker polls indefinitely until scheduler sends cancel.
+def test_worker_handles_cancel_while_waiting():
+    """Worker exits session cleanly when cancel arrives during waiting_for_event.
 
-    Verifies architectural requirement: Worker does NOT enforce timeout.
-    Per RWIR architecture, scheduler enforces execution.timeout and sends cancel command.
-    Worker polls indefinitely until terminal state or cancel command received.
+    After reporting a result, worker enters waiting_for_event. A cancel command
+    should cause the worker to leave the session and return to idle.
     """
-    mock_orchestrator_port = 19481
+    pm = PortManager()
+    port = pm.allocate_scheduler_port()
     processes = []
 
     try:
-        # Start simple mock orchestrator
-        scheduler_proc = start_mock_scheduler(
-            mock_orchestrator_port, Path(__file__).parent.parent.parent
-        )
+        scheduler_proc = start_mock_scheduler(port, BASE_DIR)
         processes.append(scheduler_proc)
+        assert wait_for_port(port, timeout=10), "Mock scheduler did not start"
+        url = f"http://localhost:{port}"
 
-        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert scheduler_ready, "Mock scheduler should start"
+        _enqueue_session(url, "sess-cancel-1", "exec-cancel-1", "prompt before cancel")
 
-        # Start A2A mock agent
-        agent_proc = start_and_wait_for_a2a_agent(
-            18765, Path(__file__).parent.parent.parent
-        )
-        processes.append(agent_proc)
+        worker = _start_worker(url)
+        processes.append(worker)
 
-        # Task with long delay: agent returns working, will complete after 30s
-        # Worker should poll indefinitely (no timeout), waiting for cancel or completion
-        long_task = build_canonical_task(
-            node_id="indefinite-task-1",
-            execution_id="indefinite-exec-1",
-            text="DELAY_30",  # 30 second delay
+        # Wait for first result (worker will enter waiting_for_event after)
+        assert _poll_until(lambda: len(_get_results(url)) > 0, timeout=30), (
+            "Worker did not report initial result"
         )
 
-        response = requests.post(
-            f"http://localhost:{mock_orchestrator_port}/add_task", json=long_task
-        )
-        assert response.status_code == 200
+        # Send cancel command — worker should receive it in waiting_for_event
+        _send_command(url, "cancel")
 
-        # Start worker
-        worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-        processes.append(worker_proc)
-
-        # Wait for task to start polling (verify worker is polling non-terminal state)
+        # Give worker time to process cancel and return to idle
         time.sleep(3)
 
-        # Send cancel command (simulating scheduler timeout enforcement)
-        response = requests.post(
-            f"http://localhost:{mock_orchestrator_port}/cancel_task",
-            json={"execution_id": "indefinite-exec-1", "node_id": "indefinite-task-1"},
+        # Worker should still be alive (returned to idle after cancel)
+        assert worker.poll() is None, "Worker should survive cancel and return to idle"
+
+        # Verify sync log shows waiting_for_event state before cancel
+        sync_log = _get_sync_log(url)
+        has_waiting = any(
+            e.get("sessionState", {}).get("status") == "waiting_for_event"
+            for e in sync_log
         )
-        # Note: Mock scheduler may not implement cancel endpoint, worker will handle via sync
-
-        # Wait for cancellation to propagate
-        time.sleep(2)
-
-        # Terminate worker and check logs
-        worker_proc.terminate()
-        worker_output, _ = worker_proc.communicate(timeout=5)
-
-        # Verify worker is polling non-terminal state (status=Working in logs)
-        # Note: ANSI color codes in logs, so just check for "working" keyword
-        assert "working" in worker_output.lower(), (
-            f"Worker should be polling non-terminal state: {worker_output}"
-        )
-
-        # Verify NO timeout-related errors (worker doesn't enforce timeout)
-        assert "timeout" not in worker_output.lower(), (
-            f"Worker should NOT timeout (scheduler's job): {worker_output}"
-        )
-
-        # Verify worker doesn't fail or complete prematurely
-        # Task is DELAY_30 but we terminate after 5s, so it shouldn't complete
-        assert "completed successfully" not in worker_output.lower(), (
-            f"Worker should not complete 30s task in 5s: {worker_output}"
-        )
-
+        assert has_waiting, f"Worker should have entered waiting_for_event: {sync_log}"
     finally:
         cleanup_processes(processes)
+        pm.release_port(port)
 
 
-def test_worker_cancels_remote_task():
-    """Test worker calls tasks/cancel when receiving cancel command.
+def test_worker_handles_cancel_after_result():
+    """Worker handles cancel delivered in the sync response to a result report.
 
-    Verifies P1 fix: Worker must propagate cancellation to remote A2A agent.
-    Starts long-running task, sends cancel command, verifies tasks/cancel RPC.
+    Scheduler can respond to a sessionResult sync with a cancel command directly,
+    which the worker should handle without entering waiting_for_event.
     """
-    mock_orchestrator_port = 19482
+    pm = PortManager()
+    port = pm.allocate_scheduler_port()
     processes = []
 
     try:
-        # Start simple mock orchestrator
-        scheduler_proc = start_mock_scheduler(
-            mock_orchestrator_port, Path(__file__).parent.parent.parent
-        )
+        scheduler_proc = start_mock_scheduler(port, BASE_DIR)
         processes.append(scheduler_proc)
+        assert wait_for_port(port, timeout=10), "Mock scheduler did not start"
+        url = f"http://localhost:{port}"
 
-        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert scheduler_ready, "Mock scheduler should start"
-
-        # Start A2A mock agent
-        agent_proc = start_and_wait_for_a2a_agent(
-            18765, Path(__file__).parent.parent.parent
-        )
-        processes.append(agent_proc)
-
-        # Task with long delay to allow cancellation
-        long_task = build_canonical_task(
-            node_id="cancel-task-1",
-            execution_id="cancel-exec-1",
-            text="DELAY_10",  # 10 second delay
+        # Queue cancel BEFORE session so it's ready when worker reports result
+        _send_command(url, "cancel")
+        _enqueue_session(
+            url, "sess-cancel-2", "exec-cancel-2", "prompt then immediate cancel"
         )
 
-        response = requests.post(
-            f"http://localhost:{mock_orchestrator_port}/add_task", json=long_task
-        )
-        assert response.status_code == 200
+        worker = _start_worker(url)
+        processes.append(worker)
 
-        # Start worker
-        worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-        processes.append(worker_proc)
-
-        # Wait for task to start
-        time.sleep(2)
-
-        # Send cancel command
-        response = requests.post(
-            f"http://localhost:{mock_orchestrator_port}/cancel_task",
-            json={"execution_id": "cancel-exec-1", "node_id": "cancel-task-1"},
-        )
-        # Note: Mock scheduler may not implement cancel endpoint, worker will handle via sync
-
-        # Wait for cancellation to propagate
-        time.sleep(2)
-
-        # Terminate worker and check logs
-        worker_proc.terminate()
-        worker_output, _ = worker_proc.communicate(timeout=5)
-
-        # Verify worker attempted to propagate cancellation to A2A agent
-        # Look for either successful cancel propagation or metadata not yet available message
-        has_cancel_attempt = (
-            "propagating cancellation" in worker_output.lower()
-            or "cancel" in worker_output.lower()
+        # Wait for result
+        assert _poll_until(lambda: len(_get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
         )
 
-        assert has_cancel_attempt
-
-        # This test verifies the cancellation code path exists
-        # The actual RPC call success depends on timing and mock agent implementation
-        assert "cancel" in worker_output.lower(), (
-            f"Worker should handle cancellation: {worker_output}"
-        )
-
-    finally:
-        cleanup_processes(processes)
-
-
-def test_worker_handles_multi_task_conversation():
-    """Test worker uses latest taskId in multi-task conversations.
-
-    Verifies P2 fix: Worker must use .rev() to get latest taskId, not first.
-    Simulates A2A conversation where first task completes, second task starts.
-    """
-    mock_orchestrator_port = 19483
-    processes = []
-
-    try:
-        # Start simple mock orchestrator
-        scheduler_proc = start_mock_scheduler(
-            mock_orchestrator_port, Path(__file__).parent.parent.parent
-        )
-        processes.append(scheduler_proc)
-
-        scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-        assert scheduler_ready, "Mock scheduler should start"
-
-        # Start A2A mock agent
-        agent_proc = start_and_wait_for_a2a_agent(
-            18765, Path(__file__).parent.parent.parent
-        )
-        processes.append(agent_proc)
-
-        # First task - completes immediately
-        task1 = build_canonical_task(
-            node_id="multi-task-1",
-            execution_id="multi-exec-1",
-            text="First task",
-        )
-
-        response = requests.post(
-            f"http://localhost:{mock_orchestrator_port}/add_task", json=task1
-        )
-        assert response.status_code == 200
-
-        # Start worker
-        worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-        processes.append(worker_proc)
-
-        # Wait for first task to complete
+        # Give worker time to process the cancel response
         time.sleep(3)
 
-        # Second task in same conversation (if multi-task is supported)
-        # Note: Full multi-task conversation testing requires mock agent to maintain state
-        # This test verifies the .rev() iterator logic exists
-
-        # Terminate worker and check logs
-        worker_proc.terminate()
-        worker_output, _ = worker_proc.communicate(timeout=5)
-
-        # Verify worker completed first task
-        assert "multi-task-1" in worker_output, (
-            f"Worker should process multi-task-1: {worker_output}"
-        )
-
-        # Check results
-        response = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-        assert response.status_code == 200
-        results = response.json()
-        assert len(results) > 0, "Worker should have completed task"
-
-        # This test primarily verifies the code path exists (.rev() iterator)
-        # Full multi-task testing requires more complex conversation state
-
+        # Worker should still be alive (returned to idle after cancel)
+        assert worker.poll() is None, "Worker should survive cancel-after-result"
     finally:
         cleanup_processes(processes)
+        pm.release_port(port)
+
+
+def test_worker_handles_multi_turn_session():
+    """Worker processes two turns in the same session via prompt delivery.
+
+    First turn: initial session assignment with prompt.
+    Second turn: follow-up prompt delivered while waiting_for_event.
+    Both turns should produce results with the same sessionId.
+    """
+    pm = PortManager()
+    port = pm.allocate_scheduler_port()
+    processes = []
+
+    try:
+        scheduler_proc = start_mock_scheduler(port, BASE_DIR)
+        processes.append(scheduler_proc)
+        assert wait_for_port(port, timeout=10), "Mock scheduler did not start"
+        url = f"http://localhost:{port}"
+
+        _enqueue_session(url, "sess-multi-1", "exec-multi-1", "first turn")
+        # Queue follow-up prompt before worker starts so it's ready in waiting_for_event
+        _enqueue_prompt(url, "sess-multi-1", "exec-multi-1", "second turn")
+
+        worker = _start_worker(url)
+        processes.append(worker)
+
+        # Wait for two results (one per turn)
+        assert _poll_until(lambda: len(_get_results(url)) >= 2, timeout=30), (
+            f"Expected 2 results, got {len(_get_results(url))}: {_get_results(url)}"
+        )
+
+        results = _get_results(url)
+        assert len(results) == 2
+        assert results[0]["sessionId"] == "sess-multi-1"
+        assert results[1]["sessionId"] == "sess-multi-1"
+
+        # Both results should have the same agentSessionId (same ACP subprocess)
+        assert results[0]["agentSessionId"] == results[1]["agentSessionId"], (
+            f"Both turns should use same agent session: "
+            f"{results[0]['agentSessionId']} vs {results[1]['agentSessionId']}"
+        )
+
+        # Both results should have output
+        for i, r in enumerate(results):
+            assert r.get("output") is not None, f"Turn {i + 1} should have output: {r}"
+    finally:
+        _mark_complete(f"http://localhost:{port}", "sess-multi-1")
+        time.sleep(0.5)
+        cleanup_processes(processes)
+        pm.release_port(port)

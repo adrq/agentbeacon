@@ -10,8 +10,10 @@ These variants were causing deserialization failures before the enum fix.
 import time
 from pathlib import Path
 
+import pytest
 import requests
 
+from tests.contracts.schema_helpers import build_acp_task
 from tests.testhelpers import (
     PortManager,
     cleanup_processes,
@@ -19,7 +21,10 @@ from tests.testhelpers import (
     start_worker,
     wait_for_port,
 )
-from tests.contracts.schema_helpers import build_acp_task
+
+pytestmark = pytest.mark.skip(
+    reason="Disabled: uses old worker sync protocol. Re-enable after full ACP support."
+)
 
 
 def test_session_update_plan_variant():

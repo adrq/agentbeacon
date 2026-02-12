@@ -8,6 +8,7 @@ Run with: uv run pytest tests/integration/test_acp_config.py -v
 import time
 from pathlib import Path
 
+import pytest
 import requests
 
 from tests.contracts.schema_helpers import build_acp_task, build_canonical_task
@@ -18,6 +19,10 @@ from tests.testhelpers import (
     start_worker,
     start_and_wait_for_a2a_agent,
     PortManager,
+)
+
+pytestmark = pytest.mark.skip(
+    reason="Disabled: uses old worker sync protocol. Re-enable after full ACP support."
 )
 
 

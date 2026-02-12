@@ -87,14 +87,14 @@ def cleanup_postgres_database(request):
             # Truncate all tables in reverse dependency order
             # CASCADE handles any remaining foreign key constraints
             tables = [
-                "events",        # Child of sessions
-                "artifacts",     # Child of workspaces/sessions
-                "task_queue",    # Child of executions/sessions
-                "sessions",      # Child of executions
-                "executions",    # Child of workspaces
-                "agents",        # Standalone
-                "workspaces",    # Standalone
-                "config",        # Standalone
+                "events",  # Child of sessions
+                "artifacts",  # Child of workspaces/sessions
+                "task_queue",  # Child of executions/sessions
+                "sessions",  # Child of executions
+                "executions",  # Child of workspaces
+                "agents",  # Standalone
+                "workspaces",  # Standalone
+                "config",  # Standalone
             ]
 
             # Note: schema_migrations is NOT truncated to preserve migration history

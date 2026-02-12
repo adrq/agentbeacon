@@ -6,6 +6,7 @@ temporary files to reduce duplication and flakiness across tests.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -747,15 +748,13 @@ def start_worker(
     orchestrator_url: str,
     interval: str = "1s",
     base_dir: Path = None,
-    agents_config: str = None,
 ) -> subprocess.Popen:
     """Start the worker binary with specified configuration.
 
     Args:
-        orchestrator_url: URL of the orchestrator to connect to
+        orchestrator_url: URL of the scheduler to connect to
         interval: Polling interval (default: "1s")
         base_dir: Base directory for the project (defaults to test file parent directory)
-        agents_config: Path to agents config file (default: examples/agents.yaml)
 
     Returns:
         subprocess.Popen: The worker process
@@ -767,7 +766,6 @@ def start_worker(
     if base_dir is None:
         base_dir = Path(__file__).parent.parent
 
-    # Copy current environment so worker subprocess inherits pytest context
     worker_env = os.environ.copy()
 
     cmd = [
@@ -777,9 +775,6 @@ def start_worker(
         "--interval",
         interval,
     ]
-
-    if agents_config:
-        cmd.extend(["--agents-config", agents_config])
 
     worker_process = subprocess.Popen(
         cmd,
@@ -1370,6 +1365,42 @@ def seed_test_agent(
         conn.execute(
             "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, ?, '{}', ?)",
             (agent_id, name, agent_type, enabled),
+        )
+        conn.commit()
+
+    return agent_id
+
+
+def seed_acp_mock_agent(
+    db_url: str,
+    name: str = "acp-mock",
+    agent_id: str = None,
+) -> str:
+    """Insert an ACP mock agent into the database with appropriate config.
+
+    Args:
+        db_url: Database URL (sqlite:... or postgres://...)
+        name: Agent name
+        agent_id: Agent ID (generated UUID if None)
+
+    Returns:
+        str: Agent ID
+    """
+    if agent_id is None:
+        agent_id = str(uuid.uuid4())
+
+    config = json.dumps(
+        {
+            "command": "uv",
+            "args": ["run", "python", "-m", "agentmaestro.mock_agent", "--mode", "acp"],
+            "timeout": 30,
+        }
+    )
+
+    with db_conn(db_url) as conn:
+        conn.execute(
+            "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, 'acp', ?, ?)",
+            (agent_id, name, config, True),
         )
         conn.commit()
 

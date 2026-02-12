@@ -1,419 +1,334 @@
-"""Simple FastAPI mock orchestrator for AgentBeacon worker testing.
+"""Simple FastAPI mock scheduler for AgentBeacon worker testing.
 
-Based on FastAPI basic example pattern: https://fastapi.tiangolo.com/#create-it
+Implements the new session-based sync protocol for worker-in-isolation tests.
 """
 
-from fastapi import FastAPI, HTTPException, Request
-from typing import Dict, Any, Optional, List, Literal, Union
+from fastapi import FastAPI
+from typing import Dict, Any, Optional, List, Literal
 from pydantic import BaseModel
 
 app = FastAPI()
 
-# Pydantic Models for API validation with A2A protocol compliance
-# Note: A2A protocol types allow extensions, so extra='forbid' is NOT used
+# Pydantic Models for session-based sync protocol
 
 
-class TextPart(BaseModel):
-    """A2A TextPart - allows extension fields via metadata."""
+class SessionResult(BaseModel):
+    """Worker-reported session result."""
 
-    kind: Literal["text"]
-    text: str
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class FilePart(BaseModel):
-    """A2A FilePart - allows extension fields via metadata."""
-
-    kind: Literal["file"]
-    file: Dict[str, Any]
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class DataPart(BaseModel):
-    """A2A DataPart - allows extension fields via metadata."""
-
-    kind: Literal["data"]
-    data: Dict[str, Any]
-    metadata: Optional[Dict[str, Any]] = None
-
-
-Part = Union[TextPart, FilePart, DataPart]
-
-
-class A2AMessage(BaseModel):
-    """A2A Message - allows extension fields per A2A protocol spec."""
-
-    messageId: str
-    kind: Literal["message"] = "message"
-    role: Literal["user", "agent"]
-    parts: List[Part]
-    metadata: Optional[Dict[str, Any]] = None
-    taskId: Optional[str] = None
-    contextId: Optional[str] = None
-    extensions: Optional[List[str]] = None
-    referenceTaskIds: Optional[List[str]] = None
-
-
-# class A2ATaskStatus(BaseModel):
-#     """A2A TaskStatus - allows extension fields per A2A protocol spec."""
-
-#     state: Literal["pending", "running", "completed", "failed", "cancelled"]
-#     message: Optional[A2AMessage] = None
-#     timestamp: str
-
-
-# class A2AArtifact(BaseModel):
-#     """A2A Artifact - allows extension fields per A2A protocol spec."""
-
-#     artifactId: str
-#     name: Optional[str] = None
-#     description: Optional[str] = None
-#     parts: List[Part]
-#     metadata: Optional[Dict[str, Any]] = None
-#     extensions: Optional[List[str]] = None
-
-
-class CurrentTask(BaseModel):
-    executionId: str
-    nodeId: str
+    sessionId: str
+    agentSessionId: Optional[str] = None
+    output: Optional[Any] = None
+    error: Optional[str] = None
 
     class Config:
         extra = "forbid"
 
 
-class Part(BaseModel):
-    """A2A Protocol Part union type."""
+class SessionState(BaseModel):
+    """Worker-reported session state."""
 
-    kind: Literal["text", "file", "data"]
-    text: Optional[str] = None
-    data: Optional[Union[str, Dict[str, Any]]] = None
-    mimeType: Optional[str] = None
-
-    class Config:
-        extra = "forbid"
-
-
-class Message(BaseModel):
-    """A2A Protocol Message structure."""
-
-    messageId: str
-    kind: Literal["message"]
-    role: Literal["user", "agent"]
-    parts: List[Part]
+    sessionId: str
+    status: Literal["running", "waiting_for_event"]
+    agentSessionId: Optional[str] = None
 
     class Config:
         extra = "forbid"
 
 
-class A2ATaskStatus(BaseModel):
-    """A2A Protocol TaskStatus structure."""
+class WorkerSyncRequest(BaseModel):
+    """Worker sync request - can contain sessionResult and/or sessionState."""
 
-    state: Literal["completed", "failed", "canceled", "rejected"]
-    message: Optional[Message] = None
-    timestamp: Optional[str] = None
-
-    class Config:
-        extra = "forbid"
-
-
-class A2AArtifact(BaseModel):
-    """A2A Protocol Artifact structure."""
-
-    artifactId: str
-    name: str
-    description: Optional[str] = None
-    parts: List[Part]
+    sessionResult: Optional[SessionResult] = None
+    sessionState: Optional[SessionState] = None
 
     class Config:
         extra = "forbid"
 
 
-class TaskResult(BaseModel):
-    """Worker TaskResult with A2A types."""
+class TaskPayload(BaseModel):
+    """Task payload for session assignment or prompt delivery."""
 
     executionId: str
-    nodeId: str
-    taskStatus: A2ATaskStatus
-    artifacts: Optional[List[A2AArtifact]] = None
+    sessionId: str
+    taskPayload: Any
+
+    class Config:
+        extra = "allow"
+
+
+class NoActionResponse(BaseModel):
+    """No action response."""
+
+    type: Literal["no_action"] = "no_action"
 
     class Config:
         extra = "forbid"
 
 
-class SyncRequest(BaseModel):
-    status: Literal["idle", "working"]
-    currentTask: Optional[CurrentTask] = None
-    taskResult: Optional[TaskResult] = None
+class SessionAssignedResponse(BaseModel):
+    """Session assigned response."""
+
+    type: Literal["session_assigned"] = "session_assigned"
+    sessionId: str
+    task: TaskPayload
 
     class Config:
         extra = "forbid"
 
 
-class TaskAssignment(BaseModel):
-    executionId: str
-    nodeId: str
-    agent: str
-    task: Dict[str, Any]
-    workflowRegistryId: Optional[str] = None
-    workflowVersion: Optional[str] = None
-    workflowRef: Optional[str] = None
-    protocolMetadata: Optional[Dict[str, Any]] = None
+class PromptDeliveryResponse(BaseModel):
+    """Prompt delivery response."""
 
-    class Config:
-        extra = "allow"  # Schema says additionalProperties: true
-
-
-class SyncResponse(BaseModel):
-    type: Literal["no_action", "task_assigned", "command"]
-    task: Optional[TaskAssignment] = None
-    command: Optional[Literal["cancel", "shutdown"]] = None
+    type: Literal["prompt_delivery"] = "prompt_delivery"
+    sessionId: str
+    task: TaskPayload
 
     class Config:
         extra = "forbid"
-        # Skip null values to match canonical schema's additionalProperties: false
-        exclude_none = True
 
 
-class AddCommandRequest(BaseModel):
-    executionId: str
-    nodeId: str
+class SessionCompleteResponse(BaseModel):
+    """Session complete response."""
+
+    type: Literal["session_complete"] = "session_complete"
+    sessionId: str
+
+    class Config:
+        extra = "forbid"
+
+
+class CommandResponse(BaseModel):
+    """Command response."""
+
+    type: Literal["command"] = "command"
     command: Literal["cancel", "shutdown"]
 
     class Config:
         extra = "forbid"
 
 
-class DowntimeRequest(BaseModel):
-    enabled: bool
+WorkerSyncResponse = (
+    NoActionResponse
+    | SessionAssignedResponse
+    | PromptDeliveryResponse
+    | SessionCompleteResponse
+    | CommandResponse
+)
+
+
+class EnqueueSessionRequest(BaseModel):
+    """Test endpoint: enqueue session assignment."""
+
+    sessionId: str
+    executionId: str
+    taskPayload: Any
+
+    class Config:
+        extra = "forbid"
+
+
+class EnqueuePromptRequest(BaseModel):
+    """Test endpoint: enqueue prompt delivery."""
+
+    sessionId: str
+    executionId: str
+    taskPayload: Any
+
+    class Config:
+        extra = "forbid"
+
+
+class MarkCompleteRequest(BaseModel):
+    """Test endpoint: mark session as complete."""
+
+    sessionId: str
+
+    class Config:
+        extra = "forbid"
+
+
+class SendCommandRequest(BaseModel):
+    """Test endpoint: send command."""
+
+    command: Literal["cancel", "shutdown"]
 
     class Config:
         extra = "forbid"
 
 
 class StatusResponse(BaseModel):
+    """Generic status response."""
+
     status: str
-
-    class Config:
-        extra = "forbid"
-
-
-class CountResponse(BaseModel):
-    count: int
-
-    class Config:
-        extra = "forbid"
-
-
-class SyncStatusResponse(BaseModel):
-    commandQueue: Dict[str, int]
-    syncCount: int
-    taskQueue: int
-    resultsCount: int
 
     class Config:
         extra = "forbid"
 
 
 class HealthResponse(BaseModel):
+    """Health check response."""
+
     status: str
 
     class Config:
         extra = "forbid"
 
 
-# Simple in-memory task queue and results storage
-task_queue = []
-results = []
-simulate_downtime = False
-poll_count = 0
-
-# Worker sync endpoint storage (no worker tracking needed for anonymous workers)
-command_queue = {}  # executionId+nodeId -> list of commands
-sync_count = 0
-
-# @app.get("/api/worker/poll")
-# def poll_for_task() -> Dict[str, Any]:
-#     """Poll for available tasks."""
-#     global poll_count, simulate_downtime
-#     poll_count += 1
-
-#     if simulate_downtime:
-#         raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-
-#     if task_queue:
-#         task = task_queue.pop(0)  # FIFO
-#         return {"task": task}
-#     return {"task": None}
-
-# @app.post("/api/worker/result")
-# def submit_result(result: Dict[str, Any]) -> Dict[str, bool]:
-#     """Accept task results."""
-#     global simulate_downtime
-#     if simulate_downtime:
-#         raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-
-#     # Store results for testing
-#     results.append(result)
-#     return {"accepted": True}
+# In-memory state
+session_queue: List[Dict[str, Any]] = []
+prompt_queues: Dict[str, List[Dict[str, Any]]] = {}
+complete_sessions: set[str] = set()
+command_queue: List[str] = []
+results: List[Dict[str, Any]] = []
+sync_log: List[Dict[str, Any]] = []
 
 
-@app.post("/api/worker/sync", response_model_exclude_none=True)
-def worker_sync(sync_request: SyncRequest, request: Request) -> SyncResponse:
-    """Unified worker sync endpoint for bidirectional communication."""
-    global sync_count, simulate_downtime
-    sync_count += 1
+@app.post("/api/worker/sync")
+def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
+    """Main worker sync endpoint implementing the session-based state machine."""
+    sync_log.append(sync_request.dict(exclude_none=True))
 
-    if simulate_downtime:
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
+    if sync_request.sessionResult:
+        results.append(sync_request.sessionResult.dict())
 
-    status = sync_request.status
+    if sync_request.sessionState:
+        session_state = sync_request.sessionState
+        session_id = session_state.sessionId
 
-    # No worker tracking needed - workers are truly anonymous
+        if session_state.status == "waiting_for_event":
+            if session_id in prompt_queues and prompt_queues[session_id]:
+                prompt_data = prompt_queues[session_id].pop(0)
+                return PromptDeliveryResponse(
+                    sessionId=session_id,
+                    task=TaskPayload(
+                        executionId=prompt_data["executionId"],
+                        sessionId=session_id,
+                        taskPayload=prompt_data["taskPayload"],
+                    ),
+                )
 
-    # Process task result if present
-    if sync_request.taskResult:
-        task_result = sync_request.taskResult
-        # Store the result
-        results.append(task_result.dict())
-        # Per worker-sync-protocol.md: acknowledge result with no_action
-        # Worker expects acknowledgment before receiving new tasks
-        return SyncResponse(type="no_action")
+            if session_id in complete_sessions:
+                complete_sessions.remove(session_id)
+                return SessionCompleteResponse(sessionId=session_id)
 
-    # Check for pending commands based on current task
-    if sync_request.currentTask:
-        current_task = sync_request.currentTask
-        task_key = f"{current_task.executionId}:{current_task.nodeId}"
-        if task_key in command_queue and command_queue[task_key]:
-            command = command_queue[task_key].pop(0)
-            return SyncResponse(
-                type="command",
-                command=command,
+            if command_queue:
+                command = command_queue.pop(0)
+                return CommandResponse(command=command)
+
+            return NoActionResponse()
+
+        elif session_state.status == "running":
+            if command_queue:
+                command = command_queue.pop(0)
+                return CommandResponse(command=command)
+
+            return NoActionResponse()
+
+    if sync_request.sessionResult and not sync_request.sessionState:
+        session_id = sync_request.sessionResult.sessionId
+
+        if session_id in prompt_queues and prompt_queues[session_id]:
+            prompt_data = prompt_queues[session_id].pop(0)
+            return PromptDeliveryResponse(
+                sessionId=session_id,
+                task=TaskPayload(
+                    executionId=prompt_data["executionId"],
+                    sessionId=session_id,
+                    taskPayload=prompt_data["taskPayload"],
+                ),
             )
 
-    # Check for available tasks when worker is idle
-    if status == "idle" and task_queue:
-        task_payload = task_queue.pop(0)  # FIFO
-        task_assignment = TaskAssignment(
-            executionId=task_payload.get("executionId", "test-exec-1"),
-            nodeId=task_payload["nodeId"],
-            agent=task_payload["agent"],
-            task=task_payload["task"],
-            workflowRegistryId=task_payload.get("workflowRegistryId"),
-            workflowVersion=task_payload.get("workflowVersion"),
-            workflowRef=task_payload.get("workflowRef"),
-            protocolMetadata=task_payload.get("protocolMetadata"),
-        )
-        return SyncResponse(
-            type="task_assigned",
-            task=task_assignment,
+        if session_id in complete_sessions:
+            complete_sessions.remove(session_id)
+            return SessionCompleteResponse(sessionId=session_id)
+
+    if session_queue:
+        session_data = session_queue.pop(0)
+        return SessionAssignedResponse(
+            sessionId=session_data["sessionId"],
+            task=TaskPayload(
+                executionId=session_data["executionId"],
+                sessionId=session_data["sessionId"],
+                taskPayload=session_data["taskPayload"],
+            ),
         )
 
-    # Default response - no action needed
-    return SyncResponse(type="no_action")
+    if command_queue:
+        command = command_queue.pop(0)
+        return CommandResponse(command=command)
+
+    return NoActionResponse()
 
 
-@app.post("/add_task")
-def add_task_endpoint(task: Dict[str, Any]) -> StatusResponse:
-    """Add a task to the queue for testing."""
-    required_fields = {
-        "nodeId",
-        "executionId",
-        "workflowRegistryId",
-        "workflowVersion",
-        "workflowRef",
-        "agent",
-        "task",
-    }
-    missing = sorted(required_fields - task.keys())
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": f"Missing required fields: {', '.join(missing)}"},
-        )
-
-    if not isinstance(task["task"], dict):
-        raise HTTPException(
-            status_code=422, detail={"error": "task payload must be an object"}
-        )
-
-    task_queue.append(task)
-    return StatusResponse(status="added")
+@app.post("/test/enqueue_session")
+def enqueue_session(request: EnqueueSessionRequest) -> StatusResponse:
+    """Test endpoint: add a session assignment to the queue."""
+    session_queue.append(
+        {
+            "sessionId": request.sessionId,
+            "executionId": request.executionId,
+            "taskPayload": request.taskPayload,
+        }
+    )
+    return StatusResponse(status="session enqueued")
 
 
-@app.get("/results")
-def get_results() -> list:
-    """Get all submitted results for testing.
-
-    Worker now sends A2A-compliant TaskResult format directly.
-    """
-    return results
-
-
-@app.post("/clear")
-def clear_all() -> StatusResponse:
-    """Clear tasks and results for testing."""
-    task_queue.clear()
-    results.clear()
-    command_queue.clear()
-    return StatusResponse(status="cleared")
+@app.post("/test/enqueue_prompt")
+def enqueue_prompt(request: EnqueuePromptRequest) -> StatusResponse:
+    """Test endpoint: add a prompt delivery for a session."""
+    if request.sessionId not in prompt_queues:
+        prompt_queues[request.sessionId] = []
+    prompt_queues[request.sessionId].append(
+        {
+            "executionId": request.executionId,
+            "taskPayload": request.taskPayload,
+        }
+    )
+    return StatusResponse(status="prompt enqueued")
 
 
-@app.post("/test/add_command")
-def add_command_for_testing(command_data: AddCommandRequest) -> StatusResponse:
-    """Queue a command for a specific execution/node for testing."""
-    task_key = f"{command_data.executionId}:{command_data.nodeId}"
-    if task_key not in command_queue:
-        command_queue[task_key] = []
-    command_queue[task_key].append(command_data.command)
+@app.post("/test/mark_complete")
+def mark_complete(request: MarkCompleteRequest) -> StatusResponse:
+    """Test endpoint: mark a session as complete."""
+    complete_sessions.add(request.sessionId)
+    return StatusResponse(status="session marked complete")
 
+
+@app.post("/test/send_command")
+def send_command(request: SendCommandRequest) -> StatusResponse:
+    """Test endpoint: queue a command."""
+    command_queue.append(request.command)
     return StatusResponse(status="command queued")
 
 
-@app.get("/test/sync_status")
-def get_sync_status() -> SyncStatusResponse:
-    """Get current sync endpoint status for testing."""
-    return SyncStatusResponse(
-        commandQueue={k: len(v) for k, v in command_queue.items()},
-        syncCount=sync_count,
-        taskQueue=len(task_queue),
-        resultsCount=len(results),
-    )
+@app.get("/test/results")
+def get_results() -> List[Dict[str, Any]]:
+    """Test endpoint: retrieve reported sessionResult payloads."""
+    return results
 
 
-@app.post("/simulate_downtime")
-def set_downtime_simulation(downtime: DowntimeRequest) -> StatusResponse:
-    """Enable or disable downtime simulation."""
-    global simulate_downtime
-    simulate_downtime = downtime.enabled
-    return StatusResponse(
-        status=f"downtime simulation {'enabled' if simulate_downtime else 'disabled'}"
-    )
-
-
-@app.get("/poll_count")
-def get_poll_count() -> CountResponse:
-    """Get the number of poll requests received."""
-    return CountResponse(count=poll_count)
-
-
-@app.get("/sync_count")
-def get_sync_count() -> CountResponse:
-    """Get the number of sync requests received."""
-    return CountResponse(count=sync_count)
+@app.get("/test/sync_log")
+def get_sync_log() -> List[Dict[str, Any]]:
+    """Test endpoint: retrieve all sync requests received."""
+    return sync_log
 
 
 @app.get("/api/health")
 def health_check() -> HealthResponse:
     """Health check endpoint."""
-    global simulate_downtime
-    if simulate_downtime:
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
     return HealthResponse(status="ok")
 
 
-def clear_tasks() -> None:
-    """Clear all tasks from the queue."""
-    task_queue.clear()
+@app.post("/test/clear")
+def clear_all() -> StatusResponse:
+    """Test endpoint: clear all state for testing."""
+    session_queue.clear()
+    prompt_queues.clear()
+    complete_sessions.clear()
+    command_queue.clear()
+    results.clear()
+    sync_log.clear()
+    return StatusResponse(status="cleared")
 
 
 if __name__ == "__main__":

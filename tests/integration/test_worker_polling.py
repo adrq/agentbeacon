@@ -1,272 +1,159 @@
-"""
-T004: Idle Polling Test - Worker polling behavior integration test.
+"""Worker polling behavior tests.
 
-This test verifies that workers properly respect polling intervals and handle
-idle periods when no tasks are available from the orchestrator.
+Verifies workers respect polling intervals, handle scheduler unavailability,
+and shut down cleanly on OS signals.
 
 Run with: uv run pytest tests/integration/test_worker_polling.py -v
 """
 
+import signal
 import subprocess
 import time
 from pathlib import Path
+
+import requests
+
 from tests.testhelpers import (
+    PortManager,
     cleanup_processes,
     start_mock_scheduler,
     start_worker_with_retry_config,
     wait_for_port,
-    start_and_wait_for_a2a_agent,
 )
-import pytest
-import requests
+
+BASE_DIR = Path(__file__).parent.parent.parent
 
 
 def test_worker_respects_polling_interval():
-    """Test that worker respects 2s sync interval when no tasks available."""
-    # Use faster interval for testing to reduce test time
-
-    test_port = 19457  # Unique port for this test
-    worker_binary = "./bin/agentbeacon-worker"
+    """Worker respects configured sync interval when idle (no sessions available)."""
+    pm = PortManager()
+    port = pm.allocate_scheduler_port()
     processes = []
 
     try:
-        # Start A2A mock agent
-        agent_proc = start_and_wait_for_a2a_agent(
-            18765, Path(__file__).parent.parent.parent
-        )
-        processes.append(agent_proc)
-
-        # Start simple mock orchestrator with sync endpoint
-        scheduler_proc = start_mock_scheduler(
-            test_port, Path(__file__).parent.parent.parent
-        )
+        scheduler_proc = start_mock_scheduler(port, BASE_DIR)
         processes.append(scheduler_proc)
+        assert wait_for_port(port, timeout=10), "Mock scheduler did not start"
 
-        # Wait for scheduler to be ready
-        scheduler_ready = wait_for_port(test_port, timeout=15)
-        assert scheduler_ready, (
-            f"Mock scheduler did not start on port {test_port} within 15 seconds"
-        )
-
-        # Verify scheduler health
-        response = requests.get(f"http://localhost:{test_port}/api/health", timeout=5)
-        assert response.status_code == 200
-
-        # Start worker with 2s sync interval (faster for testing)
         worker_proc = subprocess.Popen(
             [
-                worker_binary,
+                "./bin/agentbeacon-worker",
                 "--scheduler-url",
-                f"http://localhost:{test_port}",
+                f"http://localhost:{port}",
                 "--interval",
                 "2s",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            cwd=Path(__file__).parent.parent.parent,
+            cwd=BASE_DIR,
         )
         processes.append(worker_proc)
 
-        # Give worker time to start and make several sync calls
-        time.sleep(6)  # Allow for at least 3 sync cycles (2s interval)
+        # Allow at least 3 sync cycles (2s interval)
+        time.sleep(6)
 
-        # Stop worker
         worker_proc.terminate()
         worker_output, _ = worker_proc.communicate(timeout=5)
 
-        # Verify sync endpoint usage instead of poll
-        assert (
-            "syncing with" in worker_output and "/api/worker/sync" in worker_output
-        ), f"Worker should use sync endpoint instead of poll: {worker_output}"
-
-        # Verify worker receives no_action responses when idle (no tasks available)
-        assert "No action from sync response" in worker_output, (
-            f"Worker should receive no_action when idle: {worker_output}"
+        # Verify startup message shows correct interval
+        assert "Starting worker loop" in worker_output, (
+            f"Worker should log startup: {worker_output}"
+        )
+        assert "every 2s" in worker_output, (
+            f"Worker should report 2s interval: {worker_output}"
         )
 
-        # Parse worker output for sync activity - look for sync calls or "no_action" responses
-        sync_activity = [
-            line
-            for line in worker_output.split("\n")
-            if "sync" in line.lower() or "no_action" in line or "idle" in line
-        ]
-
-        # Should have multiple sync cycles
-        assert len(sync_activity) >= 2, (
-            f"Expected at least 2 sync activities, got {len(sync_activity)}: {worker_output}"
+        # Verify mock scheduler received multiple sync calls
+        resp = requests.get(f"http://localhost:{port}/test/sync_log", timeout=5)
+        sync_log = resp.json()
+        assert len(sync_log) >= 2, (
+            f"Expected at least 2 idle syncs in 6s with 2s interval, got {len(sync_log)}"
         )
-
-        # Verify worker reports correct interval in startup message
-        startup_lines = [
-            line
-            for line in worker_output.split("\n")
-            if "Starting worker loop" in line and "every 2s" in line
-        ]
-        assert len(startup_lines) >= 1, (
-            f"Expected worker to report 2s interval in startup message. Output: {worker_output}"
-        )
-
-        # Verify sync calls were made by checking orchestrator received them
-        response = requests.get(f"http://localhost:{test_port}/sync_count", timeout=5)
-        if response.status_code == 200:
-            sync_data = response.json()
-            assert sync_data["count"] > 0, (
-                f"Orchestrator should receive sync calls from worker: {sync_data}"
-            )
-
     finally:
         cleanup_processes(processes)
+        pm.release_port(port)
 
 
 def test_worker_handles_orchestrator_unavailable():
-    """Test that worker exits gracefully when scheduler never available."""
-    unavailable_port = 19999  # Port that should be unused
+    """Worker exits gracefully with error when scheduler never becomes available."""
     processes = []
 
     try:
-        # Start worker pointing to non-existent orchestrator
-        # Use fast startup failure: 3 attempts × 100ms = 300ms
+        # Point at a port nothing is listening on
         worker_proc = start_worker_with_retry_config(
-            f"http://localhost:{unavailable_port}",
+            "http://localhost:19999",
             startup_attempts=3,
-            reconnect_attempts=5,  # Unused since never connects
+            reconnect_attempts=5,
             retry_delay_ms=100,
         )
         processes.append(worker_proc)
 
-        # Wait for worker to exhaust startup retries and exit
-        # Should exit in ~300ms, wait up to 2s with buffer
-        exit_code = worker_proc.wait(timeout=2)
-
-        # Verify proper exit behavior
+        # Should exit quickly after exhausting startup retries
+        exit_code = worker_proc.wait(timeout=5)
         assert exit_code == 1, (
-            "Worker should exit with error code when scheduler unavailable"
+            f"Worker should exit with code 1 when scheduler unreachable, got {exit_code}"
         )
 
-        # Get output and verify error logging
         worker_output = worker_proc.stdout.read() if worker_proc.stdout else ""
 
-        assert "scheduler unreachable - exiting worker" in worker_output, (
-            "Worker should log exit reason"
+        # Verify error messages
+        assert "scheduler unreachable" in worker_output.lower(), (
+            f"Worker should mention scheduler unreachable: {worker_output}"
         )
         assert "during startup" in worker_output, (
-            "Worker should indicate startup failure context"
+            f"Worker should indicate startup context: {worker_output}"
         )
 
-        # Verify retry attempts logged
+        # Verify retry attempts were logged
         sync_failure_count = worker_output.lower().count("sync failed")
         assert sync_failure_count >= 2, (
-            f"Worker should log multiple retry attempts, found {sync_failure_count}"
+            f"Expected at least 2 retry logs, found {sync_failure_count}"
         )
-
-        # Should show worker attempting sync
-        assert "/api/worker/sync" in worker_output, (
-            f"Worker should attempt sync calls: {worker_output}"
-        )
-
-        # Verify sync failures were logged (already validated by sync_failure_count above)
-        assert "failed to send sync request" in worker_output, (
-            f"Worker should report sync connection failures: {worker_output}"
-        )
-
     finally:
         cleanup_processes(processes)
 
 
 def test_worker_shutdown_on_signal():
-    """Test that worker shuts down gracefully on SIGTERM."""
-    # This test will fail until signal handling is properly implemented
-
-    test_port = 19458  # Unique port
-    worker_binary = "./bin/agentbeacon-worker"
+    """Worker shuts down cleanly on SIGTERM with exit code 0."""
+    pm = PortManager()
+    port = pm.allocate_scheduler_port()
     processes = []
 
     try:
-        # Start A2A mock agent
-        agent_proc = start_and_wait_for_a2a_agent(
-            18765, Path(__file__).parent.parent.parent
-        )
-        processes.append(agent_proc)
-
-        # Start simple mock orchestrator
-        scheduler_proc = start_mock_scheduler(
-            test_port, Path(__file__).parent.parent.parent
-        )
+        scheduler_proc = start_mock_scheduler(port, BASE_DIR)
         processes.append(scheduler_proc)
+        assert wait_for_port(port, timeout=10), "Mock scheduler did not start"
 
-        # Wait for orchestrator
-        orchestrator_ready = wait_for_port(test_port, timeout=10)
-        assert orchestrator_ready, "Mock orchestrator should start successfully"
-
-        # Start worker
         worker_proc = subprocess.Popen(
             [
-                worker_binary,
+                "./bin/agentbeacon-worker",
                 "--scheduler-url",
-                f"http://localhost:{test_port}",
+                f"http://localhost:{port}",
                 "--interval",
                 "5s",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            cwd=Path(__file__).parent.parent.parent,
+            cwd=BASE_DIR,
         )
         processes.append(worker_proc)
 
-        # Let worker start polling
         time.sleep(2)
         assert worker_proc.poll() is None, "Worker should be running"
 
-        # Send SIGTERM to worker
-        import signal
-
         worker_proc.send_signal(signal.SIGTERM)
 
-        # Worker should shut down gracefully within reasonable time
         try:
             exit_code = worker_proc.wait(timeout=10)
             assert exit_code == 0, (
-                f"Worker should exit cleanly, got exit code {exit_code}"
+                f"Worker should exit cleanly on SIGTERM, got exit code {exit_code}"
             )
         except subprocess.TimeoutExpired:
-            pytest.fail("Worker did not shutdown within 10 seconds after SIGTERM")
-
+            raise AssertionError(
+                "Worker did not shutdown within 10 seconds after SIGTERM"
+            )
     finally:
         cleanup_processes(processes)
-
-
-# class _HTTPRequestMonitor:
-#     """Helper class to monitor HTTP requests to specific endpoints."""
-
-#     def __init__(self, port: int, endpoint: str):
-#         self.port = port
-#         self.endpoint = endpoint
-#         self.should_stop = False
-
-#     def monitor_requests(self, timestamps: List[float], duration: float):
-#         """Monitor requests for specified duration, recording timestamps."""
-#         start_time = time.time()
-#         last_check = start_time
-
-#         while time.time() - start_time < duration and not self.should_stop:
-#             current_time = time.time()
-
-#             # Check if enough time has passed to warrant another check (avoid tight loop)
-#             if current_time - last_check >= 0.5:
-#                 try:
-#                     # Make request to detect if worker is polling
-#                     response = requests.get(f"http://localhost:{self.port}{self.endpoint}", timeout=1)
-#                     if response.status_code == 200:
-#                         timestamps.append(current_time)
-#                 except requests.RequestException:
-#                     pass  # Expected when no request in progress
-
-#                 last_check = current_time
-
-#             time.sleep(0.1)  # Small sleep to avoid excessive CPU usage
-
-#     def stop(self):
-#         """Signal the monitor to stop."""
-#         self.should_stop = True
+        pm.release_port(port)

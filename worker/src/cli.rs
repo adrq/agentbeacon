@@ -1,5 +1,4 @@
 use clap::Parser;
-use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
@@ -14,26 +13,23 @@ pub struct Args {
     #[arg(long, default_value = "5s", value_parser = parse_duration)]
     pub interval: Duration,
 
-    /// Path to agents configuration file
-    #[arg(long, default_value = "examples/agents.yaml")]
-    pub agents_config: PathBuf,
-
     /// HTTP request timeout (e.g., "30s", "1m")
     #[arg(long, default_value = "30s", value_parser = parse_duration)]
     pub http_timeout: Duration,
 
-    /// Maximum sync retry attempts during startup (before first successful connection)
-    /// Production default: 10 attempts = ~5s total at default retry-delay
+    /// Long-poll timeout for waiting_for_event syncs (e.g., "40s")
+    #[arg(long, default_value = "40s", value_parser = parse_duration)]
+    pub long_poll_timeout: Duration,
+
+    /// Maximum sync retry attempts during startup
     #[arg(long, default_value = "10")]
     pub startup_max_attempts: usize,
 
-    /// Maximum sync retry attempts after successful connection (when idle)
-    /// Production default: 60 attempts = ~30s total at default retry-delay
+    /// Maximum sync retry attempts after successful connection
     #[arg(long, default_value = "60")]
     pub reconnect_max_attempts: usize,
 
     /// Delay between sync retry attempts (e.g., "500ms", "1s")
-    /// Production default: 500ms provides good balance of responsiveness and resource usage
     #[arg(long, default_value = "500ms", value_parser = parse_duration)]
     pub retry_delay: Duration,
 }
