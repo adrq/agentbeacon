@@ -1,17 +1,5 @@
-/**
- * Application State Store
- * Svelte writable stores for global application state
- *
- * This file manages client-side application state using Svelte stores.
- * Theme preference is initialized from localStorage and persisted on change.
- */
-
 import { writable } from 'svelte/store';
-import type { Screen, RouteParams, Theme } from '../types';
-
-// ============================================================================
-// Theme Store (with localStorage persistence)
-// ============================================================================
+import type { Screen, Theme } from '../types';
 
 function createThemeStore() {
   const getInitialTheme = (): Theme => {
@@ -22,23 +10,28 @@ function createThemeStore() {
 
   const { subscribe, set, update } = writable<Theme>(getInitialTheme());
 
+  const persistAndSet = (value: Theme) => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('theme', value);
+    }
+    set(value);
+  };
+
   return {
     subscribe,
-    set: (value: Theme) => {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('theme', value);
-      }
-      set(value);
-    },
-    update
+    set: persistAndSet,
+    update: (updater: (value: Theme) => Theme) => {
+      update((current) => {
+        const next = updater(current);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('theme', next);
+        }
+        return next;
+      });
+    }
   };
 }
 
 export const theme = createThemeStore();
-
-// ============================================================================
-// Route State Stores (managed by router)
-// ============================================================================
-
-export const currentScreen = writable<Screen>('Dashboard');
-export const routeParams = writable<RouteParams>({});
+export const currentScreen = writable<Screen>('Home');
+export const selectedExecutionId = writable<string | null>(null);

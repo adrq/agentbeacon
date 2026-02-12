@@ -1,75 +1,44 @@
-/**
- * Hash-Based Router
- * Simple client-side router for three-screen UI architecture
- *
- * Routes:
- * - / or /#/ → Dashboard
- * - /#/templates → TemplateGallery
- * - /#/editor/:workflowId → WorkflowEditorScreen
- * - /#/run/:runId → RunDetails
- *
- * Features:
- * - Hash-based routing (no server-side configuration needed)
- * - URL parameter extraction
- * - Browser back/forward support via hashchange event
- * - Route change subscriptions
- */
+import type { Screen } from '../types';
+import { currentScreen, selectedExecutionId } from '../stores/appState';
 
-import type { Screen, RouteParams, Router } from '../types';
-import { currentScreen, routeParams } from '../stores/appState';
+interface RouteState {
+  screen: Screen;
+  executionId: string | null;
+}
 
-type RouteChangeCallback = (route: { screen: Screen; params: RouteParams }) => void;
+type RouteChangeCallback = (route: RouteState) => void;
 
-class HashRouter implements Router {
+class HashRouter {
   private callbacks: Set<RouteChangeCallback> = new Set();
 
   constructor() {
-    this.init();
-  }
-
-  private init() {
     window.addEventListener('hashchange', () => this.handleRouteChange());
     this.handleRouteChange();
   }
 
-  private parseHash(hash: string): { screen: Screen; params: RouteParams } {
+  private parseHash(hash: string): RouteState {
     const cleanHash = hash.replace(/^#?\/?/, '');
 
-    if (cleanHash === '' || cleanHash === '/') {
-      return { screen: 'Dashboard', params: {} };
+    const execMatch = cleanHash.match(/^execution\/([^/]+)$/);
+    if (execMatch) {
+      return { screen: 'ExecutionDetail', executionId: execMatch[1] };
     }
 
-    if (cleanHash === 'templates') {
-      return { screen: 'TemplateGallery', params: {} };
-    }
-
-    const editorMatch = cleanHash.match(/^editor\/([^/]+)$/);
-    if (editorMatch) {
-      return { screen: 'WorkflowEditor', params: { workflowId: editorMatch[1] } };
-    }
-
-    const runMatch = cleanHash.match(/^run\/([^/]+)$/);
-    if (runMatch) {
-      return { screen: 'RunDetails', params: { runId: runMatch[1] } };
-    }
-
-    return { screen: 'Dashboard', params: {} };
+    return { screen: 'Home', executionId: null };
   }
 
   private handleRouteChange() {
     const route = this.parseHash(window.location.hash);
     currentScreen.set(route.screen);
-    routeParams.set(route.params);
-
-    this.callbacks.forEach(callback => callback(route));
+    selectedExecutionId.set(route.executionId);
+    this.callbacks.forEach(cb => cb(route));
   }
 
   navigate(path: string): void {
-    const cleanPath = path.startsWith('#') ? path.slice(1) : path;
-    window.location.hash = cleanPath;
+    window.location.hash = path.startsWith('#') ? path.slice(1) : path;
   }
 
-  getCurrentRoute(): { screen: Screen; params: RouteParams } {
+  getCurrentRoute(): RouteState {
     return this.parseHash(window.location.hash);
   }
 

@@ -1,8 +1,14 @@
 <script lang="ts">
-  export let variant: 'default' | 'secondary' | 'outline' | 'destructive' | 'ghost' = 'default';
-  export let size: 'sm' | 'md' | 'lg' = 'md';
-  export let disabled = false;
-  export let type: 'button' | 'submit' = 'button';
+  import type { Snippet } from 'svelte';
+  import type { HTMLButtonAttributes } from 'svelte/elements';
+
+  interface Props extends HTMLButtonAttributes {
+    variant?: 'default' | 'secondary' | 'outline' | 'destructive' | 'ghost';
+    size?: 'sm' | 'md' | 'lg';
+    children?: Snippet;
+  }
+
+  let { variant = 'default', size = 'md', disabled = false, type = 'button', children, class: className, ...restProps }: Props = $props();
 
   const baseClass = 'inline-flex items-center justify-center gap-1 rounded-md font-medium transition outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-60 disabled:cursor-not-allowed';
 
@@ -24,10 +30,10 @@
 <button
   {type}
   {disabled}
-  {...$$restProps}
-  class="{baseClass} {variants[variant]} {sizes[size]} {$$restProps.class || ''}"
+  {...restProps}
+  class="{baseClass} {variants[variant]} {sizes[size]} {className || ''}"
 >
-  <slot />
+  {#if children}{@render children()}{/if}
 </button>
 
 <style>

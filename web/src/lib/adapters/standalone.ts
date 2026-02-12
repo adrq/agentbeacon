@@ -8,7 +8,7 @@ export class StandaloneAdapter implements EnvironmentAdapter {
   showNotification(message: string, type: 'info' | 'warning' | 'error' = 'info'): void {
     // Use browser's native notification if available
     if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification('AgentMaestro', { body: message });
+      new Notification('AgentBeacon', { body: message });
     } else {
       // Fallback to console or could show a toast notification
       console[type === 'error' ? 'error' : type === 'warning' ? 'warn' : 'log'](message);

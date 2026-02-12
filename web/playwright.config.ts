@@ -9,9 +9,7 @@ export default defineConfig({
   reporter: 'list',
 
   use: {
-    baseURL: process.env.SCHEDULER_PORT
-      ? `http://localhost:${process.env.SCHEDULER_PORT}`
-      : 'http://localhost:9456',
+    baseURL: process.env.BASE_URL ?? 'http://localhost:9456',
     trace: 'on-first-retry',
     headless: true,
   },

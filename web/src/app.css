@@ -24,6 +24,10 @@
   --destructive-foreground: 0 0% 98%;
   --ring: 217 90% 56%;
   --radius: 0.5rem;
+  --status-working: 217 90% 56%;
+  --status-attention: 25 95% 53%;
+  --status-success: 142 71% 45%;
+  --status-danger: 0 72% 51%;
 }
 
 .light {
@@ -46,6 +50,10 @@
   --destructive: 0 72% 45%;
   --destructive-foreground: 0 0% 100%;
   --ring: 217 90% 56%;
+  --status-working: 217 90% 56%;
+  --status-attention: 25 95% 53%;
+  --status-success: 142 71% 45%;
+  --status-danger: 0 72% 45%;
 }
 
 @layer base {

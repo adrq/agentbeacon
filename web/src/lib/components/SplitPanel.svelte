@@ -1,17 +1,21 @@
 <script lang="ts">
-  import { onMount, createEventDispatcher } from 'svelte';
+  import { onMount } from 'svelte';
+  import type { Snippet } from 'svelte';
 
-  // Props
-  export let storageKey: string;
-  export let initialLeftWidth = 50;
-  export let minWidth = 20;
-  export let maxWidth = 80;
+  interface Props {
+    storageKey: string;
+    initialLeftWidth?: number;
+    minWidth?: number;
+    maxWidth?: number;
+    onresize?: (data: { leftWidth: number }) => void;
+    left?: Snippet;
+    right?: Snippet;
+  }
 
-  const dispatch = createEventDispatcher<{ resize: { leftWidth: number } }>();
+  let { storageKey, initialLeftWidth = 50, minWidth = 20, maxWidth = 80, onresize, left, right }: Props = $props();
 
-  // State
-  let leftPanelWidth = initialLeftWidth;
-  let isDragging = false;
+  let leftPanelWidth = $state(initialLeftWidth);
+  let isDragging = $state(false);
   let containerElement: HTMLDivElement;
 
   function handleDividerMouseDown(e: MouseEvent) {
@@ -29,14 +33,28 @@
     leftPanelWidth = Math.min(Math.max(newLeftWidth, minWidth), maxWidth);
 
     // Emit resize event
-    dispatch('resize', { leftWidth: leftPanelWidth });
+    onresize?.({ leftWidth: leftPanelWidth });
   }
 
   function handleMouseUp() {
     if (isDragging) {
       isDragging = false;
-      // Save to localStorage when dragging stops
       localStorage.setItem(storageKey, leftPanelWidth.toString());
+    }
+  }
+
+  function handleDividerKeydown(e: KeyboardEvent) {
+    const step = 2;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      leftPanelWidth = Math.max(leftPanelWidth - step, minWidth);
+      localStorage.setItem(storageKey, leftPanelWidth.toString());
+      onresize?.({ leftWidth: leftPanelWidth });
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      leftPanelWidth = Math.min(leftPanelWidth + step, maxWidth);
+      localStorage.setItem(storageKey, leftPanelWidth.toString());
+      onresize?.({ leftWidth: leftPanelWidth });
     }
   }
 
@@ -63,18 +81,25 @@
 
 <div bind:this={containerElement} class="split-panel-container" class:dragging={isDragging}>
   <div style="width: {leftPanelWidth}%; min-width: {minWidth}%; max-width: {maxWidth}%;" class="left-panel">
-    <slot name="left" />
+    {#if left}{@render left()}{/if}
   </div>
 
-  <!-- Draggable divider -->
-  <button
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+  <div
     class="divider"
-    on:mousedown={handleDividerMouseDown}
+    role="separator"
+    aria-orientation="vertical"
+    aria-valuenow={Math.round(leftPanelWidth)}
+    aria-valuemin={minWidth}
+    aria-valuemax={maxWidth}
     aria-label="Resize panels"
-  ></button>
+    tabindex="0"
+    onmousedown={handleDividerMouseDown}
+    onkeydown={handleDividerKeydown}
+  ></div>
 
   <div style="width: {100 - leftPanelWidth}%; min-width: {minWidth}%;" class="right-panel">
-    <slot name="right" />
+    {#if right}{@render right()}{/if}
   </div>
 </div>
 
@@ -100,6 +125,21 @@
     position: relative;
     user-select: none;
     margin: 0 4px;
+    border: none;
+    padding: 0;
+    outline: none;
+  }
+
+  .divider:focus-visible::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 100%;
+    background: hsl(var(--primary));
+    opacity: 0.8;
   }
 
   .divider:hover::after,
