@@ -43,6 +43,8 @@ pub struct SessionResult {
     pub output: Option<serde_json::Value>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub error_kind: Option<String>,
 }
 
 /// Worker sync response — tagged union
@@ -126,8 +128,75 @@ pub async fn handle_worker_sync(
             }
         }
 
-        // Handle error: transition session to failed and emit error event
-        if let Some(ref error_msg) = result.error {
+        // Handle error_kind (checked BEFORE error field for correct cancelled handling)
+        if let Some(ref ek) = result.error_kind {
+            let (target_state, propagate_to_execution) = match ek.as_str() {
+                "cancelled" => ("canceled", false),
+                _ => ("failed", true),
+            };
+
+            tracing::warn!(
+                session_id = %result.session_id,
+                error_kind = %ek,
+                error = ?result.error,
+                "Worker reported session {target_state}"
+            );
+
+            if let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
+                let mut event_payload = json!({
+                    "from": session.status,
+                    "to": target_state,
+                });
+                if let Some(ref error_msg) = result.error {
+                    event_payload["error"] = json!(error_msg);
+                }
+
+                if let Err(e) = db::events::insert(
+                    &state.db_pool,
+                    &session.execution_id,
+                    Some(&result.session_id),
+                    "state_change",
+                    &serde_json::to_string(&event_payload).unwrap(),
+                )
+                .await
+                {
+                    tracing::error!(
+                        session_id = %result.session_id,
+                        error = %e,
+                        "failed to insert state_change event"
+                    );
+                }
+
+                if let Err(e) =
+                    db::sessions::update_status(&state.db_pool, &result.session_id, target_state)
+                        .await
+                {
+                    tracing::error!(
+                        session_id = %result.session_id,
+                        error = %e,
+                        "failed to transition session to {target_state}"
+                    );
+                }
+
+                // Only propagate to execution for master sessions with failure (not cancellation)
+                if propagate_to_execution
+                    && session.parent_session_id.is_none()
+                    && let Err(e) = db::executions::update_status(
+                        &state.db_pool,
+                        &session.execution_id,
+                        "failed",
+                    )
+                    .await
+                {
+                    tracing::error!(
+                        execution_id = %session.execution_id,
+                        error = %e,
+                        "failed to transition execution to failed"
+                    );
+                }
+            }
+        } else if let Some(ref error_msg) = result.error {
+            // Backward compat: error without error_kind (ACP adapter)
             tracing::warn!(
                 session_id = %result.session_id,
                 error = %error_msg,
@@ -135,7 +204,6 @@ pub async fn handle_worker_sync(
             );
 
             if let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
-                // Emit error state_change event
                 if let Err(e) = db::events::insert(
                     &state.db_pool,
                     &session.execution_id,
@@ -157,7 +225,6 @@ pub async fn handle_worker_sync(
                     );
                 }
 
-                // Transition session to failed
                 if let Err(e) =
                     db::sessions::update_status(&state.db_pool, &result.session_id, "failed").await
                 {
@@ -168,7 +235,6 @@ pub async fn handle_worker_sync(
                     );
                 }
 
-                // Only propagate to execution for master sessions
                 if session.parent_session_id.is_none()
                     && let Err(e) = db::executions::update_status(
                         &state.db_pool,

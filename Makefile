@@ -1,7 +1,10 @@
-.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install test test-sqlite test-postgres test-int test-all run clean pre-commit dev-backend dev-frontend
+.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-sqlite test-postgres test-int test-all run clean pre-commit dev-backend dev-frontend
 
 # Default target
-all: build build-frontend
+all: build executors build-frontend
+
+executors:
+	cd executors && npm install && npm run build
 
 npm-install:
 	@echo "Installing npm dependencies..."
@@ -78,6 +81,7 @@ clean:
 	rm -rf bin/*
 	rm -rf dist/*
 	cd web && rm -rf dist/
+	rm -rf executors/dist
 	cargo clean
 
 # Run pre-commit hooks on all staged files

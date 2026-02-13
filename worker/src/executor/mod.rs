@@ -1,7 +1,29 @@
 pub mod acp;
+pub mod claude;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorKind {
+    ExecutorFailed,
+    Cancelled,
+    BudgetExceeded,
+    MaxTurns,
+}
+
+impl ErrorKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ErrorKind::ExecutorFailed => "executor_failed",
+            ErrorKind::Cancelled => "cancelled",
+            ErrorKind::BudgetExceeded => "budget_exceeded",
+            ErrorKind::MaxTurns => "max_turns",
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub struct SessionConfig {
@@ -12,13 +34,16 @@ pub struct SessionConfig {
     pub sandbox_config: serde_json::Value,
     pub cwd: String,
     pub scheduler_url: String,
+    /// Override for Node.js binary path (Claude executor)
+    pub node_path: Option<String>,
+    /// Override for executors/dist directory (Claude executor)
+    pub executors_dir: Option<String>,
 }
 
-#[allow(dead_code)]
 pub struct TurnResult {
     pub agent_session_id: Option<String>,
-    pub success: bool,
     pub error: Option<String>,
+    pub error_kind: Option<ErrorKind>,
     pub output: Option<serde_json::Value>,
 }
 
@@ -38,6 +63,7 @@ pub trait AgentHandle: Send {
 pub async fn start_executor(config: SessionConfig) -> Result<Box<dyn AgentHandle>> {
     match config.agent_type.as_str() {
         "acp" => Ok(Box::new(acp::AcpAgentHandle::start(config).await?)),
+        "claude_sdk" => Ok(Box::new(claude::ClaudeAgentHandle::start(config).await?)),
         other => Err(anyhow::anyhow!("unsupported agent_type: {other}")),
     }
 }

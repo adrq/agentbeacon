@@ -39,6 +39,8 @@ pub struct SessionResult {
     pub output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
 }
 
 // --- Response types (Deserialize, tagged union) ---
@@ -112,6 +114,7 @@ impl SyncRequest {
         agent_session_id: Option<String>,
         output: Option<serde_json::Value>,
         error: Option<String>,
+        error_kind: Option<String>,
     ) -> Self {
         // Include session_state "running" so scheduler knows we're still in this session
         // and doesn't try to assign us a new one
@@ -126,6 +129,7 @@ impl SyncRequest {
                 agent_session_id,
                 output,
                 error,
+                error_kind,
             }),
         }
     }
@@ -141,13 +145,12 @@ async fn parse_sync_response(response: reqwest::Response) -> Result<SyncResponse
         .context("failed to read sync response body")?;
 
     serde_json::from_str(&body).map_err(|e| {
-        // Truncate to avoid logging sensitive payloads (user prompts, agent config)
-        let truncated: String = body.chars().take(500).collect();
         tracing::error!(
-            body = %truncated,
+            body_len = body.len(),
             error = %e,
             "failed to parse sync response"
         );
+        tracing::debug!(body = %body, "raw sync response body");
         anyhow::anyhow!("failed to parse sync response: {e}")
     })
 }
@@ -270,7 +273,7 @@ mod tests {
     #[test]
     fn test_session_result_serializes_camelcase() {
         let request =
-            SyncRequest::with_result("sess-1", Some("agent-sess-1".to_string()), None, None);
+            SyncRequest::with_result("sess-1", Some("agent-sess-1".to_string()), None, None, None);
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["sessionId"], "sess-1");
         assert_eq!(value["sessionResult"]["agentSessionId"], "agent-sess-1");
@@ -284,6 +287,7 @@ mod tests {
             Some("agent-sess-1".to_string()),
             Some(output.clone()),
             None,
+            None,
         );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["output"], output);
@@ -291,24 +295,50 @@ mod tests {
 
     #[test]
     fn test_session_result_without_output_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, None, None, None);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("output").is_none());
     }
 
     #[test]
     fn test_session_result_with_error_serializes() {
-        let request =
-            SyncRequest::with_result("sess-1", None, None, Some("executor failed".to_string()));
+        let request = SyncRequest::with_result(
+            "sess-1",
+            None,
+            None,
+            Some("executor failed".to_string()),
+            None,
+        );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["error"], "executor failed");
     }
 
     #[test]
     fn test_session_result_without_error_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, None, None, None);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("error").is_none());
+    }
+
+    #[test]
+    fn test_session_result_with_error_kind_serializes() {
+        let request = SyncRequest::with_result(
+            "sess-1",
+            None,
+            None,
+            Some("budget limit hit".to_string()),
+            Some("budget_exceeded".to_string()),
+        );
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["sessionResult"]["errorKind"], "budget_exceeded");
+        assert_eq!(value["sessionResult"]["error"], "budget limit hit");
+    }
+
+    #[test]
+    fn test_session_result_without_error_kind_omits_field() {
+        let request = SyncRequest::with_result("sess-1", None, None, None, None);
+        let value = serde_json::to_value(&request).unwrap();
+        assert!(value["sessionResult"].get("errorKind").is_none());
     }
 
     #[test]

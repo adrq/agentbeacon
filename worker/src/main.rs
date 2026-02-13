@@ -208,6 +208,8 @@ async fn run_session(
         sandbox_config,
         cwd,
         scheduler_url: args.scheduler_url.clone(),
+        node_path: args.node_path.clone(),
+        executors_dir: args.executors_dir.clone(),
     };
 
     // Start executor
@@ -219,7 +221,13 @@ async fn run_session(
             let _ = perform_sync_with_retry(
                 client,
                 &args.scheduler_url,
-                &SyncRequest::with_result(session_id, None, None, Some(format!("{e:#}"))),
+                &SyncRequest::with_result(
+                    session_id,
+                    None,
+                    None,
+                    Some(format!("{e:#}")),
+                    Some("executor_failed".into()),
+                ),
                 true,
                 retry_config,
             )
@@ -234,11 +242,21 @@ async fn run_session(
         // Running: send prompt to agent
         let turn_result = handle.send_prompt(&current_task_payload).await;
 
-        let (agent_session_id, error, output) = match turn_result {
-            Ok(r) => (r.agent_session_id, r.error, r.output),
+        let (agent_session_id, error, output, error_kind) = match turn_result {
+            Ok(r) => (
+                r.agent_session_id,
+                r.error,
+                r.output,
+                r.error_kind.map(|ek| ek.as_str().to_string()),
+            ),
             Err(e) => {
                 tracing::error!(error = %e, "Prompt execution failed");
-                (None, Some(format!("{e:#}")), None)
+                (
+                    None,
+                    Some(format!("{e:#}")),
+                    None,
+                    Some("executor_failed".into()),
+                )
             }
         };
 
@@ -250,7 +268,7 @@ async fn run_session(
         let response = perform_sync_with_retry(
             client,
             &args.scheduler_url,
-            &SyncRequest::with_result(session_id, agent_session_id, output, error),
+            &SyncRequest::with_result(session_id, agent_session_id, output, error, error_kind),
             true,
             retry_config,
         )

@@ -136,14 +136,16 @@ pub(crate) async fn send_initialize(
                 );
             }
             JsonRpcMessage::ParseError(line) => {
+                let truncated: String = line.chars().take(80).collect();
                 tracing::error!(
                     event = "parse_error",
                     phase = "initialize",
-                    line = %line,
+                    line_len = line.len(),
+                    line_preview = %truncated,
                     "Malformed JSON-RPC response during initialize"
                 );
                 return Err(anyhow::anyhow!(
-                    "malformed JSON-RPC response during initialize: {line}"
+                    "malformed JSON-RPC response during initialize"
                 ));
             }
         }
@@ -217,14 +219,16 @@ pub(crate) async fn send_session_new(
                 );
             }
             JsonRpcMessage::ParseError(line) => {
+                let truncated: String = line.chars().take(80).collect();
                 tracing::error!(
                     event = "parse_error",
                     phase = "session_new",
-                    line = %line,
+                    line_len = line.len(),
+                    line_preview = %truncated,
                     "Malformed JSON-RPC response during session/new"
                 );
                 return Err(anyhow::anyhow!(
-                    "malformed JSON-RPC response during session/new: {line}"
+                    "malformed JSON-RPC response during session/new"
                 ));
             }
         }
@@ -350,14 +354,16 @@ pub(crate) async fn send_session_prompt(
                         }
                     }
                     Some(JsonRpcMessage::ParseError(line)) => {
+                        let truncated: String = line.chars().take(80).collect();
                         tracing::error!(
                             event = "parse_error",
                             phase = "session_prompt",
-                            line = %line,
+                            line_len = line.len(),
+                            line_preview = %truncated,
                             "Malformed JSON-RPC response during session/prompt"
                         );
                         return Err(anyhow::anyhow!(
-                            "malformed JSON-RPC response during session/prompt: {line}"
+                            "malformed JSON-RPC response during session/prompt"
                         ));
                     }
                     None => {
@@ -716,9 +722,11 @@ pub(crate) async fn read_jsonrpc_lines(
                 break;
             }
         } else {
+            let truncated: String = line.chars().take(80).collect();
             tracing::warn!(
                 event = "jsonrpc_parse_error",
-                line = %line,
+                line_len = line.len(),
+                line_preview = %truncated,
                 "Failed to parse JSON-RPC message"
             );
             if tx.send(JsonRpcMessage::ParseError(line.clone())).is_err() {

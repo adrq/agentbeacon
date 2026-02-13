@@ -32,6 +32,14 @@ pub struct Args {
     /// Delay between sync retry attempts (e.g., "500ms", "1s")
     #[arg(long, default_value = "500ms", value_parser = parse_duration)]
     pub retry_delay: Duration,
+
+    /// Path to Node.js binary (for Claude executor)
+    #[arg(long, env = "AGENTBEACON_NODE_PATH")]
+    pub node_path: Option<String>,
+
+    /// Path to executors/dist directory (for Claude executor)
+    #[arg(long, env = "AGENTBEACON_EXECUTORS_DIR")]
+    pub executors_dir: Option<String>,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, humantime::DurationError> {

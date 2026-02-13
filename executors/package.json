@@ -1,0 +1,17 @@
+{
+  "name": "@agentbeacon/executors",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2"
+  },
+  "devDependencies": {
+    "typescript": "~5.8",
+    "@types/node": "^22"
+  }
+}

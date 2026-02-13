@@ -168,18 +168,24 @@ impl AgentHandle for AcpAgentHandle {
         )
         .await?;
 
-        let success = prompt_result.stop_reason != "error"
-            && prompt_result.stop_reason != "cancelled"
-            && prompt_result.stop_reason != "refusal";
+        let is_error = matches!(
+            prompt_result.stop_reason.as_str(),
+            "error" | "cancelled" | "refusal"
+        );
 
-        let error = if success {
-            None
+        let (error, error_kind) = if !is_error {
+            (None, None)
         } else {
-            Some(
+            let error_kind = match prompt_result.stop_reason.as_str() {
+                "cancelled" => Some(super::ErrorKind::Cancelled),
+                _ => Some(super::ErrorKind::ExecutorFailed),
+            };
+            let error = Some(
                 prompt_result
                     .error
                     .unwrap_or_else(|| prompt_result.stop_reason.clone()),
-            )
+            );
+            (error, error_kind)
         };
 
         // Consolidate agent-role messages into a single output value
@@ -197,8 +203,8 @@ impl AgentHandle for AcpAgentHandle {
 
         Ok(TurnResult {
             agent_session_id: Some(self.session_id.clone()),
-            success,
             error,
+            error_kind,
             output,
         })
     }
