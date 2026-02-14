@@ -1407,6 +1407,57 @@ def seed_acp_mock_agent(
     return agent_id
 
 
+def seed_acp_scenario_agent(
+    db_url: str,
+    name: str,
+    scenario: str,
+    delegate_to: str = None,
+    delegate_count: int = None,
+    agent_id: str = None,
+) -> str:
+    """Insert an ACP mock agent with a specific scenario into the database.
+
+    Args:
+        db_url: Database URL (sqlite:... or postgres://...)
+        name: Agent name
+        scenario: Scenario name (delegate, handoff, delegate-ask, delegate-multi)
+        delegate_to: Child agent name for delegation scenarios
+        delegate_count: Number of children for delegate-multi
+        agent_id: Agent ID (generated UUID if None)
+
+    Returns:
+        str: Agent ID
+    """
+    if agent_id is None:
+        agent_id = str(uuid.uuid4())
+
+    args = [
+        "run",
+        "python",
+        "-m",
+        "agentmaestro.mock_agent",
+        "--mode",
+        "acp",
+        "--scenario",
+        scenario,
+    ]
+    if delegate_to:
+        args.extend(["--delegate-to", delegate_to])
+    if delegate_count is not None:
+        args.extend(["--delegate-count", str(delegate_count)])
+
+    config = json.dumps({"command": "uv", "args": args, "timeout": 60})
+
+    with db_conn(db_url) as conn:
+        conn.execute(
+            "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, 'acp', ?, ?)",
+            (agent_id, name, config, True),
+        )
+        conn.commit()
+
+    return agent_id
+
+
 def create_execution_via_api(
     scheduler_url: str, agent_id: str, prompt: str, title: str = None
 ) -> tuple:

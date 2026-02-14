@@ -48,6 +48,18 @@ def main():
         default=None,
         help="Run a scripted scenario instead of echo mode (e.g., 'demo')",
     )
+    parser.add_argument(
+        "--delegate-to",
+        type=str,
+        default=None,
+        help="Child agent name for delegation scenarios",
+    )
+    parser.add_argument(
+        "--delegate-count",
+        type=int,
+        default=2,
+        help="Number of children for delegate-multi scenario (default: 2)",
+    )
 
     args = parser.parse_args()
 
@@ -65,6 +77,8 @@ def main():
                 protocol_version=args.protocol_version,
                 hang_initialize=args.hang_initialize,
                 scenario=args.scenario,
+                delegate_to=args.delegate_to,
+                delegate_count=args.delegate_count,
             )
         else:
             print(f"Unknown mode: {args.mode}", file=sys.stderr)

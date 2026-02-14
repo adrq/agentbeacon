@@ -9,6 +9,12 @@ from typing import Any, Dict
 
 from .task_store import TaskStore
 from .jsonrpc import JSONRPCDispatcher
+from .coordination_scenarios import (
+    DelegateAskScenario,
+    DelegateMultiScenario,
+    DelegateScenario,
+    HandoffScenario,
+)
 from .demo_scenario import DemoScenario
 from .file_logger import log_task_completion
 
@@ -24,6 +30,8 @@ class ACPHandler:
         protocol_version: int = 1,
         hang_initialize: bool = False,
         scenario: str = None,
+        delegate_to: str = None,
+        delegate_count: int = 2,
     ):
         self.task_store = TaskStore()
         self.jsonrpc_dispatcher = JSONRPCDispatcher(
@@ -34,7 +42,9 @@ class ACPHandler:
         )
         self.custom_responses = custom_responses or {}
         self.scenario = scenario
-        self.demo_scenario: DemoScenario | None = None
+        self.delegate_to = delegate_to
+        self.delegate_count = delegate_count
+        self.active_scenario = None
         self.active_prompts = {}
         self.pending_requests: Dict[str, asyncio.Future] = {}
 
@@ -117,6 +127,26 @@ class ACPHandler:
         except Exception as e:
             print(f"Warning: Could not save captured messages: {e}", file=sys.stderr)
 
+    def _create_scenario(self, session_id: str):
+        mcp_client = self.jsonrpc_dispatcher.mcp_client
+        scenarios = {
+            "demo": lambda: DemoScenario(session_id, mcp_client),
+            "delegate": lambda: DelegateScenario(
+                session_id, mcp_client, self.delegate_to
+            ),
+            "handoff": lambda: HandoffScenario(session_id, mcp_client),
+            "delegate-ask": lambda: DelegateAskScenario(
+                session_id, mcp_client, self.delegate_to
+            ),
+            "delegate-multi": lambda: DelegateMultiScenario(
+                session_id, mcp_client, self.delegate_to, self.delegate_count
+            ),
+        }
+        factory = scenarios.get(self.scenario)
+        if factory is None:
+            raise ValueError(f"Unknown scenario: {self.scenario}")
+        return factory()
+
     async def _handle_cancel(self, request: Dict[str, Any]):
         """Handle session/cancel notification.
 
@@ -170,10 +200,9 @@ class ACPHandler:
                 print(json.dumps(error_response), flush=True)
             return
 
-        # Lazily initialize demo scenario on first prompt
-        if self.scenario == "demo" and self.demo_scenario is None:
-            mcp_client = self.jsonrpc_dispatcher.mcp_client
-            self.demo_scenario = DemoScenario(session_id, mcp_client)
+        # Lazily initialize scenario on first prompt
+        if self.scenario and self.active_scenario is None:
+            self.active_scenario = self._create_scenario(session_id)
 
         # Track session state BEFORE spawning the task to avoid race conditions.
         # The cancel handler (_handle_cancel) may fire immediately after the task starts,
@@ -199,9 +228,9 @@ class ACPHandler:
                 if part.get("type") == "text":
                     text_content += part.get("text", "")
 
-            # Demo scenario overrides normal dispatch
-            if self.demo_scenario is not None:
-                stop_reason = await self.demo_scenario.handle_prompt(text_content)
+            # Scenario overrides normal dispatch
+            if self.active_scenario is not None:
+                stop_reason = await self.active_scenario.handle_prompt(text_content)
                 if request_id is not None:
                     response = {
                         "jsonrpc": "2.0",
@@ -487,9 +516,16 @@ def start_acp_mode(
     protocol_version: int = 1,
     hang_initialize: bool = False,
     scenario: str = None,
+    delegate_to: str = None,
+    delegate_count: int = 2,
 ):
     """Start ACP mode handler (async)."""
     handler = ACPHandler(
-        custom_responses, protocol_version, hang_initialize, scenario=scenario
+        custom_responses,
+        protocol_version,
+        hang_initialize,
+        scenario=scenario,
+        delegate_to=delegate_to,
+        delegate_count=delegate_count,
     )
     asyncio.run(handler.run())
