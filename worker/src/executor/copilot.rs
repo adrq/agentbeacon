@@ -1,5 +1,5 @@
-//! Claude executor adapter — spawns a Node.js wrapper that drives the Claude
-//! Agent SDK, communicating over stdin/stdout JSON Lines.
+//! Copilot executor adapter — spawns a Node.js wrapper that drives the GitHub
+//! Copilot SDK, communicating over stdin/stdout JSON Lines.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -15,7 +15,7 @@ use super::{AgentHandle, ErrorKind, SessionConfig, TurnResult};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
-enum ClaudeCommand {
+enum CopilotCommand {
     #[serde(rename = "start", rename_all = "camelCase")]
     Start {
         prompt: String,
@@ -25,11 +25,9 @@ enum ClaudeCommand {
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        max_turns: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        max_budget_usd: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<serde_json::Value>,
     },
     #[serde(rename = "prompt", rename_all = "camelCase")]
     Prompt { text: String },
@@ -49,7 +47,7 @@ struct InitEvent {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // Fields deserialized for protocol fidelity, used selectively
+#[allow(dead_code)]
 struct ResultEvent {
     subtype: String,
     session_id: Option<String>,
@@ -75,36 +73,36 @@ struct MessageEvent {
 // --- Config ---
 
 #[derive(Debug, Deserialize)]
-pub struct ClaudeConfig {
+pub struct CopilotConfig {
     pub model: Option<String>,
-    pub max_turns: Option<u32>,
-    pub max_budget_usd: Option<f64>,
     pub system_prompt: Option<String>,
+    pub provider: Option<serde_json::Value>,
+    pub api_key_env: Option<String>,
 }
 
 // --- Handle ---
 
-pub struct ClaudeAgentHandle {
+pub struct CopilotAgentHandle {
     child: Child,
     stdin: Option<ChildStdin>,
     event_rx: mpsc::UnboundedReceiver<serde_json::Value>,
     reader_handle: tokio::task::JoinHandle<()>,
     agent_session_id: Option<String>,
     first_prompt: bool,
-    session_config: HandleConfig,
+    config: CopilotHandleConfig,
 }
 
-struct HandleConfig {
+struct CopilotHandleConfig {
     cwd: String,
     scheduler_url: String,
     session_id: String,
-    claude_config: ClaudeConfig,
+    copilot_config: CopilotConfig,
 }
 
-impl ClaudeAgentHandle {
+impl CopilotAgentHandle {
     pub async fn start(config: SessionConfig) -> Result<Self> {
-        let claude_config: ClaudeConfig = serde_json::from_value(config.agent_config.clone())
-            .context("failed to parse Claude agent config")?;
+        let copilot_config: CopilotConfig = serde_json::from_value(config.agent_config.clone())
+            .context("failed to parse Copilot agent config")?;
 
         let node_path = config
             .node_path
@@ -117,18 +115,32 @@ impl ClaudeAgentHandle {
             .or_else(|| std::env::var("AGENTBEACON_EXECUTORS_DIR").ok())
             .context("AGENTBEACON_EXECUTORS_DIR must be set (via --executors-dir or env var)")?;
 
-        let script_path = format!("{}/claude-executor.js", executors_dir);
+        let script_path = format!("{}/copilot-executor.js", executors_dir);
 
-        let mut child = tokio::process::Command::new(&node_path)
-            .arg(&script_path)
+        // Standard Copilot auth (COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN)
+        // inherited from parent process env automatically.
+        let mut cmd = tokio::process::Command::new(&node_path);
+        cmd.arg(&script_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| {
-                format!("failed to spawn claude executor: {node_path} {script_path}")
-            })?;
+            .kill_on_drop(true);
+
+        // Inject BYOK API key via process env if configured — NEVER over stdin
+        if let Some(ref env_name) = copilot_config.api_key_env {
+            match std::env::var(env_name) {
+                Ok(key_value) => {
+                    cmd.env(env_name, key_value);
+                }
+                Err(_) => {
+                    tracing::warn!(env_var = %env_name, "BYOK api_key_env not found in environment");
+                }
+            }
+        }
+
+        let mut child = cmd.spawn().with_context(|| {
+            format!("failed to spawn copilot executor: {node_path} {script_path}")
+        })?;
 
         let stdin = child.stdin.take().context("failed to get stdin")?;
         let stdout = child.stdout.take().context("failed to get stdout")?;
@@ -144,7 +156,6 @@ impl ClaudeAgentHandle {
                     continue;
                 }
 
-                // Level 1: valid JSON?
                 let value: serde_json::Value = match serde_json::from_str(&line) {
                     Ok(v) => v,
                     Err(_) => {
@@ -153,7 +164,6 @@ impl ClaudeAgentHandle {
                     }
                 };
 
-                // Level 2: has "type" field?
                 let type_field = match value.get("type").and_then(|t| t.as_str()) {
                     Some(t) => t.to_string(),
                     None => {
@@ -162,7 +172,6 @@ impl ClaudeAgentHandle {
                     }
                 };
 
-                // Level 3: known type?
                 match type_field.as_str() {
                     "init" | "message" | "result" | "error" => {}
                     other => {
@@ -171,7 +180,6 @@ impl ClaudeAgentHandle {
                     }
                 }
 
-                // Level 4: forward (typed deserialization happens in send_prompt)
                 if event_tx.send(value).is_err() {
                     break;
                 }
@@ -183,13 +191,13 @@ impl ClaudeAgentHandle {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::debug!(target: "claude_executor", "{}", line);
+                tracing::debug!(target: "copilot_executor", "{}", line);
             }
         });
 
         tracing::info!(
             execution_id = %config.execution_id,
-            "Claude executor started"
+            "Copilot executor started"
         );
 
         Ok(Self {
@@ -199,16 +207,16 @@ impl ClaudeAgentHandle {
             reader_handle,
             agent_session_id: None,
             first_prompt: true,
-            session_config: HandleConfig {
+            config: CopilotHandleConfig {
                 cwd: config.cwd,
                 scheduler_url: config.scheduler_url,
                 session_id: config.session_id,
-                claude_config,
+                copilot_config,
             },
         })
     }
 
-    async fn write_command(&mut self, cmd: &ClaudeCommand) -> Result<()> {
+    async fn write_command(&mut self, cmd: &CopilotCommand) -> Result<()> {
         let stdin = self.stdin.as_mut().context("stdin already closed")?;
         let json = serde_json::to_string(cmd)?;
         stdin.write_all(json.as_bytes()).await?;
@@ -217,18 +225,14 @@ impl ClaudeAgentHandle {
         Ok(())
     }
 
-    /// Build MCP servers config for the start command.
     fn build_mcp_servers(&self) -> serde_json::Value {
-        let mcp_url = format!(
-            "{}/mcp",
-            self.session_config.scheduler_url.trim_end_matches('/')
-        );
+        let mcp_url = format!("{}/mcp", self.config.scheduler_url.trim_end_matches('/'));
         serde_json::json!({
             "beacon": {
                 "type": "http",
                 "url": mcp_url,
                 "headers": {
-                    "Authorization": format!("Bearer {}", self.session_config.session_id)
+                    "Authorization": format!("Bearer {}", self.config.session_id)
                 }
             }
         })
@@ -236,24 +240,23 @@ impl ClaudeAgentHandle {
 }
 
 #[async_trait]
-impl AgentHandle for ClaudeAgentHandle {
+impl AgentHandle for CopilotAgentHandle {
     async fn send_prompt(&mut self, task_payload: &serde_json::Value) -> Result<TurnResult> {
         let prompt_text = super::extract_prompt_text(task_payload)?;
 
         if self.first_prompt {
             self.first_prompt = false;
-            let cmd = ClaudeCommand::Start {
+            let cmd = CopilotCommand::Start {
                 prompt: prompt_text,
-                cwd: self.session_config.cwd.clone(),
+                cwd: self.config.cwd.clone(),
                 mcp_servers: Some(self.build_mcp_servers()),
-                model: self.session_config.claude_config.model.clone(),
-                max_turns: self.session_config.claude_config.max_turns,
-                max_budget_usd: self.session_config.claude_config.max_budget_usd,
-                system_prompt: self.session_config.claude_config.system_prompt.clone(),
+                model: self.config.copilot_config.model.clone(),
+                system_prompt: self.config.copilot_config.system_prompt.clone(),
+                provider: sanitize_provider(self.config.copilot_config.provider.clone()),
             };
             self.write_command(&cmd).await?;
         } else {
-            let cmd = ClaudeCommand::Prompt { text: prompt_text };
+            let cmd = CopilotCommand::Prompt { text: prompt_text };
             self.write_command(&cmd).await?;
         }
 
@@ -294,7 +297,6 @@ impl AgentHandle for ClaudeAgentHandle {
                             Err(e) => {
                                 return Ok(TurnResult {
                                     agent_session_id: self.agent_session_id.clone(),
-
                                     error: Some(format!("malformed result event: {e}")),
                                     error_kind: Some(ErrorKind::ExecutorFailed),
                                     output: None,
@@ -305,7 +307,6 @@ impl AgentHandle for ClaudeAgentHandle {
                             Ok(err) => {
                                 return Ok(TurnResult {
                                     agent_session_id: self.agent_session_id.clone(),
-
                                     error: Some(err.message),
                                     error_kind: Some(ErrorKind::ExecutorFailed),
                                     output: None,
@@ -314,7 +315,6 @@ impl AgentHandle for ClaudeAgentHandle {
                             Err(e) => {
                                 return Ok(TurnResult {
                                     agent_session_id: self.agent_session_id.clone(),
-
                                     error: Some(format!("malformed error event: {e}")),
                                     error_kind: Some(ErrorKind::ExecutorFailed),
                                     output: None,
@@ -325,7 +325,6 @@ impl AgentHandle for ClaudeAgentHandle {
                     }
                 }
                 None => {
-                    // Channel closed — process died
                     let exit_status = self.child.try_wait();
                     let exit_info = match exit_status {
                         Ok(Some(status)) => format!("exit code: {status}"),
@@ -334,7 +333,7 @@ impl AgentHandle for ClaudeAgentHandle {
                     };
                     return Ok(TurnResult {
                         agent_session_id: self.agent_session_id.clone(),
-                        error: Some(format!("claude executor process died ({exit_info})")),
+                        error: Some(format!("copilot executor process died ({exit_info})")),
                         error_kind: Some(ErrorKind::ExecutorFailed),
                         output: None,
                     });
@@ -344,27 +343,24 @@ impl AgentHandle for ClaudeAgentHandle {
     }
 
     async fn cancel(&mut self) -> Result<()> {
-        // Best-effort: swallow errors if stdin is already closed
-        let _ = self.write_command(&ClaudeCommand::Cancel).await;
+        let _ = self.write_command(&CopilotCommand::Cancel).await;
         Ok(())
     }
 
     async fn stop(&mut self) -> Result<()> {
         if self.stdin.is_some() {
-            let _ = self.write_command(&ClaudeCommand::Stop).await;
+            let _ = self.write_command(&CopilotCommand::Stop).await;
         }
-        // Close stdin to signal EOF
         self.stdin = None;
 
-        // Wait for process with timeout
         let timeout = std::time::Duration::from_secs(5);
         match tokio::time::timeout(timeout, self.child.wait()).await {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
-                tracing::warn!(error = %e, "error waiting for claude executor to exit");
+                tracing::warn!(error = %e, "error waiting for copilot executor to exit");
             }
             Err(_) => {
-                tracing::warn!("claude executor did not exit within timeout, killing");
+                tracing::warn!("copilot executor did not exit within timeout, killing");
                 let _ = self.child.kill().await;
             }
         }
@@ -374,7 +370,24 @@ impl AgentHandle for ClaudeAgentHandle {
     }
 }
 
-/// Map SDK result subtypes to TurnResult with ErrorKind.
+/// Strip sensitive fields from provider config before sending over stdin.
+/// API keys should be injected via process env (api_key_env), not JSON Lines.
+fn sanitize_provider(provider: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    const SENSITIVE_KEYS: &[&str] = &["apiKey", "api_key", "bearerToken", "bearer_token"];
+    provider.map(|mut v| {
+        if let serde_json::Value::Object(ref mut map) = v {
+            for key in SENSITIVE_KEYS {
+                if map.remove(*key).is_some() {
+                    tracing::warn!(field = %key, "stripped sensitive field from provider config — use api_key_env instead");
+                }
+            }
+        }
+        v
+    })
+}
+
+/// Map Copilot result subtypes to TurnResult with ErrorKind.
+/// Simpler than Claude's — no max_turns/max_budget_usd arms.
 fn map_result_to_turn(
     result: ResultEvent,
     agent_session_id: Option<String>,
@@ -382,26 +395,7 @@ fn map_result_to_turn(
 ) -> TurnResult {
     let (error, error_kind) = match result.subtype.as_str() {
         "success" => (None, None),
-        "error_max_turns" => (
-            Some(
-                result
-                    .errors
-                    .as_ref()
-                    .map_or("max turns reached".into(), |e| e.join("; ")),
-            ),
-            Some(ErrorKind::MaxTurns),
-        ),
-        "error_max_budget_usd" => (
-            Some(
-                result
-                    .errors
-                    .as_ref()
-                    .map_or("budget exceeded".into(), |e| e.join("; ")),
-            ),
-            Some(ErrorKind::BudgetExceeded),
-        ),
         "cancelled" => (Some("session cancelled".into()), Some(ErrorKind::Cancelled)),
-        // error_during_execution, error_max_structured_output_retries, or unknown
         other => (
             Some(
                 result
@@ -413,13 +407,11 @@ fn map_result_to_turn(
         ),
     };
 
-    // Build output in the same shape as ACP adapter: {"role": "agent", "parts": [...]}
     let output = if error.is_none() {
         result
             .result
             .map(|text| serde_json::json!({"role": "agent", "parts": [{"kind": "text", "text": text}]}))
             .or_else(|| last_content.and_then(|c| {
-                // Extract text from SDK content blocks (array of {type: "text", text: "..."})
                 if let serde_json::Value::Array(items) = c {
                     let parts: Vec<serde_json::Value> = items.into_iter().filter_map(|item| {
                         let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("");
@@ -450,130 +442,139 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_parse_init_event() {
-        let json_str = r#"{"type":"init","sessionId":"abc-123","mcpServers":[{"name":"beacon","status":"connected"}]}"#;
-        let value: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let init: InitEvent = serde_json::from_value(value).unwrap();
-        assert_eq!(init.session_id, "abc-123");
-    }
-
-    #[test]
-    fn test_parse_result_success() {
-        let value = json!({
-            "type": "result",
-            "subtype": "success",
-            "sessionId": "abc-123",
-            "result": "Done. Created auth.py.",
-            "costUsd": 0.42,
-            "numTurns": 3,
-            "durationMs": 15000
+    fn test_copilot_config_parsing() {
+        let json_val = json!({
+            "model": "gpt-5",
+            "system_prompt": "You are a helpful assistant."
         });
-        let result: ResultEvent = serde_json::from_value(value).unwrap();
-        let turn = map_result_to_turn(result, Some("abc-123".into()), None);
-        assert!(turn.error.is_none());
-        assert!(turn.error_kind.is_none());
-        assert!(turn.output.is_some());
+        let config: CopilotConfig = serde_json::from_value(json_val).unwrap();
+        assert_eq!(config.model.as_deref(), Some("gpt-5"));
+        assert_eq!(
+            config.system_prompt.as_deref(),
+            Some("You are a helpful assistant.")
+        );
+        assert!(config.provider.is_none());
+        assert!(config.api_key_env.is_none());
     }
 
     #[test]
-    fn test_parse_result_error_max_turns() {
-        let value = json!({
-            "type": "result",
-            "subtype": "error_max_turns",
-            "sessionId": "abc-123",
-            "errors": ["Hit 50 turn limit"],
-            "costUsd": 2.10,
-            "numTurns": 50
+    fn test_copilot_config_with_provider() {
+        let json_val = json!({
+            "model": "gpt-5",
+            "provider": {
+                "type": "openai",
+                "baseUrl": "https://api.openai.com/v1"
+            },
+            "api_key_env": "OPENAI_API_KEY"
         });
-        let result: ResultEvent = serde_json::from_value(value).unwrap();
-        let turn = map_result_to_turn(result, None, None);
-        assert!(turn.error.is_some());
-        assert_eq!(turn.error_kind, Some(ErrorKind::MaxTurns));
+        let config: CopilotConfig = serde_json::from_value(json_val).unwrap();
+        assert_eq!(config.model.as_deref(), Some("gpt-5"));
+        let provider = config.provider.unwrap();
+        assert_eq!(provider["type"], "openai");
+        assert_eq!(provider["baseUrl"], "https://api.openai.com/v1");
+        assert_eq!(config.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
     }
 
     #[test]
-    fn test_parse_result_error_max_budget() {
-        let value = json!({
-            "type": "result",
-            "subtype": "error_max_budget_usd",
-            "sessionId": "abc-123",
-            "errors": ["Budget exceeded"],
-            "costUsd": 5.0,
-            "numTurns": 12
-        });
-        let result: ResultEvent = serde_json::from_value(value).unwrap();
-        let turn = map_result_to_turn(result, None, None);
-        assert!(turn.error.is_some());
-        assert_eq!(turn.error_kind, Some(ErrorKind::BudgetExceeded));
-    }
-
-    #[test]
-    fn test_parse_unknown_type_ignored() {
-        let value = json!({"type": "stream_event", "data": "partial"});
-        let type_field = value.get("type").and_then(|t| t.as_str()).unwrap();
-        let known = matches!(type_field, "init" | "message" | "result" | "error");
-        assert!(!known);
-    }
-
-    #[test]
-    fn test_parse_non_json_ignored() {
-        let result = serde_json::from_str::<serde_json::Value>("not json at all");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_start_command_serialization() {
-        let cmd = ClaudeCommand::Start {
-            prompt: "Hello".into(),
+    fn test_copilot_start_command_serialization() {
+        let cmd = CopilotCommand::Start {
+            prompt: "Fix the tests".into(),
             cwd: "/workspace".into(),
             mcp_servers: Some(
                 json!({"beacon": {"type": "http", "url": "http://localhost:9456/mcp"}}),
             ),
-            model: Some("claude-sonnet-4-5-20250929".into()),
-            max_turns: Some(50),
-            max_budget_usd: Some(5.0),
+            model: Some("gpt-5".into()),
             system_prompt: None,
+            provider: Some(json!({"type": "openai", "baseUrl": "https://api.openai.com/v1"})),
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(value["type"], "start");
-        assert_eq!(value["prompt"], "Hello");
+        assert_eq!(value["prompt"], "Fix the tests");
         assert_eq!(value["cwd"], "/workspace");
-        assert_eq!(value["maxTurns"], 50);
-        assert_eq!(value["maxBudgetUsd"], 5.0);
+        assert_eq!(value["model"], "gpt-5");
+        assert!(value.get("mcpServers").is_some());
+        assert_eq!(value["provider"]["type"], "openai");
         assert!(value.get("systemPrompt").is_none());
     }
 
     #[test]
-    fn test_prompt_command_serialization() {
-        let cmd = ClaudeCommand::Prompt {
-            text: "continue with JWT".into(),
+    fn test_copilot_prompt_command_serialization() {
+        let cmd = CopilotCommand::Prompt {
+            text: "Now run the tests".into(),
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(value["type"], "prompt");
-        assert_eq!(value["text"], "continue with JWT");
+        assert_eq!(value["text"], "Now run the tests");
     }
 
     #[test]
-    fn test_error_kind_as_str() {
-        assert_eq!(ErrorKind::ExecutorFailed.as_str(), "executor_failed");
-        assert_eq!(ErrorKind::Cancelled.as_str(), "cancelled");
-        assert_eq!(ErrorKind::BudgetExceeded.as_str(), "budget_exceeded");
-        assert_eq!(ErrorKind::MaxTurns.as_str(), "max_turns");
+    fn test_parse_init_event() {
+        let json_str = r#"{"type":"init","sessionId":"cop-123","mcpServers":[{"name":"beacon","status":"connected"}]}"#;
+        let value: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let init: InitEvent = serde_json::from_value(value).unwrap();
+        assert_eq!(init.session_id, "cop-123");
     }
 
     #[test]
-    fn test_result_cancelled_mapping() {
+    fn test_parse_result_event_no_cost() {
         let value = json!({
             "type": "result",
-            "subtype": "cancelled",
-            "sessionId": "abc-123",
-            "costUsd": 0
+            "subtype": "success",
+            "result": "Done."
         });
         let result: ResultEvent = serde_json::from_value(value).unwrap();
-        let turn = map_result_to_turn(result, Some("abc-123".into()), None);
+        assert_eq!(result.subtype, "success");
+        assert_eq!(result.result.as_deref(), Some("Done."));
+        assert!(result.cost_usd.is_none());
+        assert!(result.num_turns.is_none());
+        assert!(result.duration_ms.is_none());
+    }
+
+    #[test]
+    fn test_map_result_to_turn() {
+        // success
+        let result = ResultEvent {
+            subtype: "success".into(),
+            session_id: Some("cop-123".into()),
+            result: Some("All tests pass.".into()),
+            errors: None,
+            cost_usd: None,
+            num_turns: None,
+            duration_ms: None,
+        };
+        let turn = map_result_to_turn(result, Some("cop-123".into()), None);
+        assert!(turn.error.is_none());
+        assert!(turn.error_kind.is_none());
+        assert!(turn.output.is_some());
+
+        // cancelled
+        let result = ResultEvent {
+            subtype: "cancelled".into(),
+            session_id: Some("cop-123".into()),
+            result: None,
+            errors: None,
+            cost_usd: None,
+            num_turns: None,
+            duration_ms: None,
+        };
+        let turn = map_result_to_turn(result, Some("cop-123".into()), None);
         assert!(turn.error.is_some());
         assert_eq!(turn.error_kind, Some(ErrorKind::Cancelled));
+
+        // error_during_execution
+        let result = ResultEvent {
+            subtype: "error_during_execution".into(),
+            session_id: None,
+            result: None,
+            errors: Some(vec!["sendAndWait returned undefined".into()]),
+            cost_usd: None,
+            num_turns: None,
+            duration_ms: None,
+        };
+        let turn = map_result_to_turn(result, None, None);
+        assert!(turn.error.is_some());
+        assert_eq!(turn.error_kind, Some(ErrorKind::ExecutorFailed));
     }
 }

@@ -11,12 +11,22 @@ export interface StartCommand {
   maxTurns?: number;
   maxBudgetUsd?: number;
   systemPrompt?: string;
+  provider?: ProviderConfig;
+}
+
+// Intentionally loose type — Rust sends opaque JSON, SDK consumes it
+export interface ProviderConfig {
+  type: string;
+  baseUrl?: string;
+  // apiKey is NOT here — injected via process env, never over stdin
+  [key: string]: unknown;
 }
 
 export interface McpServerConfig {
   type: string;
   url: string;
   headers?: Record<string, string>;
+  tools?: string[];
 }
 
 export interface PromptCommand {

@@ -36,5 +36,6 @@ packages = ["agentmaestro"]
 [tool.pytest.ini_options]
 markers = [
     "claude: tests requiring Claude auth (run with pytest -m claude)",
+    "copilot: tests requiring Copilot/GitHub auth (run with pytest -m copilot)",
 ]
-addopts = "-m 'not claude'"
+addopts = "-m 'not claude and not copilot'"
