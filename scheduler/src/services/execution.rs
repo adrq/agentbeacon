@@ -19,6 +19,7 @@ pub async fn create_execution(
     prompt: &str,
     workspace_id: Option<&str>,
     title: Option<&str>,
+    cwd: Option<&str>,
 ) -> Result<CreateExecutionResult, SchedulerError> {
     // Look up agent — NotFound if missing, ValidationFailed if disabled
     let agent = db::agents::get_by_id(db_pool, agent_id).await?;
@@ -67,6 +68,17 @@ pub async fn create_execution(
     )
     .await?;
 
+    // Resolve cwd: explicit param > workspace.project_path > omit (worker fallback)
+    let resolved_cwd = if let Some(dir) = cwd.filter(|s| !s.trim().is_empty()) {
+        Some(dir.trim().to_string())
+    } else if let Some(ws_id) = workspace_id {
+        let workspace = db::workspaces::get_by_id(db_pool, ws_id).await?;
+        let path = workspace.project_path;
+        if path.is_empty() { None } else { Some(path) }
+    } else {
+        None
+    };
+
     // Enqueue initial task to session inbox
     let agent_config: JsonValue = serde_json::from_str(&agent.config).unwrap_or_else(|_| json!({}));
     let sandbox_config: JsonValue = agent
@@ -74,13 +86,16 @@ pub async fn create_execution(
         .as_ref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(JsonValue::Null);
-    let task_payload = json!({
+    let mut task_payload = json!({
         "agent_id": agent.id,
         "agent_type": agent.agent_type,
         "agent_config": agent_config,
         "sandbox_config": sandbox_config,
         "message": input
     });
+    if let Some(dir) = resolved_cwd {
+        task_payload["cwd"] = JsonValue::String(dir);
+    }
     task_queue
         .push(TaskAssignment {
             execution_id: execution_id.clone(),

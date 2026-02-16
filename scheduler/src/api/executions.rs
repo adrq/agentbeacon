@@ -91,6 +91,7 @@ pub struct CreateExecutionRequest {
     pub prompt: String,
     pub workspace_id: Option<String>,
     pub title: Option<String>,
+    pub cwd: Option<String>,
 }
 
 /// Response for create execution
@@ -144,6 +145,7 @@ async fn create_execution_handler(
         &req.prompt,
         req.workspace_id.as_deref(),
         req.title.as_deref(),
+        req.cwd.as_deref(),
     )
     .await?;
 

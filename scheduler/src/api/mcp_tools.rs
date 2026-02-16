@@ -278,8 +278,24 @@ async fn handle_delegate(
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(JsonValue::Null);
 
+    // Resolve cwd from execution's workspace so child agents inherit the project directory
+    let resolved_cwd = {
+        let exec = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
+            .await
+            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+        if let Some(ws_id) = exec.workspace_id.as_deref() {
+            let ws = db::workspaces::get_by_id(&state.db_pool, ws_id)
+                .await
+                .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+            let path = ws.project_path;
+            if path.is_empty() { None } else { Some(path) }
+        } else {
+            None
+        }
+    };
+
     // Build task payload and enqueue
-    let task_payload = json!({
+    let mut task_payload = json!({
         "agent_id": agent.id,
         "agent_type": agent.agent_type,
         "agent_config": agent_config,
@@ -289,6 +305,9 @@ async fn handle_delegate(
             "parts": [{"kind": "text", "text": prompt}]
         }
     });
+    if let Some(dir) = resolved_cwd {
+        task_payload["cwd"] = JsonValue::String(dir);
+    }
 
     state
         .task_queue

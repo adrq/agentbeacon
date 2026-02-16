@@ -218,10 +218,20 @@ async fn run_session(
         .cloned()
         .unwrap_or_default();
 
-    let cwd = std::env::current_dir()
-        .context("failed to get current directory")?
-        .to_string_lossy()
-        .to_string();
+    let cwd = task_payload
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "current_dir() failed, falling back to /tmp");
+                    std::path::PathBuf::from("/tmp")
+                })
+                .to_string_lossy()
+                .to_string()
+        });
 
     let config = SessionConfig {
         session_id: session_id.to_string(),
