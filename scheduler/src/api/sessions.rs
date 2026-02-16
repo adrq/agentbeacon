@@ -113,14 +113,14 @@ async fn post_message(
 ) -> Result<impl IntoResponse, SchedulerError> {
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
-    if session.status != "input-required" {
+    if session.status != "input-required" && session.status != "working" {
         return Err(SchedulerError::Conflict(format!(
-            "session is not input-required (current status: {})",
+            "session cannot accept messages (current status: {})",
             session.status
         )));
     }
 
-    // Record user message event
+    // Always: record user message event
     let msg_payload = json!({
         "role": "user",
         "parts": [{"kind": "text", "text": req.message}]
@@ -134,37 +134,7 @@ async fn post_message(
     )
     .await?;
 
-    // Transition session to working
-    db::sessions::update_status(&state.db_pool, &id, "working").await?;
-
-    let session_state_event = json!({"from": "input-required", "to": "working"});
-    db::events::insert(
-        &state.db_pool,
-        &session.execution_id,
-        Some(&id),
-        "state_change",
-        &serde_json::to_string(&session_state_event).unwrap(),
-    )
-    .await?;
-
-    // Only master sessions propagate status changes to the execution
-    if session.parent_session_id.is_none() {
-        let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
-
-        db::executions::update_status(&state.db_pool, &session.execution_id, "working").await?;
-
-        let exec_state_event = json!({"from": execution.status, "to": "working"});
-        db::events::insert(
-            &state.db_pool,
-            &session.execution_id,
-            None,
-            "state_change",
-            &serde_json::to_string(&exec_state_event).unwrap(),
-        )
-        .await?;
-    }
-
-    // Push user message to session's inbox for next_instruction delivery
+    // Always: push user message to session's inbox for delivery
     let message_payload = serde_json::Value::String(format!("[user]\n\n{}", req.message));
     state
         .task_queue
@@ -175,9 +145,49 @@ async fn post_message(
         })
         .await?;
 
+    // Conditional: status transitions only for input-required → working
+    if session.status == "input-required" {
+        db::sessions::update_status(&state.db_pool, &id, "working").await?;
+
+        let session_state_event = json!({"from": "input-required", "to": "working"});
+        db::events::insert(
+            &state.db_pool,
+            &session.execution_id,
+            Some(&id),
+            "state_change",
+            &serde_json::to_string(&session_state_event).unwrap(),
+        )
+        .await?;
+
+        // Only master sessions propagate status changes to the execution
+        if session.parent_session_id.is_none() {
+            let execution =
+                db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
+
+            db::executions::update_status(&state.db_pool, &session.execution_id, "working").await?;
+
+            let exec_state_event = json!({"from": execution.status, "to": "working"});
+            db::events::insert(
+                &state.db_pool,
+                &session.execution_id,
+                None,
+                "state_change",
+                &serde_json::to_string(&exec_state_event).unwrap(),
+            )
+            .await?;
+        }
+    }
+    // If already "working": skip all transitions, message is queued for mid-turn delivery
+
+    let current_status = if session.status == "input-required" {
+        "working"
+    } else {
+        &session.status
+    };
+
     Ok((
         StatusCode::OK,
-        Json(json!({"event_id": event_id, "status": "working"})),
+        Json(json!({"event_id": event_id, "status": current_status})),
     ))
 }
 

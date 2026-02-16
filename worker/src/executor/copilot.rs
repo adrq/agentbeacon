@@ -1,15 +1,18 @@
 //! Copilot executor adapter — spawns a Node.js wrapper that drives the GitHub
 //! Copilot SDK, communicating over stdin/stdout JSON Lines.
+//!
+//! Background task pattern: `start()` spawns a tokio task that owns the child
+//! process and bridges between AgentCommand/AgentEvent channels and the
+//! subprocess stdin/stdout.
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
 
-use super::{AgentHandle, ErrorKind, SessionConfig, TurnResult};
+use super::{AgentCommand, AgentEvent, ErrorKind, ExecutorHandle, SessionConfig, TurnResult};
 
 // --- Protocol types (Rust ↔ Node JSON Lines) ---
 
@@ -80,294 +83,347 @@ pub struct CopilotConfig {
     pub api_key_env: Option<String>,
 }
 
-// --- Handle ---
+/// Start the Copilot executor: spawn the Node.js subprocess and a background
+/// task, returning an ExecutorHandle for channel-based communication.
+pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
+    let copilot_config: CopilotConfig = serde_json::from_value(config.agent_config.clone())
+        .context("failed to parse Copilot agent config")?;
 
-pub struct CopilotAgentHandle {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    event_rx: mpsc::UnboundedReceiver<serde_json::Value>,
-    reader_handle: tokio::task::JoinHandle<()>,
-    agent_session_id: Option<String>,
-    first_prompt: bool,
-    config: CopilotHandleConfig,
-}
+    let node_path = config
+        .node_path
+        .clone()
+        .or_else(|| std::env::var("AGENTBEACON_NODE_PATH").ok())
+        .unwrap_or_else(|| "node".to_string());
+    let executors_dir = config
+        .executors_dir
+        .clone()
+        .or_else(|| std::env::var("AGENTBEACON_EXECUTORS_DIR").ok())
+        .context("AGENTBEACON_EXECUTORS_DIR must be set (via --executors-dir or env var)")?;
 
-struct CopilotHandleConfig {
-    cwd: String,
-    scheduler_url: String,
-    session_id: String,
-    copilot_config: CopilotConfig,
-}
+    let script_path = format!("{}/copilot-executor.js", executors_dir);
 
-impl CopilotAgentHandle {
-    pub async fn start(config: SessionConfig) -> Result<Self> {
-        let copilot_config: CopilotConfig = serde_json::from_value(config.agent_config.clone())
-            .context("failed to parse Copilot agent config")?;
+    // Standard Copilot auth (COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN)
+    // inherited from parent process env automatically.
+    let mut cmd = tokio::process::Command::new(&node_path);
+    cmd.arg(&script_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
-        let node_path = config
-            .node_path
-            .clone()
-            .or_else(|| std::env::var("AGENTBEACON_NODE_PATH").ok())
-            .unwrap_or_else(|| "node".to_string());
-        let executors_dir = config
-            .executors_dir
-            .clone()
-            .or_else(|| std::env::var("AGENTBEACON_EXECUTORS_DIR").ok())
-            .context("AGENTBEACON_EXECUTORS_DIR must be set (via --executors-dir or env var)")?;
-
-        let script_path = format!("{}/copilot-executor.js", executors_dir);
-
-        // Standard Copilot auth (COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN)
-        // inherited from parent process env automatically.
-        let mut cmd = tokio::process::Command::new(&node_path);
-        cmd.arg(&script_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        // Inject BYOK API key via process env if configured — NEVER over stdin
-        if let Some(ref env_name) = copilot_config.api_key_env {
-            match std::env::var(env_name) {
-                Ok(key_value) => {
-                    cmd.env(env_name, key_value);
-                }
-                Err(_) => {
-                    tracing::warn!(env_var = %env_name, "BYOK api_key_env not found in environment");
-                }
-            }
-        }
-
-        let mut child = cmd.spawn().with_context(|| {
-            format!("failed to spawn copilot executor: {node_path} {script_path}")
-        })?;
-
-        let stdin = child.stdin.take().context("failed to get stdin")?;
-        let stdout = child.stdout.take().context("failed to get stdout")?;
-        let stderr = child.stderr.take().context("failed to get stderr")?;
-
-        // Stdout reader: parse JSON Lines, validate, forward to channel
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let reader_handle = tokio::spawn(async move {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
-
-                let value: serde_json::Value = match serde_json::from_str(&line) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        tracing::warn!(line_len = line.len(), "ignoring non-JSON stdout line");
-                        continue;
-                    }
-                };
-
-                let type_field = match value.get("type").and_then(|t| t.as_str()) {
-                    Some(t) => t.to_string(),
-                    None => {
-                        tracing::warn!("ignoring unrecognized JSON on stdout");
-                        continue;
-                    }
-                };
-
-                match type_field.as_str() {
-                    "init" | "message" | "result" | "error" => {}
-                    other => {
-                        tracing::warn!(type_field = %other, "ignoring unknown event type");
-                        continue;
-                    }
-                }
-
-                if event_tx.send(value).is_err() {
-                    break;
-                }
-            }
-        });
-
-        // Stderr drain: forward to tracing at debug level
-        tokio::spawn(async move {
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::debug!(target: "copilot_executor", "{}", line);
-            }
-        });
-
-        tracing::info!(
-            execution_id = %config.execution_id,
-            "Copilot executor started"
-        );
-
-        Ok(Self {
-            child,
-            stdin: Some(stdin),
-            event_rx,
-            reader_handle,
-            agent_session_id: None,
-            first_prompt: true,
-            config: CopilotHandleConfig {
-                cwd: config.cwd,
-                scheduler_url: config.scheduler_url,
-                session_id: config.session_id,
-                copilot_config,
-            },
-        })
-    }
-
-    async fn write_command(&mut self, cmd: &CopilotCommand) -> Result<()> {
-        let stdin = self.stdin.as_mut().context("stdin already closed")?;
-        let json = serde_json::to_string(cmd)?;
-        stdin.write_all(json.as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
-        stdin.flush().await?;
-        Ok(())
-    }
-
-    fn build_mcp_servers(&self) -> serde_json::Value {
-        let mcp_url = format!("{}/mcp", self.config.scheduler_url.trim_end_matches('/'));
-        serde_json::json!({
-            "beacon": {
-                "type": "http",
-                "url": mcp_url,
-                "headers": {
-                    "Authorization": format!("Bearer {}", self.config.session_id)
-                }
-            }
-        })
-    }
-}
-
-#[async_trait]
-impl AgentHandle for CopilotAgentHandle {
-    async fn send_prompt(&mut self, task_payload: &serde_json::Value) -> Result<TurnResult> {
-        let prompt_text = super::extract_prompt_text(task_payload)?;
-
-        if self.first_prompt {
-            self.first_prompt = false;
-            let cmd = CopilotCommand::Start {
-                prompt: prompt_text,
-                cwd: self.config.cwd.clone(),
-                mcp_servers: Some(self.build_mcp_servers()),
-                model: self.config.copilot_config.model.clone(),
-                system_prompt: self.config.copilot_config.system_prompt.clone(),
-                provider: sanitize_provider(self.config.copilot_config.provider.clone()),
-            };
-            self.write_command(&cmd).await?;
-        } else {
-            let cmd = CopilotCommand::Prompt { text: prompt_text };
-            self.write_command(&cmd).await?;
-        }
-
-        // Read events until result or error
-        let mut last_content: Option<serde_json::Value> = None;
-
-        loop {
-            match self.event_rx.recv().await {
-                Some(event) => {
-                    let type_field = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-                    match type_field {
-                        "init" => {
-                            if let Ok(init) = serde_json::from_value::<InitEvent>(event) {
-                                self.agent_session_id = Some(init.session_id);
-                            } else {
-                                tracing::warn!("malformed init event");
-                            }
-                        }
-                        "message" => {
-                            if let Ok(msg) = serde_json::from_value::<MessageEvent>(event)
-                                && let Some(content) = msg.content
-                            {
-                                last_content = Some(content);
-                            }
-                        }
-                        "result" => match serde_json::from_value::<ResultEvent>(event) {
-                            Ok(result) => {
-                                if let Some(ref sid) = result.session_id {
-                                    self.agent_session_id = Some(sid.clone());
-                                }
-                                return Ok(map_result_to_turn(
-                                    result,
-                                    self.agent_session_id.clone(),
-                                    last_content,
-                                ));
-                            }
-                            Err(e) => {
-                                return Ok(TurnResult {
-                                    agent_session_id: self.agent_session_id.clone(),
-                                    error: Some(format!("malformed result event: {e}")),
-                                    error_kind: Some(ErrorKind::ExecutorFailed),
-                                    output: None,
-                                });
-                            }
-                        },
-                        "error" => match serde_json::from_value::<ErrorEvent>(event) {
-                            Ok(err) => {
-                                return Ok(TurnResult {
-                                    agent_session_id: self.agent_session_id.clone(),
-                                    error: Some(err.message),
-                                    error_kind: Some(ErrorKind::ExecutorFailed),
-                                    output: None,
-                                });
-                            }
-                            Err(e) => {
-                                return Ok(TurnResult {
-                                    agent_session_id: self.agent_session_id.clone(),
-                                    error: Some(format!("malformed error event: {e}")),
-                                    error_kind: Some(ErrorKind::ExecutorFailed),
-                                    output: None,
-                                });
-                            }
-                        },
-                        _ => {}
-                    }
-                }
-                None => {
-                    let exit_status = self.child.try_wait();
-                    let exit_info = match exit_status {
-                        Ok(Some(status)) => format!("exit code: {status}"),
-                        Ok(None) => "still running".to_string(),
-                        Err(e) => format!("error checking status: {e}"),
-                    };
-                    return Ok(TurnResult {
-                        agent_session_id: self.agent_session_id.clone(),
-                        error: Some(format!("copilot executor process died ({exit_info})")),
-                        error_kind: Some(ErrorKind::ExecutorFailed),
-                        output: None,
-                    });
-                }
-            }
-        }
-    }
-
-    async fn cancel(&mut self) -> Result<()> {
-        let _ = self.write_command(&CopilotCommand::Cancel).await;
-        Ok(())
-    }
-
-    async fn stop(&mut self) -> Result<()> {
-        if self.stdin.is_some() {
-            let _ = self.write_command(&CopilotCommand::Stop).await;
-        }
-        self.stdin = None;
-
-        let timeout = std::time::Duration::from_secs(5);
-        match tokio::time::timeout(timeout, self.child.wait()).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "error waiting for copilot executor to exit");
+    // Inject BYOK API key via process env if configured — NEVER over stdin
+    if let Some(ref env_name) = copilot_config.api_key_env {
+        match std::env::var(env_name) {
+            Ok(key_value) => {
+                cmd.env(env_name, key_value);
             }
             Err(_) => {
-                tracing::warn!("copilot executor did not exit within timeout, killing");
-                let _ = self.child.kill().await;
+                tracing::warn!(env_var = %env_name, "BYOK api_key_env not found in environment");
             }
         }
-
-        let _ = (&mut self.reader_handle).await;
-        Ok(())
     }
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to spawn copilot executor: {node_path} {script_path}"))?;
+
+    let stdin = child.stdin.take().context("failed to get stdin")?;
+    let stdout = child.stdout.take().context("failed to get stdout")?;
+    let stderr = child.stderr.take().context("failed to get stderr")?;
+
+    // Stdout reader: parse JSON Lines, validate, forward to channel
+    let (raw_event_tx, raw_event_rx) = mpsc::unbounded_channel();
+    let reader_handle = tokio::spawn(async move {
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let value: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => {
+                    tracing::warn!(line_len = line.len(), "ignoring non-JSON stdout line");
+                    continue;
+                }
+            };
+
+            let type_field = match value.get("type").and_then(|t| t.as_str()) {
+                Some(t) => t.to_string(),
+                None => {
+                    tracing::warn!("ignoring unrecognized JSON on stdout");
+                    continue;
+                }
+            };
+
+            match type_field.as_str() {
+                "init" | "message" | "result" | "error" => {}
+                other => {
+                    tracing::warn!(type_field = %other, "ignoring unknown event type");
+                    continue;
+                }
+            }
+
+            if raw_event_tx.send(value).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Stderr drain: forward to tracing at debug level
+    tokio::spawn(async move {
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            tracing::debug!(target: "copilot_executor", "{}", line);
+        }
+    });
+
+    tracing::info!(
+        execution_id = %config.execution_id,
+        "Copilot executor started"
+    );
+
+    // Build MCP servers config
+    let mcp_url = format!("{}/mcp", config.scheduler_url.trim_end_matches('/'));
+    let mcp_servers = serde_json::json!({
+        "beacon": {
+            "type": "http",
+            "url": mcp_url,
+            "headers": {
+                "Authorization": format!("Bearer {}", config.session_id)
+            }
+        }
+    });
+
+    // Channels for the worker main loop
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+
+    // Background task: bridges between cmd_rx/event_tx and the subprocess
+    let task_handle = tokio::spawn(background_task(
+        child,
+        stdin,
+        raw_event_rx,
+        reader_handle,
+        cmd_rx,
+        event_tx,
+        config.cwd,
+        mcp_servers,
+        copilot_config,
+    ));
+
+    Ok(ExecutorHandle {
+        cmd_tx,
+        event_rx,
+        task_handle,
+    })
+}
+
+/// Background task that owns the child process and bridges channels.
+#[allow(clippy::too_many_arguments)]
+async fn background_task(
+    mut child: Child,
+    mut stdin: ChildStdin,
+    mut raw_event_rx: mpsc::UnboundedReceiver<serde_json::Value>,
+    reader_handle: tokio::task::JoinHandle<()>,
+    mut cmd_rx: mpsc::UnboundedReceiver<AgentCommand>,
+    event_tx: mpsc::UnboundedSender<AgentEvent>,
+    cwd: String,
+    mcp_servers: serde_json::Value,
+    copilot_config: CopilotConfig,
+) {
+    let mut agent_session_id: Option<String> = None;
+    let mut last_content: Option<serde_json::Value> = None;
+    let mut started = false;
+    let mut pending_prompts: Vec<String> = Vec::new();
+
+    loop {
+        tokio::select! {
+            biased;
+
+            // Process raw stdout events from the reader task
+            raw_event = raw_event_rx.recv() => {
+                match raw_event {
+                    Some(event) => {
+                        let type_field = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                        match type_field {
+                            "init" => {
+                                if let Ok(init) = serde_json::from_value::<InitEvent>(event) {
+                                    agent_session_id = Some(init.session_id.clone());
+                                    started = true;
+                                    let _ = event_tx.send(AgentEvent::Init { session_id: init.session_id });
+
+                                    // Flush any prompts that arrived before init
+                                    for text in pending_prompts.drain(..) {
+                                        let cmd = CopilotCommand::Prompt { text };
+                                        if let Err(e) = write_command(&mut stdin, &cmd).await {
+                                            tracing::warn!(error = %e, "failed to write buffered prompt");
+                                        }
+                                    }
+                                } else {
+                                    tracing::warn!("malformed init event");
+                                }
+                            }
+                            "message" => {
+                                if let Ok(msg) = serde_json::from_value::<MessageEvent>(event)
+                                    && let Some(content) = msg.content
+                                {
+                                    let _ = event_tx.send(AgentEvent::Message { output: content.clone() });
+                                    last_content = Some(content);
+                                }
+                            }
+                            "result" => match serde_json::from_value::<ResultEvent>(event) {
+                                Ok(result) => {
+                                    if let Some(ref sid) = result.session_id {
+                                        agent_session_id = Some(sid.clone());
+                                    }
+                                    let turn = map_result_to_turn(
+                                        result,
+                                        agent_session_id.clone(),
+                                        last_content.take(),
+                                    );
+                                    let _ = event_tx.send(AgentEvent::TurnComplete(turn));
+                                }
+                                Err(e) => {
+                                    let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                        agent_session_id: agent_session_id.clone(),
+                                        error: Some(format!("malformed result event: {e}")),
+                                        error_kind: Some(ErrorKind::ExecutorFailed),
+                                        output: None,
+                                    }));
+                                }
+                            },
+                            "error" => {
+                                last_content = None;
+                                match serde_json::from_value::<ErrorEvent>(event) {
+                                    Ok(err) => {
+                                        let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                            agent_session_id: agent_session_id.clone(),
+                                            error: Some(err.message),
+                                            error_kind: Some(ErrorKind::ExecutorFailed),
+                                            output: None,
+                                        }));
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                            agent_session_id: agent_session_id.clone(),
+                                            error: Some(format!("malformed error event: {e}")),
+                                            error_kind: Some(ErrorKind::ExecutorFailed),
+                                            output: None,
+                                        }));
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    None => {
+                        // Reader channel closed — process died
+                        let exit_status = child.try_wait();
+                        let exit_info = match exit_status {
+                            Ok(Some(status)) => format!("exit code: {status}"),
+                            Ok(None) => "still running".to_string(),
+                            Err(e) => format!("error checking status: {e}"),
+                        };
+                        let _ = event_tx.send(AgentEvent::ProcessDied {
+                            error: format!("copilot executor process died ({exit_info})"),
+                        });
+                        break;
+                    }
+                }
+            }
+
+            // Process commands from the worker main loop
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(AgentCommand::Start(task_payload)) => {
+                        match super::extract_prompt_text(&task_payload) {
+                            Ok(prompt_text) => {
+                                let cmd = CopilotCommand::Start {
+                                    prompt: prompt_text,
+                                    cwd: cwd.clone(),
+                                    mcp_servers: Some(mcp_servers.clone()),
+                                    model: copilot_config.model.clone(),
+                                    system_prompt: copilot_config.system_prompt.clone(),
+                                    provider: sanitize_provider(copilot_config.provider.clone()),
+                                };
+                                if let Err(e) = write_command(&mut stdin, &cmd).await {
+                                    let _ = event_tx.send(AgentEvent::ProcessDied {
+                                        error: format!("failed to write start command: {e}"),
+                                    });
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                    agent_session_id: agent_session_id.clone(),
+                                    error: Some(format!("bad task payload: {e}")),
+                                    error_kind: Some(ErrorKind::ExecutorFailed),
+                                    output: None,
+                                }));
+                            }
+                        }
+                    }
+                    Some(AgentCommand::Prompt(text)) => {
+                        if !started {
+                            pending_prompts.push(text);
+                        } else {
+                            let cmd = CopilotCommand::Prompt { text };
+                            if let Err(e) = write_command(&mut stdin, &cmd).await {
+                                tracing::warn!(error = %e, "failed to write prompt command");
+                            }
+                        }
+                    }
+                    Some(AgentCommand::Cancel) => {
+                        let _ = write_command(&mut stdin, &CopilotCommand::Cancel).await;
+                    }
+                    Some(AgentCommand::Stop) => {
+                        let _ = write_command(&mut stdin, &CopilotCommand::Stop).await;
+                        drop(stdin);
+                        let timeout = std::time::Duration::from_secs(5);
+                        match tokio::time::timeout(timeout, child.wait()).await {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(e)) => {
+                                tracing::warn!(error = %e, "error waiting for copilot executor to exit");
+                            }
+                            Err(_) => {
+                                tracing::warn!("copilot executor did not exit within timeout, killing");
+                                let _ = child.kill().await;
+                            }
+                        }
+                        let _ = reader_handle.await;
+                        return;
+                    }
+                    None => {
+                        drop(stdin);
+                        let timeout = std::time::Duration::from_secs(5);
+                        match tokio::time::timeout(timeout, child.wait()).await {
+                            Ok(_) => {}
+                            Err(_) => { let _ = child.kill().await; }
+                        }
+                        let _ = reader_handle.await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // If we broke out of the loop (process died), clean up
+    let timeout = std::time::Duration::from_secs(2);
+    let _ = tokio::time::timeout(timeout, child.wait()).await;
+    let _ = reader_handle.await;
+}
+
+async fn write_command(stdin: &mut ChildStdin, cmd: &CopilotCommand) -> Result<()> {
+    let json = serde_json::to_string(cmd)?;
+    stdin.write_all(json.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+    stdin.flush().await?;
+    Ok(())
 }
 
 /// Strip sensitive fields from provider config before sending over stdin.
@@ -387,7 +443,6 @@ fn sanitize_provider(provider: Option<serde_json::Value>) -> Option<serde_json::
 }
 
 /// Map Copilot result subtypes to TurnResult with ErrorKind.
-/// Simpler than Claude's — no max_turns/max_budget_usd arms.
 fn map_result_to_turn(
     result: ResultEvent,
     agent_session_id: Option<String>,

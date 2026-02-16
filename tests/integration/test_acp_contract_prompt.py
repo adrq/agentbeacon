@@ -1,8 +1,6 @@
-"""
-ACP Protocol Contract Tests - Session/Prompt Method
+"""ACP Protocol Contract Tests - Session/Prompt Method
 
-These tests verify the worker's implementation of session/prompt and response handling.
-Tests MUST fail initially per TDD approach (worker ACP support doesn't exist yet).
+Verifies the worker's implementation of session/prompt and response handling.
 
 Run with: uv run pytest tests/integration/test_acp_contract_prompt.py -v
 """
@@ -15,158 +13,95 @@ import requests
 
 from tests.contracts.schema_helpers import build_acp_task
 from tests.testhelpers import (
+    PortManager,
     cleanup_processes,
     start_mock_scheduler,
     wait_for_port,
+)
+from tests.integration.worker_test_helpers import (
+    create_mock_scheduler,
     start_worker,
-    PortManager,
+    clear_state,
+    enqueue_session,
+    get_results,
+    mark_complete,
+    poll_until,
 )
 
-pytestmark = pytest.mark.skip(
-    reason="Disabled: uses old worker sync protocol. Re-enable after full ACP support."
-)
+
+@pytest.fixture()
+def mock_scheduler():
+    url, port, proc, pm = create_mock_scheduler()
+    yield url, port, proc
+    cleanup_processes([proc])
+    pm.release_port(port)
 
 
-def _extract_history(task_status: dict) -> list:
-    """Return Task.history list from the data part of taskStatus message."""
-    message = task_status.get("message", {})
-    parts = message.get("parts", [])
-    for part in parts:
-        if isinstance(part, dict) and part.get("kind") == "data":
-            data = part.get("data")
-            if isinstance(data, dict):
-                return data.get("history", [])
-    return []
-
-
-def test_session_prompt_end_turn_success():
+def test_session_prompt_end_turn_success(mock_scheduler):
     """Contract test - session/prompt end_turn success.
 
-    Verifies that worker sends session/prompt with sessionId and prompt ContentBlock array,
-    receives stopReason="end_turn", and maps to A2A completed status.
+    Verifies that worker sends session/prompt, receives stopReason="end_turn",
+    and reports success.
     """
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
-
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            acp_task = build_acp_task(
-                node_id="node-prompt-test",
-                text="Complete this task successfully",
-                cwd="/tmp/test-workdir",
-                agent="test-acp-agent",
-                execution_id="exec-prompt-test",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            # Verify task completed successfully (end_turn maps to completed)
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-            task_result = [r for r in results if r["executionId"] == "exec-prompt-test"]
-            assert len(task_result) == 1, (
-                f"Should have result for prompt test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] in ["completed", "success"], (
-                f"Task should complete successfully with end_turn: {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="Complete this task successfully")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete successfully with end_turn: {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
 
 
-def test_session_prompt_with_session_update_notifications():
+def test_session_prompt_with_session_update_notifications(mock_scheduler):
     """Contract test - session/prompt with session/update notifications.
 
     Verifies that worker receives and accumulates session/update notifications during
-    session/prompt execution and includes them in Task.history.
+    session/prompt execution and includes them in output.
     """
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
-
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            # Use STREAM_CHUNKS special command to trigger session/update notifications
-            acp_task = build_acp_task(
-                node_id="node-updates-test",
-                text="STREAM_CHUNKS",
-                cwd="/tmp/test-workdir",
-                agent="test-acp-agent",
-                execution_id="exec-updates-test",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            # Verify task completed (session/update notifications should be in Task.history)
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-            task_result = [
-                r for r in results if r["executionId"] == "exec-updates-test"
-            ]
-            assert len(task_result) == 1, (
-                f"Should have result for updates test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] in ["completed", "success"], (
-                f"Task should complete with session/update notifications: {task_result[0]}"
-            )
-
-            # Parse and verify Task.history contains MULTIPLE session/update entries
-            task_status = task_result[0]["taskStatus"]
-            history = _extract_history(task_status)
-
-            assert history and len(history) > 0, (
-                f"Task.history should contain session/update notifications: {task_result[0]}"
-            )
-            # Verify MULTIPLE agent messages proving streaming behavior
-            agent_entries = [h for h in history if h.get("role") == "agent"]
-            assert len(agent_entries) >= 2, (
-                f"Task.history should include MULTIPLE agent messages from STREAM_CHUNKS proving streaming: got {len(agent_entries)} messages, expected >=2. History: {history}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="STREAM_CHUNKS")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete with session/update notifications: {results[0]}"
+        )
+        output = results[0]["output"]
+        assert output is not None, (
+            f"Output should contain accumulated agent messages: {results[0]}"
+        )
+        parts = output.get("parts", []) if isinstance(output, dict) else []
+        assert len(parts) >= 2, (
+            f"Output should contain multiple parts from session/update notifications: {output}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
 
 
+@pytest.mark.skip(
+    reason="Mock agent reads stdin sequentially inside _handle_prompt; "
+    "session/cancel notification cannot be processed until DELAY_5 completes. "
+    "Fix requires concurrent stdin reader in mock agent."
+)
 def test_session_prompt_cancelled():
     """Contract test - session/prompt canceled (stop_reason=cancelled).
 
@@ -241,58 +176,28 @@ def test_session_prompt_cancelled():
             cleanup_processes(processes)
 
 
-def test_session_prompt_error():
-    """Contract test - session/prompt error (stop_reason=error).
+def test_session_prompt_error(mock_scheduler):
+    """Contract test - session/prompt subprocess crash.
 
-    Verifies that worker handles session/prompt response with stopReason="error"
-    and maps to A2A failed status with error message.
+    Verifies that worker detects subprocess crash (FAIL_NODE sends SIGKILL)
+    and reports error. Note: this tests the "subprocess closed before response"
+    path, not the stopReason="error" JSON-RPC path.
     """
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
-
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            # Use FAIL_NODE special command to trigger error stopReason
-            acp_task = build_acp_task(
-                node_id="node-error-test",
-                text="FAIL_NODE",
-                cwd="/tmp/test-workdir",
-                agent="test-acp-agent",
-                execution_id="exec-error-test",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            # Verify task failed (error stopReason maps to failed status)
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-            task_result = [r for r in results if r["executionId"] == "exec-error-test"]
-            assert len(task_result) == 1, (
-                f"Should have result for error test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] in ["failed", "error"], (
-                f"Task should fail when stopReason is error: {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="FAIL_NODE")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is not None, (
+            f"Task should fail when stopReason is error: {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])

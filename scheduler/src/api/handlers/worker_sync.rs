@@ -253,6 +253,110 @@ pub async fn handle_worker_sync(
         }
     }
 
+    // Step 1b: After processing a successful result, check for queued tasks
+    // before falling through to session_state handling. This allows queued
+    // mid-turn messages to be returned in the same sync response.
+    if let Some(ref result) = request.session_result {
+        let has_error = result.error_kind.is_some() || result.error.is_some();
+
+        if !has_error {
+            // Check if a user message was queued during the turn
+            if let Some(task) = state
+                .task_queue
+                .pop_by_session(&result.session_id)
+                .await
+                .map_err(|e| {
+                    tracing::error!("post-result pop_by_session failed: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+            {
+                return Ok(Json(WorkerSyncResponse::PromptDelivery {
+                    session_id: result.session_id.clone(),
+                    task,
+                }));
+            }
+
+            // No queued tasks — transition to input-required if currently working.
+            // Note: not atomic with pop_by_session above. A concurrent post_message
+            // between the pop and this update could leave us input-required with a
+            // queued task. Acceptable: the worker's next long-poll will pick it up.
+            if let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await
+                && session.status == "working"
+            {
+                if let Err(e) = db::sessions::update_status(
+                    &state.db_pool,
+                    &result.session_id,
+                    "input-required",
+                )
+                .await
+                {
+                    tracing::error!(
+                        session_id = %result.session_id,
+                        error = %e,
+                        "failed to transition session to input-required"
+                    );
+                } else {
+                    let event_payload = json!({
+                        "from": "working",
+                        "to": "input-required",
+                    });
+                    if let Err(e) = db::events::insert(
+                        &state.db_pool,
+                        &session.execution_id,
+                        Some(&result.session_id),
+                        "state_change",
+                        &serde_json::to_string(&event_payload).unwrap(),
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            session_id = %result.session_id,
+                            error = %e,
+                            "failed to insert input-required state_change event"
+                        );
+                    }
+
+                    // Propagate to execution for master sessions
+                    if session.parent_session_id.is_none() {
+                        if let Err(e) = db::executions::update_status(
+                            &state.db_pool,
+                            &session.execution_id,
+                            "input-required",
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                execution_id = %session.execution_id,
+                                error = %e,
+                                "failed to transition execution to input-required"
+                            );
+                        }
+
+                        let exec_event = json!({
+                            "from": "working",
+                            "to": "input-required",
+                        });
+                        if let Err(e) = db::events::insert(
+                            &state.db_pool,
+                            &session.execution_id,
+                            None,
+                            "state_change",
+                            &serde_json::to_string(&exec_event).unwrap(),
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                execution_id = %session.execution_id,
+                                error = %e,
+                                "failed to insert execution input-required state_change event"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Step 2: Handle session_state if present
     if let Some(ref session_state) = request.session_state {
         return match session_state.status.as_str() {

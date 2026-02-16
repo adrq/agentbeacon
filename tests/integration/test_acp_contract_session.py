@@ -1,8 +1,6 @@
-"""
-ACP Protocol Contract Tests - ACP Protocol Contract Tests - Session Methods
+"""ACP Protocol Contract Tests - Session Methods
 
-These tests verify the worker's implementation of session/new and session lifecycle.
-Tests MUST fail initially per TDD approach (worker ACP support doesn't exist yet).
+Verifies the worker's implementation of session/new and session lifecycle.
 
 Run with: uv run pytest tests/integration/test_acp_contract_session.py -v
 """
@@ -13,79 +11,62 @@ from pathlib import Path
 import pytest
 import requests
 
-from tests.contracts.schema_helpers import build_acp_task, build_canonical_task
+from tests.contracts.schema_helpers import build_canonical_task
 from tests.testhelpers import (
+    PortManager,
     cleanup_processes,
     start_mock_scheduler,
     wait_for_port,
+)
+from tests.integration.worker_test_helpers import (
+    create_mock_scheduler,
     start_worker,
-    PortManager,
+    clear_state,
+    enqueue_session,
+    get_results,
+    mark_complete,
+    poll_until,
 )
 
-pytestmark = pytest.mark.skip(
-    reason="Disabled: uses old worker sync protocol. Re-enable after full ACP support."
-)
+
+@pytest.fixture()
+def mock_scheduler():
+    url, port, proc, pm = create_mock_scheduler()
+    yield url, port, proc
+    cleanup_processes([proc])
+    pm.release_port(port)
 
 
-def test_session_new_success():
-    """Contract test - Contract test - session/new success with cwd and mcpServers.
+def test_session_new_success(mock_scheduler):
+    """Contract test - session/new success.
 
-     Verifies that worker sends session/new with absolute cwd path and mcpServers=[] empty array
-    .
+    Verifies that worker sends session/new with cwd and mcpServers=[] and
+    agent completes successfully.
     """
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
-
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            # ACP task with valid absolute cwd path
-            acp_task = build_acp_task(
-                node_id="node-session-test",
-                text="Test session creation",
-                cwd="/tmp/valid-absolute-path",
-                agent="test-acp-agent",
-                execution_id="exec-session-test",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            # Verify task completed successfully
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-            task_result = [
-                r for r in results if r["executionId"] == "exec-session-test"
-            ]
-            assert len(task_result) == 1, (
-                f"Should have result for session test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] in ["completed", "success"], (
-                f"Task should complete successfully: {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="Test session creation")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete successfully: {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
 
 
+@pytest.mark.skip(
+    reason="Worker now uses std::env::current_dir() for cwd, not task payload metadata. "
+    "cwd validation from task payload is no longer applicable."
+)
 def test_session_new_invalid_cwd_missing():
     """Contract test - Contract test - session/new with missing cwd field.
 
@@ -184,6 +165,10 @@ def test_session_new_invalid_cwd_missing():
             cleanup_processes(processes)
 
 
+@pytest.mark.skip(
+    reason="Worker now uses std::env::current_dir() for cwd, not task payload metadata. "
+    "cwd validation from task payload is no longer applicable."
+)
 def test_session_new_invalid_cwd_relative():
     """Contract test - Contract test - session/new with relative path cwd.
 
@@ -285,6 +270,10 @@ def test_session_new_invalid_cwd_relative():
             cleanup_processes(processes)
 
 
+@pytest.mark.skip(
+    reason="Worker now uses std::env::current_dir() for cwd, not task payload metadata. "
+    "cwd validation from task payload is no longer applicable."
+)
 def test_session_new_invalid_cwd_empty():
     """Contract test - Contract test - session/new with empty string cwd.
 

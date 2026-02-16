@@ -6,136 +6,40 @@ the mock scheduler has no real DB, just in-memory queues.
 """
 
 import time
-from pathlib import Path
 
 import pytest
 import requests
 
-from tests.testhelpers import (
-    PortManager,
-    cleanup_processes,
-    start_mock_scheduler,
-    start_worker_with_retry_config,
-    wait_for_port,
+from tests.testhelpers import cleanup_processes
+
+from tests.integration.worker_test_helpers import (
+    create_mock_scheduler,
+    start_worker as _start_worker,
+    clear_state as _clear_state,
+    enqueue_session as _enqueue_session_full,
+    enqueue_prompt as _enqueue_prompt,
+    mark_complete as _mark_complete,
+    send_command as _send_command,
+    get_sync_log as _get_sync_log,
+    get_results as _get_results,
+    poll_until as _poll_until,
 )
 
-BASE_DIR = Path(__file__).parent.parent.parent
+
+def _enqueue_session(scheduler_url, session_id="sess-1", execution_id="exec-1"):
+    """Backward-compatible wrapper."""
+    _enqueue_session_full(scheduler_url, session_id, execution_id, "hello from test")
 
 
 @pytest.fixture()
 def mock_scheduler():
     """Start mock scheduler and yield (url, port, process)."""
-    pm = PortManager()
-    port = pm.allocate_scheduler_port()
-    proc = start_mock_scheduler(port, base_dir=BASE_DIR)
-    assert wait_for_port(port, timeout=10), "Mock scheduler did not start"
+    scheduler_url, port, proc, pm = create_mock_scheduler()
 
-    yield f"http://127.0.0.1:{port}", port, proc
+    yield scheduler_url, port, proc
 
     cleanup_processes([proc])
     pm.release_port(port)
-
-
-def _start_worker(scheduler_url):
-    """Start worker with fast retry config for tests."""
-    return start_worker_with_retry_config(
-        scheduler_url=scheduler_url,
-        startup_attempts=10,
-        reconnect_attempts=10,
-        retry_delay_ms=100,
-        interval="500ms",
-        base_dir=BASE_DIR,
-    )
-
-
-def _clear_state(scheduler_url):
-    """Clear mock scheduler state."""
-    requests.post(f"{scheduler_url}/test/clear", timeout=5)
-
-
-def _enqueue_session(scheduler_url, session_id="sess-1", execution_id="exec-1"):
-    """Enqueue a session assignment with ACP mock agent config."""
-    task_payload = {
-        "agent_id": "mock-agent",
-        "agent_type": "acp",
-        "agent_config": {
-            "command": "uv",
-            "args": ["run", "python", "-m", "agentmaestro.mock_agent", "--mode", "acp"],
-            "timeout": 30,
-        },
-        "sandbox_config": {},
-        "message": {
-            "parts": [{"kind": "text", "text": "hello from test"}],
-        },
-    }
-    resp = requests.post(
-        f"{scheduler_url}/test/enqueue_session",
-        json={
-            "sessionId": session_id,
-            "executionId": execution_id,
-            "taskPayload": task_payload,
-        },
-        timeout=5,
-    )
-    assert resp.status_code == 200, f"Enqueue session failed: {resp.text}"
-
-
-def _enqueue_prompt(scheduler_url, session_id="sess-1", execution_id="exec-1"):
-    """Enqueue a follow-up prompt delivery."""
-    resp = requests.post(
-        f"{scheduler_url}/test/enqueue_prompt",
-        json={
-            "sessionId": session_id,
-            "executionId": execution_id,
-            "taskPayload": {
-                "message": {"parts": [{"kind": "text", "text": "follow-up prompt"}]}
-            },
-        },
-        timeout=5,
-    )
-    assert resp.status_code == 200, f"Enqueue prompt failed: {resp.text}"
-
-
-def _mark_complete(scheduler_url, session_id="sess-1"):
-    """Mark a session as complete."""
-    resp = requests.post(
-        f"{scheduler_url}/test/mark_complete",
-        json={"sessionId": session_id},
-        timeout=5,
-    )
-    assert resp.status_code == 200, f"Mark complete failed: {resp.text}"
-
-
-def _send_command(scheduler_url, command):
-    """Queue a command (cancel/shutdown)."""
-    resp = requests.post(
-        f"{scheduler_url}/test/send_command",
-        json={"command": command},
-        timeout=5,
-    )
-    assert resp.status_code == 200, f"Send command failed: {resp.text}"
-
-
-def _get_sync_log(scheduler_url):
-    """Get all sync requests received by mock scheduler."""
-    resp = requests.get(f"{scheduler_url}/test/sync_log", timeout=5)
-    return resp.json()
-
-
-def _get_results(scheduler_url):
-    """Get all session results reported by worker."""
-    resp = requests.get(f"{scheduler_url}/test/results", timeout=5)
-    return resp.json()
-
-
-def _poll_until(predicate, timeout=15, interval=0.3):
-    """Poll until predicate returns True or timeout."""
-    start = time.time()
-    while time.time() - start < timeout:
-        if predicate():
-            return True
-        time.sleep(interval)
-    return False
 
 
 def test_worker_idle_gets_no_action(mock_scheduler):
@@ -219,18 +123,13 @@ def test_worker_enters_waiting_after_result(mock_scheduler):
         # Wait for result
         assert _poll_until(lambda: len(_get_results(scheduler_url)) > 0, timeout=30)
 
-        # Wait a bit for worker to enter waiting_for_event
-        time.sleep(2)
-
-        sync_log = _get_sync_log(scheduler_url)
-        waiting_syncs = [
-            entry
-            for entry in sync_log
-            if entry.get("sessionState", {}).get("status") == "waiting_for_event"
-        ]
-        assert len(waiting_syncs) > 0, (
-            f"Expected waiting_for_event syncs, got: {sync_log}"
-        )
+        assert _poll_until(
+            lambda: any(
+                e.get("sessionState", {}).get("status") == "waiting_for_event"
+                for e in _get_sync_log(scheduler_url)
+            ),
+            timeout=10,
+        ), f"Expected waiting_for_event syncs, got: {_get_sync_log(scheduler_url)}"
     finally:
         _mark_complete(scheduler_url)
         time.sleep(1)
@@ -312,28 +211,24 @@ def test_worker_handles_session_complete(mock_scheduler):
         # Wait for result then session complete
         assert _poll_until(lambda: len(_get_results(scheduler_url)) > 0, timeout=30)
 
-        # Give worker time to process session_complete and return to idle
-        time.sleep(3)
-
         # Worker should still be alive (returned to idle)
         assert worker.poll() is None, (
             "Worker should still be running after session_complete"
         )
 
-        # Check sync log for idle requests after the session
-        sync_log = _get_sync_log(scheduler_url)
-        # Find idle syncs (empty objects) that appear after result syncs
-        has_result = False
-        idle_after_result = False
-        for entry in sync_log:
-            if "sessionResult" in entry and entry["sessionResult"]:
-                has_result = True
-            elif has_result and entry == {}:
-                idle_after_result = True
-                break
+        # Wait for idle sync after result (subprocess termination takes ~2s)
+        def has_idle_after_result():
+            sync_log = _get_sync_log(scheduler_url)
+            found_result = False
+            for entry in sync_log:
+                if "sessionResult" in entry and entry["sessionResult"]:
+                    found_result = True
+                elif found_result and entry == {}:
+                    return True
+            return False
 
-        assert idle_after_result, (
-            f"Expected idle sync after session result, sync_log: {sync_log}"
+        assert _poll_until(has_idle_after_result, timeout=10), (
+            f"Expected idle sync after session result, sync_log: {_get_sync_log(scheduler_url)}"
         )
     finally:
         cleanup_processes([worker])

@@ -3,8 +3,8 @@ pub mod claude;
 pub mod copilot;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,16 +48,43 @@ pub struct TurnResult {
     pub output: Option<serde_json::Value>,
 }
 
-#[async_trait]
-pub trait AgentHandle: Send {
-    /// Send prompt to running agent. task_payload shapes:
-    /// - Initial/delegate: JSON object {agent_id, agent_type, agent_config, sandbox_config, message}
-    /// - User answer: plain string "[user]\n\n{text}"
-    /// - Handoff result: plain string "[delegated result from X · session Y]\n\n{text}"
-    /// Adapter detects: if Value::Object → extract message field; if Value::String → use as prompt text
-    async fn send_prompt(&mut self, task_payload: &serde_json::Value) -> Result<TurnResult>;
-    async fn cancel(&mut self) -> Result<()>;
-    async fn stop(&mut self) -> Result<()>;
+/// Events emitted by the agent process
+pub enum AgentEvent {
+    /// Agent SDK initialized with a session ID
+    Init { session_id: String },
+    /// Agent produced output (message content) — informational only,
+    /// the background task accumulates these internally and includes
+    /// the final message in TurnComplete(TurnResult.output).
+    #[allow(dead_code)]
+    Message { output: serde_json::Value },
+    /// Agent turn completed (success or error).
+    /// TurnResult.output contains the accumulated last_content from
+    /// all Message events during the turn.
+    TurnComplete(TurnResult),
+    /// Agent process died unexpectedly
+    ProcessDied { error: String },
+}
+
+/// Commands sent to the agent process
+pub enum AgentCommand {
+    /// Initial prompt with full config (task_payload JSON)
+    Start(serde_json::Value),
+    /// Follow-up prompt (user message, handoff result, etc.)
+    Prompt(String),
+    /// Cancel current turn
+    Cancel,
+    /// Graceful shutdown
+    Stop,
+}
+
+/// Returned by start_executor() — channels for async communication
+pub struct ExecutorHandle {
+    /// Send commands to the agent (Clone + Send, can be used from any task)
+    pub cmd_tx: mpsc::UnboundedSender<AgentCommand>,
+    /// Receive events from the agent
+    pub event_rx: mpsc::UnboundedReceiver<AgentEvent>,
+    /// Join handle for the background executor task
+    pub task_handle: tokio::task::JoinHandle<()>,
 }
 
 /// Extract prompt text from task_payload — shared by stdio-bridge executors (Claude, Copilot).
@@ -88,12 +115,12 @@ pub(crate) fn extract_prompt_text(task_payload: &serde_json::Value) -> Result<St
     }
 }
 
-/// Factory: create AgentHandle based on agent_type from task payload.
-pub async fn start_executor(config: SessionConfig) -> Result<Box<dyn AgentHandle>> {
+/// Factory: create ExecutorHandle based on agent_type from task payload.
+pub async fn start_executor(config: SessionConfig) -> Result<ExecutorHandle> {
     match config.agent_type.as_str() {
-        "acp" => Ok(Box::new(acp::AcpAgentHandle::start(config).await?)),
-        "claude_sdk" => Ok(Box::new(claude::ClaudeAgentHandle::start(config).await?)),
-        "copilot_sdk" => Ok(Box::new(copilot::CopilotAgentHandle::start(config).await?)),
+        "acp" => acp::start(config).await,
+        "claude_sdk" => claude::start(config).await,
+        "copilot_sdk" => copilot::start(config).await,
         other => Err(anyhow::anyhow!("unsupported agent_type: {other}")),
     }
 }

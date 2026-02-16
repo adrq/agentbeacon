@@ -6,10 +6,11 @@ use axum::body::Body;
 use axum::response::Response;
 use serde_json::Value as JsonValue;
 use sqlx::{Any, Pool, postgres::PgPoolOptions};
-use std::sync::{Mutex, Once};
+use std::sync::Once;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 static INIT_DRIVERS: Once = Once::new();
-static PG_DB_SETUP: Mutex<()> = Mutex::new(());
+static PG_DB_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Install SQLx drivers for Any pool (required in SQLx 0.8+)
 fn install_drivers() {
@@ -46,14 +47,16 @@ pub async fn create_test_pool_sqlite() -> TestPool {
         .expect("Failed to create in-memory SQLite pool")
 }
 
-/// Create PostgreSQL test pool at 0.0.0.0, drops and recreates agentbeacon_test database
-#[allow(clippy::await_holding_lock)]
+/// Create PostgreSQL test pool at 0.0.0.0 with a unique database per call.
+///
+/// Each invocation gets its own database (agentbeacon_test_0, _1, ...) so
+/// concurrent tests don't kill each other's connections.
 #[allow(clippy::redundant_pattern_matching)]
-#[allow(clippy::let_and_return)]
-pub async fn create_test_pool_postgres() -> TestPool {
+pub async fn create_test_pool_postgres() -> (TestPool, String) {
     install_drivers();
 
-    let _guard = PG_DB_SETUP.lock().unwrap();
+    let db_num = PG_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let db_name = format!("agentbeacon_test_{db_num}");
 
     let admin_url = "postgres://postgres:postgres@0.0.0.0/postgres";
     let admin_pool = PgPoolOptions::new()
@@ -62,36 +65,29 @@ pub async fn create_test_pool_postgres() -> TestPool {
         .await
         .expect("FATAL: PostgreSQL server unavailable at 0.0.0.0 - tests cannot run without both databases");
 
-    for attempt in 1..=3 {
-        let _ = sqlx::query(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'agentbeacon_test' AND pid <> pg_backend_pid()"
-        )
+    let _ = sqlx::query(&format!(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{db_name}' AND pid <> pg_backend_pid()"
+    ))
+    .execute(&admin_pool)
+    .await;
+
+    let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS {db_name}"))
         .execute(&admin_pool)
         .await;
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(200 * attempt)).await;
-
-        if let Ok(_) = sqlx::query("DROP DATABASE IF EXISTS agentbeacon_test")
-            .execute(&admin_pool)
-            .await
-        {
-            break;
-        }
-    }
-
-    sqlx::query("CREATE DATABASE agentbeacon_test")
+    sqlx::query(&format!("CREATE DATABASE {db_name}"))
         .execute(&admin_pool)
         .await
         .expect("Failed to create test database");
 
     admin_pool.close().await;
 
-    let test_url = "postgres://postgres:postgres@0.0.0.0/agentbeacon_test";
-    let pool = scheduler::db::pool::create(test_url)
+    let test_url = format!("postgres://postgres:postgres@0.0.0.0/{db_name}");
+    let pool = scheduler::db::pool::create(&test_url)
         .await
         .expect("Failed to connect to test database");
 
-    pool
+    (pool, test_url)
 }
 
 /// Get table names for migration validation
@@ -128,12 +124,8 @@ pub async fn run_migrations_sqlite(pool: &TestPool) -> Result<(), String> {
 }
 
 /// Run migrations on PostgreSQL pool
-pub async fn run_migrations_postgres(pool: &TestPool) -> Result<(), String> {
-    run_migrations(
-        pool,
-        "postgres://postgres:postgres@0.0.0.0/agentbeacon_test",
-    )
-    .await
+pub async fn run_migrations_postgres(pool: &TestPool, db_url: &str) -> Result<(), String> {
+    run_migrations(pool, db_url).await
 }
 
 /// Config helpers (config table is unchanged)

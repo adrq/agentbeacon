@@ -44,8 +44,8 @@ async fn test_config_upsert_sqlite() {
 /// Test: Config UPSERT Logic (PostgreSQL - ON CONFLICT)
 #[tokio::test]
 async fn test_config_upsert_postgres() {
-    let pool = create_test_pool_postgres().await;
-    run_migrations_postgres(&pool)
+    let (pool, db_url) = create_test_pool_postgres().await;
+    run_migrations_postgres(&pool, &db_url)
         .await
         .expect("Failed to run migrations");
 
@@ -104,8 +104,8 @@ async fn test_execution_crud_sqlite() {
 /// Test: Execution CRUD with new schema (PostgreSQL)
 #[tokio::test]
 async fn test_execution_crud_postgres() {
-    let pool = create_test_pool_postgres().await;
-    run_migrations_postgres(&pool)
+    let (pool, db_url) = create_test_pool_postgres().await;
+    run_migrations_postgres(&pool, &db_url)
         .await
         .expect("Failed to run migrations on PostgreSQL");
 
@@ -163,8 +163,8 @@ async fn test_migrations_sqlite() {
 /// Test: Migration Validation (PostgreSQL)
 #[tokio::test]
 async fn test_migrations_postgres() {
-    let postgres_pool = create_test_pool_postgres().await;
-    run_migrations_postgres(&postgres_pool)
+    let (postgres_pool, db_url) = create_test_pool_postgres().await;
+    run_migrations_postgres(&postgres_pool, &db_url)
         .await
         .expect("PostgreSQL migrations failed");
 
@@ -190,7 +190,7 @@ async fn test_migrations_postgres() {
     }
 
     // Test idempotence
-    run_migrations_postgres(&postgres_pool)
+    run_migrations_postgres(&postgres_pool, &db_url)
         .await
         .expect("PostgreSQL migrations not idempotent");
 
@@ -216,7 +216,7 @@ async fn test_parameter_conversion_sqlite() {
 
 #[tokio::test]
 async fn test_parameter_conversion_postgres() {
-    let pool = create_test_pool_postgres().await;
+    let (pool, _db_url) = create_test_pool_postgres().await;
 
     let query0 = "SELECT * FROM config";
     let converted0 = pool.prepare_query(query0);

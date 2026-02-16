@@ -1,8 +1,6 @@
-"""
-T036-T041: ACP Quickstart Integration Tests
+"""T036-T041: ACP Quickstart Integration Tests
 
-These tests verify end-to-end scenarios from quickstart.md for ACP protocol support.
-Tests MUST fail initially per TDD approach (worker ACP support doesn't exist yet).
+Verifies end-to-end scenarios from quickstart.md for ACP protocol support.
 
 Run with: uv run pytest tests/integration/test_acp_quickstart.py -v
 """
@@ -15,90 +13,60 @@ import requests
 
 from tests.contracts.schema_helpers import build_acp_task, build_canonical_task
 from tests.testhelpers import (
+    PortManager,
     cleanup_processes,
+    start_and_wait_for_a2a_agent,
     start_mock_scheduler,
     wait_for_port,
+)
+from tests.integration.worker_test_helpers import (
+    create_mock_scheduler,
     start_worker,
-    start_and_wait_for_a2a_agent,
-    PortManager,
+    clear_state,
+    enqueue_session,
+    get_results,
+    mark_complete,
+    poll_until,
 )
 
-pytestmark = pytest.mark.skip(
-    reason="Disabled: uses old worker sync protocol. Re-enable after full ACP support."
-)
+
+@pytest.fixture()
+def mock_scheduler():
+    url, port, proc, pm = create_mock_scheduler()
+    yield url, port, proc
+    cleanup_processes([proc])
+    pm.release_port(port)
 
 
-def _extract_history(task_status: dict) -> list:
-    """Return Task.history list from the data part of taskStatus message."""
-    message = task_status.get("message", {})
-    parts = message.get("parts", [])
-    for part in parts:
-        if isinstance(part, dict) and part.get("kind") == "data":
-            data = part.get("data")
-            if isinstance(data, dict):
-                return data.get("history", [])
-    return []
-
-
-def test_quickstart_scenario_1_basic_acp_task():
+def test_quickstart_scenario_1_basic_acp_task(mock_scheduler):
     """T036: Quickstart scenario 1 - Basic ACP task execution.
 
-    Verifies end-to-end flow: scheduler assigns ACP task → worker spawns agent subprocess
-    → complete ACP protocol sequence → task completes → result returned to scheduler.
+    Verifies end-to-end flow: scheduler assigns ACP task -> worker spawns agent subprocess
+    -> complete ACP protocol sequence -> task completes -> result returned to scheduler.
     """
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
-
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            # Basic ACP task
-            acp_task = build_acp_task(
-                node_id="node-basic",
-                text="Write a hello world script",
-                cwd="/tmp/basic-test",
-                agent="test-acp-agent",
-                execution_id="exec-basic",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            # Verify task completed and result returned to scheduler
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200, (
-                f"Should get results: {result.status_code}"
-            )
-            results = result.json()
-            task_result = [r for r in results if r["executionId"] == "exec-basic"]
-            assert len(task_result) == 1, (
-                f"Should have result for basic test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] in ["completed", "success"], (
-                f"Task should complete successfully: {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="Write a hello world script")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete successfully: {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
 
 
+@pytest.mark.skip(
+    reason="Phase 5: A2A executor not yet implemented in new executor system"
+)
 def test_quickstart_scenario_2_cross_protocol_workflow():
     """T037: Quickstart scenario 2 - Cross-protocol workflow (A2A + ACP).
 
@@ -184,80 +152,44 @@ def test_quickstart_scenario_2_cross_protocol_workflow():
             cleanup_processes(processes)
 
 
-def test_quickstart_scenario_3_session_updates_in_history():
-    """T038: Quickstart scenario 3 - Session update notifications in Task.history.
+def test_quickstart_scenario_3_session_updates_in_history(mock_scheduler):
+    """T038: Quickstart scenario 3 - Session update notifications in output.
 
-    Verifies that session/update notifications are converted to A2A Message objects
-    and included in Task.history of the final result.
+    Verifies that session/update notifications are accumulated and included in output.
     """
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
-
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            # Task that generates session/update notifications
-            acp_task = build_acp_task(
-                node_id="node-updates",
-                text="STREAM_CHUNKS",
-                cwd="/tmp/updates-test",
-                agent="test-acp-agent",
-                execution_id="exec-updates",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            # Verify result includes history with session/update notifications
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200, (
-                f"Should get results: {result.status_code}"
-            )
-            results = result.json()
-            task_result = [r for r in results if r["executionId"] == "exec-updates"]
-            assert len(task_result) == 1, (
-                f"Should have result for updates test: {results}"
-            )
-
-            # Verify task completed successfully
-            assert task_result[0]["taskStatus"]["state"] in ["completed", "success"], (
-                f"Task should complete successfully: {task_result[0]}"
-            )
-
-            # Parse and verify Task.history contains MULTIPLE session/update entries per quickstart
-            task_status = task_result[0]["taskStatus"]
-            history = _extract_history(task_status)
-
-            assert history and len(history) > 0, (
-                f"Task.history should contain session/update notifications: {task_result[0]}"
-            )
-            # Verify MULTIPLE agent messages proving streaming behavior per quickstart scenario 3
-            agent_entries = [h for h in history if h.get("role") == "agent"]
-            assert len(agent_entries) >= 2, (
-                f"Task.history should include MULTIPLE agent messages from STREAM_CHUNKS proving streaming per quickstart: got {len(agent_entries)} messages, expected >=2. History: {history}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="STREAM_CHUNKS")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete successfully: {results[0]}"
+        )
+        output = results[0]["output"]
+        assert output is not None, (
+            f"Output should contain accumulated agent messages: {results[0]}"
+        )
+        parts = output.get("parts", []) if isinstance(output, dict) else []
+        assert len(parts) >= 2, (
+            f"Output should contain multiple parts from session/update notifications: {output}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
 
 
+@pytest.mark.skip(
+    reason="Mock agent reads stdin sequentially inside _handle_prompt; "
+    "session/cancel notification cannot be processed until DELAY_5 completes. "
+    "Fix requires concurrent stdin reader in mock agent."
+)
 def test_quickstart_scenario_5_timeout_and_cancellation():
     """T039: Quickstart scenario 5 - Timeout and graceful cancellation.
 
@@ -334,115 +266,51 @@ def test_quickstart_scenario_5_timeout_and_cancellation():
             cleanup_processes(processes)
 
 
-def test_quickstart_scenario_6_subprocess_crash_handling():
+def test_quickstart_scenario_6_subprocess_crash_handling(mock_scheduler):
     """T040: Quickstart scenario 6 - Subprocess crash handling.
 
-    Verifies that worker detects subprocess crashes and fails task with
-    appropriate error message.
+    Verifies that worker detects subprocess crashes and fails task with error.
     """
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
-
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            # Task with EXIT_1 command to crash subprocess
-            acp_task = build_acp_task(
-                node_id="node-crash",
-                text="EXIT_1",
-                cwd="/tmp/crash-test",
-                agent="test-acp-agent",
-                execution_id="exec-crash",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            # Verify task failed due to subprocess crash
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-            task_result = [r for r in results if r["executionId"] == "exec-crash"]
-            assert len(task_result) == 1, (
-                f"Should have result for crash test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] in ["failed", "error"], (
-                f"Task should fail when subprocess crashes: {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="EXIT_1")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is not None, (
+            f"Task should fail when subprocess crashes: {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
 
 
-def test_quickstart_scenario_7_malformed_jsonrpc():
+def test_quickstart_scenario_7_malformed_jsonrpc(mock_scheduler):
     """T041: Quickstart scenario 7 - Malformed JSON-RPC response.
 
-    Verifies that worker fails task when agent sends invalid JSON or malformed
-    JSON-RPC structure.
+    Verifies that worker fails task when agent sends invalid JSON.
     """
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
-
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            # Task with INVALID_JSONRPC command
-            acp_task = build_acp_task(
-                node_id="node-malformed",
-                text="INVALID_JSONRPC",
-                cwd="/tmp/malformed-test",
-                agent="test-acp-agent",
-                execution_id="exec-malformed",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            # Verify task failed due to malformed JSON-RPC
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-            task_result = [r for r in results if r["executionId"] == "exec-malformed"]
-            assert len(task_result) == 1, (
-                f"Should have result for malformed test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] in ["failed", "error"], (
-                f"Task should fail on malformed JSON-RPC: {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="INVALID_JSONRPC")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is not None, (
+            f"Task should fail on malformed JSON-RPC: {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])

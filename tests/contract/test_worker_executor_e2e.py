@@ -110,7 +110,9 @@ def test_worker_executes_acp_session(test_database):
                 timeout=30,
             ), "Worker did not report agent_session_id"
 
-            assert _session_status(ctx["db_url"], session_id) == "working"
+            # After the worker reports a result with no queued prompt,
+            # the scheduler transitions to input-required.
+            assert _session_status(ctx["db_url"], session_id) == "input-required"
 
             _mark_session_completed(ctx["db_url"], session_id)
 

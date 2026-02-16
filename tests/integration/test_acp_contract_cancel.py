@@ -1,7 +1,6 @@
-"""
-ACP Protocol Contract Test - Session/Cancel Notification
+"""ACP Protocol Contract Test - Session/Cancel Notification
 
-This test verifies the worker's implementation of graceful cancellation via session/cancel.
+Verifies the worker's implementation of graceful cancellation via session/cancel.
 
 Run with: uv run pytest tests/integration/test_acp_contract_cancel.py -v
 """
@@ -14,18 +13,19 @@ import requests
 
 from tests.contracts.schema_helpers import build_acp_task
 from tests.testhelpers import (
+    PortManager,
     cleanup_processes,
     start_mock_scheduler,
-    wait_for_port,
     start_worker,
-    PortManager,
-)
-
-pytestmark = pytest.mark.skip(
-    reason="Disabled: uses old worker sync protocol. Re-enable after full ACP support."
+    wait_for_port,
 )
 
 
+@pytest.mark.skip(
+    reason="Mock agent reads stdin sequentially inside _handle_prompt; "
+    "session/cancel notification cannot be processed until DELAY_5 completes. "
+    "Fix requires concurrent stdin reader in mock agent."
+)
 def test_session_cancel_graceful_shutdown():
     """Contract test - session/cancel graceful shutdown.
 

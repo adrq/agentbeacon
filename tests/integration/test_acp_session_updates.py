@@ -8,227 +8,112 @@ These variants were causing deserialization failures before the enum fix.
 """
 
 import time
-from pathlib import Path
 
 import pytest
-import requests
 
-from tests.contracts.schema_helpers import build_acp_task
-from tests.testhelpers import (
-    PortManager,
-    cleanup_processes,
-    start_mock_scheduler,
+from tests.testhelpers import cleanup_processes
+from tests.integration.worker_test_helpers import (
+    create_mock_scheduler,
     start_worker,
-    wait_for_port,
+    clear_state,
+    enqueue_session,
+    get_results,
+    mark_complete,
+    poll_until,
 )
 
-pytestmark = pytest.mark.skip(
-    reason="Disabled: uses old worker sync protocol. Re-enable after full ACP support."
-)
+
+@pytest.fixture()
+def mock_scheduler():
+    url, port, proc, pm = create_mock_scheduler()
+    yield url, port, proc
+    cleanup_processes([proc])
+    pm.release_port(port)
 
 
-def test_session_update_plan_variant():
+def test_session_update_plan_variant(mock_scheduler):
     """Test worker handles session/update with plan variant (no content field)."""
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            acp_task = build_acp_task(
-                node_id="node-plan-test",
-                text="SEND_PLAN",
-                cwd="/tmp/test-workdir",
-                agent="test-acp-agent",
-                execution_id="exec-plan-test",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            # Verify task completed without deserialization error
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-
-            task_result = [r for r in results if r["executionId"] == "exec-plan-test"]
-            assert len(task_result) == 1, f"Should have result for plan test: {results}"
-            assert task_result[0]["taskStatus"]["state"] == "completed", (
-                f"Task should complete (no deserialization error): {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="SEND_PLAN")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete (no deserialization error): {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
 
 
-def test_session_update_tool_call_variant():
+def test_session_update_tool_call_variant(mock_scheduler):
     """Test worker handles session/update with tool_call variant (minimal content)."""
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            acp_task = build_acp_task(
-                node_id="node-tool-call-test",
-                text="SEND_TOOL_CALL",
-                cwd="/tmp/test-workdir",
-                agent="test-acp-agent",
-                execution_id="exec-tool-call-test",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-
-            task_result = [
-                r for r in results if r["executionId"] == "exec-tool-call-test"
-            ]
-            assert len(task_result) == 1, (
-                f"Should have result for tool_call test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] == "completed", (
-                f"Task should complete (no deserialization error): {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="SEND_TOOL_CALL")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete (no deserialization error): {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
 
 
-def test_session_update_mode_update_variant():
+def test_session_update_mode_update_variant(mock_scheduler):
     """Test worker handles session/update with current_mode_update variant."""
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            acp_task = build_acp_task(
-                node_id="node-mode-test",
-                text="SEND_MODE_UPDATE",
-                cwd="/tmp/test-workdir",
-                agent="test-acp-agent",
-                execution_id="exec-mode-test",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-
-            task_result = [r for r in results if r["executionId"] == "exec-mode-test"]
-            assert len(task_result) == 1, (
-                f"Should have result for mode update test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] == "completed", (
-                f"Task should complete (no deserialization error): {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="SEND_MODE_UPDATE")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete (no deserialization error): {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
 
 
-def test_session_update_commands_update_variant():
+def test_session_update_commands_update_variant(mock_scheduler):
     """Test worker handles session/update with available_commands_update variant."""
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
+    url, _, _ = mock_scheduler
+    clear_state(url)
 
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            acp_task = build_acp_task(
-                node_id="node-commands-test",
-                text="SEND_COMMANDS_UPDATE",
-                cwd="/tmp/test-workdir",
-                agent="test-acp-agent",
-                execution_id="exec-commands-test",
-            )
-
-            response = requests.post(
-                f"http://localhost:{mock_orchestrator_port}/add_task", json=acp_task
-            )
-            assert response.status_code == 200
-
-            worker_proc = start_worker(f"http://localhost:{mock_orchestrator_port}")
-            processes.append(worker_proc)
-
-            time.sleep(3)
-
-            worker_proc.terminate()
-            worker_proc.communicate(timeout=5)
-
-            result = requests.get(f"http://localhost:{mock_orchestrator_port}/results")
-            assert result.status_code == 200
-            results = result.json()
-
-            task_result = [
-                r for r in results if r["executionId"] == "exec-commands-test"
-            ]
-            assert len(task_result) == 1, (
-                f"Should have result for commands update test: {results}"
-            )
-            assert task_result[0]["taskStatus"]["state"] == "completed", (
-                f"Task should complete (no deserialization error): {task_result[0]}"
-            )
-
-        finally:
-            cleanup_processes(processes)
+    enqueue_session(url, prompt_text="SEND_COMMANDS_UPDATE")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete (no deserialization error): {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])

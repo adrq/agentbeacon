@@ -5,10 +5,15 @@ mod sync;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::Args;
-use crate::executor::{SessionConfig, start_executor};
+use crate::executor::{
+    AgentCommand, AgentEvent, ExecutorHandle, SessionConfig, extract_prompt_text, start_executor,
+};
 use crate::sync::{
     RetryConfig, SyncRequest, SyncResponse, perform_sync_long_poll, perform_sync_with_retry,
 };
@@ -170,6 +175,24 @@ async fn run_worker_loop(args: &Args, client: &reqwest::Client) -> Result<()> {
     }
 }
 
+/// Create a long-poll future that owns its SyncRequest.
+///
+/// `perform_sync_long_poll` borrows its `&SyncRequest`, so we can't pass a
+/// temporary directly into `Box::pin(...)` — the temporary would be dropped
+/// before the future runs. This helper moves the owned request into the
+/// async block.
+fn start_long_poll<'a>(
+    client: &'a reqwest::Client,
+    scheduler_url: &'a str,
+    session_id: &str,
+    long_poll_timeout: Duration,
+) -> Pin<Box<dyn Future<Output = Result<SyncResponse>> + Send + 'a>> {
+    let request = SyncRequest::waiting_for_event(session_id);
+    Box::pin(async move {
+        perform_sync_long_poll(client, scheduler_url, &request, long_poll_timeout).await
+    })
+}
+
 async fn run_session(
     args: &Args,
     client: &reqwest::Client,
@@ -213,7 +236,7 @@ async fn run_session(
     };
 
     // Start executor
-    let mut handle = match start_executor(config).await {
+    let executor = match start_executor(config).await {
         Ok(h) => h,
         Err(e) => {
             tracing::error!(error = %e, "Failed to start executor");
@@ -236,117 +259,213 @@ async fn run_session(
         }
     };
 
-    let mut current_task_payload = initial_task.task_payload;
+    let ExecutorHandle {
+        cmd_tx,
+        mut event_rx,
+        task_handle,
+    } = executor;
 
-    loop {
-        // Running: send prompt to agent
-        let turn_result = handle.send_prompt(&current_task_payload).await;
+    // Start the agent with the initial task payload
+    let _ = cmd_tx.send(AgentCommand::Start(initial_task.task_payload));
 
-        let (agent_session_id, error, output, error_kind) = match turn_result {
-            Ok(r) => (
-                r.agent_session_id,
-                r.error,
-                r.output,
-                r.error_kind.map(|ek| ek.as_str().to_string()),
-            ),
-            Err(e) => {
-                tracing::error!(error = %e, "Prompt execution failed");
-                (
-                    None,
-                    Some(format!("{e:#}")),
-                    None,
-                    Some("executor_failed".into()),
-                )
-            }
-        };
+    // Long-poll is NOT started yet — defer until agent is initialized (Init event)
+    // or the first TurnComplete. This prevents premature task delivery before the
+    // agent has processed its initial prompt.
+    let mut poll_fut: Option<Pin<Box<dyn Future<Output = Result<SyncResponse>> + Send>>> = None;
 
-        if let Some(ref err) = error {
-            tracing::warn!(error = %err, "Turn completed with error");
-        }
+    let mut agent_session_id: Option<String> = None;
+    let mut turns_in_flight: usize = 1; // starts at 1 — processing initial prompt
+    let mut cancelling = false;
+    let mut completing = false;
 
-        // Report result to scheduler
-        let response = perform_sync_with_retry(
-            client,
-            &args.scheduler_url,
-            &SyncRequest::with_result(session_id, agent_session_id, output, error, error_kind),
-            true,
-            retry_config,
-        )
-        .await?;
+    let exit = loop {
+        tokio::select! {
+            biased; // prefer agent events (drain before checking scheduler)
 
-        match response {
-            SyncResponse::PromptDelivery { task, .. } => {
-                current_task_payload = task.task_payload;
-                continue;
-            }
-            SyncResponse::SessionComplete { .. } => {
-                tracing::info!(session_id = %session_id, "Session complete");
-                handle.stop().await?;
-                return Ok(SessionExit::Done);
-            }
-            SyncResponse::Command { command } => match command.as_str() {
-                "cancel" => {
-                    tracing::info!(session_id = %session_id, "Cancel during result report");
-                    handle.cancel().await?;
-                    handle.stop().await?;
-                    return Ok(SessionExit::Done);
-                }
-                "shutdown" => {
-                    handle.stop().await?;
-                    return Ok(SessionExit::ShutdownRequested);
-                }
-                _ => {} // Fall through to WaitingForEvent
-            },
-            _ => {} // NoAction or unexpected → enter WaitingForEvent
-        }
+            // Branch A: Agent event
+            event = event_rx.recv() => {
+                match event {
+                    Some(AgentEvent::TurnComplete(result)) => {
+                        turns_in_flight = turns_in_flight.saturating_sub(1);
+                        agent_session_id = result.agent_session_id.clone()
+                            .or(agent_session_id);
 
-        // WaitingForEvent loop
-        loop {
-            let wait_response = perform_sync_long_poll(
-                client,
-                &args.scheduler_url,
-                &SyncRequest::waiting_for_event(session_id),
-                args.long_poll_timeout,
-            )
-            .await;
+                        let is_cancelled = cancelling
+                            || result.error_kind.as_ref()
+                                .is_some_and(|ek| ek.as_str() == "cancelled");
 
-            match wait_response {
-                Ok(SyncResponse::PromptDelivery { task, .. }) => {
-                    current_task_payload = task.task_payload;
-                    break; // Back to Running (outer loop)
-                }
-                Ok(SyncResponse::SessionComplete { .. }) => {
-                    tracing::info!(session_id = %session_id, "Session complete");
-                    handle.stop().await?;
-                    return Ok(SessionExit::Done);
-                }
-                Ok(SyncResponse::Command { command }) => match command.as_str() {
-                    "cancel" => {
-                        tracing::info!(session_id = %session_id, "Cancel while waiting");
-                        handle.cancel().await?;
-                        handle.stop().await?;
-                        return Ok(SessionExit::Done);
+                        // Drop any in-flight long-poll future before sending
+                        // sync-with-result (side-effect: cancels the request).
+                        drop(poll_fut.take());
+
+                        // Report result to scheduler
+                        let response = match perform_sync_with_retry(client, &args.scheduler_url,
+                            &SyncRequest::with_result(session_id,
+                                agent_session_id.clone(),
+                                result.output, result.error,
+                                result.error_kind.map(|ek| ek.as_str().to_string()),
+                            ), true, retry_config,
+                        ).await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::error!(error = %e, "failed to report result to scheduler");
+                                let _ = cmd_tx.send(AgentCommand::Stop);
+                                break SessionExit::Done;
+                            }
+                        };
+
+                        if is_cancelled || completing {
+                            let _ = cmd_tx.send(AgentCommand::Stop);
+                            break SessionExit::Done;
+                        }
+
+                        match response {
+                            SyncResponse::PromptDelivery { task, .. } => {
+                                match extract_prompt_text(&task.task_payload) {
+                                    Ok(text) => {
+                                        turns_in_flight += 1;
+                                        let _ = cmd_tx.send(AgentCommand::Prompt(text));
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "bad task payload");
+                                        let _ = perform_sync_with_retry(client,
+                                            &args.scheduler_url,
+                                            &SyncRequest::with_result(session_id,
+                                                agent_session_id.clone(),
+                                                None, Some(format!("Bad task payload: {e}")),
+                                                Some("internal_error".into())),
+                                            true, retry_config).await;
+                                    }
+                                }
+                                // Start long-poll for mid-turn messages
+                                poll_fut = Some(start_long_poll(
+                                    client, &args.scheduler_url,
+                                    session_id, args.long_poll_timeout,
+                                ));
+                            }
+                            SyncResponse::SessionComplete { .. } => {
+                                let _ = cmd_tx.send(AgentCommand::Stop);
+                                break SessionExit::Done;
+                            }
+                            SyncResponse::Command { command } if command == "cancel" => {
+                                let _ = cmd_tx.send(AgentCommand::Cancel);
+                                break SessionExit::Done;
+                            }
+                            SyncResponse::Command { command } if command == "shutdown" => {
+                                let _ = cmd_tx.send(AgentCommand::Stop);
+                                break SessionExit::ShutdownRequested;
+                            }
+                            _ => {
+                                // NoAction — agent is idle, start long-poll to
+                                // wait for next task (user message, etc.)
+                                poll_fut = Some(start_long_poll(
+                                    client, &args.scheduler_url,
+                                    session_id, args.long_poll_timeout,
+                                ));
+                            }
+                        }
                     }
-                    "shutdown" => {
-                        handle.stop().await?;
-                        return Ok(SessionExit::ShutdownRequested);
+                    Some(AgentEvent::Init { session_id: sid }) => {
+                        agent_session_id = Some(sid);
+                        // Agent is initialized and processing the initial prompt.
+                        // Start the long-poll now so mid-turn messages can be delivered.
+                        if poll_fut.is_none() {
+                            poll_fut = Some(start_long_poll(
+                                client, &args.scheduler_url,
+                                session_id, args.long_poll_timeout,
+                            ));
+                        }
                     }
-                    _ => {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    Some(AgentEvent::Message { .. }) => {
+                        // Informational — content accumulation handled by executor
+                        // background task.
                     }
-                },
-                Ok(SyncResponse::NoAction) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                Ok(other) => {
-                    tracing::warn!("Unexpected response while waiting: {:?}", other);
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Long-poll failed, retrying");
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    Some(AgentEvent::ProcessDied { error }) => {
+                        // Report failure to scheduler
+                        let _ = perform_sync_with_retry(client, &args.scheduler_url,
+                            &SyncRequest::with_result(session_id, agent_session_id.clone(),
+                                None, Some(error), Some("executor_failed".into())),
+                            true, retry_config).await;
+                        break SessionExit::Done;
+                    }
+                    None => {
+                        // Channel closed — executor task exited
+                        break SessionExit::Done;
+                    }
                 }
             }
+
+            // Branch B: Scheduler long-poll (only active when poll_fut is Some)
+            response = async {
+                match poll_fut.as_mut() {
+                    Some(f) => f.await,
+                    None => std::future::pending().await,
+                }
+            }, if poll_fut.is_some() => {
+                // poll_fut was consumed, clear it before processing
+                poll_fut = None;
+
+                match response {
+                    Ok(SyncResponse::PromptDelivery { task, .. }) => {
+                        if !cancelling {
+                            match extract_prompt_text(&task.task_payload) {
+                                Ok(text) => {
+                                    turns_in_flight += 1;
+                                    let _ = cmd_tx.send(AgentCommand::Prompt(text));
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = %e, "bad task payload");
+                                    let _ = perform_sync_with_retry(client,
+                                        &args.scheduler_url,
+                                        &SyncRequest::with_result(session_id,
+                                            agent_session_id.clone(),
+                                            None, Some(format!("Bad task payload: {e}")),
+                                            Some("internal_error".into())),
+                                        true, retry_config).await;
+                                }
+                            }
+                        }
+                    }
+                    Ok(SyncResponse::Command { command }) if command == "cancel" => {
+                        let _ = cmd_tx.send(AgentCommand::Cancel);
+                        cancelling = true;
+                        // Don't restart the long-poll — only listen for TurnComplete/ProcessDied
+                        continue;
+                    }
+                    Ok(SyncResponse::Command { command }) if command == "shutdown" => {
+                        let _ = cmd_tx.send(AgentCommand::Stop);
+                        break SessionExit::ShutdownRequested;
+                    }
+                    Ok(SyncResponse::SessionComplete { .. }) => {
+                        if turns_in_flight > 0 {
+                            // Defer until current turn completes — don't stop mid-turn
+                            completing = true;
+                            continue;
+                        } else {
+                            let _ = cmd_tx.send(AgentCommand::Stop);
+                            break SessionExit::Done;
+                        }
+                    }
+                    Ok(_) => {
+                        // NoAction — normal, will restart long-poll below
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "long-poll error");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+                // Restart the long-poll (cancel path skips this via `continue`)
+                poll_fut = Some(start_long_poll(
+                    client, &args.scheduler_url,
+                    session_id, args.long_poll_timeout,
+                ));
+            }
         }
-    }
+    };
+
+    // Graceful shutdown: drop cmd_tx to signal background task, await it
+    drop(cmd_tx);
+    let _ = task_handle.await;
+
+    Ok(exit)
 }

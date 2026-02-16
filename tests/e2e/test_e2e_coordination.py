@@ -130,12 +130,12 @@ def test_e2e_delegate_handoff(test_database):
                 f"Child execution_id {child_exec_id} != master {exec_id}"
             )
 
-            # 5. Execution still working (master alive after processing)
+            # 5. Execution idle after master processed handoff result
             assert _poll_until(
-                lambda: _execution_status(ctx["db_url"], exec_id) == "working",
+                lambda: _execution_status(ctx["db_url"], exec_id) == "input-required",
                 timeout=10,
             ), (
-                f"Expected execution working, got {_execution_status(ctx['db_url'], exec_id)}"
+                f"Expected execution input-required, got {_execution_status(ctx['db_url'], exec_id)}"
             )
 
         finally:
@@ -261,12 +261,12 @@ def test_e2e_ask_user_round_trip(test_database):
                 ),
             ), "Master did not process user answer"
 
-            # 5. Execution returned to working
+            # 5. Execution idle after master processed answer
             assert _poll_until(
-                lambda: _execution_status(ctx["db_url"], exec_id) == "working",
+                lambda: _execution_status(ctx["db_url"], exec_id) == "input-required",
                 timeout=10,
             ), (
-                f"Expected execution working after answer, got {_execution_status(ctx['db_url'], exec_id)}"
+                f"Expected execution input-required after answer, got {_execution_status(ctx['db_url'], exec_id)}"
             )
 
         finally:

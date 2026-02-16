@@ -19,6 +19,7 @@ class SessionResult(BaseModel):
     agentSessionId: Optional[str] = None
     output: Optional[Any] = None
     error: Optional[str] = None
+    errorKind: Optional[str] = None
 
     class Config:
         extra = "forbid"
@@ -218,6 +219,19 @@ def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
             return NoActionResponse()
 
         elif session_state.status == "running":
+            # Section 5a: return queued prompt immediately when result is reported
+            if sync_request.sessionResult:
+                if session_id in prompt_queues and prompt_queues[session_id]:
+                    prompt_data = prompt_queues[session_id].pop(0)
+                    return PromptDeliveryResponse(
+                        sessionId=session_id,
+                        task=TaskPayload(
+                            executionId=prompt_data["executionId"],
+                            sessionId=session_id,
+                            taskPayload=prompt_data["taskPayload"],
+                        ),
+                    )
+
             if command_queue:
                 command = command_queue.pop(0)
                 return CommandResponse(command=command)
