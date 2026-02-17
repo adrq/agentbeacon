@@ -5,9 +5,10 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 
+use crate::api::types::{EventResponse, SessionResponse};
 use crate::app::AppState;
 use crate::db;
 use crate::error::SchedulerError;
@@ -18,58 +19,6 @@ use crate::queue::TaskAssignment;
 pub struct ListSessionsQuery {
     pub status: Option<String>,
     pub execution_id: Option<String>,
-}
-
-/// Session response
-#[derive(Debug, Serialize)]
-pub struct SessionResponse {
-    pub id: String,
-    pub execution_id: String,
-    pub parent_session_id: Option<String>,
-    pub agent_id: String,
-    pub agent_session_id: Option<String>,
-    pub status: String,
-    pub coordination_mode: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-impl From<db::sessions::Session> for SessionResponse {
-    fn from(s: db::sessions::Session) -> Self {
-        Self {
-            id: s.id,
-            execution_id: s.execution_id,
-            parent_session_id: s.parent_session_id,
-            agent_id: s.agent_id,
-            agent_session_id: s.agent_session_id,
-            status: s.status,
-            coordination_mode: s.coordination_mode,
-            created_at: s.created_at.to_rfc3339(),
-            updated_at: s.updated_at.to_rfc3339(),
-        }
-    }
-}
-
-/// Event response
-#[derive(Debug, Serialize)]
-pub struct EventResponse {
-    pub id: i64,
-    pub event_type: String,
-    pub payload: serde_json::Value,
-    pub created_at: String,
-}
-
-impl From<db::events::Event> for EventResponse {
-    fn from(e: db::events::Event) -> Self {
-        // Parse payload from JSON string to Value for clean API output
-        let payload_value = serde_json::from_str(&e.payload).unwrap_or(json!(e.payload));
-        Self {
-            id: e.id,
-            event_type: e.event_type,
-            payload: payload_value,
-            created_at: e.created_at.to_rfc3339(),
-        }
-    }
 }
 
 /// Request body for posting a user message
@@ -145,7 +94,13 @@ async fn post_message(
         })
         .await?;
 
+    // Always fetch execution for response
+    let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
+
     // Conditional: status transitions only for input-required → working
+    let session_status;
+    let execution_status;
+
     if session.status == "input-required" {
         db::sessions::update_status(&state.db_pool, &id, "working").await?;
 
@@ -159,11 +114,10 @@ async fn post_message(
         )
         .await?;
 
+        session_status = "working".to_string();
+
         // Only master sessions propagate status changes to the execution
         if session.parent_session_id.is_none() {
-            let execution =
-                db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
-
             db::executions::update_status(&state.db_pool, &session.execution_id, "working").await?;
 
             let exec_state_event = json!({"from": execution.status, "to": "working"});
@@ -175,19 +129,24 @@ async fn post_message(
                 &serde_json::to_string(&exec_state_event).unwrap(),
             )
             .await?;
-        }
-    }
-    // If already "working": skip all transitions, message is queued for mid-turn delivery
 
-    let current_status = if session.status == "input-required" {
-        "working"
+            execution_status = "working".to_string();
+        } else {
+            execution_status = execution.status;
+        }
     } else {
-        &session.status
-    };
+        // Already working — no transitions
+        session_status = session.status;
+        execution_status = execution.status;
+    }
 
     Ok((
         StatusCode::OK,
-        Json(json!({"event_id": event_id, "status": current_status})),
+        Json(json!({
+            "event_id": event_id,
+            "session_status": session_status,
+            "execution_status": execution_status,
+        })),
     ))
 }
 

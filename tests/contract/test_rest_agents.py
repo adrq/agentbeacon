@@ -41,9 +41,11 @@ def test_list_agents_response_shape(test_database):
         expected_fields = {
             "id",
             "name",
+            "description",
             "agent_type",
             "enabled",
             "config",
+            "sandbox_config",
             "created_at",
             "updated_at",
         }

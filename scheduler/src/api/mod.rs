@@ -12,7 +12,9 @@ pub mod health;
 pub mod jsonrpc;
 pub mod mcp;
 pub mod mcp_tools;
+pub mod projects;
 pub mod sessions;
+pub mod types;
 pub mod worker;
 
 /// Build API router with all endpoint modules
@@ -21,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .merge(health::routes())
         .merge(agents::routes())
         .merge(executions::routes())
+        .merge(projects::routes())
         .merge(config::routes())
         .merge(jsonrpc::routes())
         .merge(agent_card::routes())

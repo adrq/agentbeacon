@@ -1,5 +1,7 @@
 """Contract tests for POST /api/executions and GET /api/executions/{id} with sessions."""
 
+import tempfile
+
 import httpx
 import pytest
 
@@ -32,23 +34,32 @@ def test_create_execution_status_is_submitted(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_id": agent_id, "prompt": "test task"},
+            json={
+                "agent_id": agent_id,
+                "prompt": "test task",
+                "cwd": tempfile.gettempdir(),
+            },
             timeout=5,
         )
         assert resp.status_code == 201
         data = resp.json()
-        assert data["status"] == "submitted"
+        assert data["execution"]["status"] == "submitted"
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_create_execution_nonexistent_agent_returns_404(test_database):
+def test_create_execution_nonexistent_agent_returns_400(test_database):
+    """Nonexistent agent_id returns 400 (validation error), not 404."""
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_id": "nonexistent-id", "prompt": "test"},
+            json={
+                "agent_id": "nonexistent-id",
+                "prompt": "test",
+                "cwd": tempfile.gettempdir(),
+            },
             timeout=5,
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 400
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -58,7 +69,11 @@ def test_create_execution_disabled_agent_returns_400(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_id": agent_id, "prompt": "test"},
+            json={
+                "agent_id": agent_id,
+                "prompt": "test",
+                "cwd": tempfile.gettempdir(),
+            },
             timeout=5,
         )
         assert resp.status_code == 400
@@ -76,8 +91,8 @@ def test_get_execution_includes_sessions(test_database):
         assert resp.status_code == 200
         data = resp.json()
 
-        assert data["id"] == exec_id
-        assert data["status"] == "submitted"
+        assert data["execution"]["id"] == exec_id
+        assert data["execution"]["status"] == "submitted"
         assert "sessions" in data
         assert len(data["sessions"]) == 1
         assert data["sessions"][0]["id"] == session_id

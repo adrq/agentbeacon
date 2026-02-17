@@ -5,6 +5,10 @@ use crate::error::SchedulerError;
 
 /// Embedded migration files
 const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");
+const MIGRATION_0002: &str =
+    include_str!("../../migrations/0002_rename_workspaces_to_projects.sql");
+const MIGRATION_0002_PG: &str =
+    include_str!("../../migrations/0002_pg_rename_workspaces_to_projects.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -126,7 +130,13 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     let current_version = get_current_version(pool).await.unwrap_or(0);
 
     // List of all migrations in order
-    let migrations = vec![(MIGRATION_0001, 1)];
+    // v2 uses a separate PG migration (ALTER RENAME COLUMN) vs SQLite (recreate-table)
+    let migration_0002 = if is_postgres {
+        MIGRATION_0002_PG
+    } else {
+        MIGRATION_0002
+    };
+    let migrations = vec![(MIGRATION_0001, 1), (migration_0002, 2)];
 
     // Process each migration
     for (migration_sql, version) in migrations {
@@ -134,6 +144,19 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         if version <= current_version {
             continue;
         }
+
+        // Migration 0002 uses DROP TABLE which triggers CASCADE with foreign_keys ON.
+        // Disable FKs before the migration and re-enable after.
+        let needs_fk_disable = !is_postgres && version == 2;
+        if needs_fk_disable {
+            pool.as_ref()
+                .execute("PRAGMA foreign_keys = OFF")
+                .await
+                .map_err(|e| {
+                    SchedulerError::Database(format!("disable foreign_keys failed: {e}"))
+                })?;
+        }
+
         // Adapt migration for database-specific syntax
         let migration = if is_postgres {
             // Replace SQLite-specific syntax with PostgreSQL equivalents
@@ -183,6 +206,16 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
                     &stmt[..std::cmp::min(200, stmt.len())]
                 ))
             })?;
+        }
+
+        // Re-enable FKs after migration
+        if needs_fk_disable {
+            pool.as_ref()
+                .execute("PRAGMA foreign_keys = ON")
+                .await
+                .map_err(|e| {
+                    SchedulerError::Database(format!("enable foreign_keys failed: {e}"))
+                })?;
         }
     }
 

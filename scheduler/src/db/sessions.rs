@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
+use super::helpers::{map_db_error, parse_optional_timestamp, parse_timestamp};
 use super::{DbPool, TimestampColumn};
 use crate::error::SchedulerError;
 
@@ -12,6 +13,7 @@ pub struct Session {
     pub parent_session_id: Option<String>,
     pub agent_id: String,
     pub agent_session_id: Option<String>,
+    pub cwd: Option<String>,
     pub status: String,
     pub coordination_mode: String,
     pub metadata: String, // JSON
@@ -26,9 +28,10 @@ pub async fn create(
     execution_id: &str,
     agent_id: &str,
     parent_session_id: Option<&str>,
+    cwd: Option<&str>,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, status) VALUES (?, ?, ?, ?, ?, 'submitted')",
     );
 
     sqlx::query(&query)
@@ -36,6 +39,7 @@ pub async fn create(
         .bind(execution_id)
         .bind(parent_session_id)
         .bind(agent_id)
+        .bind(cwd)
         .execute(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("create session failed: {e}")))?;
@@ -43,14 +47,13 @@ pub async fn create(
     Ok(())
 }
 
-#[allow(clippy::uninlined_format_args)]
 pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Session, SchedulerError> {
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE id = ?",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE id = ?",
         created_fmt, updated_fmt, completed_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -59,12 +62,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Session, SchedulerErro
         .bind(id)
         .fetch_one(pool.as_ref())
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => {
-                SchedulerError::NotFound(format!("session not found: {id}"))
-            }
-            _ => SchedulerError::Database(format!("fetch session failed: {e}")),
-        })?;
+        .map_err(|e| map_db_error("session", id, e))?;
 
     parse_session_row(row)
 }
@@ -78,7 +76,7 @@ pub async fn list_by_execution(
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE execution_id = ? ORDER BY created_at ASC",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE execution_id = ? ORDER BY created_at ASC",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -151,7 +149,7 @@ pub async fn list_filtered(
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let mut sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE 1=1",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE 1=1",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -210,7 +208,7 @@ pub async fn find_assignable(pool: &DbPool) -> Result<Option<Session>, Scheduler
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE coordination_mode = 'sdk' AND status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE coordination_mode = 'sdk' AND status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
         created_fmt, updated_fmt, completed_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -240,30 +238,39 @@ pub async fn claim_assignable(pool: &DbPool, id: &str) -> Result<bool, Scheduler
     Ok(result.rows_affected() > 0)
 }
 
-fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> {
-    let created_at_str: String = row.get("created_at");
-    let updated_at_str: String = row.get("updated_at");
-    let completed_at_str: Option<String> = row.get("completed_at");
+/// Count non-terminal sessions for an agent (used by agent delete guard)
+pub async fn count_non_terminal_by_agent(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<i64, SchedulerError> {
+    let query = pool.prepare_query(
+        "SELECT COUNT(*) as cnt FROM sessions WHERE agent_id = ? AND status NOT IN ('completed', 'failed', 'canceled')",
+    );
 
+    let row = sqlx::query(&query)
+        .bind(agent_id)
+        .fetch_one(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("count non-terminal sessions failed: {e}"))
+        })?;
+
+    Ok(row.get::<i64, _>("cnt"))
+}
+
+fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> {
     Ok(Session {
         id: row.get("id"),
         execution_id: row.get("execution_id"),
         parent_session_id: row.get("parent_session_id"),
         agent_id: row.get("agent_id"),
         agent_session_id: row.get("agent_session_id"),
+        cwd: row.get("cwd"),
         status: row.get("status"),
         coordination_mode: row.get("coordination_mode"),
         metadata: row.get("metadata"),
-        created_at: DateTime::parse_from_rfc3339(&created_at_str)
-            .map_err(|e| SchedulerError::Database(format!("parse created_at failed: {e}")))?
-            .with_timezone(&Utc),
-        updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
-            .map_err(|e| SchedulerError::Database(format!("parse updated_at failed: {e}")))?
-            .with_timezone(&Utc),
-        completed_at: completed_at_str.and_then(|s| {
-            DateTime::parse_from_rfc3339(&s)
-                .map(|dt| dt.with_timezone(&Utc))
-                .ok()
-        }),
+        created_at: parse_timestamp(&row, "created_at")?,
+        updated_at: parse_timestamp(&row, "updated_at")?,
+        completed_at: parse_optional_timestamp(&row, "completed_at"),
     })
 }

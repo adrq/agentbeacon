@@ -210,6 +210,7 @@ async fn handle_delegate(
     let agent_name = args["agent"].as_str().unwrap();
     let prompt = args["prompt"].as_str().unwrap();
     let resume_session_id = args.get("session_id").and_then(|v| v.as_str());
+    let explicit_cwd = args.get("cwd").and_then(|v| v.as_str());
 
     // Look up agent by name
     let agent = db::agents::get_by_name(&state.db_pool, agent_name)
@@ -225,6 +226,53 @@ async fn handle_delegate(
         return Err(JsonRpcError::invalid_params(&format!(
             "agent is disabled: {agent_name}"
         )));
+    }
+
+    // Resolve child cwd: explicit > parent session's cwd
+    let parent_session = db::sessions::get_by_id(&state.db_pool, &auth.session_id)
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+
+    // Validate explicit cwd is an absolute path before canonicalize
+    if let Some(cwd) = explicit_cwd
+        && !std::path::Path::new(cwd).is_absolute()
+    {
+        return Err(JsonRpcError::invalid_params(&format!(
+            "cwd must be an absolute path: {cwd}"
+        )));
+    }
+
+    let child_cwd = if let Some(cwd) = explicit_cwd {
+        Some(cwd.to_string())
+    } else {
+        parent_session.cwd.clone()
+    };
+
+    // Security: validate child cwd is subdirectory of master session's cwd
+    // Fail closed: if explicit cwd is provided but master has no cwd, reject
+    if let Some(ref child_dir) = child_cwd
+        && explicit_cwd.is_some()
+    {
+        let master_cwd = find_master_cwd(&state.db_pool, &auth.session_id)
+            .await
+            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+
+        let master_dir = master_cwd.ok_or_else(|| {
+            JsonRpcError::invalid_params("cannot verify cwd containment: master session has no cwd")
+        })?;
+
+        let master_canonical = std::fs::canonicalize(&master_dir).map_err(|e| {
+            JsonRpcError::internal_error(&format!("canonicalize master cwd failed: {e}"))
+        })?;
+        let child_canonical = std::fs::canonicalize(child_dir).map_err(|_| {
+            JsonRpcError::invalid_params(&format!("cwd path does not exist: {child_dir}"))
+        })?;
+
+        if !child_canonical.starts_with(&master_canonical) {
+            return Err(JsonRpcError::invalid_params(
+                "child cwd must be within master session's directory tree",
+            ));
+        }
     }
 
     let child_session_id = if let Some(existing_id) = resume_session_id {
@@ -249,14 +297,14 @@ async fn handle_delegate(
             ));
         }
 
-        // Reset status to submitted
+        // Reset status to submitted (cwd not updated on resume)
         db::sessions::update_status(&state.db_pool, existing_id, "submitted")
             .await
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
         existing_id.to_string()
     } else {
-        // Create new child session
+        // Create new child session with cwd
         let new_id = Uuid::new_v4().to_string();
         db::sessions::create(
             &state.db_pool,
@@ -264,6 +312,7 @@ async fn handle_delegate(
             &auth.execution_id,
             &agent.id,
             Some(&auth.session_id),
+            child_cwd.as_deref(),
         )
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
@@ -278,22 +327,6 @@ async fn handle_delegate(
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(JsonValue::Null);
 
-    // Resolve cwd from execution's workspace so child agents inherit the project directory
-    let resolved_cwd = {
-        let exec = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-        if let Some(ws_id) = exec.workspace_id.as_deref() {
-            let ws = db::workspaces::get_by_id(&state.db_pool, ws_id)
-                .await
-                .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-            let path = ws.project_path;
-            if path.is_empty() { None } else { Some(path) }
-        } else {
-            None
-        }
-    };
-
     // Build task payload and enqueue
     let mut task_payload = json!({
         "agent_id": agent.id,
@@ -305,8 +338,8 @@ async fn handle_delegate(
             "parts": [{"kind": "text", "text": prompt}]
         }
     });
-    if let Some(dir) = resolved_cwd {
-        task_payload["cwd"] = JsonValue::String(dir);
+    if let Some(ref dir) = child_cwd {
+        task_payload["cwd"] = JsonValue::String(dir.clone());
     }
 
     state
@@ -344,6 +377,18 @@ async fn handle_delegate(
         "content": [{"type": "text", "text": result_text}],
         "isError": false
     }))
+}
+
+/// Traverse parent_session_id chain to find master session's cwd
+async fn find_master_cwd(
+    pool: &crate::db::DbPool,
+    session_id: &str,
+) -> Result<Option<String>, crate::error::SchedulerError> {
+    let mut current = db::sessions::get_by_id(pool, session_id).await?;
+    while let Some(ref parent_id) = current.parent_session_id {
+        current = db::sessions::get_by_id(pool, parent_id).await?;
+    }
+    Ok(current.cwd)
 }
 
 async fn handle_ask_user(
@@ -485,6 +530,10 @@ fn delegate_schema() -> JsonValue {
                 "session_id": {
                     "type": "string",
                     "description": "Resume existing session (optional)"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory for child (defaults to parent's cwd)"
                 }
             },
             "required": ["agent", "prompt"]

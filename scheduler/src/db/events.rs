@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
+use super::helpers::parse_timestamp;
 use super::{DbPool, TimestampColumn};
 use crate::error::SchedulerError;
 
@@ -69,7 +70,7 @@ pub async fn list_by_execution(
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at FROM events WHERE execution_id = ? ORDER BY created_at ASC",
+        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at FROM events WHERE execution_id = ? ORDER BY id ASC",
         created_fmt
     );
 
@@ -89,7 +90,7 @@ pub async fn list_by_session(
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at FROM events WHERE session_id = ? ORDER BY created_at ASC",
+        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at FROM events WHERE session_id = ? ORDER BY id ASC",
         created_fmt
     );
 
@@ -103,16 +104,12 @@ pub async fn list_by_session(
 }
 
 fn parse_event_row(row: sqlx::any::AnyRow) -> Result<Event, SchedulerError> {
-    let created_at_str: String = row.get("created_at");
-
     Ok(Event {
         id: row.get("id"),
         execution_id: row.get("execution_id"),
         session_id: row.get("session_id"),
         event_type: row.get("event_type"),
         payload: row.get("payload"),
-        created_at: DateTime::parse_from_rfc3339(&created_at_str)
-            .map_err(|e| SchedulerError::Database(format!("parse created_at failed: {e}")))?
-            .with_timezone(&Utc),
+        created_at: parse_timestamp(&row, "created_at")?,
     })
 }

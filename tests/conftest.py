@@ -88,12 +88,12 @@ def cleanup_postgres_database(request):
             # CASCADE handles any remaining foreign key constraints
             tables = [
                 "events",  # Child of sessions
-                "artifacts",  # Child of workspaces/sessions
+                "artifacts",  # Child of projects/sessions
                 "task_queue",  # Child of executions/sessions
                 "sessions",  # Child of executions
-                "executions",  # Child of workspaces
+                "executions",  # Child of projects
                 "agents",  # Standalone
-                "workspaces",  # Standalone
+                "projects",  # Standalone
                 "config",  # Standalone
             ]
 

@@ -6,7 +6,9 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
+use crate::api::types::{EventResponse, ExecutionResponse, SessionResponse};
 use crate::app::AppState;
 use crate::db;
 use crate::error::SchedulerError;
@@ -15,71 +17,15 @@ use crate::services::execution;
 /// Query parameters for listing executions
 #[derive(Debug, Deserialize)]
 pub struct ListExecutionsQuery {
-    pub workspace_id: Option<String>,
+    pub project_id: Option<String>,
     pub status: Option<String>,
     pub limit: Option<i64>,
-}
-
-/// Execution response matching new schema
-#[derive(Debug, Serialize)]
-pub struct ExecutionResponse {
-    pub id: String,
-    pub workspace_id: Option<String>,
-    pub parent_execution_id: Option<String>,
-    pub context_id: String,
-    pub status: String,
-    pub title: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub completed_at: Option<String>,
-}
-
-impl From<db::Execution> for ExecutionResponse {
-    fn from(e: db::Execution) -> Self {
-        Self {
-            id: e.id,
-            workspace_id: e.workspace_id,
-            parent_execution_id: e.parent_execution_id,
-            context_id: e.context_id,
-            status: e.status,
-            title: e.title,
-            created_at: e.created_at.to_rfc3339(),
-            updated_at: e.updated_at.to_rfc3339(),
-            completed_at: e.completed_at.map(|dt| dt.to_rfc3339()),
-        }
-    }
-}
-
-/// Session summary for execution detail
-#[derive(Debug, Serialize)]
-pub struct SessionResponse {
-    pub id: String,
-    pub execution_id: String,
-    pub parent_session_id: Option<String>,
-    pub agent_id: String,
-    pub status: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-impl From<db::sessions::Session> for SessionResponse {
-    fn from(s: db::sessions::Session) -> Self {
-        Self {
-            id: s.id,
-            execution_id: s.execution_id,
-            parent_session_id: s.parent_session_id,
-            agent_id: s.agent_id,
-            status: s.status,
-            created_at: s.created_at.to_rfc3339(),
-            updated_at: s.updated_at.to_rfc3339(),
-        }
-    }
+    pub offset: Option<i64>,
 }
 
 /// Execution detail with sessions
 #[derive(Debug, Serialize)]
 pub struct ExecutionDetailResponse {
-    #[serde(flatten)]
     pub execution: ExecutionResponse,
     pub sessions: Vec<SessionResponse>,
 }
@@ -89,17 +35,26 @@ pub struct ExecutionDetailResponse {
 pub struct CreateExecutionRequest {
     pub agent_id: String,
     pub prompt: String,
-    pub workspace_id: Option<String>,
+    pub project_id: Option<String>,
     pub title: Option<String>,
     pub cwd: Option<String>,
+    pub branch: Option<String>,
+    pub context_id: Option<String>,
 }
 
 /// Response for create execution
 #[derive(Debug, Serialize)]
 pub struct CreateExecutionResponse {
-    pub execution_id: String,
+    pub execution: ExecutionResponse,
     pub session_id: String,
-    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// Cancel response
+#[derive(Debug, Serialize)]
+pub struct CancelExecutionResponse {
+    pub execution: ExecutionResponse,
 }
 
 /// List all executions (GET /api/executions)
@@ -109,9 +64,10 @@ async fn list_executions(
 ) -> Result<Json<Vec<ExecutionResponse>>, SchedulerError> {
     let executions = db::executions::list(
         &state.db_pool,
-        query.workspace_id.as_deref(),
+        query.project_id.as_deref(),
         query.status.as_deref(),
         query.limit,
+        query.offset,
     )
     .await?;
 
@@ -143,20 +99,86 @@ async fn create_execution_handler(
         &state.task_queue,
         &req.agent_id,
         &req.prompt,
-        req.workspace_id.as_deref(),
+        req.project_id.as_deref(),
         req.title.as_deref(),
         req.cwd.as_deref(),
+        req.branch.as_deref(),
+        req.context_id.as_deref(),
     )
     .await?;
 
     Ok((
         StatusCode::CREATED,
         Json(CreateExecutionResponse {
-            execution_id: result.execution_id,
+            execution: result.execution.into(),
             session_id: result.session_id,
-            status: result.status,
+            warning: result.warning,
         }),
     ))
+}
+
+/// Cancel an execution (POST /api/executions/:id/cancel)
+async fn cancel_execution(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<CancelExecutionResponse>, SchedulerError> {
+    let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
+
+    // Check if already terminal
+    if matches!(exec.status.as_str(), "completed" | "failed" | "canceled") {
+        return Err(SchedulerError::Conflict(format!(
+            "execution is already in terminal state: {}",
+            exec.status
+        )));
+    }
+
+    // Cancel all non-terminal sessions
+    let sessions = db::sessions::list_by_execution(&state.db_pool, &id).await?;
+    for session in &sessions {
+        if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
+            db::sessions::update_status(&state.db_pool, &session.id, "canceled").await?;
+
+            let session_state_event = json!({"from": session.status, "to": "canceled"});
+            db::events::insert(
+                &state.db_pool,
+                &id,
+                Some(&session.id),
+                "state_change",
+                &serde_json::to_string(&session_state_event).unwrap(),
+            )
+            .await?;
+        }
+    }
+
+    // Cancel the execution itself
+    db::executions::update_status(&state.db_pool, &id, "canceled").await?;
+
+    let exec_state_event = json!({"from": exec.status, "to": "canceled"});
+    db::events::insert(
+        &state.db_pool,
+        &id,
+        None,
+        "state_change",
+        &serde_json::to_string(&exec_state_event).unwrap(),
+    )
+    .await?;
+
+    let updated = db::executions::get_by_id(&state.db_pool, &id).await?;
+    Ok(Json(CancelExecutionResponse {
+        execution: updated.into(),
+    }))
+}
+
+/// Get events for an execution (GET /api/executions/:id/events)
+async fn execution_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<EventResponse>>, SchedulerError> {
+    // Verify execution exists
+    db::executions::get_by_id(&state.db_pool, &id).await?;
+
+    let events = db::events::list_by_execution(&state.db_pool, &id).await?;
+    Ok(Json(events.into_iter().map(Into::into).collect()))
 }
 
 /// Execution routes
@@ -167,4 +189,9 @@ pub fn routes() -> Router<AppState> {
             get(list_executions).post(create_execution_handler),
         )
         .route("/api/executions/{id}", get(get_execution))
+        .route(
+            "/api/executions/{id}/cancel",
+            axum::routing::post(cancel_execution),
+        )
+        .route("/api/executions/{id}/events", get(execution_events))
 }

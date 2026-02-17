@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
+use super::helpers::{map_db_error, parse_optional_timestamp, parse_timestamp};
 use super::{DbPool, TimestampColumn};
 use crate::error::SchedulerError;
 
@@ -9,42 +10,45 @@ use crate::error::SchedulerError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Execution {
     pub id: String,
-    pub workspace_id: Option<String>,
+    pub project_id: Option<String>,
     pub parent_execution_id: Option<String>,
     pub context_id: String,
     pub status: String, // submitted|working|input-required|completed|failed|canceled
     pub title: Option<String>,
-    pub input: String,    // JSON (A2A Message)
+    pub input: String,    // plain prompt string
     pub metadata: String, // JSON
+    pub worktree_path: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
 
-/// Create a new execution
+#[allow(clippy::too_many_arguments)]
 pub async fn create(
     pool: &DbPool,
     id: &str,
     context_id: &str,
     input: &str,
-    workspace_id: Option<&str>,
+    project_id: Option<&str>,
     parent_execution_id: Option<&str>,
     title: Option<&str>,
+    worktree_path: Option<&str>,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
         r#"
-        INSERT INTO executions (id, workspace_id, parent_execution_id, context_id, status, title, input, metadata, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'submitted', ?, ?, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO executions (id, project_id, parent_execution_id, context_id, status, title, input, metadata, worktree_path, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'submitted', ?, ?, '{}', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#,
     );
 
     sqlx::query(&query)
         .bind(id)
-        .bind(workspace_id)
+        .bind(project_id)
         .bind(parent_execution_id)
         .bind(context_id)
         .bind(title)
         .bind(input)
+        .bind(worktree_path)
         .execute(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("create execution failed: {e}")))?;
@@ -53,7 +57,6 @@ pub async fn create(
 }
 
 /// Get execution by ID
-#[allow(clippy::uninlined_format_args)]
 pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Execution, SchedulerError> {
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
@@ -61,7 +64,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Execution, SchedulerEr
 
     let sql = format!(
         r#"
-        SELECT id, workspace_id, parent_execution_id, context_id, status, title, input, metadata,
+        SELECT id, project_id, parent_execution_id, context_id, status, title, input, metadata, worktree_path,
                {} as created_at, {} as updated_at, {} as completed_at
         FROM executions
         WHERE id = ?
@@ -75,53 +78,50 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Execution, SchedulerEr
         .bind(id)
         .fetch_one(pool.as_ref())
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => {
-                SchedulerError::NotFound(format!("execution not found: {id}"))
-            }
-            _ => SchedulerError::Database(format!("fetch execution failed: {e}")),
-        })?;
+        .map_err(|e| map_db_error("execution", id, e))?;
 
     parse_execution_row(row)
 }
 
 /// List executions with optional filters
-#[allow(clippy::uninlined_format_args)]
 pub async fn list(
     pool: &DbPool,
-    workspace_id: Option<&str>,
+    project_id: Option<&str>,
     status: Option<&str>,
     limit: Option<i64>,
+    offset: Option<i64>,
 ) -> Result<Vec<Execution>, SchedulerError> {
     let limit = limit.unwrap_or(50).min(100);
+    let offset = offset.unwrap_or(0).max(0);
 
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let mut sql = format!(
-        "SELECT id, workspace_id, parent_execution_id, context_id, status, title, input, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM executions WHERE 1=1",
+        "SELECT id, project_id, parent_execution_id, context_id, status, title, input, metadata, worktree_path, {} as created_at, {} as updated_at, {} as completed_at FROM executions WHERE 1=1",
         created_fmt, updated_fmt, completed_fmt
     );
 
-    if workspace_id.is_some() {
-        sql.push_str(" AND workspace_id = ?");
+    if project_id.is_some() {
+        sql.push_str(" AND project_id = ?");
     }
     if status.is_some() {
         sql.push_str(" AND status = ?");
     }
-    sql.push_str(" ORDER BY created_at DESC LIMIT ?");
+    sql.push_str(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
 
     let prepared = pool.prepare_query(&sql);
     let mut q = sqlx::query(&prepared);
 
-    if let Some(ws_id) = workspace_id {
-        q = q.bind(ws_id);
+    if let Some(pid) = project_id {
+        q = q.bind(pid);
     }
     if let Some(st) = status {
         q = q.bind(st);
     }
     q = q.bind(limit);
+    q = q.bind(offset);
 
     let rows = q
         .fetch_all(pool.as_ref())
@@ -161,34 +161,39 @@ pub async fn update_status(pool: &DbPool, id: &str, status: &str) -> Result<(), 
     Ok(())
 }
 
-fn parse_execution_row(row: sqlx::any::AnyRow) -> Result<Execution, SchedulerError> {
-    let created_at_str: String = row.get("created_at");
-    let updated_at_str: String = row.get("updated_at");
-    let completed_at_str: Option<String> = row.get("completed_at");
+/// Count non-terminal executions for a project
+pub async fn count_non_terminal_by_project(
+    pool: &DbPool,
+    project_id: &str,
+) -> Result<i64, SchedulerError> {
+    let query = pool.prepare_query(
+        "SELECT COUNT(*) as cnt FROM executions WHERE project_id = ? AND status NOT IN ('completed', 'failed', 'canceled')",
+    );
 
+    let row = sqlx::query(&query)
+        .bind(project_id)
+        .fetch_one(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("count non-terminal executions failed: {e}"))
+        })?;
+
+    Ok(row.get::<i64, _>("cnt"))
+}
+
+fn parse_execution_row(row: sqlx::any::AnyRow) -> Result<Execution, SchedulerError> {
     Ok(Execution {
         id: row.get("id"),
-        workspace_id: row.get("workspace_id"),
+        project_id: row.get("project_id"),
         parent_execution_id: row.get("parent_execution_id"),
         context_id: row.get("context_id"),
         status: row.get("status"),
         title: row.get("title"),
         input: row.get("input"),
         metadata: row.get("metadata"),
-        created_at: DateTime::parse_from_rfc3339(&created_at_str)
-            .map_err(|e| {
-                SchedulerError::Database(format!("parse created_at timestamp failed: {e}"))
-            })?
-            .with_timezone(&Utc),
-        updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
-            .map_err(|e| {
-                SchedulerError::Database(format!("parse updated_at timestamp failed: {e}"))
-            })?
-            .with_timezone(&Utc),
-        completed_at: completed_at_str.and_then(|s| {
-            DateTime::parse_from_rfc3339(&s)
-                .map(|dt| dt.with_timezone(&Utc))
-                .ok()
-        }),
+        worktree_path: row.get("worktree_path"),
+        created_at: parse_timestamp(&row, "created_at")?,
+        updated_at: parse_timestamp(&row, "updated_at")?,
+        completed_at: parse_optional_timestamp(&row, "completed_at"),
     })
 }

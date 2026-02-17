@@ -157,7 +157,7 @@ pub async fn create_execution(
     input: &str,
 ) -> Result<String, scheduler::error::SchedulerError> {
     let id = uuid::Uuid::new_v4().to_string();
-    scheduler::db::executions::create(pool, &id, context_id, input, None, None, None).await?;
+    scheduler::db::executions::create(pool, &id, context_id, input, None, None, None, None).await?;
     Ok(id)
 }
 

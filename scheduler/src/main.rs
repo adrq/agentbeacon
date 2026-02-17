@@ -72,6 +72,42 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .context("Failed to run database migrations")?;
     info!("Database migrations completed successfully");
 
+    // Seed default agents if table is empty (opt-out via AGENTBEACON_NO_SEED)
+    if std::env::var("AGENTBEACON_NO_SEED").is_err() {
+        let agent_count = db::agents::count(&db_pool)
+            .await
+            .context("Failed to count agents")?;
+        if agent_count == 0 {
+            info!("Seeding default agents...");
+            let demo_id = uuid::Uuid::new_v4().to_string();
+            db::agents::create(
+                &db_pool,
+                &demo_id,
+                "Demo Agent",
+                "acp",
+                r#"{"command":"echo","args":["demo"],"timeout":60}"#,
+                Some("Mock agent for API testing — not a real ACP agent"),
+                None,
+            )
+            .await
+            .context("Failed to seed Demo Agent")?;
+
+            let claude_id = uuid::Uuid::new_v4().to_string();
+            db::agents::create(
+                &db_pool,
+                &claude_id,
+                "Claude Code",
+                "claude_sdk",
+                r#"{"command":"claude","args":[],"timeout":300,"env":{},"state_dir":"~/.claude"}"#,
+                Some("Claude Code via Agent SDK"),
+                None,
+            )
+            .await
+            .context("Failed to seed Claude Code agent")?;
+            info!("Seeded 2 default agents");
+        }
+    }
+
     // Create task queue (database-only, no rebuild needed)
     info!("Initializing task queue...");
     let task_queue = Arc::new(TaskQueue::new(db_pool.clone()));

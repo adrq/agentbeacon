@@ -2,13 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
+use super::helpers::parse_timestamp;
 use super::{DbPool, TimestampColumn};
 use crate::error::SchedulerError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {
     pub id: String,
-    pub workspace_id: Option<String>,
+    pub project_id: Option<String>,
     pub session_id: Option<String>,
     pub artifact_type: String, // "file" | "commit" | "url"
     pub name: String,
@@ -25,17 +26,17 @@ pub async fn create(
     artifact_type: &str,
     name: &str,
     reference: &str,
-    workspace_id: Option<&str>,
+    project_id: Option<&str>,
     session_id: Option<&str>,
     description: Option<&str>,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO artifacts (id, workspace_id, session_id, artifact_type, name, description, reference) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO artifacts (id, project_id, session_id, artifact_type, name, description, reference) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
 
     sqlx::query(&query)
         .bind(id)
-        .bind(workspace_id)
+        .bind(project_id)
         .bind(session_id)
         .bind(artifact_type)
         .bind(name)
@@ -48,19 +49,19 @@ pub async fn create(
     Ok(())
 }
 
-pub async fn list_by_workspace(
+pub async fn list_by_project(
     pool: &DbPool,
-    workspace_id: &str,
+    project_id: &str,
 ) -> Result<Vec<Artifact>, SchedulerError> {
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
 
     let sql = format!(
-        "SELECT id, workspace_id, session_id, artifact_type, name, description, reference, metadata, {} as created_at FROM artifacts WHERE workspace_id = ? ORDER BY created_at DESC",
+        "SELECT id, project_id, session_id, artifact_type, name, description, reference, metadata, {} as created_at FROM artifacts WHERE project_id = ? ORDER BY created_at DESC",
         created_fmt
     );
 
     let rows = sqlx::query(&pool.prepare_query(&sql))
-        .bind(workspace_id)
+        .bind(project_id)
         .fetch_all(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("list artifacts failed: {e}")))?;
@@ -69,19 +70,15 @@ pub async fn list_by_workspace(
 }
 
 fn parse_artifact_row(row: sqlx::any::AnyRow) -> Result<Artifact, SchedulerError> {
-    let created_at_str: String = row.get("created_at");
-
     Ok(Artifact {
         id: row.get("id"),
-        workspace_id: row.get("workspace_id"),
+        project_id: row.get("project_id"),
         session_id: row.get("session_id"),
         artifact_type: row.get("artifact_type"),
         name: row.get("name"),
         description: row.get("description"),
         reference: row.get("reference"),
         metadata: row.get("metadata"),
-        created_at: DateTime::parse_from_rfc3339(&created_at_str)
-            .map_err(|e| SchedulerError::Database(format!("parse created_at failed: {e}")))?
-            .with_timezone(&Utc),
+        created_at: parse_timestamp(&row, "created_at")?,
     })
 }

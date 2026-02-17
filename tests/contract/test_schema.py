@@ -13,7 +13,7 @@ EXPECTED_TABLES = [
     "schema_migrations",
     "config",
     "agents",
-    "workspaces",
+    "projects",
     "executions",
     "sessions",
     "events",
@@ -22,12 +22,13 @@ EXPECTED_TABLES = [
 ]
 
 EXPECTED_COLUMNS = {
-    "workspaces": [
+    "projects": [
         "id",
         "name",
-        "project_path",
+        "path",
         "default_agent_id",
         "settings",
+        "deleted_at",
         "created_at",
         "updated_at",
     ],
@@ -39,14 +40,16 @@ EXPECTED_COLUMNS = {
         "config",
         "sandbox_config",
         "enabled",
+        "deleted_at",
         "created_at",
         "updated_at",
     ],
     "executions": [
         "id",
-        "workspace_id",
+        "project_id",
         "parent_execution_id",
         "context_id",
+        "worktree_path",
         "status",
         "title",
         "input",
@@ -61,7 +64,9 @@ EXPECTED_COLUMNS = {
         "parent_session_id",
         "agent_id",
         "agent_session_id",
+        "cwd",
         "status",
+        "coordination_mode",
         "metadata",
         "created_at",
         "updated_at",
@@ -77,7 +82,7 @@ EXPECTED_COLUMNS = {
     ],
     "artifacts": [
         "id",
-        "workspace_id",
+        "project_id",
         "session_id",
         "artifact_type",
         "name",
@@ -207,8 +212,9 @@ def test_indexes_present():
 
             expected_indexes = [
                 "idx_agents_enabled",
-                "idx_workspaces_project_path",
-                "idx_executions_workspace_id",
+                "idx_agents_name_active",
+                "idx_projects_path",
+                "idx_executions_project_id",
                 "idx_executions_status",
                 "idx_executions_context_id",
                 "idx_executions_created_at",
@@ -218,7 +224,7 @@ def test_indexes_present():
                 "idx_events_session_id",
                 "idx_events_execution_timestamp",
                 "idx_events_session_timestamp",
-                "idx_artifacts_workspace_id",
+                "idx_artifacts_project_id",
                 "idx_artifacts_session_id",
                 "idx_task_queue_queued",
             ]

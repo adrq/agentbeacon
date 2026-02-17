@@ -724,8 +724,13 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
     temp_db_path = None
 
     try:
+        # Always disable auto-seeding in tests for predictable state
+        merged_env = {"AGENTBEACON_NO_SEED": "1"}
+        if env:
+            merged_env.update(env)
+
         scheduler_process, temp_db_path = start_scheduler(
-            allocated_port, db_url=db_url, env=env
+            allocated_port, db_url=db_url, env=merged_env
         )
         yield {
             "process": scheduler_process,
@@ -1459,7 +1464,14 @@ def seed_acp_scenario_agent(
 
 
 def create_execution_via_api(
-    scheduler_url: str, agent_id: str, prompt: str, title: str = None
+    scheduler_url: str,
+    agent_id: str,
+    prompt: str,
+    title: str = None,
+    cwd: str = None,
+    project_id: str = None,
+    branch: str = None,
+    context_id: str = None,
 ) -> tuple:
     """POST /api/executions, return (execution_id, session_id).
 
@@ -1468,20 +1480,35 @@ def create_execution_via_api(
         agent_id: Agent ID to assign the execution to
         prompt: User prompt text
         title: Optional execution title
+        cwd: Working directory (defaults to tempfile.gettempdir())
+        project_id: Optional project ID
+        branch: Optional git branch name
+        context_id: Optional context ID
 
     Returns:
         tuple: (execution_id, session_id)
     """
+    if cwd is None and project_id is None:
+        cwd = tempfile.gettempdir()
+
     payload = {"agent_id": agent_id, "prompt": prompt}
     if title is not None:
         payload["title"] = title
+    if cwd is not None:
+        payload["cwd"] = cwd
+    if project_id is not None:
+        payload["project_id"] = project_id
+    if branch is not None:
+        payload["branch"] = branch
+    if context_id is not None:
+        payload["context_id"] = context_id
 
     resp = httpx.post(f"{scheduler_url}/api/executions", json=payload, timeout=5)
     assert resp.status_code == 201, (
         f"create execution failed: {resp.status_code} {resp.text}"
     )
     data = resp.json()
-    return data["execution_id"], data["session_id"]
+    return data["execution"]["id"], data["session_id"]
 
 
 def mcp_call(
@@ -1611,3 +1638,97 @@ def count_processes_by_name(name_pattern: str) -> int:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
     return count
+
+
+def seed_project(
+    db_url: str,
+    name: str = "test-project",
+    path: str = None,
+    project_id: str = None,
+) -> str:
+    """Insert a test project directly into the database.
+
+    Args:
+        db_url: Database URL (sqlite:... or postgres://...)
+        name: Project name
+        path: Project path (defaults to a temp directory)
+        project_id: Project ID (generated UUID if None)
+
+    Returns:
+        str: Project ID
+    """
+    if project_id is None:
+        project_id = str(uuid.uuid4())
+    if path is None:
+        path = tempfile.gettempdir()
+
+    with db_conn(db_url) as conn:
+        conn.execute(
+            "INSERT INTO projects (id, name, path, settings) VALUES (?, ?, ?, '{}')",
+            (project_id, name, path),
+        )
+        conn.commit()
+
+    return project_id
+
+
+def create_project_via_api(scheduler_url: str, name: str, path: str = None) -> dict:
+    """POST /api/projects, return response data.
+
+    Args:
+        scheduler_url: Base URL of the scheduler
+        name: Project name
+        path: Project path (defaults to a temp directory)
+
+    Returns:
+        dict: Project response data
+    """
+    if path is None:
+        path = tempfile.gettempdir()
+
+    resp = httpx.post(
+        f"{scheduler_url}/api/projects",
+        json={"name": name, "path": path},
+        timeout=5,
+    )
+    assert resp.status_code == 201, (
+        f"create project failed: {resp.status_code} {resp.text}"
+    )
+    return resp.json()
+
+
+def create_agent_via_api(
+    scheduler_url: str,
+    name: str,
+    agent_type: str = "acp",
+    config: dict = None,
+    description: str = None,
+) -> dict:
+    """POST /api/agents, return response data.
+
+    Args:
+        scheduler_url: Base URL of the scheduler
+        name: Agent name
+        agent_type: Agent type
+        config: Agent config (defaults to minimal valid config)
+        description: Optional description
+
+    Returns:
+        dict: Agent response data
+    """
+    if config is None:
+        config = {"command": "echo", "args": ["test"], "timeout": 60}
+
+    payload = {"name": name, "agent_type": agent_type, "config": config}
+    if description is not None:
+        payload["description"] = description
+
+    resp = httpx.post(
+        f"{scheduler_url}/api/agents",
+        json=payload,
+        timeout=5,
+    )
+    assert resp.status_code == 201, (
+        f"create agent failed: {resp.status_code} {resp.text}"
+    )
+    return resp.json()

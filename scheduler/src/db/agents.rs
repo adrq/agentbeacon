@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
+use super::helpers::{map_db_error, parse_bool, parse_timestamp};
 use super::{DbPool, TimestampColumn};
 use crate::error::SchedulerError;
 
@@ -14,6 +15,7 @@ pub struct Agent {
     pub config: String,                 // JSON
     pub sandbox_config: Option<String>, // JSON
     pub enabled: bool,
+    pub deleted_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -40,18 +42,27 @@ pub async fn create(
         .bind(sandbox_config)
         .execute(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("create agent failed: {e}")))?;
+        .map_err(|e| {
+            // Detect unique constraint violation for name
+            let err_str = e.to_string();
+            if err_str.contains("UNIQUE")
+                || err_str.contains("unique")
+                || err_str.contains("duplicate key")
+            {
+                return SchedulerError::Conflict(format!("agent name already exists: {name}"));
+            }
+            SchedulerError::Database(format!("create agent failed: {e}"))
+        })?;
 
     Ok(())
 }
 
-#[allow(clippy::uninlined_format_args)]
 pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Agent, SchedulerError> {
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, description, agent_type, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE id = ?",
+        "SELECT id, name, description, agent_type, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE id = ? AND deleted_at IS NULL",
         created_fmt, updated_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -60,10 +71,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Agent, SchedulerError>
         .bind(id)
         .fetch_one(pool.as_ref())
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => SchedulerError::NotFound(format!("agent not found: {id}")),
-            _ => SchedulerError::Database(format!("fetch agent failed: {e}")),
-        })?;
+        .map_err(|e| map_db_error("agent", id, e))?;
 
     parse_agent_row(row)
 }
@@ -73,7 +81,7 @@ pub async fn get_by_name(pool: &DbPool, name: &str) -> Result<Agent, SchedulerEr
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, description, agent_type, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE name = ?",
+        "SELECT id, name, description, agent_type, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE name = ? AND deleted_at IS NULL",
         created_fmt, updated_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -82,12 +90,7 @@ pub async fn get_by_name(pool: &DbPool, name: &str) -> Result<Agent, SchedulerEr
         .bind(name)
         .fetch_one(pool.as_ref())
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => {
-                SchedulerError::NotFound(format!("agent not found: {name}"))
-            }
-            _ => SchedulerError::Database(format!("fetch agent failed: {e}")),
-        })?;
+        .map_err(|e| map_db_error("agent", name, e))?;
 
     parse_agent_row(row)
 }
@@ -97,7 +100,7 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Agent>, SchedulerError> {
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, description, agent_type, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents ORDER BY name",
+        "SELECT id, name, description, agent_type, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE deleted_at IS NULL ORDER BY name",
         created_fmt, updated_fmt
     );
 
@@ -109,14 +112,127 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Agent>, SchedulerError> {
     rows.into_iter().map(parse_agent_row).collect()
 }
 
-fn parse_agent_row(row: sqlx::any::AnyRow) -> Result<Agent, SchedulerError> {
-    let created_at_str: String = row.get("created_at");
-    let updated_at_str: String = row.get("updated_at");
-    // SQLite stores booleans as integers, PostgreSQL as native bool
-    let enabled: bool = row
-        .try_get::<bool, _>("enabled")
-        .unwrap_or_else(|_| row.get::<i32, _>("enabled") != 0);
+/// Count active agents (for seed check)
+pub async fn count(pool: &DbPool) -> Result<i64, SchedulerError> {
+    let query = pool.prepare_query("SELECT COUNT(*) as cnt FROM agents WHERE deleted_at IS NULL");
 
+    let row = sqlx::query(&query)
+        .fetch_one(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("count agents failed: {e}")))?;
+
+    Ok(row.get::<i64, _>("cnt"))
+}
+
+pub async fn update(
+    pool: &DbPool,
+    id: &str,
+    name: Option<&str>,
+    description: Option<Option<&str>>,
+    config: Option<&str>,
+    sandbox_config: Option<Option<&str>>,
+    enabled: Option<bool>,
+) -> Result<Agent, SchedulerError> {
+    let mut set_clauses = Vec::new();
+    let mut bind_values: Vec<BindValue> = Vec::new();
+
+    if let Some(v) = name {
+        set_clauses.push("name = ?".to_string());
+        bind_values.push(BindValue::Str(v.to_string()));
+    }
+    if let Some(desc_opt) = description {
+        match desc_opt {
+            Some(v) => {
+                set_clauses.push("description = ?".to_string());
+                bind_values.push(BindValue::Str(v.to_string()));
+            }
+            None => {
+                set_clauses.push("description = NULL".to_string());
+            }
+        }
+    }
+    if let Some(v) = config {
+        set_clauses.push("config = ?".to_string());
+        bind_values.push(BindValue::Str(v.to_string()));
+    }
+    if let Some(sc_opt) = sandbox_config {
+        match sc_opt {
+            Some(v) => {
+                set_clauses.push("sandbox_config = ?".to_string());
+                bind_values.push(BindValue::Str(v.to_string()));
+            }
+            None => {
+                set_clauses.push("sandbox_config = NULL".to_string());
+            }
+        }
+    }
+    if let Some(v) = enabled {
+        set_clauses.push("enabled = ?".to_string());
+        bind_values.push(BindValue::Bool(v));
+    }
+
+    set_clauses.push("updated_at = CURRENT_TIMESTAMP".to_string());
+
+    let sql = format!(
+        "UPDATE agents SET {} WHERE id = ? AND deleted_at IS NULL",
+        set_clauses.join(", ")
+    );
+    let prepared = pool.prepare_query(&sql);
+    let mut q = sqlx::query(&prepared);
+
+    for val in &bind_values {
+        match val {
+            BindValue::Str(s) => q = q.bind(s),
+            BindValue::Bool(b) => q = q.bind(*b),
+        }
+    }
+    q = q.bind(id);
+
+    let result = q.execute(pool.as_ref()).await.map_err(|e| {
+        let err_str = e.to_string();
+        if err_str.contains("UNIQUE")
+            || err_str.contains("unique")
+            || err_str.contains("duplicate key")
+        {
+            if let Some(n) = name {
+                return SchedulerError::Conflict(format!("agent name already exists: {n}"));
+            }
+            return SchedulerError::Conflict("agent name already exists".to_string());
+        }
+        SchedulerError::Database(format!("update agent failed: {e}"))
+    })?;
+
+    if result.rows_affected() == 0 {
+        return Err(SchedulerError::NotFound(format!("agent not found: {id}")));
+    }
+
+    get_by_id(pool, id).await
+}
+
+pub async fn soft_delete(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
+    let query = pool.prepare_query(
+        "UPDATE agents SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+    );
+
+    let result = sqlx::query(&query)
+        .bind(id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("soft delete agent failed: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        return Err(SchedulerError::NotFound(format!("agent not found: {id}")));
+    }
+
+    Ok(())
+}
+
+enum BindValue {
+    Str(String),
+    Bool(bool),
+}
+
+fn parse_agent_row(row: sqlx::any::AnyRow) -> Result<Agent, SchedulerError> {
     Ok(Agent {
         id: row.get("id"),
         name: row.get("name"),
@@ -124,12 +240,9 @@ fn parse_agent_row(row: sqlx::any::AnyRow) -> Result<Agent, SchedulerError> {
         agent_type: row.get("agent_type"),
         config: row.get("config"),
         sandbox_config: row.get("sandbox_config"),
-        enabled,
-        created_at: DateTime::parse_from_rfc3339(&created_at_str)
-            .map_err(|e| SchedulerError::Database(format!("parse created_at failed: {e}")))?
-            .with_timezone(&Utc),
-        updated_at: DateTime::parse_from_rfc3339(&updated_at_str)
-            .map_err(|e| SchedulerError::Database(format!("parse updated_at failed: {e}")))?
-            .with_timezone(&Utc),
+        enabled: parse_bool(&row, "enabled"),
+        deleted_at: None, // filtered by WHERE deleted_at IS NULL
+        created_at: parse_timestamp(&row, "created_at")?,
+        updated_at: parse_timestamp(&row, "updated_at")?,
     })
 }
