@@ -1,13 +1,18 @@
 <script lang="ts">
   import { currentScreen, selectedExecutionId } from '../stores/appState';
+  import { executions } from '../stores/executions';
   import AppHeader from './AppHeader.svelte';
   import SplitPanel from './SplitPanel.svelte';
   import ExecutionList from './ExecutionList.svelte';
   import ExecutionDetail from './ExecutionDetail.svelte';
   import EmptyState from './EmptyState.svelte';
+  import DecisionQueue from './DecisionQueue.svelte';
+  import ActivityFeed from './ActivityFeed.svelte';
   import NewExecutionModal from './NewExecutionModal.svelte';
 
   let showNewModal = $state(false);
+
+  let hasExecutions = $derived($executions.length > 0);
 </script>
 
 <AppHeader onnewexecution={() => showNewModal = true} />
@@ -23,6 +28,11 @@
       <div class="main-content">
         {#if $currentScreen === 'ExecutionDetail' && $selectedExecutionId}
           <ExecutionDetail executionId={$selectedExecutionId} />
+        {:else if hasExecutions}
+          <div class="home-view scroll-thin">
+            <DecisionQueue />
+            <ActivityFeed />
+          </div>
         {:else}
           <EmptyState />
         {/if}
@@ -53,5 +63,10 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .home-view {
+    flex: 1;
+    overflow-y: auto;
   }
 </style>

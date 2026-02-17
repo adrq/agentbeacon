@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { Event } from '../types';
   import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData } from '../types';
   interface Props {
@@ -16,9 +17,11 @@
   }
 
   $effect(() => {
-    parsed;
+    const _len = parsed.length; // dependency: re-run when entries change
     if (shouldAutoScroll && scrollContainer) {
-      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      tick().then(() => {
+        if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      });
     }
   });
 
@@ -130,7 +133,6 @@
 </script>
 
 <div class="timeline-section">
-  <div class="timeline-header">Events</div>
   <div class="timeline-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll}>
     {#if parsed.length === 0}
       <div class="timeline-empty">No events yet</div>
@@ -154,16 +156,6 @@
     min-height: 0;
   }
 
-  .timeline-header {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: hsl(var(--muted-foreground));
-    padding: 0.5rem 1rem 0.375rem;
-    flex-shrink: 0;
-  }
-
   .timeline-scroll {
     flex: 1;
     overflow-y: auto;
@@ -180,14 +172,22 @@
     display: flex;
     align-items: flex-start;
     gap: 0.5rem;
-    padding: 0.25rem 0;
+    padding: 0.375rem 0.625rem;
+    margin-bottom: 0.125rem;
     font-size: 0.8125rem;
     line-height: 1.4;
+    border-radius: 0.375rem;
+    background: hsl(var(--muted) / 0.25);
+  }
+
+  .timeline-entry:hover {
+    background: hsl(var(--muted) / 0.5);
   }
 
   .ev-time {
     font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
     padding-top: 0.0625rem;

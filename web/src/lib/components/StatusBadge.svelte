@@ -54,10 +54,17 @@
   .submitted .dot { background: hsl(var(--muted-foreground)); }
 
   .working { background: hsl(var(--status-working) / 0.15); color: hsl(var(--status-working)); }
-  .working .dot { background: hsl(var(--status-working)); animation: pulse 2s ease-in-out infinite; }
+  .working .dot {
+    background: hsl(var(--status-working));
+    animation: pulse 2s ease-in-out infinite;
+    box-shadow: 0 0 4px 1px hsl(var(--status-working) / 0.5);
+  }
 
   .input-required { background: hsl(var(--status-attention) / 0.15); color: hsl(var(--status-attention)); }
-  .input-required .dot { background: hsl(var(--status-attention)); }
+  .input-required .dot {
+    background: hsl(var(--status-attention));
+    box-shadow: 0 0 4px 1px hsl(var(--status-attention) / 0.5);
+  }
 
   .completed { background: hsl(var(--status-success) / 0.15); color: hsl(var(--status-success)); }
   .completed .dot { background: hsl(var(--status-success)); }

@@ -9,8 +9,8 @@
       <path d="M9 13h4" />
     </svg>
   </div>
-  <p class="empty-title">No execution selected</p>
-  <p class="empty-hint">Select an execution from the sidebar or create a new one.</p>
+  <p class="empty-title">No executions yet</p>
+  <p class="empty-hint">Create your first execution to get started.</p>
 </div>
 
 <style>

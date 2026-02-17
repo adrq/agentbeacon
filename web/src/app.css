@@ -28,6 +28,7 @@
   --status-attention: 25 95% 53%;
   --status-success: 142 71% 45%;
   --status-danger: 0 72% 51%;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
 }
 
 .light {
@@ -66,7 +67,7 @@
 .app-shell { @apply flex flex-col h-screen w-full; }
 .app-header { @apply flex items-center justify-between px-6 py-3 border-b bg-gradient-to-r from-background/90 to-background/70 backdrop-blur supports-[backdrop-filter]:bg-background/60; }
 .card-elevated { @apply shadow-sm hover:shadow-md transition-shadow; }
-.code-surface { @apply font-mono text-[13px] leading-relaxed rounded-md border bg-neutral-900/70 text-neutral-100 outline-none focus:ring-2 focus:ring-ring focus:border-ring; }
+.code-surface { font-family: var(--font-mono); @apply text-[13px] leading-relaxed rounded-md border bg-neutral-900/70 text-neutral-100 outline-none focus:ring-2 focus:ring-ring focus:border-ring; }
 .editor-stats { @apply text-[11px] font-medium text-muted-foreground px-2 py-0.5 rounded bg-secondary/50; }
 .scroll-thin { scrollbar-width: thin; }
 .scroll-thin::-webkit-scrollbar { width: 8px; }

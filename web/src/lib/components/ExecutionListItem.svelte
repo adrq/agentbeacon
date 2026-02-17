@@ -12,7 +12,7 @@
   let selected = $derived($selectedExecutionId === execution.id);
   let needsInput = $derived(execution.status === 'input-required');
   let displayTitle = $derived(execution.title || execution.id.slice(0, 8));
-  let statusText = $derived(needsInput ? 'needs answer'
+  let statusText = $derived(needsInput ? 'awaiting input'
     : execution.status === 'working' ? 'working'
     : execution.status === 'submitted' ? 'submitted'
     : execution.status === 'completed' ? 'completed'
@@ -65,15 +65,15 @@
     background: transparent;
     cursor: pointer;
     border-left: 3px solid transparent;
-    transition: background 0.1s;
+    transition: background 0.15s, border-color 0.15s;
   }
 
   .exec-item:hover {
-    background: hsl(var(--muted) / 0.5);
+    background: hsl(var(--muted) / 0.6);
   }
 
   .exec-item.selected {
-    background: hsl(var(--muted));
+    background: hsl(var(--primary) / 0.08);
     border-left-color: hsl(var(--primary));
   }
 
@@ -98,7 +98,16 @@
     font-size: 0;
   }
 
-  .status-indicator.working { background: hsl(var(--status-working)); }
+  .status-indicator.working {
+    background: hsl(var(--status-working));
+    box-shadow: 0 0 4px 1px hsl(var(--status-working) / 0.4);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
   .status-indicator.completed { background: hsl(var(--status-success)); }
   .status-indicator.failed { background: hsl(var(--status-danger)); }
   .status-indicator.submitted { background: hsl(var(--muted-foreground)); }
@@ -110,7 +119,7 @@
     height: 1rem;
     font-size: 0.625rem;
     font-weight: 700;
-    color: white;
+    color: hsl(var(--primary-foreground));
   }
 
   .exec-title {

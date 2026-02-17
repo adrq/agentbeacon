@@ -58,7 +58,7 @@
 
   .app-name {
     font-weight: 600;
-    font-size: 0.9375rem;
+    font-size: 1rem;
     letter-spacing: -0.01em;
     user-select: none;
   }
