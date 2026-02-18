@@ -463,18 +463,21 @@ pub(crate) async fn send_session_prompt(
     }
 }
 
-/// Handle session/update notification and convert to A2A Message
+/// Handle session/update notification and convert to A2A Message.
+/// Text content (agent/user messages) stays as Part::Text.
+/// Structured notifications (tool calls, plans, etc.) become Part::Data
+/// with a `type` discriminator for frontend rendering.
 fn handle_session_update(params: &Value, update_history: &mut Vec<Message>) -> Result<()> {
     let update_params: SessionUpdateParams = serde_json::from_value(params.clone())?;
 
-    let (role, text) = match &update_params.update {
+    let (role, parts) = match &update_params.update {
         SessionUpdate::AgentMessageChunk { content } => {
             let text = content
                 .get("text")
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .to_string();
-            ("agent", text)
+            ("agent", vec![Part::Text { text }])
         }
         SessionUpdate::UserMessageChunk { content } => {
             let text = content
@@ -482,7 +485,7 @@ fn handle_session_update(params: &Value, update_history: &mut Vec<Message>) -> R
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .to_string();
-            ("user", text)
+            ("user", vec![Part::Text { text }])
         }
         SessionUpdate::AgentThoughtChunk { content } => {
             let text = content
@@ -490,46 +493,91 @@ fn handle_session_update(params: &Value, update_history: &mut Vec<Message>) -> R
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .to_string();
-            ("agent", format!("[thought] {text}"))
+            (
+                "agent",
+                vec![Part::Data {
+                    data: serde_json::json!({
+                        "type": "thinking",
+                        "text": text
+                    }),
+                }],
+            )
         }
         SessionUpdate::ToolCall {
             tool_call_id,
             title,
+            status,
+            kind,
             ..
-        } => (
-            "agent",
-            format!("[tool_call: {title} (id: {tool_call_id})]"),
-        ),
+        } => {
+            let mut data = serde_json::json!({
+                "type": "tool_call",
+                "toolCallId": tool_call_id,
+                "title": title,
+            });
+            if let Some(s) = status {
+                data["status"] = serde_json::json!(s);
+            }
+            if let Some(k) = kind {
+                data["kind"] = serde_json::json!(k);
+            }
+            ("agent", vec![Part::Data { data }])
+        }
         SessionUpdate::ToolCallUpdate {
             tool_call_id,
             title,
             status,
-            ..
+            content,
         } => {
-            let title_str = title.as_deref().unwrap_or("unknown");
-            let status_str = status.as_deref().unwrap_or("unknown");
-            (
-                "agent",
-                format!(
-                    "[tool_call_update: {title_str} (id: {tool_call_id}, status: {status_str})]"
-                ),
-            )
+            let mut data = serde_json::json!({
+                "type": "tool_call_update",
+                "toolCallId": tool_call_id,
+            });
+            if let Some(t) = title {
+                data["title"] = serde_json::json!(t);
+            }
+            if let Some(s) = status {
+                data["status"] = serde_json::json!(s);
+            }
+            if let Some(c) = content {
+                data["content"] = serde_json::json!(c);
+            }
+            ("agent", vec![Part::Data { data }])
         }
-        SessionUpdate::Plan { entries } => ("agent", format!("[plan] {} steps", entries.len())),
+        SessionUpdate::Plan { entries } => (
+            "agent",
+            vec![Part::Data {
+                data: serde_json::json!({
+                    "type": "plan",
+                    "entries": entries
+                }),
+            }],
+        ),
         SessionUpdate::AvailableCommandsUpdate { available_commands } => (
             "agent",
-            format!("[available_commands] {} commands", available_commands.len()),
+            vec![Part::Data {
+                data: serde_json::json!({
+                    "type": "available_commands",
+                    "commands": available_commands
+                }),
+            }],
         ),
-        SessionUpdate::CurrentModeUpdate { current_mode_id } => {
-            ("agent", format!("[mode_change] {current_mode_id}"))
-        }
+        SessionUpdate::CurrentModeUpdate { current_mode_id } => (
+            "agent",
+            vec![Part::Data {
+                data: serde_json::json!({
+                    "type": "mode_change",
+                    "modeId": current_mode_id
+                }),
+            }],
+        ),
     };
 
     let message = Message {
         message_id: Uuid::new_v4().to_string(),
         kind: "message".to_string(),
         role: role.to_string(),
-        parts: vec![Part::Text { text }],
+        parts,
     };
 
     update_history.push(message);

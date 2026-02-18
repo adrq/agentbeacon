@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import sys
+import traceback
 from typing import Any, Dict
 
 from .task_store import TaskStore
@@ -73,8 +74,6 @@ class ACPHandler:
                     try:
                         await self._handle_request(request)
                     except Exception:
-                        import traceback
-
                         traceback.print_exc(file=sys.stderr)
                 except json.JSONDecodeError:
                     error_response = {
@@ -258,6 +257,9 @@ class ACPHandler:
                     "SEND_TOOL_CALL",
                     "SEND_MODE_UPDATE",
                     "SEND_COMMANDS_UPDATE",
+                    "SEND_MARKDOWN",
+                    "SEND_THOUGHT",
+                    "SEND_TOOL_CALL_UPDATE",
                 ]
 
             stop_reason = "end_turn"
@@ -483,6 +485,72 @@ class ACPHandler:
                                 "availableCommands": [
                                     {"name": "/test", "description": "Run tests"}
                                 ],
+                            },
+                        },
+                    }
+                    print(json.dumps(notification), flush=True)
+                    return
+                elif prompt_text.strip().upper() == "SEND_MARKDOWN":
+                    markdown_text = (
+                        "# Analysis Report\n\n"
+                        "## Summary\n\n"
+                        "The implementation looks **solid** with a few notes:\n\n"
+                        "| Component | Status | Notes |\n"
+                        "|-----------|--------|-------|\n"
+                        "| Auth | Done | JWT with refresh tokens |\n"
+                        "| API | In Progress | 3 endpoints remaining |\n\n"
+                        "### Code Example\n\n"
+                        "```python\ndef authenticate(token: str) -> User:\n"
+                        "    payload = jwt.decode(token, SECRET_KEY)\n"
+                        "    return User.from_payload(payload)\n```\n\n"
+                        "- First item in list\n"
+                        "- Second item with **bold**\n\n"
+                        "> Important: Review the token expiry settings before deploy."
+                    )
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {
+                                    "type": "text",
+                                    "text": markdown_text,
+                                },
+                            },
+                        },
+                    }
+                    print(json.dumps(notification), flush=True)
+                    return
+                elif prompt_text.strip().upper() == "SEND_THOUGHT":
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "agent_thought_chunk",
+                                "content": {
+                                    "type": "text",
+                                    "text": "I need to analyze the code structure first...",
+                                },
+                            },
+                        },
+                    }
+                    print(json.dumps(notification), flush=True)
+                    return
+                elif prompt_text.strip().upper() == "SEND_TOOL_CALL_UPDATE":
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "tool_call_update",
+                                "toolCallId": "tool-456",
+                                "title": "Running tests",
+                                "status": "completed",
                             },
                         },
                     }

@@ -106,13 +106,13 @@ async fn handle_handoff(
     // Record message event
     let msg_payload = json!({
         "role": "agent",
-        "parts": [{"kind": "data", "data": {"tool": "handoff", "message": message}}]
+        "parts": [{"kind": "data", "data": {"type": "handoff", "message": message}}]
     });
     db::events::insert(
         &state.db_pool,
         &auth.execution_id,
         Some(&auth.session_id),
-        "message",
+        "platform",
         &serde_json::to_string(&msg_payload).unwrap(),
     )
     .await
@@ -145,7 +145,7 @@ async fn handle_handoff(
         let parent_msg = json!({
             "role": "agent",
             "parts": [{"kind": "data", "data": {
-                "tool": "handoff_result",
+                "type": "handoff_result",
                 "child_session_id": auth.session_id,
                 "message": message
             }}]
@@ -154,7 +154,7 @@ async fn handle_handoff(
             &state.db_pool,
             &auth.execution_id,
             Some(parent_id),
-            "message",
+            "platform",
             &serde_json::to_string(&parent_msg).unwrap(),
         )
         .await
@@ -356,7 +356,7 @@ async fn handle_delegate(
     let event_payload = json!({
         "role": "agent",
         "parts": [{"kind": "data", "data": {
-            "tool": "delegate",
+            "type": "delegate",
             "agent": agent_name,
             "child_session_id": child_session_id,
             "prompt": prompt
@@ -366,7 +366,7 @@ async fn handle_delegate(
         &state.db_pool,
         &auth.execution_id,
         Some(&auth.session_id),
-        "message",
+        "platform",
         &serde_json::to_string(&event_payload).unwrap(),
     )
     .await
@@ -414,7 +414,7 @@ async fn handle_ask_user(
         let context = q.get("context").and_then(|v| v.as_str());
 
         let mut data = json!({
-            "tool": "ask_user",
+            "type": "ask_user",
             "question": question,
             "importance": importance,
             "batch_id": batch_id,
@@ -436,7 +436,7 @@ async fn handle_ask_user(
             &state.db_pool,
             &auth.execution_id,
             Some(&auth.session_id),
-            "message",
+            "platform",
             &serde_json::to_string(&event_payload).unwrap(),
         )
         .await

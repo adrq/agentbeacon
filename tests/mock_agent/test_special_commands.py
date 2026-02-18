@@ -334,3 +334,13 @@ def test_hang_command_logging_behavior():
                 hang_proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 pass
+
+
+def test_is_special_command_recognizes_send_markdown():
+    """SEND_MARKDOWN is recognized as a special command."""
+    from agentmaestro.mock_agent.special_commands import SpecialCommands
+
+    sc = SpecialCommands()
+    assert sc.is_special_command("SEND_MARKDOWN") is True
+    assert sc.is_special_command("send_markdown") is True
+    assert sc.is_special_command("  SEND_MARKDOWN  ") is True

@@ -123,7 +123,7 @@ def test_ask_user_fyi_records_event(test_database):
 
         with db_conn(ctx["db_url"]) as conn:
             events = conn.execute(
-                "SELECT event_type, payload FROM events WHERE session_id = ? AND event_type = 'message'",
+                "SELECT event_type, payload FROM events WHERE session_id = ? AND event_type = 'platform'",
                 (session_id,),
             ).fetchall()
         assert len(events) == 1

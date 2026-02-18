@@ -247,7 +247,8 @@ def test_full_ask_answer_round_trip(test_database):
         resp = httpx.get(f"{ctx['url']}/api/sessions/{session_id}/events", timeout=5)
         events = resp.json()
         event_types = [e["event_type"] for e in events]
-        assert event_types.count("message") == 2
+        assert event_types.count("platform") == 1
+        assert event_types.count("message") == 1
         assert event_types.count("state_change") >= 2
 
         # 6. Verify user message event payload shape (no question_event_id)

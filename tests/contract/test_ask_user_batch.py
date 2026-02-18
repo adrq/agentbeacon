@@ -59,14 +59,14 @@ def test_ask_user_batch_creates_multiple_events(test_database):
         # Verify events share batch_id and have sequential batch_index
         with db_conn(ctx["db_url"]) as conn:
             events = conn.execute(
-                "SELECT payload FROM events WHERE session_id = ? AND event_type = 'message' ORDER BY id",
+                "SELECT payload FROM events WHERE session_id = ? AND event_type = 'platform' ORDER BY id",
                 (session_id,),
             ).fetchall()
 
         ask_events = []
         for row in events:
             p = json.loads(row[0])
-            if p.get("parts", [{}])[0].get("data", {}).get("tool") == "ask_user":
+            if p.get("parts", [{}])[0].get("data", {}).get("type") == "ask_user":
                 ask_events.append(p)
 
         assert len(ask_events) == 3
@@ -137,14 +137,14 @@ def test_ask_user_batch_with_options_and_context(test_database):
 
         with db_conn(ctx["db_url"]) as conn:
             events = conn.execute(
-                "SELECT payload FROM events WHERE session_id = ? AND event_type = 'message'",
+                "SELECT payload FROM events WHERE session_id = ? AND event_type = 'platform'",
                 (session_id,),
             ).fetchall()
 
         ask_events = [
             json.loads(r[0])
             for r in events
-            if json.loads(r[0]).get("parts", [{}])[0].get("data", {}).get("tool")
+            if json.loads(r[0]).get("parts", [{}])[0].get("data", {}).get("type")
             == "ask_user"
         ]
         data = ask_events[0]["parts"][0]["data"]

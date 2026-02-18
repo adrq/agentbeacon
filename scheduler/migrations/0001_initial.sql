@@ -95,7 +95,7 @@ CREATE TABLE events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     execution_id TEXT NOT NULL,
     session_id TEXT,
-    event_type TEXT NOT NULL CHECK (event_type IN ('message', 'state_change')),
+    event_type TEXT NOT NULL CHECK (event_type IN ('message', 'state_change', 'platform')),
     payload TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (execution_id) REFERENCES executions(id) ON DELETE CASCADE,

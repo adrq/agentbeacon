@@ -29,6 +29,9 @@ class SpecialCommands:
             or text == "SEND_TOOL_CALL"
             or text == "SEND_MODE_UPDATE"
             or text == "SEND_COMMANDS_UPDATE"
+            or text == "SEND_MARKDOWN"
+            or text == "SEND_THOUGHT"
+            or text == "SEND_TOOL_CALL_UPDATE"
         )
 
     def handle_command(self, text: str, stdio_mode: bool = False) -> Optional[str]:
@@ -98,6 +101,15 @@ class SpecialCommands:
         elif text == "SEND_COMMANDS_UPDATE":
             return "SEND_COMMANDS_UPDATE"
 
+        elif text == "SEND_MARKDOWN":
+            return "SEND_MARKDOWN"
+
+        elif text == "SEND_THOUGHT":
+            return "SEND_THOUGHT"
+
+        elif text == "SEND_TOOL_CALL_UPDATE":
+            return "SEND_TOOL_CALL_UPDATE"
+
         return None
 
     async def handle_command_async(self, text: str) -> Optional[str]:
@@ -156,5 +168,14 @@ class SpecialCommands:
 
         elif text == "SEND_COMMANDS_UPDATE":
             return "SEND_COMMANDS_UPDATE"
+
+        elif text == "SEND_MARKDOWN":
+            return "SEND_MARKDOWN"
+
+        elif text == "SEND_THOUGHT":
+            return "SEND_THOUGHT"
+
+        elif text == "SEND_TOOL_CALL_UPDATE":
+            return "SEND_TOOL_CALL_UPDATE"
 
         return None

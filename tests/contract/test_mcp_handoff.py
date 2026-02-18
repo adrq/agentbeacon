@@ -76,7 +76,7 @@ def test_handoff_records_event(test_database):
             ).fetchall()
 
         event_types = [e[0] for e in events]
-        assert "message" in event_types
+        assert "platform" in event_types
         assert "state_change" in event_types
 
 
