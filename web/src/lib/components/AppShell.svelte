@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { currentScreen, selectedExecutionId } from '../stores/appState';
-  import { executions } from '../stores/executions';
+  import { currentScreen, selectedExecutionId, selectedProjectId } from '../stores/appState';
+  import { executionsQuery } from '../queries/executions';
   import AppHeader from './AppHeader.svelte';
   import SplitPanel from './SplitPanel.svelte';
   import ExecutionList from './ExecutionList.svelte';
@@ -9,10 +9,14 @@
   import DecisionQueue from './DecisionQueue.svelte';
   import ActivityFeed from './ActivityFeed.svelte';
   import NewExecutionModal from './NewExecutionModal.svelte';
+  import ProjectsView from './ProjectsView.svelte';
+  import ProjectDetail from './ProjectDetail.svelte';
+  import AgentsView from './AgentsView.svelte';
 
   let showNewModal = $state(false);
 
-  let hasExecutions = $derived($executions.length > 0);
+  const execsQuery = executionsQuery();
+  let hasExecutions = $derived((execsQuery.data ?? []).length > 0);
 </script>
 
 <AppHeader onnewexecution={() => showNewModal = true} />
@@ -28,6 +32,12 @@
       <div class="main-content">
         {#if $currentScreen === 'ExecutionDetail' && $selectedExecutionId}
           <ExecutionDetail executionId={$selectedExecutionId} />
+        {:else if $currentScreen === 'Projects'}
+          <ProjectsView />
+        {:else if $currentScreen === 'ProjectDetail' && $selectedProjectId}
+          <ProjectDetail projectId={$selectedProjectId} />
+        {:else if $currentScreen === 'Agents'}
+          <AgentsView />
         {:else if hasExecutions}
           <div class="home-view scroll-thin">
             <DecisionQueue />

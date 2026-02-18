@@ -24,12 +24,15 @@ async function ensureAgent(): Promise<{ id: string; name: string }> {
   throw new Error('No agents seeded — run scripts/seed_agents.py first');
 }
 
+async function ensureProject(): Promise<{ id: string; name: string }> {
+  const projects: { id: string; name: string }[] = await apiGet('/api/projects');
+  if (projects.length > 0) return projects[0];
+  const result = await apiPost('/api/projects', { name: 'smoke-test', path: '/tmp' });
+  return { id: result.id, name: result.name };
+}
+
 async function claimSession() {
-  await apiPost('/api/worker/sync', {
-    worker_id: 'playwright-worker',
-    active_sessions: [],
-    capacity: 5,
-  });
+  await apiPost('/api/worker/sync', {});
 }
 
 async function sendQuestion(sessionId: string, question: string, options: { label: string; description: string }[]) {
@@ -81,13 +84,19 @@ test('theme toggle switches between light and dark', async ({ page }) => {
 
 test('create execution via modal', async ({ page }) => {
   const agent = await ensureAgent();
+  const project = await ensureProject();
 
   await page.goto('/');
   await page.getByRole('button', { name: '+ New' }).click();
 
   await expect(page.getByRole('dialog', { name: 'New Execution' })).toBeVisible();
 
-  await page.getByLabel('Agent').selectOption(agent.name);
+  // Select project
+  await page.getByLabel('Project').selectOption(project.id);
+
+  // Select agent
+  await page.getByLabel('Agent').selectOption(agent.id);
+
   await page.getByRole('textbox', { name: 'Task' }).fill('Playwright smoke test task');
   await page.getByRole('textbox', { name: /title/i }).fill('Smoke test');
 
@@ -105,8 +114,9 @@ test('full question-answer flow', async ({ page }) => {
     agent_id: agent.id,
     prompt: 'E2E question flow test',
     title: 'Q&A flow test',
+    cwd: '/tmp',
   });
-  const execId = exec.execution_id;
+  const execId = exec.execution.id;
   const sessionId = exec.session_id;
 
   await claimSession();
@@ -134,4 +144,19 @@ test('full question-answer flow', async ({ page }) => {
   await page.getByRole('button', { name: /Submit/ }).click();
 
   await expect(page.getByText('User: Svelte')).toBeVisible({ timeout: 10000 });
+});
+
+test('navigation between views', async ({ page }) => {
+  await page.goto('/');
+
+  // Navigate to Projects
+  await page.getByRole('link', { name: 'Projects' }).click();
+  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+
+  // Navigate to Agents
+  await page.getByRole('link', { name: 'Agents' }).click();
+  await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
+
+  // Navigate back to Executions
+  await page.getByRole('link', { name: 'Executions' }).click();
 });

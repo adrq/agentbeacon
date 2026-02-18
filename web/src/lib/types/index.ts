@@ -6,13 +6,25 @@ export type SessionStatus = ExecutionStatus;
 export type CoordinationMode = 'sdk' | 'mcp_poll';
 export type EventType = 'message' | 'state_change';
 export type Theme = 'light' | 'dark';
-export type Screen = 'Home' | 'ExecutionDetail';
+export type Screen = 'Home' | 'ExecutionDetail' | 'Projects' | 'ProjectDetail' | 'Agents';
+export type AgentType = 'claude_sdk' | 'codex_sdk' | 'copilot_sdk' | 'opencode_sdk' | 'acp' | 'a2a';
+
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  default_agent_id: string | null;
+  settings: Record<string, unknown>;
+  is_git: boolean;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface Agent {
   id: string;
   name: string;
   description: string | null;
-  agent_type: string;
+  agent_type: AgentType;
   enabled: boolean;
   config: Record<string, unknown>;
   sandbox_config: Record<string, unknown> | null;
@@ -22,48 +34,49 @@ export interface Agent {
 
 export interface Execution {
   id: string;
-  workspace_id: string | null;
+  project_id: string | null;
   parent_execution_id: string | null;
   context_id: string;
+  worktree_path: string | null;
   status: ExecutionStatus;
   title: string | null;
+  input: string;
+  metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
 }
 
-// GET /api/executions/{id} — flat execution fields + sessions[]
-export type ExecutionDetail = Execution & {
+// GET /api/executions/{id} — wrapped execution + sessions
+export interface ExecutionDetail {
+  execution: Execution;
   sessions: SessionSummary[];
-};
+}
 
-// Sessions from execution detail endpoint (fewer fields than full session)
+// Sessions from execution detail endpoint and GET /api/sessions
 export interface SessionSummary {
   id: string;
   execution_id: string;
   parent_session_id: string | null;
   agent_id: string;
-  status: SessionStatus;
-  created_at: string;
-  updated_at: string;
-}
-
-// Full session from GET /api/sessions
-export interface Session {
-  id: string;
-  execution_id: string;
-  parent_session_id: string | null;
-  agent_id: string;
   agent_session_id: string | null;
+  cwd: string | null;
   status: SessionStatus;
   coordination_mode: CoordinationMode;
+  metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  completed_at: string | null;
 }
+
+// Full session from GET /api/sessions — same shape as SessionSummary
+export type Session = SessionSummary;
 
 // GET /api/sessions/{id}/events
 export interface Event {
   id: number;
+  execution_id: string;
+  session_id: string | null;
   event_type: EventType;
   payload: MessagePayload | StateChangePayload;
   created_at: string;
@@ -77,7 +90,8 @@ export interface MessagePayload {
 export type MessagePart =
   | { kind: 'text'; text: string }
   | { kind: 'data'; data: ToolCallData }
-  | { kind: 'file'; file: { name: string }; mimeType?: string };
+  | { kind: 'file'; file: { name: string }; mimeType?: string }
+  | { kind: string; [key: string]: unknown };
 
 export type ToolCallData =
   | AskUserData
@@ -117,6 +131,19 @@ export interface HandoffResultData {
 export interface StateChangePayload {
   from: string | null;
   to: string;
+}
+
+// Response types
+export interface CreateExecutionResponse {
+  execution: Execution;
+  session_id: string;
+  warning?: string;
+}
+
+export interface PostMessageResponse {
+  event_id: number;
+  session_status: string;
+  execution_status: string;
 }
 
 // Type guards

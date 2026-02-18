@@ -1,10 +1,22 @@
 <script lang="ts">
   import './lib/router';
+  import { QueryClientProvider, QueryClient } from '@tanstack/svelte-query';
   import AppShell from './lib/components/AppShell.svelte';
+
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 2000,
+        retry: 1,
+      },
+    },
+  });
 </script>
 
 <div class="app-shell">
-  <AppShell />
+  <QueryClientProvider client={queryClient}>
+    <AppShell />
+  </QueryClientProvider>
 </div>
 
 <style>

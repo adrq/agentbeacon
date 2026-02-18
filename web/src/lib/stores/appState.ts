@@ -35,3 +35,5 @@ function createThemeStore() {
 export const theme = createThemeStore();
 export const currentScreen = writable<Screen>('Home');
 export const selectedExecutionId = writable<string | null>(null);
+export const selectedProjectId = writable<string | null>(null);
+export const selectedFilterProjectId = writable<string | null>(null);

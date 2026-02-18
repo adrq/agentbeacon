@@ -120,13 +120,28 @@
               entries.push({ type: 'tool', icon: '\u2192', text: `Delegated to ${d.agent}`, time, key: `${ev.id}-${seq++}` });
             } else if (isHandoffResultData(d)) {
               entries.push({ type: 'tool', icon: '\u2713', text: `Child completed: ${d.message}`, time, key: `${ev.id}-${seq++}` });
+            } else {
+              entries.push({ type: 'tool', icon: '\u25A1', text: `[${d.tool}]`, time, key: `${ev.id}-${seq++}` });
             }
+          } else if (part.kind === 'file') {
+            const name = 'file' in part && typeof part.file === 'object' && part.file && 'name' in part.file
+              ? (part.file as { name: string }).name : 'file';
+            entries.push({ type: 'tool', icon: '\u25A1', text: `[file] ${name}`, time, key: `${ev.id}-${seq++}` });
           } else if (part.kind === 'text') {
             if (msg.role === 'user') {
               entries.push({ type: 'user', text: part.text, time, key: `${ev.id}-${seq++}` });
             } else {
               entries.push({ type: 'agent', text: part.text, agentLabel, time, key: `${ev.id}-${seq++}` });
             }
+          } else {
+            // Fallback for unknown part kinds (tool-use, thinking, cost, etc.)
+            const label = part.kind;
+            const detail = 'text' in part && typeof part.text === 'string'
+              ? part.text
+              : 'name' in part && typeof part.name === 'string'
+                ? part.name
+                : '';
+            entries.push({ type: 'tool', icon: '\u25A1', text: detail ? `[${label}] ${detail}` : `[${label}]`, time, key: `${ev.id}-${seq++}` });
           }
         }
       }

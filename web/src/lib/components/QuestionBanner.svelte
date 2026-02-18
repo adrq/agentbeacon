@@ -1,29 +1,55 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
-  import type { ExecutionDetail, Agent } from '../types';
-  import { api } from '../api';
+  import type { Execution, SessionSummary, Event, Agent } from '../types';
   import { extractQuestions, composeAnswer, submitAnswer } from '../questions';
   import type { QuestionState } from '../questions';
   import QuestionCard from './QuestionCard.svelte';
 
   interface Props {
-    execution: ExecutionDetail;
+    execution: Execution;
+    sessions: SessionSummary[];
+    events: Event[];
     agents: Agent[];
   }
 
-  let { execution, agents }: Props = $props();
+  let { execution, sessions, events, agents }: Props = $props();
 
   let submitting = $state(false);
   let submitted = $state(false);
   let error: string | null = $state(null);
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Derive questions from events but preserve user-typed answers across re-derives
   let questions: QuestionState[] = $state([]);
+  let lastBatchId = '';
   let allAnswered = $state(false);
 
   let inputSessionId = $derived(
-    execution.sessions.find(s => s.status === 'input-required')?.id ?? null
+    sessions.find(s => s.status === 'input-required')?.id ?? null
   );
+
+  // Update questions only when the batch changes, preserving answers otherwise
+  $effect(() => {
+    const extracted = extractQuestions(events);
+    const newBatchId = extracted.length > 0
+      ? events.filter(e => 'parts' in (e.payload as Record<string, unknown>)).at(-1)?.id?.toString() ?? ''
+      : '';
+    if (newBatchId !== lastBatchId || extracted.length !== questions.length) {
+      lastBatchId = newBatchId;
+      questions = extracted;
+      allAnswered = false;
+    }
+  });
+
+  // Reset submitted state when input session changes
+  let prevInputSessionId: string | null = null;
+  $effect(() => {
+    if (inputSessionId !== prevInputSessionId) {
+      prevInputSessionId = inputSessionId;
+      submitted = false;
+      allAnswered = false;
+      error = null;
+      lastBatchId = '';
+    }
+  });
 
   function agentName(agentId: string): string {
     const agent = agents.find(a => a.id === agentId);
@@ -39,7 +65,6 @@
     try {
       await submitAnswer(inputSessionId, composeAnswer(questions));
       submitted = true;
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to submit';
     } finally {
@@ -55,47 +80,6 @@
     questions[index].answer = answer;
     checkAllAnswered();
   }
-
-  let questionsLoaded = $state(false);
-  let prevInputSessionId: string | null = null;
-
-  async function fetchAndExtract() {
-    if (!inputSessionId || questionsLoaded) return;
-    try {
-      const evs = await api.getSessionEvents(inputSessionId);
-      const extracted = extractQuestions(evs);
-      if (extracted.length > 0) {
-        questions = extracted;
-        allAnswered = false;
-        questionsLoaded = true;
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-      }
-    } catch {
-      // retry next poll
-    }
-  }
-
-  function startPolling() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    fetchAndExtract();
-    pollTimer = setInterval(fetchAndExtract, 2000);
-  }
-
-  $effect(() => {
-    if (inputSessionId !== prevInputSessionId) {
-      prevInputSessionId = inputSessionId;
-      questionsLoaded = false;
-      submitted = false;
-      questions = [];
-      allAnswered = false;
-      error = null;
-      startPolling();
-    }
-  });
-
-  onDestroy(() => {
-    if (pollTimer) clearInterval(pollTimer);
-  });
 </script>
 
 {#if inputSessionId && !submitted}
@@ -103,7 +87,7 @@
     <div class="banner-header">
       <span class="banner-icon">&#x26A0;</span>
       <span class="banner-title">
-        {#if !questionsLoaded}
+        {#if questions.length === 0}
           LOADING QUESTION...
         {:else if questions.length <= 1}
           QUESTION
@@ -113,7 +97,7 @@
       </span>
       <span class="banner-meta">
         {#if inputSessionId}
-          from {agentName(execution.sessions.find(s => s.id === inputSessionId)?.agent_id ?? '')}
+          from {agentName(sessions.find(s => s.id === inputSessionId)?.agent_id ?? '')}
         {/if}
         {#if execution.title}
           &middot; {execution.title}

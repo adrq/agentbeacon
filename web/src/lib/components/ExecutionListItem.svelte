@@ -5,9 +5,10 @@
 
   interface Props {
     execution: Execution;
+    projectName?: string | null;
   }
 
-  let { execution }: Props = $props();
+  let { execution, projectName = null }: Props = $props();
 
   let selected = $derived($selectedExecutionId === execution.id);
   let needsInput = $derived(execution.status === 'input-required');
@@ -52,6 +53,9 @@
   </div>
   <div class="exec-item-bottom">
     <span class="exec-status">{statusText}</span>
+    {#if projectName}
+      <span class="exec-project">{projectName}</span>
+    {/if}
   </div>
 </button>
 
@@ -141,6 +145,9 @@
   .exec-item-bottom {
     margin-top: 0.125rem;
     padding-left: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 
   .exec-status {
@@ -151,5 +158,14 @@
   .needs-input .exec-status {
     color: hsl(var(--status-attention));
     font-weight: 500;
+  }
+
+  .exec-project {
+    font-size: 0.625rem;
+    color: hsl(var(--muted-foreground));
+    opacity: 0.7;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

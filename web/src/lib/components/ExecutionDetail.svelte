@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
-  import type { ExecutionDetail as ExecDetail, Event } from '../types';
-  import { api } from '../api';
-  import { agents as agentsStore } from '../stores/executions';
+  import type { Execution, Agent } from '../types';
+  import { executionDetailQuery, sessionEventsQuery } from '../queries/executions';
+  import { agentsQuery } from '../queries/agents';
   import StatusBadge from './StatusBadge.svelte';
   import QuestionBanner from './QuestionBanner.svelte';
   import SessionTree from './SessionTree.svelte';
@@ -15,11 +14,27 @@
 
   let { executionId }: Props = $props();
 
-  let execution = $state<ExecDetail | null>(null);
-  let events = $state<Event[]>([]);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
+  const terminalStatuses = new Set(['completed', 'failed', 'canceled']);
+
+  const agentsQ = agentsQuery();
+  let agents = $derived<Agent[]>(agentsQ.data ?? []);
+
+  const detailQuery = executionDetailQuery(() => executionId);
+
+  let detail = $derived(detailQuery.data ?? null);
+  let loading = $derived(detailQuery.isLoading);
+  let error = $derived(detailQuery.error?.message ?? null);
+
   let selectedSessionId = $state<string | null>(null);
+
+  // Reset selected session when execution changes
+  let prevExecId = '';
+  $effect.pre(() => {
+    if (executionId !== prevExecId) {
+      prevExecId = executionId;
+      selectedSessionId = null;
+    }
+  });
 
   // View toggle: log or chat, persisted to localStorage
   type ViewMode = 'log' | 'chat';
@@ -32,21 +47,37 @@
     }
   });
 
-  let detailTimer: ReturnType<typeof setInterval> | null = null;
-  let prevExecId = '';
+  let masterSession = $derived(detail?.sessions.find(s => !s.parent_session_id) ?? null);
+  let displayTitle = $derived(detail?.execution.title ?? executionId.slice(0, 8));
+  let isTerminal = $derived(terminalStatuses.has(detail?.execution.status ?? ''));
 
-  const terminalStatuses = new Set(['completed', 'failed', 'canceled']);
+  // Events for the currently viewed session
+  let activeSessionId = $derived(selectedSessionId ?? masterSession?.id ?? null);
+  const eventsQuery = sessionEventsQuery(
+    () => activeSessionId,
+    () => isTerminal,
+  );
+  let events = $derived(eventsQuery.data ?? []);
 
-  let agents = $derived($agentsStore);
-  let masterSession = $derived(execution?.sessions.find(s => !s.parent_session_id) ?? null);
-  let displayTitle = $derived(execution?.title ?? executionId.slice(0, 8));
+  // Events for the input-required session (may differ from viewed session)
+  let inputSessionId = $derived(
+    detail?.sessions.find(s => s.status === 'input-required')?.id ?? activeSessionId
+  );
+  const inputEventsQuery = sessionEventsQuery(
+    () => inputSessionId !== activeSessionId ? inputSessionId : null,
+    () => isTerminal,
+  );
+  // Use input session events if polling separately, otherwise reuse the active session events
+  let inputEvents = $derived(
+    inputSessionId === activeSessionId ? events : (inputEventsQuery.data ?? [])
+  );
 
   function agentName(agentId: string): string {
     const agent = agents.find(a => a.id === agentId);
     return agent?.name ?? agentId.slice(0, 8);
   }
 
-  function duration(exec: ExecDetail): string {
+  function duration(exec: Execution): string {
     const start = new Date(exec.created_at).getTime();
     const end = exec.completed_at ? new Date(exec.completed_at).getTime() : Date.now();
     const diff = Math.floor((end - start) / 1000);
@@ -58,72 +89,8 @@
     return `${h}h ${m % 60}m`;
   }
 
-  async function poll() {
-    const id = prevExecId;
-    try {
-      const result = await api.getExecution(id);
-      if (prevExecId !== id) return;
-      execution = result;
-      error = null;
-
-      if (terminalStatuses.has(result.status)) {
-        stopPolling();
-      }
-    } catch (e) {
-      if (prevExecId !== id) return;
-      execution = null;
-      error = e instanceof Error ? e.message : 'Failed to load';
-    } finally {
-      loading = false;
-    }
-
-    const session = execution?.sessions.find(s => !s.parent_session_id);
-    if (!session) return;
-    const sid = selectedSessionId ?? session.id;
-    try {
-      const evs = await api.getSessionEvents(sid);
-      if (prevExecId !== id) return;
-      events = evs;
-    } catch {
-      // retry next poll
-    }
-  }
-
-  function stopPolling() {
-    if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }
-  }
-
-  function startForId(id: string) {
-    stopPolling();
-    prevExecId = id;
-    loading = true;
-    execution = null;
-    events = [];
-    selectedSessionId = null;
-    poll();
-    detailTimer = setInterval(poll, 3000);
-  }
-
-  $effect.pre(() => {
-    if (executionId !== prevExecId) {
-      startForId(executionId);
-    }
-  });
-
-  onDestroy(stopPolling);
-
   function handleSessionSelect(sessionId: string | null) {
     selectedSessionId = sessionId;
-    const session = execution?.sessions.find(s => !s.parent_session_id);
-    if (!session) return;
-    const sid = sessionId ?? session.id;
-    const capturedExecId = executionId;
-    const capturedSid = sid;
-    api.getSessionEvents(sid).then(evs => {
-      if (prevExecId === capturedExecId && (selectedSessionId ?? session.id) === capturedSid) {
-        events = evs;
-      }
-    }).catch(() => {});
   }
 </script>
 
@@ -131,29 +98,27 @@
   <div class="detail-loading">Loading execution...</div>
 {:else if error}
   <div class="detail-error">{error}</div>
-{:else if execution}
+{:else if detail}
   <div class="detail-view scroll-thin">
     <div class="detail-header">
       <div class="detail-title-row">
         <h2 class="detail-title">{displayTitle}</h2>
-        <StatusBadge status={execution.status} />
+        <StatusBadge status={detail.execution.status} />
       </div>
       <div class="detail-meta">
         {#if masterSession}
           <span>Agent: {agentName(masterSession.agent_id)}</span>
           <span class="meta-sep">&middot;</span>
         {/if}
-        <span>{duration(execution)}</span>
+        <span>{duration(detail.execution)}</span>
       </div>
     </div>
 
-    {#if execution.status === 'input-required'}
-      <QuestionBanner {execution} {agents} />
-    {/if}
+    <QuestionBanner execution={detail.execution} sessions={detail.sessions} events={inputEvents} {agents} />
 
-    {#if execution.sessions.length > 0}
+    {#if detail.sessions.length > 0}
       <SessionTree
-        sessions={execution.sessions}
+        sessions={detail.sessions}
         {agents}
         {selectedSessionId}
         onselectsession={handleSessionSelect}
@@ -183,7 +148,7 @@
     {#if viewMode === 'log'}
       <EventsTimeline {events} />
     {:else}
-      <ChatView {events} {agents} sessions={execution.sessions} sessionId={selectedSessionId ?? masterSession?.id ?? null} />
+      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} />
     {/if}
   </div>
 {/if}

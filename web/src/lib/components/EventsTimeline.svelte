@@ -35,101 +35,85 @@
   }
 
   interface ParsedEvent {
-    id: number;
+    key: string;
     time: string;
     icon: string;
     iconClass: string;
     text: string;
   }
 
-  function parseEvent(ev: Event): ParsedEvent | null {
-    const base = { id: ev.id, time: formatTime(ev.created_at) };
+  function parseEventParts(ev: Event): ParsedEvent[] {
+    const time = formatTime(ev.created_at);
 
     if (isStateChangePayload(ev.payload)) {
       const p = ev.payload;
-      return {
-        ...base,
+      return [{
+        key: `${ev.id}`,
+        time,
         icon: '\u25CF',
         iconClass: 'state-change',
         text: p.from ? `${p.from} \u2192 ${p.to}` : `started \u2192 ${p.to}`,
-      };
+      }];
     }
 
     if (isMessagePayload(ev.payload)) {
       const msg = ev.payload;
+      const entries: ParsedEvent[] = [];
 
-      for (const part of msg.parts) {
+      for (let i = 0; i < msg.parts.length; i++) {
+        const part = msg.parts[i];
+        const key = `${ev.id}-${i}`;
+
         if (part.kind === 'data') {
           const d = part.data;
 
           if (isAskUserData(d)) {
-            // Hide non-primary batch events
-            if (d.batch_index > 0) return null;
+            if (d.batch_index > 0) continue;
 
             if (d.importance === 'fyi') {
-              return {
-                ...base,
-                icon: '\u2139',
-                iconClass: 'fyi',
-                text: `FYI: ${truncate(d.question, 80)}`,
-              };
+              entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(d.question, 80)}` });
+            } else {
+              const qText = d.batch_size > 1
+                ? `Asked ${d.batch_size} questions: "${truncate(d.question, 60)}" + ${d.batch_size - 1} more`
+                : `Asked: "${truncate(d.question, 80)}"`;
+              entries.push({ key, time, icon: '\u26A0', iconClass: 'question', text: qText });
             }
-
-            const qText = d.batch_size > 1
-              ? `Asked ${d.batch_size} questions: "${truncate(d.question, 60)}" + ${d.batch_size - 1} more`
-              : `Asked: "${truncate(d.question, 80)}"`;
-            return {
-              ...base,
-              icon: '\u26A0',
-              iconClass: 'question',
-              text: qText,
-            };
+          } else if (isDelegateData(d)) {
+            entries.push({ key, time, icon: '\u2192', iconClass: 'delegate', text: `Delegated to ${d.agent}` });
+          } else if (isHandoffResultData(d)) {
+            entries.push({ key, time, icon: '\u2713', iconClass: 'handoff', text: `Child completed: "${truncate(d.message, 80)}"` });
+          } else {
+            entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[${d.tool}]` });
           }
-
-          if (isDelegateData(d)) {
-            return {
-              ...base,
-              icon: '\u2192',
-              iconClass: 'delegate',
-              text: `Delegated to ${d.agent}`,
-            };
-          }
-
-          if (isHandoffResultData(d)) {
-            return {
-              ...base,
-              icon: '\u2713',
-              iconClass: 'handoff',
-              text: `Child completed: "${truncate(d.message, 80)}"`,
-            };
-          }
-        }
-
-        if (part.kind === 'text') {
+        } else if (part.kind === 'file') {
+          const name = 'file' in part && typeof part.file === 'object' && part.file && 'name' in part.file
+            ? (part.file as { name: string }).name : 'file';
+          entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[file] ${name}` });
+        } else if (part.kind === 'text') {
           if (msg.role === 'user') {
-            return {
-              ...base,
-              icon: '\u25B6',
-              iconClass: 'user',
-              text: `User: ${truncate(part.text, 100)}`,
-            };
+            entries.push({ key, time, icon: '\u25B6', iconClass: 'user', text: `User: ${truncate(part.text, 100)}` });
+          } else {
+            entries.push({ key, time, icon: '\u25CF', iconClass: 'agent', text: truncate(part.text, 120) });
           }
-          return {
-            ...base,
-            icon: '\u25CF',
-            iconClass: 'agent',
-            text: truncate(part.text, 120),
-          };
+        } else {
+          // Fallback for unknown part kinds (tool-use, thinking, cost, etc.)
+          const label = part.kind;
+          const detail = 'text' in part && typeof part.text === 'string'
+            ? truncate(part.text, 80)
+            : 'name' in part && typeof part.name === 'string'
+              ? part.name
+              : '';
+          entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: detail ? `[${label}] ${detail}` : `[${label}]` });
         }
       }
+
+      return entries;
     }
 
-    return null;
+    return [];
   }
 
-  let parsed = $derived(events
-    .map(parseEvent)
-    .filter((e): e is ParsedEvent => e !== null));
+  let parsed = $derived(events.flatMap(parseEventParts));
 </script>
 
 <div class="timeline-section">
@@ -137,7 +121,7 @@
     {#if parsed.length === 0}
       <div class="timeline-empty">No events yet</div>
     {:else}
-      {#each parsed as ev (ev.id)}
+      {#each parsed as ev (ev.key)}
         <div class="timeline-entry">
           <span class="ev-time">{ev.time}</span>
           <span class="ev-icon {ev.iconClass}">{ev.icon}</span>

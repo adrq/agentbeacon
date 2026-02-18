@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { executions, executionsLoading, executionsError, inputRequiredCount, startPolling, stopPolling } from '../stores/executions';
+  import { selectedFilterProjectId } from '../stores/appState';
+  import { executionsQuery } from '../queries/executions';
+  import { projectsQuery } from '../queries/projects';
   import { router } from '../router';
   import ExecutionListItem from './ExecutionListItem.svelte';
 
@@ -13,7 +14,20 @@
     'canceled': 5,
   };
 
-  let sorted = $derived([...$executions].sort((a, b) => {
+  const projects = projectsQuery();
+  const execsQuery = executionsQuery(() => $selectedFilterProjectId);
+
+  let executions = $derived(execsQuery.data ?? []);
+
+  let inputRequiredCount = $derived(
+    executions.filter(e => e.status === 'input-required').length
+  );
+
+  let projectNameMap = $derived(
+    new Map((projects.data ?? []).map(p => [p.id, p.name]))
+  );
+
+  let sorted = $derived([...executions].sort((a, b) => {
     const orderDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
     if (orderDiff !== 0) return orderDiff;
     return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
@@ -23,28 +37,41 @@
     const first = sorted.find(e => e.status === 'input-required');
     if (first) router.navigate(`/execution/${first.id}`);
   }
-
-  onMount(() => startPolling());
-  onDestroy(() => stopPolling());
 </script>
 
 <div class="exec-list scroll-thin">
-  {#if $inputRequiredCount > 0}
+  {#if (projects.data ?? []).length > 0}
+    <div class="filter-bar">
+      <select
+        class="filter-select"
+        value={$selectedFilterProjectId ?? ''}
+        onchange={(e) => selectedFilterProjectId.set(e.currentTarget.value || null)}
+        aria-label="Filter by project"
+      >
+        <option value="">All Projects</option>
+        {#each projects.data ?? [] as project}
+          <option value={project.id}>{project.name}</option>
+        {/each}
+      </select>
+    </div>
+  {/if}
+
+  {#if inputRequiredCount > 0}
     <button class="attention-banner" onclick={handleAttentionClick} aria-label="Jump to first execution needing answers">
       <span class="attention-icon" aria-hidden="true">!</span>
-      <span>{$inputRequiredCount} question{$inputRequiredCount > 1 ? 's' : ''} waiting</span>
+      <span>{inputRequiredCount} question{inputRequiredCount > 1 ? 's' : ''} waiting</span>
     </button>
   {/if}
 
-  {#if $executionsLoading}
+  {#if execsQuery.isLoading}
     <div class="list-message">Loading...</div>
-  {:else if $executionsError}
-    <div class="list-message list-error">{$executionsError}</div>
+  {:else if execsQuery.isError}
+    <div class="list-message list-error">{execsQuery.error?.message ?? 'Failed to load'}</div>
   {:else if sorted.length === 0}
     <div class="list-message">No executions yet</div>
   {:else}
     {#each sorted as execution (execution.id)}
-      <ExecutionListItem {execution} />
+      <ExecutionListItem {execution} projectName={projectNameMap.get(execution.project_id ?? '') ?? null} />
     {/each}
   {/if}
 </div>
@@ -55,6 +82,28 @@
     overflow-y: auto;
     display: flex;
     flex-direction: column;
+  }
+
+  .filter-bar {
+    padding: 0.5rem;
+    border-bottom: 1px solid hsl(var(--border));
+  }
+
+  .filter-select {
+    width: 100%;
+    padding: 0.375rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.25rem;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-size: 0.75rem;
+    font-family: inherit;
+  }
+
+  .filter-select:focus {
+    outline: none;
+    border-color: hsl(var(--primary));
+    box-shadow: 0 0 0 2px hsl(var(--primary) / 0.15);
   }
 
   .attention-banner {
