@@ -83,7 +83,7 @@
       for (const result of results) {
         if (result.status !== 'fulfilled') continue;
         const { session, events } = result.value;
-        const questions = extractQuestions(events);
+        const { questions } = extractQuestions(events);
         if (questions.length === 0) continue;
 
         const exec = execs.find(e => e.id === session.execution_id);

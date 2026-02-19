@@ -12,7 +12,7 @@
 
   let selected = $derived($selectedExecutionId === execution.id);
   let needsInput = $derived(execution.status === 'input-required');
-  let displayTitle = $derived(execution.title || execution.id.slice(0, 8));
+  let displayTitle = $derived(execution.title ?? execution.id.slice(0, 8));
   let statusText = $derived(needsInput ? 'awaiting input'
     : execution.status === 'working' ? 'working'
     : execution.status === 'submitted' ? 'submitted'

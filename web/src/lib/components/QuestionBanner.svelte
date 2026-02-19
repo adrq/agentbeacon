@@ -28,10 +28,7 @@
 
   // Update questions only when the batch changes, preserving answers otherwise
   $effect(() => {
-    const extracted = extractQuestions(events);
-    const newBatchId = extracted.length > 0
-      ? events.filter(e => 'parts' in (e.payload as Record<string, unknown>)).at(-1)?.id?.toString() ?? ''
-      : '';
+    const { batchId: newBatchId, questions: extracted } = extractQuestions(events);
     if (newBatchId !== lastBatchId || extracted.length !== questions.length) {
       lastBatchId = newBatchId;
       questions = extracted;
@@ -48,6 +45,7 @@
       allAnswered = false;
       error = null;
       lastBatchId = '';
+      questions = [];
     }
   });
 
@@ -99,9 +97,7 @@
         {#if inputSessionId}
           from {agentName(sessions.find(s => s.id === inputSessionId)?.agent_id ?? '')}
         {/if}
-        {#if execution.title}
-          &middot; {execution.title}
-        {/if}
+        {#if execution.title}&middot; {execution.title}{/if}
       </span>
     </div>
 

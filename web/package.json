@@ -23,7 +23,15 @@
     "vite": "^7.1.2"
   },
   "dependencies": {
+    "@shikijs/rehype": "^3.22.0",
     "@tanstack/svelte-query": "^6.0.18",
-    "bits-ui": "^2.15.8"
+    "bits-ui": "^2.15.8",
+    "rehype-sanitize": "^6.0.0",
+    "rehype-stringify": "^10.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "shiki": "^3.22.0",
+    "unified": "^11.0.5"
   }
 }

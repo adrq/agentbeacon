@@ -4,7 +4,7 @@ export type ExecutionStatus =
 
 export type SessionStatus = ExecutionStatus;
 export type CoordinationMode = 'sdk' | 'mcp_poll';
-export type EventType = 'message' | 'state_change';
+export type EventType = 'message' | 'state_change' | 'platform';
 export type Theme = 'light' | 'dark';
 export type Screen = 'Home' | 'ExecutionDetail' | 'Projects' | 'ProjectDetail' | 'Agents';
 export type AgentType = 'claude_sdk' | 'codex_sdk' | 'copilot_sdk' | 'opencode_sdk' | 'acp' | 'a2a';
@@ -89,18 +89,21 @@ export interface MessagePayload {
 
 export type MessagePart =
   | { kind: 'text'; text: string }
-  | { kind: 'data'; data: ToolCallData }
+  | { kind: 'data'; data: DataPartPayload }
   | { kind: 'file'; file: { name: string }; mimeType?: string }
   | { kind: string; [key: string]: unknown };
 
-export type ToolCallData =
+export type DataPartPayload =
   | AskUserData
   | DelegateData
   | HandoffResultData
-  | { tool: string; [key: string]: unknown };
+  | ToolCallActivityData
+  | ThinkingData
+  | PlanData
+  | { type: string; [key: string]: unknown };
 
 export interface AskUserData {
-  tool: 'ask_user';
+  type: 'ask_user';
   batch_id: string;
   batch_size: number;
   batch_index: number;
@@ -116,16 +119,34 @@ export interface QuestionOption {
 }
 
 export interface DelegateData {
-  tool: 'delegate';
+  type: 'delegate';
   agent: string;
   child_session_id: string;
   prompt: string;
 }
 
 export interface HandoffResultData {
-  tool: 'handoff_result';
+  type: 'handoff_result';
   child_session_id: string;
   message: string;
+}
+
+export interface ToolCallActivityData {
+  type: 'tool_call';
+  tool_call_id: string;
+  title: string;
+  status?: string;
+  kind?: string;
+}
+
+export interface ThinkingData {
+  type: 'thinking';
+  text: string;
+}
+
+export interface PlanData {
+  type: 'plan';
+  entries: unknown[];
 }
 
 export interface StateChangePayload {
@@ -155,14 +176,26 @@ export function isStateChangePayload(p: MessagePayload | StateChangePayload): p 
   return 'to' in p && !('role' in p);
 }
 
-export function isAskUserData(d: ToolCallData): d is AskUserData {
-  return d.tool === 'ask_user';
+export function isAskUserData(d: DataPartPayload): d is AskUserData {
+  return d.type === 'ask_user';
 }
 
-export function isDelegateData(d: ToolCallData): d is DelegateData {
-  return d.tool === 'delegate';
+export function isDelegateData(d: DataPartPayload): d is DelegateData {
+  return d.type === 'delegate';
 }
 
-export function isHandoffResultData(d: ToolCallData): d is HandoffResultData {
-  return d.tool === 'handoff_result';
+export function isHandoffResultData(d: DataPartPayload): d is HandoffResultData {
+  return d.type === 'handoff_result';
+}
+
+export function isToolCallActivity(d: DataPartPayload): d is ToolCallActivityData {
+  return d.type === 'tool_call';
+}
+
+export function isThinkingData(d: DataPartPayload): d is ThinkingData {
+  return d.type === 'thinking';
+}
+
+export function isPlanData(d: DataPartPayload): d is PlanData {
+  return d.type === 'plan';
 }

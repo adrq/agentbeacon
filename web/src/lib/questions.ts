@@ -1,4 +1,4 @@
-import type { Event, AskUserData } from './types';
+import type { Event, AskUserData, DataPartPayload } from './types';
 import { isMessagePayload, isAskUserData } from './types';
 import { api } from './api';
 
@@ -9,20 +9,20 @@ export interface QuestionState {
   answer: string;
 }
 
-export function extractQuestions(events: Event[]): QuestionState[] {
+export function extractQuestions(events: Event[]): { batchId: string; questions: QuestionState[] } {
   const askEvents: { data: AskUserData; event: Event }[] = [];
 
   for (const ev of events) {
     if (isMessagePayload(ev.payload)) {
       for (const part of ev.payload.parts) {
-        if (part.kind === 'data' && isAskUserData(part.data) && part.data.importance === 'blocking') {
-          askEvents.push({ data: part.data, event: ev });
+        if (part.kind === 'data' && isAskUserData(part.data as DataPartPayload) && (part.data as AskUserData).importance === 'blocking') {
+          askEvents.push({ data: part.data as AskUserData, event: ev });
         }
       }
     }
   }
 
-  if (askEvents.length === 0) return [];
+  if (askEvents.length === 0) return { batchId: '', questions: [] };
 
   // Group by batch_id, take latest batch
   const batches = new Map<string, typeof askEvents>();
@@ -45,12 +45,15 @@ export function extractQuestions(events: Event[]): QuestionState[] {
   const batch = batches.get(latestBatchId) ?? [];
   batch.sort((a, b) => a.data.batch_index - b.data.batch_index);
 
-  return batch.map(b => ({
-    questionText: b.data.question,
-    context: b.data.context,
-    options: b.data.options,
-    answer: '',
-  }));
+  return {
+    batchId: latestBatchId,
+    questions: batch.map(b => ({
+      questionText: b.data.question,
+      context: b.data.context,
+      options: b.data.options,
+      answer: '',
+    })),
+  };
 }
 
 export function composeAnswer(questions: QuestionState[]): string {

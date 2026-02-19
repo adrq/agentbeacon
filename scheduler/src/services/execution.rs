@@ -132,22 +132,6 @@ pub async fn create_execution(
         .map(|s| s.to_string())
         .unwrap_or_else(|| execution_id.clone());
 
-    // Auto-generate title from prompt if not provided
-    let effective_title = title.map(|t| t.to_string()).unwrap_or_else(|| {
-        let trimmed = prompt.trim();
-        if trimmed.len() <= 80 {
-            trimmed.to_string()
-        } else {
-            // Use char_indices to avoid panicking on multi-byte UTF-8
-            let end = trimmed
-                .char_indices()
-                .nth(77)
-                .map(|(i, _)| i)
-                .unwrap_or(trimmed.len());
-            format!("{}...", &trimmed[..end])
-        }
-    });
-
     // Working directory resolution + worktree creation
     let (session_cwd, worktree_path) = if let Some(cwd_val) = resolved_cwd_from_param {
         // Explicit cwd takes priority
@@ -209,7 +193,7 @@ pub async fn create_execution(
         &effective_context_id,
         prompt,
         project_id,
-        &effective_title,
+        title,
         worktree_path.as_deref(),
         &session_id,
         &agent,
@@ -235,7 +219,7 @@ async fn persist_and_enqueue(
     context_id: &str,
     prompt: &str,
     project_id: Option<&str>,
-    title: &str,
+    title: Option<&str>,
     worktree_path: Option<&str>,
     session_id: &str,
     agent: &db::agents::Agent,
@@ -249,7 +233,7 @@ async fn persist_and_enqueue(
         prompt,
         project_id,
         None, // parent_execution_id
-        Some(title),
+        title,
         worktree_path,
     )
     .await?;

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event } from '../types';
-  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isToolCallActivity, isThinkingData, isPlanData } from '../types';
   interface Props {
     events: Event[];
   }
@@ -65,7 +65,7 @@
         const key = `${ev.id}-${i}`;
 
         if (part.kind === 'data') {
-          const d = part.data;
+          const d = part.data as import('../types').DataPartPayload;
 
           if (isAskUserData(d)) {
             if (d.batch_index > 0) continue;
@@ -82,18 +82,25 @@
             entries.push({ key, time, icon: '\u2192', iconClass: 'delegate', text: `Delegated to ${d.agent}` });
           } else if (isHandoffResultData(d)) {
             entries.push({ key, time, icon: '\u2713', iconClass: 'handoff', text: `Child completed: "${truncate(d.message, 80)}"` });
+          } else if (isToolCallActivity(d)) {
+            entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: d.title });
+          } else if (isThinkingData(d)) {
+            entries.push({ key, time, icon: '\u22EF', iconClass: 'agent', text: truncate(d.text, 200) });
+          } else if (isPlanData(d)) {
+            entries.push({ key, time, icon: '\u2630', iconClass: 'agent', text: `Plan (${d.entries.length} steps)` });
           } else {
-            entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[${d.tool}]` });
+            entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[${d.type}]` });
           }
         } else if (part.kind === 'file') {
           const name = 'file' in part && typeof part.file === 'object' && part.file && 'name' in part.file
             ? (part.file as { name: string }).name : 'file';
           entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[file] ${name}` });
         } else if (part.kind === 'text') {
+          const text = part.text as string;
           if (msg.role === 'user') {
-            entries.push({ key, time, icon: '\u25B6', iconClass: 'user', text: `User: ${truncate(part.text, 100)}` });
+            entries.push({ key, time, icon: '\u25B6', iconClass: 'user', text: `User: ${truncate(text, 100)}` });
           } else {
-            entries.push({ key, time, icon: '\u25CF', iconClass: 'agent', text: truncate(part.text, 120) });
+            entries.push({ key, time, icon: '\u25CF', iconClass: 'agent', text: truncate(text, 120) });
           }
         } else {
           // Fallback for unknown part kinds (tool-use, thinking, cost, etc.)

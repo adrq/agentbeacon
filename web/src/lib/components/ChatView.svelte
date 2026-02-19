@@ -1,8 +1,9 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, SessionSummary } from '../types';
-  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isToolCallActivity, isThinkingData, isPlanData } from '../types';
   import { api } from '../api';
+  import Markdown from './Markdown.svelte';
 
   interface Props {
     events: Event[];
@@ -105,7 +106,7 @@
 
         for (const part of msg.parts) {
           if (part.kind === 'data') {
-            const d = part.data;
+            const d = part.data as import('../types').DataPartPayload;
             if (isAskUserData(d)) {
               if (d.batch_index > 0) continue;
               if (d.importance === 'fyi') {
@@ -120,18 +121,25 @@
               entries.push({ type: 'tool', icon: '\u2192', text: `Delegated to ${d.agent}`, time, key: `${ev.id}-${seq++}` });
             } else if (isHandoffResultData(d)) {
               entries.push({ type: 'tool', icon: '\u2713', text: `Child completed: ${d.message}`, time, key: `${ev.id}-${seq++}` });
+            } else if (isToolCallActivity(d)) {
+              entries.push({ type: 'tool', icon: '\u2699', text: d.title, time, key: `${ev.id}-${seq++}` });
+            } else if (isThinkingData(d)) {
+              entries.push({ type: 'tool', icon: '\u22EF', text: d.text.length > 200 ? d.text.slice(0, 200) + '\u2026' : d.text, time, key: `${ev.id}-${seq++}` });
+            } else if (isPlanData(d)) {
+              entries.push({ type: 'tool', icon: '\u2630', text: `Plan (${d.entries.length} steps)`, time, key: `${ev.id}-${seq++}` });
             } else {
-              entries.push({ type: 'tool', icon: '\u25A1', text: `[${d.tool}]`, time, key: `${ev.id}-${seq++}` });
+              entries.push({ type: 'tool', icon: '\u25A1', text: `[${d.type}]`, time, key: `${ev.id}-${seq++}` });
             }
           } else if (part.kind === 'file') {
             const name = 'file' in part && typeof part.file === 'object' && part.file && 'name' in part.file
               ? (part.file as { name: string }).name : 'file';
             entries.push({ type: 'tool', icon: '\u25A1', text: `[file] ${name}`, time, key: `${ev.id}-${seq++}` });
           } else if (part.kind === 'text') {
+            const text = part.text as string;
             if (msg.role === 'user') {
-              entries.push({ type: 'user', text: part.text, time, key: `${ev.id}-${seq++}` });
+              entries.push({ type: 'user', text, time, key: `${ev.id}-${seq++}` });
             } else {
-              entries.push({ type: 'agent', text: part.text, agentLabel, time, key: `${ev.id}-${seq++}` });
+              entries.push({ type: 'agent', text, agentLabel, time, key: `${ev.id}-${seq++}` });
             }
           } else {
             // Fallback for unknown part kinds (tool-use, thinking, cost, etc.)
@@ -163,7 +171,7 @@
           <div class="chat-row agent-row">
             <div class="bubble agent-bubble">
               <div class="bubble-header">{entry.agentLabel}</div>
-              <div class="bubble-text">{entry.text}</div>
+              <div class="bubble-text"><Markdown text={entry.text} /></div>
               <div class="bubble-time">{entry.time}</div>
             </div>
           </div>
@@ -284,6 +292,7 @@
   }
 
   .agent-bubble {
+    width: 100%;
     background: hsl(var(--muted));
     color: hsl(var(--foreground));
     border-bottom-left-radius: 0.25rem;
@@ -302,7 +311,7 @@
     margin-bottom: 0.125rem;
   }
 
-  .bubble-text {
+  .user-bubble .bubble-text {
     white-space: pre-wrap;
   }
 
