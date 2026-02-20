@@ -61,7 +61,7 @@ struct Args {
     workers: usize,
 
     /// Port for the scheduler to listen on
-    #[arg(long, default_value_t = 9456)]
+    #[arg(long, default_value_t = 9456, env = "AGENTBEACON_PORT")]
     scheduler_port: u16,
 
     /// Worker sync polling interval (e.g., '1s', '500ms'). If not specified, workers use their default (5s)

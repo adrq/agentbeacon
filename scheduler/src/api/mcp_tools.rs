@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::api::auth::{McpRole, McpSession};
 use crate::api::jsonrpc::{JsonRpcError, JsonRpcResponse};
-use crate::app::AppState;
+use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::queue::TaskAssignment;
 
@@ -108,7 +108,7 @@ async fn handle_handoff(
         "role": "agent",
         "parts": [{"kind": "data", "data": {"type": "handoff", "message": message}}]
     });
-    db::events::insert(
+    let event_id = db::events::insert(
         &state.db_pool,
         &auth.execution_id,
         Some(&auth.session_id),
@@ -117,6 +117,10 @@ async fn handle_handoff(
     )
     .await
     .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    let _ = state.event_broadcast.send(EventNotification {
+        execution_id: auth.execution_id.clone(),
+        event_id,
+    });
 
     // Update session to completed
     db::sessions::update_status(&state.db_pool, &auth.session_id, "completed")
@@ -125,7 +129,7 @@ async fn handle_handoff(
 
     // Record state_change event
     let state_event = json!({"from": auth.status, "to": "completed"});
-    db::events::insert(
+    let event_id = db::events::insert(
         &state.db_pool,
         &auth.execution_id,
         Some(&auth.session_id),
@@ -134,6 +138,10 @@ async fn handle_handoff(
     )
     .await
     .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    let _ = state.event_broadcast.send(EventNotification {
+        execution_id: auth.execution_id.clone(),
+        event_id,
+    });
 
     // Deliver handoff result to parent session's inbox
     let child_session = db::sessions::get_by_id(&state.db_pool, &auth.session_id)
@@ -150,7 +158,7 @@ async fn handle_handoff(
                 "message": message
             }}]
         });
-        db::events::insert(
+        let event_id = db::events::insert(
             &state.db_pool,
             &auth.execution_id,
             Some(parent_id),
@@ -159,6 +167,10 @@ async fn handle_handoff(
         )
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+        let _ = state.event_broadcast.send(EventNotification {
+            execution_id: auth.execution_id.clone(),
+            event_id,
+        });
 
         // Look up agent name for context prefix — fallback to agent_id if lookup fails
         // so the handoff result still reaches the master even if enrichment fails
@@ -362,7 +374,7 @@ async fn handle_delegate(
             "prompt": prompt
         }}]
     });
-    db::events::insert(
+    let event_id = db::events::insert(
         &state.db_pool,
         &auth.execution_id,
         Some(&auth.session_id),
@@ -371,6 +383,10 @@ async fn handle_delegate(
     )
     .await
     .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    let _ = state.event_broadcast.send(EventNotification {
+        execution_id: auth.execution_id.clone(),
+        event_id,
+    });
 
     let result_text = serde_json::to_string(&json!({"session_id": child_session_id})).unwrap();
     Ok(json!({
@@ -441,6 +457,10 @@ async fn handle_ask_user(
         )
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+        let _ = state.event_broadcast.send(EventNotification {
+            execution_id: auth.execution_id.clone(),
+            event_id,
+        });
 
         question_ids.push(event_id);
     }
@@ -452,7 +472,7 @@ async fn handle_ask_user(
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
         let session_state_event = json!({"from": auth.status, "to": "input-required"});
-        db::events::insert(
+        let event_id = db::events::insert(
             &state.db_pool,
             &auth.execution_id,
             Some(&auth.session_id),
@@ -461,6 +481,10 @@ async fn handle_ask_user(
         )
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+        let _ = state.event_broadcast.send(EventNotification {
+            execution_id: auth.execution_id.clone(),
+            event_id,
+        });
 
         if auth.role == McpRole::Master {
             let execution = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
@@ -472,7 +496,7 @@ async fn handle_ask_user(
                 .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
             let exec_state_event = json!({"from": execution.status, "to": "input-required"});
-            db::events::insert(
+            let event_id = db::events::insert(
                 &state.db_pool,
                 &auth.execution_id,
                 None,
@@ -481,6 +505,10 @@ async fn handle_ask_user(
             )
             .await
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+            let _ = state.event_broadcast.send(EventNotification {
+                execution_id: auth.execution_id.clone(),
+                event_id,
+            });
         }
     }
 

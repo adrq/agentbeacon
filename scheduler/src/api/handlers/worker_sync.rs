@@ -6,7 +6,7 @@ use tokio::time::Instant;
 
 use serde_json::json;
 
-use crate::app::AppState;
+use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::queue::TaskAssignment;
 
@@ -45,6 +45,8 @@ pub struct SessionResult {
     pub error: Option<String>,
     #[serde(default)]
     pub error_kind: Option<String>,
+    #[serde(default)]
+    pub stderr: Option<String>,
 }
 
 /// Worker sync response — tagged union
@@ -105,7 +107,7 @@ pub async fn handle_worker_sync(
             match db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
                 Ok(session) => {
                     let payload_str = serde_json::to_string(output).unwrap();
-                    if let Err(e) = db::events::insert(
+                    match db::events::insert(
                         &state.db_pool,
                         &session.execution_id,
                         Some(&result.session_id),
@@ -114,12 +116,20 @@ pub async fn handle_worker_sync(
                     )
                     .await
                     {
-                        tracing::error!(
-                            session_id = %result.session_id,
-                            execution_id = %session.execution_id,
-                            error = %e,
-                            "failed to insert agent message event"
-                        );
+                        Ok(event_id) => {
+                            let _ = state.event_broadcast.send(EventNotification {
+                                execution_id: session.execution_id.clone(),
+                                event_id,
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                session_id = %result.session_id,
+                                execution_id = %session.execution_id,
+                                error = %e,
+                                "failed to insert agent message event"
+                            );
+                        }
                     }
                 }
                 Err(e) => {
@@ -150,8 +160,11 @@ pub async fn handle_worker_sync(
                 if let Some(ref error_msg) = result.error {
                     event_payload["error"] = json!(error_msg);
                 }
+                if let Some(ref stderr_text) = result.stderr {
+                    event_payload["stderr"] = json!(stderr_text);
+                }
 
-                if let Err(e) = db::events::insert(
+                match db::events::insert(
                     &state.db_pool,
                     &session.execution_id,
                     Some(&result.session_id),
@@ -160,11 +173,19 @@ pub async fn handle_worker_sync(
                 )
                 .await
                 {
-                    tracing::error!(
-                        session_id = %result.session_id,
-                        error = %e,
-                        "failed to insert state_change event"
-                    );
+                    Ok(event_id) => {
+                        let _ = state.event_broadcast.send(EventNotification {
+                            execution_id: session.execution_id.clone(),
+                            event_id,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            session_id = %result.session_id,
+                            error = %e,
+                            "failed to insert state_change event"
+                        );
+                    }
                 }
 
                 if let Err(e) =
@@ -179,20 +200,51 @@ pub async fn handle_worker_sync(
                 }
 
                 // Only propagate to execution for master sessions with failure (not cancellation)
-                if propagate_to_execution
-                    && session.parent_session_id.is_none()
-                    && let Err(e) = db::executions::update_status(
+                if propagate_to_execution && session.parent_session_id.is_none() {
+                    let exec_from =
+                        db::executions::get_by_id(&state.db_pool, &session.execution_id)
+                            .await
+                            .map(|e| e.status)
+                            .unwrap_or_else(|_| "working".into());
+
+                    if let Err(e) = db::executions::update_status(
                         &state.db_pool,
                         &session.execution_id,
                         "failed",
                     )
                     .await
-                {
-                    tracing::error!(
-                        execution_id = %session.execution_id,
-                        error = %e,
-                        "failed to transition execution to failed"
-                    );
+                    {
+                        tracing::error!(
+                            execution_id = %session.execution_id,
+                            error = %e,
+                            "failed to transition execution to failed"
+                        );
+                    }
+
+                    let exec_event = json!({"from": exec_from, "to": "failed"});
+                    match db::events::insert(
+                        &state.db_pool,
+                        &session.execution_id,
+                        None,
+                        "state_change",
+                        &serde_json::to_string(&exec_event).unwrap(),
+                    )
+                    .await
+                    {
+                        Ok(event_id) => {
+                            let _ = state.event_broadcast.send(EventNotification {
+                                execution_id: session.execution_id.clone(),
+                                event_id,
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                execution_id = %session.execution_id,
+                                error = %e,
+                                "failed to insert execution failed state_change event"
+                            );
+                        }
+                    }
                 }
             }
         } else if let Some(ref error_msg) = result.error {
@@ -204,25 +256,39 @@ pub async fn handle_worker_sync(
             );
 
             if let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
-                if let Err(e) = db::events::insert(
+                match db::events::insert(
                     &state.db_pool,
                     &session.execution_id,
                     Some(&result.session_id),
                     "state_change",
-                    &serde_json::to_string(&json!({
-                        "from": session.status,
-                        "to": "failed",
-                        "error": error_msg,
-                    }))
+                    &serde_json::to_string(&{
+                        let mut payload = json!({
+                            "from": session.status,
+                            "to": "failed",
+                            "error": error_msg,
+                        });
+                        if let Some(ref stderr_text) = result.stderr {
+                            payload["stderr"] = json!(stderr_text);
+                        }
+                        payload
+                    })
                     .unwrap(),
                 )
                 .await
                 {
-                    tracing::error!(
-                        session_id = %result.session_id,
-                        error = %e,
-                        "failed to insert error state_change event"
-                    );
+                    Ok(event_id) => {
+                        let _ = state.event_broadcast.send(EventNotification {
+                            execution_id: session.execution_id.clone(),
+                            event_id,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            session_id = %result.session_id,
+                            error = %e,
+                            "failed to insert error state_change event"
+                        );
+                    }
                 }
 
                 if let Err(e) =
@@ -235,19 +301,51 @@ pub async fn handle_worker_sync(
                     );
                 }
 
-                if session.parent_session_id.is_none()
-                    && let Err(e) = db::executions::update_status(
+                if session.parent_session_id.is_none() {
+                    let exec_from =
+                        db::executions::get_by_id(&state.db_pool, &session.execution_id)
+                            .await
+                            .map(|e| e.status)
+                            .unwrap_or_else(|_| "working".into());
+
+                    if let Err(e) = db::executions::update_status(
                         &state.db_pool,
                         &session.execution_id,
                         "failed",
                     )
                     .await
-                {
-                    tracing::error!(
-                        execution_id = %session.execution_id,
-                        error = %e,
-                        "failed to transition execution to failed"
-                    );
+                    {
+                        tracing::error!(
+                            execution_id = %session.execution_id,
+                            error = %e,
+                            "failed to transition execution to failed"
+                        );
+                    }
+
+                    let exec_event = json!({"from": exec_from, "to": "failed"});
+                    match db::events::insert(
+                        &state.db_pool,
+                        &session.execution_id,
+                        None,
+                        "state_change",
+                        &serde_json::to_string(&exec_event).unwrap(),
+                    )
+                    .await
+                    {
+                        Ok(event_id) => {
+                            let _ = state.event_broadcast.send(EventNotification {
+                                execution_id: session.execution_id.clone(),
+                                event_id,
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                execution_id = %session.execution_id,
+                                error = %e,
+                                "failed to insert execution failed state_change event"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -300,7 +398,7 @@ pub async fn handle_worker_sync(
                         "from": "working",
                         "to": "input-required",
                     });
-                    if let Err(e) = db::events::insert(
+                    match db::events::insert(
                         &state.db_pool,
                         &session.execution_id,
                         Some(&result.session_id),
@@ -309,11 +407,19 @@ pub async fn handle_worker_sync(
                     )
                     .await
                     {
-                        tracing::warn!(
-                            session_id = %result.session_id,
-                            error = %e,
-                            "failed to insert input-required state_change event"
-                        );
+                        Ok(event_id) => {
+                            let _ = state.event_broadcast.send(EventNotification {
+                                execution_id: session.execution_id.clone(),
+                                event_id,
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                session_id = %result.session_id,
+                                error = %e,
+                                "failed to insert input-required state_change event"
+                            );
+                        }
                     }
 
                     // Propagate to execution for master sessions
@@ -336,7 +442,7 @@ pub async fn handle_worker_sync(
                             "from": "working",
                             "to": "input-required",
                         });
-                        if let Err(e) = db::events::insert(
+                        match db::events::insert(
                             &state.db_pool,
                             &session.execution_id,
                             None,
@@ -345,11 +451,19 @@ pub async fn handle_worker_sync(
                         )
                         .await
                         {
-                            tracing::warn!(
-                                execution_id = %session.execution_id,
-                                error = %e,
-                                "failed to insert execution input-required state_change event"
-                            );
+                            Ok(event_id) => {
+                                let _ = state.event_broadcast.send(EventNotification {
+                                    execution_id: session.execution_id.clone(),
+                                    event_id,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    execution_id = %session.execution_id,
+                                    error = %e,
+                                    "failed to insert execution input-required state_change event"
+                                );
+                            }
                         }
                     }
                 }
@@ -461,7 +575,7 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
 
         // Emit session state_change event
         let session_state_event = json!({"from": "submitted", "to": "working"});
-        db::events::insert(
+        let event_id = db::events::insert(
             &state.db_pool,
             &session.execution_id,
             Some(&session.id),
@@ -473,6 +587,10 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
             tracing::error!("session state_change event failed: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+        let _ = state.event_broadcast.send(EventNotification {
+            execution_id: session.execution_id.clone(),
+            event_id,
+        });
 
         // Transition execution submitted → working (only on first session claim)
         let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id)
@@ -491,7 +609,7 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
                 })?;
 
             let exec_state_event = json!({"from": "submitted", "to": "working"});
-            db::events::insert(
+            let event_id = db::events::insert(
                 &state.db_pool,
                 &session.execution_id,
                 None,
@@ -503,6 +621,10 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
                 tracing::error!("execution state_change event failed: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+            let _ = state.event_broadcast.send(EventNotification {
+                execution_id: session.execution_id.clone(),
+                event_id,
+            });
         }
 
         // Claimed successfully — try to pop initial task

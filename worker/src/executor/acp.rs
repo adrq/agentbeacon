@@ -1,23 +1,32 @@
 //! ACP executor adapter wrapping existing ACP subprocess management.
 //!
 //! Background task pattern: `start()` initializes the ACP subprocess (JSON-RPC
-//! initialize + session/new) then spawns a background task that processes
-//! commands sequentially. Mid-turn Prompt commands are buffered until the
-//! current turn completes (ACP doesn't support concurrent JSON-RPC prompts).
+//! initialize + session/new) then spawns a `tokio::select!`-based event loop
+//! that concurrently polls ACP protocol messages and worker commands. This
+//! ensures Cancel can be received even during an active prompt turn.
 
 use anyhow::{Context, Result};
 use common::Message;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
-use super::{AgentCommand, AgentEvent, ErrorKind, ExecutorHandle, SessionConfig, TurnResult};
+use super::{
+    AgentCommand, AgentEvent, ErrorKind, ExecutorHandle, SessionConfig, StderrBuffer, TurnResult,
+    new_stderr_buffer, push_stderr_line, snapshot_stderr,
+};
 use crate::acp::executor::{
-    JsonRpcClient, JsonRpcMessage, LegacyAcpConfig, read_jsonrpc_lines, send_initialize,
-    send_session_new, send_session_prompt, spawn_acp_subprocess, terminate_subprocess,
+    JsonRpcClient, JsonRpcMessage, LegacyAcpConfig, handle_permission_request,
+    handle_permission_request_cancelled, handle_session_update, read_jsonrpc_lines,
+    send_initialize, send_session_new, spawn_acp_subprocess, terminate_subprocess,
     translate_a2a_parts_to_acp_content,
 };
+use crate::acp::protocol::{JsonRpcResponse, SessionPromptParams, SessionPromptResult};
+
+const CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(3);
 
 /// ACP agent configuration parsed from task_payload.agent_config
 #[derive(Debug, Deserialize, Clone)]
@@ -72,6 +81,22 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         .stdout
         .take()
         .context("failed to get subprocess stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("failed to get subprocess stderr")?;
+
+    // Stderr drain: capture to buffer + forward to tracing
+    let stderr_buf = new_stderr_buffer();
+    let buf_clone = stderr_buf.clone();
+    tokio::spawn(async move {
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            tracing::debug!(target: "acp_executor", "{}", line);
+            push_stderr_line(&buf_clone, line);
+        }
+    });
 
     let (notification_tx, mut notification_rx) = mpsc::unbounded_channel();
 
@@ -124,7 +149,7 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         session_id: acp_session_id.clone(),
     });
 
-    // Background task: processes commands sequentially
+    // Background task: select!-based event loop
     let task_handle = tokio::spawn(background_task(
         child,
         client,
@@ -133,6 +158,7 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         cmd_rx,
         event_tx,
         acp_session_id,
+        stderr_buf,
     ));
 
     Ok(ExecutorHandle {
@@ -142,11 +168,95 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
     })
 }
 
-/// Background task that processes ACP commands sequentially.
-///
-/// ACP doesn't support concurrent JSON-RPC requests during a prompt, so
-/// commands are processed one at a time. Cancel is delivered via a separate
-/// channel that `send_session_prompt` monitors.
+// ---------------------------------------------------------------------------
+// PromptPhase state machine
+// ---------------------------------------------------------------------------
+
+/// Tracks the current state of the ACP prompt turn.
+enum PromptPhase {
+    Idle,
+    AwaitingResponse {
+        request_id: String,
+        update_history: Vec<Message>,
+    },
+    Cancelling {
+        request_id: String,
+        update_history: Vec<Message>,
+        deadline: Instant,
+    },
+}
+
+impl PromptPhase {
+    fn is_idle(&self) -> bool {
+        matches!(self, PromptPhase::Idle)
+    }
+
+    fn is_cancelling(&self) -> bool {
+        matches!(self, PromptPhase::Cancelling { .. })
+    }
+
+    fn is_active(&self) -> bool {
+        !self.is_idle()
+    }
+
+    fn has_request_id(&self, id: &str) -> bool {
+        match self {
+            PromptPhase::AwaitingResponse { request_id, .. }
+            | PromptPhase::Cancelling { request_id, .. } => request_id == id,
+            PromptPhase::Idle => false,
+        }
+    }
+
+    fn update_history_mut(&mut self) -> Option<&mut Vec<Message>> {
+        match self {
+            PromptPhase::AwaitingResponse { update_history, .. }
+            | PromptPhase::Cancelling { update_history, .. } => Some(update_history),
+            PromptPhase::Idle => None,
+        }
+    }
+
+    fn deadline(&self) -> Instant {
+        match self {
+            PromptPhase::Cancelling { deadline, .. } => *deadline,
+            // Far future: the `if phase.is_cancelling()` guard prevents this branch
+            // from firing, but tokio::select! may still create the Sleep future.
+            _ => Instant::now() + Duration::from_secs(86400),
+        }
+    }
+
+    /// Transition from AwaitingResponse → Cancelling.
+    fn begin_cancel(self) -> Self {
+        match self {
+            PromptPhase::AwaitingResponse {
+                request_id,
+                update_history,
+            } => PromptPhase::Cancelling {
+                request_id,
+                update_history,
+                deadline: Instant::now() + CANCEL_GRACE_PERIOD,
+            },
+            other => other,
+        }
+    }
+
+    /// Consume phase and return update_history (transitions to Idle implicitly).
+    fn take_history(self) -> Vec<Message> {
+        match self {
+            PromptPhase::AwaitingResponse { update_history, .. }
+            | PromptPhase::Cancelling { update_history, .. } => update_history,
+            PromptPhase::Idle => Vec::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Background task
+// ---------------------------------------------------------------------------
+
+/// Event loop that concurrently polls ACP protocol messages and worker
+/// commands via `tokio::select!`. This ensures Cancel is received even
+/// during an active prompt turn (the root cause of the original bug).
+#[allow(clippy::too_many_arguments)]
 async fn background_task(
     mut child: tokio::process::Child,
     mut client: JsonRpcClient,
@@ -155,76 +265,238 @@ async fn background_task(
     mut cmd_rx: mpsc::UnboundedReceiver<AgentCommand>,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     session_id: String,
+    stderr_buf: StderrBuffer,
 ) {
-    let mut prompt_cancel_tx: Option<mpsc::UnboundedSender<()>> = None;
+    let mut phase = PromptPhase::Idle;
+    let mut pending_prompts: VecDeque<String> = VecDeque::new();
 
     loop {
-        let cmd = match cmd_rx.recv().await {
-            Some(c) => c,
-            None => {
-                // cmd_rx closed — worker dropped cmd_tx, shut down
-                terminate_subprocess(&mut child).await;
-                // Abort reader: `uv run` process trees may keep stdout open
-                // after the parent is killed, so EOF never arrives.
-                reader_handle.abort();
-                return;
-            }
-        };
+        tokio::select! {
+            // Branch 1: ACP protocol messages — always polled regardless of phase.
+            // In Idle: discards stale updates, detects subprocess death.
+            // In AwaitingResponse/Cancelling: processes prompt responses + updates.
+            msg = notification_rx.recv() => {
+                match msg {
+                    Some(JsonRpcMessage::Response(resp)) if phase.has_request_id(&resp.id) => {
+                        let was_cancelling = phase.is_cancelling();
+                        let history = std::mem::replace(&mut phase, PromptPhase::Idle)
+                            .take_history();
+                        let turn = build_turn_result(&resp, history, &session_id, &stderr_buf);
+                        let _ = event_tx.send(AgentEvent::TurnComplete(turn));
 
-        match cmd {
-            AgentCommand::Start(task_payload) => {
-                run_acp_prompt(
-                    &mut client,
-                    &mut notification_rx,
-                    &event_tx,
-                    &session_id,
-                    &task_payload,
-                    &mut prompt_cancel_tx,
-                )
-                .await;
-            }
-            AgentCommand::Prompt(text) => {
-                let task_payload = serde_json::Value::String(text);
-                run_acp_prompt(
-                    &mut client,
-                    &mut notification_rx,
-                    &event_tx,
-                    &session_id,
-                    &task_payload,
-                    &mut prompt_cancel_tx,
-                )
-                .await;
-            }
-            AgentCommand::Cancel => {
-                if let Some(tx) = &prompt_cancel_tx {
-                    let _ = tx.send(());
+                        // Drain pending prompt queue (skip if cancelling — session ending)
+                        if !was_cancelling {
+                            if let Some(text) = pending_prompts.pop_front() {
+                                let parts = vec![serde_json::json!({"type": "text", "text": text})];
+                                match send_prompt(&mut client, &session_id, parts).await {
+                                    Ok(request_id) => {
+                                        phase = PromptPhase::AwaitingResponse {
+                                            request_id,
+                                            update_history: Vec::new(),
+                                        };
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                            agent_session_id: Some(session_id.clone()),
+                                            error: Some(format!("failed to send queued prompt: {e}")),
+                                            error_kind: Some(ErrorKind::ExecutorFailed),
+                                            output: None,
+                                            stderr: snapshot_stderr(&stderr_buf),
+                                        }));
+                                    }
+                                }
+                            }
+                        } else {
+                            // Discard queued prompts on cancel
+                            pending_prompts.clear();
+                        }
+                    }
+                    Some(JsonRpcMessage::Response(_)) => {
+                        // Stale response from previous request, ignore
+                    }
+                    Some(JsonRpcMessage::Notification(notif)) => {
+                        if notif.method == "session/update"
+                            && let Some(history) = phase.update_history_mut()
+                            && let Err(e) = handle_session_update(&notif.params, history)
+                        {
+                            tracing::warn!(error = %e, "failed to process session/update");
+                        }
+                    }
+                    Some(JsonRpcMessage::Request(req)) => {
+                        if req.method == "session/request_permission" {
+                            let result = if phase.is_cancelling() {
+                                handle_permission_request_cancelled(&mut client, &req.id).await
+                            } else {
+                                handle_permission_request(&mut client, &req.id, &req.params).await
+                            };
+                            if let Err(e) = result {
+                                tracing::warn!(error = %e, "failed to handle permission request");
+                            }
+                        } else {
+                            tracing::warn!(method = %req.method, "Unsupported agent→worker request");
+                            if let Err(e) = client.send_error_response(
+                                req.id,
+                                -32601,
+                                "Method not found".to_string(),
+                            ).await {
+                                tracing::warn!(error = %e, "failed to send error response");
+                            }
+                        }
+                    }
+                    Some(JsonRpcMessage::ParseError(line)) => {
+                        if phase.is_active() {
+                            let truncated: String = line.chars().take(80).collect();
+                            tracing::error!(
+                                line_preview = %truncated,
+                                "Malformed JSON-RPC response during active prompt"
+                            );
+                            phase = PromptPhase::Idle;
+                            pending_prompts.clear();
+                            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                agent_session_id: Some(session_id.clone()),
+                                error: Some("malformed JSON-RPC response".into()),
+                                error_kind: Some(ErrorKind::ExecutorFailed),
+                                output: None,
+                                stderr: snapshot_stderr(&stderr_buf),
+                            }));
+                        }
+                    }
+                    None => {
+                        // Subprocess died — detected regardless of phase
+                        let exit_status = child.try_wait();
+                        let exit_info = match exit_status {
+                            Ok(Some(status)) => format!("exit code: {status}"),
+                            Ok(None) => "still running".to_string(),
+                            Err(e) => format!("error checking status: {e}"),
+                        };
+                        let _ = event_tx.send(AgentEvent::ProcessDied {
+                            error: format!("ACP subprocess died ({exit_info})"),
+                            stderr: snapshot_stderr(&stderr_buf),
+                        });
+                        reader_handle.abort();
+                        terminate_subprocess(&mut child).await;
+                        return;
+                    }
                 }
             }
-            AgentCommand::Stop => {
-                drop(prompt_cancel_tx);
-                terminate_subprocess(&mut child).await;
-                reader_handle.abort();
-                return;
+
+            // Branch 2: Worker commands
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(AgentCommand::Start(task_payload)) => {
+                        if !phase.is_idle() {
+                            tracing::error!("Start received while not idle");
+                            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                agent_session_id: Some(session_id.clone()),
+                                error: Some("Start received while prompt in progress".into()),
+                                error_kind: Some(ErrorKind::ExecutorFailed),
+                                output: None,
+                                stderr: None,
+                            }));
+                            continue;
+                        }
+                        let prompt_parts = match extract_acp_content(
+                            &task_payload, &session_id, &event_tx,
+                        ) {
+                            Some(p) => p,
+                            None => continue, // error already emitted
+                        };
+                        match send_prompt(&mut client, &session_id, prompt_parts).await {
+                            Ok(request_id) => {
+                                phase = PromptPhase::AwaitingResponse {
+                                    request_id,
+                                    update_history: Vec::new(),
+                                };
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                    agent_session_id: Some(session_id.clone()),
+                                    error: Some(format!("failed to send prompt: {e}")),
+                                    error_kind: Some(ErrorKind::ExecutorFailed),
+                                    output: None,
+                                    stderr: snapshot_stderr(&stderr_buf),
+                                }));
+                            }
+                        }
+                    }
+                    Some(AgentCommand::Prompt(text)) => {
+                        if !phase.is_idle() {
+                            tracing::debug!("Prompt received while busy, queuing");
+                            pending_prompts.push_back(text);
+                            continue;
+                        }
+                        let prompt_parts = vec![serde_json::json!({"type": "text", "text": text})];
+                        match send_prompt(&mut client, &session_id, prompt_parts).await {
+                            Ok(request_id) => {
+                                phase = PromptPhase::AwaitingResponse {
+                                    request_id,
+                                    update_history: Vec::new(),
+                                };
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                    agent_session_id: Some(session_id.clone()),
+                                    error: Some(format!("failed to send prompt: {e}")),
+                                    error_kind: Some(ErrorKind::ExecutorFailed),
+                                    output: None,
+                                    stderr: snapshot_stderr(&stderr_buf),
+                                }));
+                            }
+                        }
+                    }
+                    Some(AgentCommand::Cancel) => {
+                        if let PromptPhase::AwaitingResponse { .. } = &phase {
+                            tracing::info!(session_id = %session_id, "Sending session/cancel");
+                            let cancel_params = serde_json::json!({
+                                "sessionId": session_id
+                            });
+                            if let Err(e) = client
+                                .send_notification("session/cancel", cancel_params)
+                                .await
+                            {
+                                tracing::warn!(error = %e, "failed to send session/cancel");
+                            }
+                            phase = phase.begin_cancel();
+                        }
+                        // Idle or already Cancelling → no-op
+                    }
+                    Some(AgentCommand::Stop) | None => {
+                        terminate_subprocess(&mut child).await;
+                        reader_handle.abort();
+                        return;
+                    }
+                }
+            }
+
+            // Branch 3: Cancel grace period timeout
+            _ = tokio::time::sleep_until(phase.deadline()), if phase.is_cancelling() => {
+                tracing::warn!("Agent did not respond to session/cancel within grace period");
+                phase = PromptPhase::Idle;
+                pending_prompts.clear();
+                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                    agent_session_id: Some(session_id.clone()),
+                    error: Some("Agent did not acknowledge cancellation".into()),
+                    error_kind: Some(ErrorKind::Cancelled),
+                    output: None,
+                    stderr: snapshot_stderr(&stderr_buf),
+                }));
             }
         }
     }
 }
 
-/// Run a single ACP prompt turn and emit the result as AgentEvent::TurnComplete.
-async fn run_acp_prompt(
-    client: &mut JsonRpcClient,
-    notification_rx: &mut mpsc::UnboundedReceiver<JsonRpcMessage>,
-    event_tx: &mpsc::UnboundedSender<AgentEvent>,
-    session_id: &str,
-    task_payload: &serde_json::Value,
-    prompt_cancel_tx: &mut Option<mpsc::UnboundedSender<()>>,
-) {
-    // Create a fresh cancel channel for this prompt
-    let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
-    *prompt_cancel_tx = Some(cancel_tx);
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-    // Extract prompt content: Object with message.parts (A2A) or String (plain text)
-    let prompt_parts = if let Some(message) = task_payload.get("message") {
+/// Extract ACP content parts from a task payload (A2A message or plain text).
+/// Returns None if invalid (error already emitted to event_tx).
+fn extract_acp_content(
+    task_payload: &serde_json::Value,
+    session_id: &str,
+    event_tx: &mpsc::UnboundedSender<AgentEvent>,
+) -> Option<Vec<serde_json::Value>> {
+    if let Some(message) = task_payload.get("message") {
         let parts = match message.get("parts").and_then(|p| p.as_array()) {
             Some(p) => p,
             None => {
@@ -233,94 +505,134 @@ async fn run_acp_prompt(
                     error: Some("message missing parts array".into()),
                     error_kind: Some(ErrorKind::ExecutorFailed),
                     output: None,
+                    stderr: None,
                 }));
-                return;
+                return None;
             }
         };
         match translate_a2a_parts_to_acp_content(parts) {
-            Ok(p) => p,
+            Ok(p) => Some(p),
             Err(e) => {
                 let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
                     agent_session_id: Some(session_id.to_string()),
                     error: Some(format!("failed to translate parts: {e}")),
                     error_kind: Some(ErrorKind::ExecutorFailed),
                     output: None,
+                    stderr: None,
                 }));
-                return;
+                None
             }
         }
     } else if let Some(text) = task_payload.as_str() {
-        vec![serde_json::json!({"type": "text", "text": text})]
+        Some(vec![serde_json::json!({"type": "text", "text": text})])
     } else {
         let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
             agent_session_id: Some(session_id.to_string()),
             error: Some("unsupported task_payload format".into()),
             error_kind: Some(ErrorKind::ExecutorFailed),
             output: None,
+            stderr: None,
         }));
-        return;
+        None
+    }
+}
+
+/// Send a session/prompt JSON-RPC request, returning the request_id.
+async fn send_prompt(
+    client: &mut JsonRpcClient,
+    session_id: &str,
+    prompt_parts: Vec<serde_json::Value>,
+) -> Result<String> {
+    let prompt_params = SessionPromptParams {
+        session_id: session_id.to_string(),
+        prompt: prompt_parts,
     };
+    client
+        .send_request("session/prompt", serde_json::to_value(&prompt_params)?)
+        .await
+}
 
-    let mut update_history: Vec<Message> = Vec::new();
-    let prompt_result = send_session_prompt(
-        client,
-        notification_rx,
-        &mut cancel_rx,
-        session_id,
-        prompt_parts,
-        &mut update_history,
-    )
-    .await;
+/// Build a TurnResult from an ACP session/prompt response.
+fn build_turn_result(
+    resp: &JsonRpcResponse,
+    update_history: Vec<Message>,
+    session_id: &str,
+    stderr_buf: &StderrBuffer,
+) -> TurnResult {
+    // JSON-RPC level error
+    if let Some(error) = &resp.error {
+        return TurnResult {
+            agent_session_id: Some(session_id.to_string()),
+            error: Some(format!("{} (code: {})", error.message, error.code)),
+            error_kind: Some(ErrorKind::ExecutorFailed),
+            output: None,
+            stderr: snapshot_stderr(stderr_buf),
+        };
+    }
 
-    match prompt_result {
-        Ok(prompt_result) => {
-            let is_error = matches!(
-                prompt_result.stop_reason.as_str(),
-                "error" | "cancelled" | "refusal"
-            );
-
-            let (error, error_kind) = if !is_error {
-                (None, None)
-            } else {
-                let error_kind = match prompt_result.stop_reason.as_str() {
-                    "cancelled" => Some(ErrorKind::Cancelled),
-                    _ => Some(ErrorKind::ExecutorFailed),
-                };
-                let error = Some(
-                    prompt_result
-                        .error
-                        .unwrap_or_else(|| prompt_result.stop_reason.clone()),
-                );
-                (error, error_kind)
-            };
-
-            // Consolidate agent-role messages into a single output value
-            let agent_parts: Vec<serde_json::Value> = update_history
-                .iter()
-                .filter(|m| m.role == "agent")
-                .flat_map(|m| m.parts.iter().filter_map(|p| serde_json::to_value(p).ok()))
-                .collect();
-
-            let output = if agent_parts.is_empty() {
-                None
-            } else {
-                Some(serde_json::json!({"role": "agent", "parts": agent_parts}))
-            };
-
-            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                agent_session_id: Some(session_id.to_string()),
-                error,
-                error_kind,
-                output,
-            }));
-        }
+    // Parse SessionPromptResult from response
+    let prompt_result: SessionPromptResult = match resp
+        .result
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("session/prompt response missing result"))
+        .and_then(|v| serde_json::from_value(v.clone()).map_err(Into::into))
+    {
+        Ok(r) => r,
         Err(e) => {
-            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+            return TurnResult {
                 agent_session_id: Some(session_id.to_string()),
                 error: Some(format!("{e:#}")),
                 error_kind: Some(ErrorKind::ExecutorFailed),
                 output: None,
-            }));
+                stderr: snapshot_stderr(stderr_buf),
+            };
         }
+    };
+
+    let is_error = matches!(
+        prompt_result.stop_reason.as_str(),
+        "error" | "cancelled" | "refusal"
+    );
+
+    let (error, error_kind) = if !is_error {
+        (None, None)
+    } else {
+        let error_kind = match prompt_result.stop_reason.as_str() {
+            "cancelled" => Some(ErrorKind::Cancelled),
+            _ => Some(ErrorKind::ExecutorFailed),
+        };
+        let error = Some(
+            prompt_result
+                .error
+                .unwrap_or_else(|| prompt_result.stop_reason.clone()),
+        );
+        (error, error_kind)
+    };
+
+    // Consolidate agent-role messages into output
+    let agent_parts: Vec<serde_json::Value> = update_history
+        .iter()
+        .filter(|m| m.role == "agent")
+        .flat_map(|m| m.parts.iter().filter_map(|p| serde_json::to_value(p).ok()))
+        .collect();
+
+    let output = if agent_parts.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({"role": "agent", "parts": agent_parts}))
+    };
+
+    let stderr = if error.is_some() {
+        snapshot_stderr(stderr_buf)
+    } else {
+        None
+    };
+
+    TurnResult {
+        agent_session_id: Some(session_id.to_string()),
+        error,
+        error_kind,
+        output,
+        stderr,
     }
 }

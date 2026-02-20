@@ -1,5 +1,11 @@
-use axum::{Router, extract::Request, response::Redirect, routing::get};
+use axum::{
+    Router,
+    extract::{Request, State},
+    response::Redirect,
+    routing::get,
+};
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 use tracing::warn;
 
@@ -7,8 +13,13 @@ use crate::assets::Assets;
 use crate::db::DbPool;
 use crate::queue::TaskQueue;
 
-/// Port used by Vite dev server in development mode
-const VITE_DEV_PORT: u16 = 5173;
+/// Notification sent when a new event is inserted into the events table.
+/// SSE handlers subscribe to these to push updates in real-time.
+#[derive(Clone, Debug)]
+pub struct EventNotification {
+    pub execution_id: String,
+    pub event_id: i64,
+}
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -17,6 +28,8 @@ pub struct AppState {
     pub task_queue: Arc<TaskQueue>,
     pub base_url: String,
     pub public_url: Option<String>,
+    pub event_broadcast: broadcast::Sender<EventNotification>,
+    pub vite_dev_port: u16,
 }
 
 impl AppState {
@@ -25,12 +38,20 @@ impl AppState {
         task_queue: Arc<TaskQueue>,
         base_url: String,
         public_url: Option<String>,
+        port: u16,
     ) -> Self {
+        let (event_broadcast, _) = broadcast::channel(256);
+        let vite_dev_port = std::env::var("VITE_DEV_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(port + 1000);
         Self {
             db_pool,
             task_queue,
             base_url,
             public_url,
+            event_broadcast,
+            vite_dev_port,
         }
     }
 
@@ -79,36 +100,42 @@ impl AppState {
 
 /// Build Axum router with all routes and middleware
 pub fn create_router(state: AppState, dev_mode: bool, port: u16) -> Router {
-    let base_router = Router::new().merge(crate::api::routes());
+    let vite_dev_port = state.vite_dev_port;
 
-    let router = if dev_mode {
-        // Development mode - redirect all UI routes to Vite dev server
+    // SSE routes bypass compression (CompressionLayer buffers, breaking streaming)
+    let sse_routes = crate::api::sse::routes();
+
+    // Base routes get compression
+    let base_router = Router::new().merge(crate::api::routes());
+    let compressed = if dev_mode {
         base_router
             .route("/", get(dev_mode_redirect_root))
             .fallback(dev_mode_redirect_path)
     } else {
-        // Production mode - serve embedded static files (use fallback for all non-API routes)
         base_router
             .route("/", get(serve_index))
             .route("/index.html", get(serve_index))
             .fallback(serve_spa_fallback)
-    };
+    }
+    .layer(CompressionLayer::new());
 
-    router
-        .layer(build_cors_layer(dev_mode, port))
-        .layer(CompressionLayer::new())
+    // Merge SSE (uncompressed) + base (compressed), then apply CORS at the outer level
+    Router::new()
+        .merge(sse_routes)
+        .merge(compressed)
+        .layer(build_cors_layer(dev_mode, port, vite_dev_port))
         .with_state(state)
 }
 
 /// Build CORS layer with restricted origins for security
 ///
 /// Default allowed origins:
-/// - Development mode: http://localhost:5173 (Vite dev server)
+/// - Development mode: http://localhost:{vite_dev_port} (Vite dev server)
 /// - Production mode: http://localhost:{port} (embedded UI)
 ///
 /// Additional origins can be configured via CORS_ALLOWED_ORIGINS environment variable
 /// (comma-separated list of origins, e.g., "http://localhost:3000,http://localhost:8080")
-fn build_cors_layer(dev_mode: bool, port: u16) -> CorsLayer {
+fn build_cors_layer(dev_mode: bool, port: u16, vite_dev_port: u16) -> CorsLayer {
     use axum::http::{
         HeaderValue, Method,
         header::{AUTHORIZATION, CONTENT_TYPE},
@@ -118,7 +145,7 @@ fn build_cors_layer(dev_mode: bool, port: u16) -> CorsLayer {
     let mut allowed_origins = Vec::new();
 
     if dev_mode {
-        allowed_origins.push(format!("http://localhost:{VITE_DEV_PORT}"));
+        allowed_origins.push(format!("http://localhost:{vite_dev_port}"));
     }
     allowed_origins.push(format!("http://localhost:{port}"));
 
@@ -155,18 +182,22 @@ fn build_cors_layer(dev_mode: bool, port: u16) -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ]))
-        .allow_headers(AllowHeaders::list([CONTENT_TYPE, AUTHORIZATION]))
+        .allow_headers(AllowHeaders::list([
+            CONTENT_TYPE,
+            AUTHORIZATION,
+            axum::http::HeaderName::from_static("last-event-id"),
+        ]))
         .allow_credentials(true)
 }
 
-async fn dev_mode_redirect_root() -> Redirect {
-    Redirect::temporary(&format!("http://localhost:{VITE_DEV_PORT}"))
+async fn dev_mode_redirect_root(State(state): State<AppState>) -> Redirect {
+    Redirect::temporary(&format!("http://localhost:{}", state.vite_dev_port))
 }
 
 /// Development mode - redirect all other paths to Vite dev server
-async fn dev_mode_redirect_path(req: Request) -> Redirect {
+async fn dev_mode_redirect_path(State(state): State<AppState>, req: Request) -> Redirect {
     let path = req.uri().path();
-    let redirect_url = format!("http://localhost:{VITE_DEV_PORT}{path}");
+    let redirect_url = format!("http://localhost:{}{path}", state.vite_dev_port);
     Redirect::temporary(&redirect_url)
 }
 

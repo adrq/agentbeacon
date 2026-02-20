@@ -26,8 +26,9 @@ struct Cli {
     /// Examples:
     ///   sqlite:///tmp/scheduler.db
     ///   postgres://user:pass@localhost/dbname
-    #[arg(long, env = "DATABASE_URL", default_value = "sqlite://scheduler.db")]
-    db_url: String,
+    /// Defaults to sqlite://scheduler-{port}.db when not specified.
+    #[arg(long, env = "DATABASE_URL")]
+    db_url: Option<String>,
 }
 
 #[tokio::main]
@@ -42,7 +43,7 @@ async fn main() -> Result<()> {
     sqlx::any::install_default_drivers();
 
     info!("AgentBeacon Scheduler starting...");
-    info!("Configuration: port={}, db_url={}", cli.port, cli.db_url);
+    info!("Configuration: port={}", cli.port);
 
     // Run bootstrap and startup flow
     bootstrap(cli).await
@@ -52,9 +53,14 @@ async fn bootstrap(cli: Cli) -> Result<()> {
     // Check for development mode
     let dev_mode = std::env::var("DEV_MODE").map(|v| v == "1").unwrap_or(false);
 
+    // Resolve db_url: explicit value or port-derived default
+    let db_url = cli
+        .db_url
+        .unwrap_or_else(|| format!("sqlite://scheduler-{}.db", cli.port));
+
     // Connect to database
-    info!("Connecting to database: {}", cli.db_url);
-    let db_pool = db::pool::create(&cli.db_url)
+    info!("Connecting to database: {}", db_url);
+    let db_pool = db::pool::create(&db_url)
         .await
         .context("Failed to create database pool")?;
 
@@ -67,7 +73,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
 
     // Run migrations
     info!("Running database migrations...");
-    db::migrations::run(&db_pool, &cli.db_url)
+    db::migrations::run(&db_pool, &db_url)
         .await
         .context("Failed to run database migrations")?;
     info!("Database migrations completed successfully");
@@ -85,8 +91,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
                 &demo_id,
                 "Demo Agent",
                 "acp",
-                r#"{"command":"echo","args":["demo"],"timeout":60}"#,
-                Some("Mock agent for API testing — not a real ACP agent"),
+                r#"{"command":"uv","args":["run","python","-m","agentmaestro.mock_agent","--mode","acp","--scenario","demo"],"timeout":60}"#,
+                Some("Mock ACP agent for e2e testing"),
                 None,
             )
             .await
@@ -139,7 +145,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
     }
 
     // Build application state and router
-    let app_state = AppState::new(db_pool, task_queue, base_url, public_url);
+    let app_state = AppState::new(db_pool, task_queue, base_url, public_url, cli.port);
+    let vite_dev_port = app_state.vite_dev_port;
     let app = create_router(app_state, dev_mode, cli.port);
 
     // Bind to port
@@ -152,8 +159,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
 
     if dev_mode {
         info!(
-            "Starting scheduler on {} (DEV_MODE: redirecting to Vite dev server at localhost:5173)",
-            addr
+            "Starting scheduler on {} (DEV_MODE: redirecting to Vite dev server at localhost:{})",
+            addr, vite_dev_port
         );
     } else {
         info!(

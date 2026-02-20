@@ -14,10 +14,13 @@ pub mod mcp;
 pub mod mcp_tools;
 pub mod projects;
 pub mod sessions;
+pub mod sse;
 pub mod types;
 pub mod worker;
 
-/// Build API router with all endpoint modules
+/// Build API router with all endpoint modules.
+/// Note: SSE routes (sse::routes()) are intentionally excluded here — they are
+/// merged separately in create_router() to bypass the compression layer.
 pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(health::routes())

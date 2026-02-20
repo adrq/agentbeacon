@@ -41,6 +41,8 @@ pub struct SessionResult {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
 }
 
 // --- Response types (Deserialize, tagged union) ---
@@ -115,6 +117,7 @@ impl SyncRequest {
         output: Option<serde_json::Value>,
         error: Option<String>,
         error_kind: Option<String>,
+        stderr: Option<String>,
     ) -> Self {
         // Include session_state "running" so scheduler knows we're still in this session
         // and doesn't try to assign us a new one
@@ -130,6 +133,7 @@ impl SyncRequest {
                 output,
                 error,
                 error_kind,
+                stderr,
             }),
         }
     }
@@ -272,8 +276,14 @@ mod tests {
 
     #[test]
     fn test_session_result_serializes_camelcase() {
-        let request =
-            SyncRequest::with_result("sess-1", Some("agent-sess-1".to_string()), None, None, None);
+        let request = SyncRequest::with_result(
+            "sess-1",
+            Some("agent-sess-1".to_string()),
+            None,
+            None,
+            None,
+            None,
+        );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["sessionId"], "sess-1");
         assert_eq!(value["sessionResult"]["agentSessionId"], "agent-sess-1");
@@ -288,6 +298,7 @@ mod tests {
             Some(output.clone()),
             None,
             None,
+            None,
         );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["output"], output);
@@ -295,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_session_result_without_output_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, None, None, None, None);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("output").is_none());
     }
@@ -308,6 +319,7 @@ mod tests {
             None,
             Some("executor failed".to_string()),
             None,
+            None,
         );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["error"], "executor failed");
@@ -315,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_session_result_without_error_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, None, None, None, None);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("error").is_none());
     }
@@ -328,6 +340,7 @@ mod tests {
             None,
             Some("budget limit hit".to_string()),
             Some("budget_exceeded".to_string()),
+            None,
         );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["errorKind"], "budget_exceeded");
@@ -336,9 +349,33 @@ mod tests {
 
     #[test]
     fn test_session_result_without_error_kind_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, None, None, None, None);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("errorKind").is_none());
+    }
+
+    #[test]
+    fn test_session_result_with_stderr_serializes() {
+        let request = SyncRequest::with_result(
+            "sess-1",
+            None,
+            None,
+            Some("crash".to_string()),
+            Some("executor_failed".to_string()),
+            Some("Error: module not found\n    at require".to_string()),
+        );
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            value["sessionResult"]["stderr"],
+            "Error: module not found\n    at require"
+        );
+    }
+
+    #[test]
+    fn test_session_result_without_stderr_omits_field() {
+        let request = SyncRequest::with_result("sess-1", None, None, None, None, None);
+        let value = serde_json::to_value(&request).unwrap();
+        assert!(value["sessionResult"].get("stderr").is_none());
     }
 
     #[test]

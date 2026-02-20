@@ -60,6 +60,12 @@ impl TaskQueue {
         self.notify.notified()
     }
 
+    /// Wake all long-poll waiters so they re-check session state.
+    /// Used when session state changes externally (e.g., cancel API).
+    pub fn wake_waiters(&self) {
+        self.notify.notify_waiters();
+    }
+
     /// Get current queue length
     pub async fn len(&self) -> Result<usize, SchedulerError> {
         crate::db::task_queue::count(&self.db_pool).await

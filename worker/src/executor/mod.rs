@@ -4,7 +4,43 @@ pub mod copilot;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+
+/// Bounded ring buffer for capturing subprocess stderr lines.
+/// Uses std::sync::Mutex (not tokio) since the critical section is trivially short.
+pub type StderrBuffer = Arc<Mutex<VecDeque<String>>>;
+
+const STDERR_BUFFER_CAPACITY: usize = 100;
+
+pub fn new_stderr_buffer() -> StderrBuffer {
+    Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_BUFFER_CAPACITY)))
+}
+
+/// Snapshot stderr buffer contents into a single string, or None if empty.
+pub fn snapshot_stderr(buf: &StderrBuffer) -> Option<String> {
+    let lines: Vec<String> = buf
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .cloned()
+        .collect();
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+/// Append a line to the stderr buffer, evicting oldest if at capacity.
+pub fn push_stderr_line(buf: &StderrBuffer, line: String) {
+    let mut guard = buf.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.len() >= STDERR_BUFFER_CAPACITY {
+        guard.pop_front();
+    }
+    guard.push_back(line);
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,6 +82,7 @@ pub struct TurnResult {
     pub error: Option<String>,
     pub error_kind: Option<ErrorKind>,
     pub output: Option<serde_json::Value>,
+    pub stderr: Option<String>,
 }
 
 /// Events emitted by the agent process
@@ -62,7 +99,10 @@ pub enum AgentEvent {
     /// all Message events during the turn.
     TurnComplete(TurnResult),
     /// Agent process died unexpectedly
-    ProcessDied { error: String },
+    ProcessDied {
+        error: String,
+        stderr: Option<String>,
+    },
 }
 
 /// Commands sent to the agent process
@@ -122,5 +162,59 @@ pub async fn start_executor(config: SessionConfig) -> Result<ExecutorHandle> {
         "claude_sdk" => claude::start(config).await,
         "copilot_sdk" => copilot::start(config).await,
         other => Err(anyhow::anyhow!("unsupported agent_type: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_stderr_buffer_is_empty() {
+        let buf = new_stderr_buffer();
+        assert!(buf.lock().unwrap().is_empty());
+        assert!(snapshot_stderr(&buf).is_none());
+    }
+
+    #[test]
+    fn test_push_stderr_line_and_snapshot() {
+        let buf = new_stderr_buffer();
+        push_stderr_line(&buf, "line 1".into());
+        push_stderr_line(&buf, "line 2".into());
+
+        let snap = snapshot_stderr(&buf).unwrap();
+        assert_eq!(snap, "line 1\nline 2");
+    }
+
+    #[test]
+    fn test_stderr_buffer_bounded() {
+        let buf = new_stderr_buffer();
+        for i in 0..STDERR_BUFFER_CAPACITY + 50 {
+            push_stderr_line(&buf, format!("line {i}"));
+        }
+
+        let locked = buf.lock().unwrap();
+        assert_eq!(locked.len(), STDERR_BUFFER_CAPACITY);
+        // Oldest lines should have been evicted
+        assert!(locked.front().unwrap().starts_with("line 50"));
+    }
+
+    #[test]
+    fn test_snapshot_stderr_after_poison_recovery() {
+        let buf = new_stderr_buffer();
+        push_stderr_line(&buf, "before".into());
+
+        // Poison the mutex
+        let buf_clone = buf.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = buf_clone.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+
+        // Should still work via into_inner recovery
+        push_stderr_line(&buf, "after".into());
+        let snap = snapshot_stderr(&buf).unwrap();
+        assert!(snap.contains("after"));
     }
 }

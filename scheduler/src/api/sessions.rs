@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::api::types::{EventResponse, SessionResponse};
-use crate::app::AppState;
+use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
 use crate::queue::TaskAssignment;
@@ -82,6 +82,10 @@ async fn post_message(
         &serde_json::to_string(&msg_payload).unwrap(),
     )
     .await?;
+    let _ = state.event_broadcast.send(EventNotification {
+        execution_id: session.execution_id.clone(),
+        event_id,
+    });
 
     // Always: push user message to session's inbox for delivery
     let message_payload = serde_json::Value::String(format!("[user]\n\n{}", req.message));
@@ -105,7 +109,7 @@ async fn post_message(
         db::sessions::update_status(&state.db_pool, &id, "working").await?;
 
         let session_state_event = json!({"from": "input-required", "to": "working"});
-        db::events::insert(
+        let sc_event_id = db::events::insert(
             &state.db_pool,
             &session.execution_id,
             Some(&id),
@@ -113,6 +117,10 @@ async fn post_message(
             &serde_json::to_string(&session_state_event).unwrap(),
         )
         .await?;
+        let _ = state.event_broadcast.send(EventNotification {
+            execution_id: session.execution_id.clone(),
+            event_id: sc_event_id,
+        });
 
         session_status = "working".to_string();
 
@@ -121,7 +129,7 @@ async fn post_message(
             db::executions::update_status(&state.db_pool, &session.execution_id, "working").await?;
 
             let exec_state_event = json!({"from": execution.status, "to": "working"});
-            db::events::insert(
+            let exec_event_id = db::events::insert(
                 &state.db_pool,
                 &session.execution_id,
                 None,
@@ -129,6 +137,10 @@ async fn post_message(
                 &serde_json::to_string(&exec_state_event).unwrap(),
             )
             .await?;
+            let _ = state.event_broadcast.send(EventNotification {
+                execution_id: session.execution_id.clone(),
+                event_id: exec_event_id,
+            });
 
             execution_status = "working".to_string();
         } else {

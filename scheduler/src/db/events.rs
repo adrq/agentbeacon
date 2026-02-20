@@ -23,10 +23,11 @@ pub async fn insert(
     event_type: &str,
     payload: &str,
 ) -> Result<i64, SchedulerError> {
-    if pool.is_postgres() {
-        let row = sqlx::query(
-            "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES ($1, $2, $3, $4) RETURNING id",
-        )
+    let sql = pool.prepare_query(
+        "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, ?, ?) RETURNING id",
+    );
+
+    let row = sqlx::query(&sql)
         .bind(execution_id)
         .bind(session_id)
         .bind(event_type)
@@ -35,32 +36,10 @@ pub async fn insert(
         .await
         .map_err(|e| SchedulerError::Database(format!("insert event failed: {e}")))?;
 
-        let id: i64 = row
-            .try_get("id")
-            .map_err(|e| SchedulerError::Database(format!("get id failed: {e}")))?;
-        Ok(id)
-    } else {
-        sqlx::query(
-            "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, ?, ?)",
-        )
-        .bind(execution_id)
-        .bind(session_id)
-        .bind(event_type)
-        .bind(payload)
-        .execute(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("insert event failed: {e}")))?;
-
-        let id_row = sqlx::query("SELECT last_insert_rowid() as id")
-            .fetch_one(pool.as_ref())
-            .await
-            .map_err(|e| SchedulerError::Database(format!("get last insert id failed: {e}")))?;
-
-        let id: i64 = id_row
-            .try_get("id")
-            .map_err(|e| SchedulerError::Database(format!("get id failed: {e}")))?;
-        Ok(id)
-    }
+    let id: i64 = row
+        .try_get("id")
+        .map_err(|e| SchedulerError::Database(format!("get id failed: {e}")))?;
+    Ok(id)
 }
 
 pub async fn list_by_execution(
@@ -99,6 +78,29 @@ pub async fn list_by_session(
         .fetch_all(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("list events failed: {e}")))?;
+
+    rows.into_iter().map(parse_event_row).collect()
+}
+
+pub async fn list_by_execution_since(
+    pool: &DbPool,
+    execution_id: &str,
+    since_id: i64,
+) -> Result<Vec<Event>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+
+    let sql = format!(
+        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at \
+         FROM events WHERE execution_id = ? AND id > ? ORDER BY id ASC",
+        created_fmt
+    );
+
+    let rows = sqlx::query(&pool.prepare_query(&sql))
+        .bind(execution_id)
+        .bind(since_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list events since failed: {e}")))?;
 
     rows.into_iter().map(parse_event_row).collect()
 }

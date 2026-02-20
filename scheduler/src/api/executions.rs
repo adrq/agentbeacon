@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::api::types::{EventResponse, ExecutionResponse, SessionResponse};
-use crate::app::AppState;
+use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
 use crate::services::execution;
@@ -107,6 +107,14 @@ async fn create_execution_handler(
     )
     .await?;
 
+    // Broadcast for the initial "submitted" event created by the service.
+    // We don't have the event_id, but sending event_id=0 triggers a DB backfill
+    // on the SSE handler, which picks up the new event correctly.
+    let _ = state.event_broadcast.send(EventNotification {
+        execution_id: result.execution.id.clone(),
+        event_id: 0,
+    });
+
     Ok((
         StatusCode::CREATED,
         Json(CreateExecutionResponse {
@@ -139,7 +147,7 @@ async fn cancel_execution(
             db::sessions::update_status(&state.db_pool, &session.id, "canceled").await?;
 
             let session_state_event = json!({"from": session.status, "to": "canceled"});
-            db::events::insert(
+            let event_id = db::events::insert(
                 &state.db_pool,
                 &id,
                 Some(&session.id),
@@ -147,14 +155,21 @@ async fn cancel_execution(
                 &serde_json::to_string(&session_state_event).unwrap(),
             )
             .await?;
+            let _ = state.event_broadcast.send(EventNotification {
+                execution_id: id.clone(),
+                event_id,
+            });
         }
     }
 
     // Cancel the execution itself
     db::executions::update_status(&state.db_pool, &id, "canceled").await?;
 
+    // Wake long-polling workers so they discover the cancel immediately
+    state.task_queue.wake_waiters();
+
     let exec_state_event = json!({"from": exec.status, "to": "canceled"});
-    db::events::insert(
+    let event_id = db::events::insert(
         &state.db_pool,
         &id,
         None,
@@ -162,6 +177,10 @@ async fn cancel_execution(
         &serde_json::to_string(&exec_state_event).unwrap(),
     )
     .await?;
+    let _ = state.event_broadcast.send(EventNotification {
+        execution_id: id.clone(),
+        event_id,
+    });
 
     let updated = db::executions::get_by_id(&state.db_pool, &id).await?;
     Ok(Json(CancelExecutionResponse {

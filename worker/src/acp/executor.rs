@@ -18,9 +18,6 @@ use uuid::Uuid;
 
 use super::protocol::*;
 
-const TERMINATION_TIMEOUT_SECS: u64 = 2;
-const CANCEL_GRACE_PERIOD_SECS: u64 = 10;
-
 /// ACP agent config shape used by spawn_acp_subprocess
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
@@ -38,7 +35,7 @@ pub(crate) fn spawn_acp_subprocess(acp_config: &LegacyAcpConfig) -> Result<Child
     cmd.args(&acp_config.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
 
     // Apply env vars with panic protection
@@ -59,30 +56,46 @@ pub(crate) fn spawn_acp_subprocess(acp_config: &LegacyAcpConfig) -> Result<Child
     cmd.spawn().context("failed to spawn ACP subprocess")
 }
 
-/// Terminate subprocess within 2 seconds
+/// Terminate subprocess: wait 1s for natural exit, SIGTERM + 1s, then SIGKILL.
 pub(crate) async fn terminate_subprocess(child: &mut Child) {
-    let term_timeout = Duration::from_secs(TERMINATION_TIMEOUT_SECS);
-
-    match timeout(term_timeout, child.wait()).await {
-        Ok(Ok(_)) => {
-            tracing::debug!("Subprocess exited gracefully");
+    // Wait 1s for natural exit
+    match timeout(Duration::from_secs(1), child.wait()).await {
+        Ok(Ok(status)) => {
+            tracing::debug!(%status, "Subprocess exited naturally");
+            return;
         }
         Ok(Err(e)) => {
-            tracing::warn!(
-                event = "subprocess_exit_error",
-                error = %e,
-                "Error waiting for subprocess to exit"
-            );
+            tracing::warn!(error = %e, "Error waiting for subprocess");
+            return;
         }
-        Err(_) => {
-            tracing::warn!(
-                event = "subprocess_timeout",
-                timeout_secs = term_timeout.as_secs(),
-                "Subprocess did not exit within timeout, sending SIGTERM"
-            );
-            let _ = child.kill().await;
+        Err(_) => {}
+    }
+
+    // Try SIGTERM
+    if let Some(pid) = child.id() {
+        tracing::debug!(pid, "Sending SIGTERM to subprocess");
+        // Safety: pid is a valid process ID from child.id()
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+
+        match timeout(Duration::from_secs(1), child.wait()).await {
+            Ok(Ok(status)) => {
+                tracing::debug!(%status, "Subprocess exited after SIGTERM");
+                return;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "Error waiting for subprocess after SIGTERM");
+                return;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    pid,
+                    "Subprocess did not exit after SIGTERM, sending SIGKILL"
+                );
+            }
         }
     }
+
+    let _ = child.kill().await;
 }
 
 /// Send initialize request and wait for response
@@ -296,178 +309,14 @@ pub(crate) fn translate_a2a_parts_to_acp_content(parts: &[Value]) -> Result<Vec<
         .collect()
 }
 
-/// Send session/prompt request and handle session/update notifications.
-/// Monitors cancellation channel for graceful shutdown.
-/// `prompt_parts` should be pre-formatted ACP ContentBlock array.
-pub(crate) async fn send_session_prompt(
-    client: &mut JsonRpcClient,
-    notification_rx: &mut mpsc::UnboundedReceiver<JsonRpcMessage>,
-    cancel_rx: &mut mpsc::UnboundedReceiver<()>,
-    session_id: &str,
-    prompt_parts: Vec<Value>,
-    update_history: &mut Vec<Message>,
-) -> Result<SessionPromptResult> {
-    let prompt_params = SessionPromptParams {
-        session_id: session_id.to_string(),
-        prompt: prompt_parts,
-    };
-
-    let request_id = client
-        .send_request("session/prompt", serde_json::to_value(&prompt_params)?)
-        .await?;
-
-    // Wait for response, handling session/update notifications, agent requests, and cancellation
-    loop {
-        tokio::select! {
-            msg = notification_rx.recv() => {
-                match msg {
-                    Some(JsonRpcMessage::Response(resp)) if resp.id == request_id => {
-                        if let Some(error) = resp.error {
-                            return Ok(SessionPromptResult {
-                                stop_reason: "error".to_string(),
-                                error: Some(format!("{} (code: {})", error.message, error.code)),
-                            });
-                        }
-
-                        let result: SessionPromptResult = serde_json::from_value(
-                            resp.result
-                                .ok_or_else(|| anyhow::anyhow!("session/prompt response missing result"))?,
-                        )?;
-                        return Ok(result);
-                    }
-                    Some(JsonRpcMessage::Response(_)) => {}
-                    Some(JsonRpcMessage::Notification(notif)) => {
-                        if notif.method == "session/update" {
-                            handle_session_update(&notif.params, update_history)?;
-                        }
-                    }
-                    Some(JsonRpcMessage::Request(req)) => {
-                        if req.method == "session/request_permission" {
-                            handle_permission_request(client, &req.id, &req.params).await?;
-                        } else {
-                            tracing::warn!(method = %req.method, "Unsupported agent→worker request");
-                            client.send_error_response(
-                                req.id,
-                                -32601,
-                                "Method not found".to_string()
-                            ).await?;
-                        }
-                    }
-                    Some(JsonRpcMessage::ParseError(line)) => {
-                        let truncated: String = line.chars().take(80).collect();
-                        tracing::error!(
-                            event = "parse_error",
-                            phase = "session_prompt",
-                            line_len = line.len(),
-                            line_preview = %truncated,
-                            "Malformed JSON-RPC response during session/prompt"
-                        );
-                        return Err(anyhow::anyhow!(
-                            "malformed JSON-RPC response during session/prompt"
-                        ));
-                    }
-                    None => {
-                        tracing::error!(
-                            event = "subprocess_closed",
-                            phase = "session_prompt",
-                            "Subprocess closed before session/prompt response"
-                        );
-                        return Err(anyhow::anyhow!(
-                            "subprocess closed before session/prompt response"
-                        ));
-                    }
-                }
-            }
-            Some(_) = cancel_rx.recv() => {
-                tracing::info!(session_id = %session_id, "Sending session/cancel notification");
-
-                let cancel_params = serde_json::json!({
-                    "sessionId": session_id
-                });
-
-                client.send_notification("session/cancel", cancel_params).await?;
-
-                // Wait up to CANCEL_GRACE_PERIOD_SECS for agent to respond
-                let grace_timeout = Duration::from_secs(CANCEL_GRACE_PERIOD_SECS);
-
-                match timeout(grace_timeout, async {
-                    while let Some(msg) = notification_rx.recv().await {
-                        match msg {
-                            JsonRpcMessage::Response(resp) if resp.id == request_id => {
-                                return Some(resp);
-                            }
-                            JsonRpcMessage::Response(_) => {}
-                            JsonRpcMessage::Notification(notif) => {
-                                if notif.method == "session/update"
-                                    && let Err(e) = handle_session_update(&notif.params, update_history)
-                                {
-                                    tracing::warn!(
-                                        event = "session_update_error",
-                                        phase = "cancellation",
-                                        error = %e,
-                                        "Failed to process session/update during cancellation"
-                                    );
-                                }
-                            }
-                            JsonRpcMessage::Request(req) => {
-                                if req.method == "session/request_permission" {
-                                    if let Err(e) = handle_permission_request_cancelled(client, &req.id).await {
-                                        tracing::warn!(
-                                            event = "permission_response_error",
-                                            phase = "cancellation",
-                                            error = %e,
-                                            "Failed to respond to permission request during cancellation"
-                                        );
-                                    }
-                                } else if let Err(e) = client.send_error_response(req.id, -32601, "Method not found".to_string()).await {
-                                    tracing::warn!(
-                                        event = "error_response_failed",
-                                        phase = "cancellation",
-                                        error = %e,
-                                        "Failed to send error response during cancellation"
-                                    );
-                                }
-                            }
-                            JsonRpcMessage::ParseError(_) => {}
-                        }
-                    }
-                    None
-                }).await {
-                    Ok(Some(resp)) => {
-                        if let Some(error) = resp.error {
-                            return Ok(SessionPromptResult {
-                                stop_reason: "error".to_string(),
-                                error: Some(format!("{} (code: {})", error.message, error.code)),
-                            });
-                        }
-
-                        let result: SessionPromptResult = serde_json::from_value(
-                            resp.result.ok_or_else(|| anyhow::anyhow!("session/prompt response missing result"))?
-                        )?;
-                        return Ok(result);
-                    }
-                    Ok(None) | Err(_) => {
-                        tracing::warn!(
-                            event = "cancellation_timeout",
-                            grace_period_secs = CANCEL_GRACE_PERIOD_SECS,
-                            "Agent did not respond to session/cancel within grace period"
-                        );
-                        return Ok(SessionPromptResult {
-                            stop_reason: "cancelled".to_string(),
-                            error: Some("Agent did not acknowledge cancellation".to_string()),
-                        });
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Handle session/update notification and convert to A2A Message.
 /// Text content (agent/user messages) stays as Part::Text.
 /// Structured notifications (tool calls, plans, etc.) become Part::Data
 /// with a `type` discriminator for frontend rendering.
-fn handle_session_update(params: &Value, update_history: &mut Vec<Message>) -> Result<()> {
+pub(crate) fn handle_session_update(
+    params: &Value,
+    update_history: &mut Vec<Message>,
+) -> Result<()> {
     let update_params: SessionUpdateParams = serde_json::from_value(params.clone())?;
 
     let (role, parts) = match &update_params.update {
@@ -586,7 +435,7 @@ fn handle_session_update(params: &Value, update_history: &mut Vec<Message>) -> R
 }
 
 /// Auto-approve permission request and send response
-async fn handle_permission_request(
+pub(crate) async fn handle_permission_request(
     client: &mut JsonRpcClient,
     request_id: &str,
     params: &Value,
@@ -636,7 +485,7 @@ async fn handle_permission_request(
 }
 
 /// Respond to permission request with cancelled outcome during cancellation
-async fn handle_permission_request_cancelled(
+pub(crate) async fn handle_permission_request_cancelled(
     client: &mut JsonRpcClient,
     request_id: &str,
 ) -> Result<()> {
@@ -661,7 +510,7 @@ impl JsonRpcClient {
         Self { stdin }
     }
 
-    async fn send_request(&mut self, method: &str, params: Value) -> Result<String> {
+    pub(crate) async fn send_request(&mut self, method: &str, params: Value) -> Result<String> {
         let request_id = Uuid::new_v4().to_string();
 
         let request = JsonRpcRequest {
@@ -679,7 +528,7 @@ impl JsonRpcClient {
         Ok(request_id)
     }
 
-    async fn send_notification(&mut self, method: &str, params: Value) -> Result<()> {
+    pub(crate) async fn send_notification(&mut self, method: &str, params: Value) -> Result<()> {
         let notification = JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
@@ -710,7 +559,12 @@ impl JsonRpcClient {
         Ok(())
     }
 
-    async fn send_error_response(&mut self, id: String, code: i64, message: String) -> Result<()> {
+    pub(crate) async fn send_error_response(
+        &mut self,
+        id: String,
+        code: i64,
+        message: String,
+    ) -> Result<()> {
         let response = JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             result: None,

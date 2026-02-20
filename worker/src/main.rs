@@ -260,6 +260,7 @@ async fn run_session(
                     None,
                     Some(format!("{e:#}")),
                     Some("executor_failed".into()),
+                    None,
                 ),
                 true,
                 retry_config,
@@ -314,6 +315,7 @@ async fn run_session(
                                 agent_session_id.clone(),
                                 result.output, result.error,
                                 result.error_kind.map(|ek| ek.as_str().to_string()),
+                                result.stderr,
                             ), true, retry_config,
                         ).await {
                             Ok(r) => r,
@@ -343,7 +345,8 @@ async fn run_session(
                                             &SyncRequest::with_result(session_id,
                                                 agent_session_id.clone(),
                                                 None, Some(format!("Bad task payload: {e}")),
-                                                Some("internal_error".into())),
+                                                Some("internal_error".into()),
+                                                None),
                                             true, retry_config).await;
                                     }
                                 }
@@ -390,11 +393,12 @@ async fn run_session(
                         // Informational — content accumulation handled by executor
                         // background task.
                     }
-                    Some(AgentEvent::ProcessDied { error }) => {
+                    Some(AgentEvent::ProcessDied { error, stderr }) => {
                         // Report failure to scheduler
                         let _ = perform_sync_with_retry(client, &args.scheduler_url,
                             &SyncRequest::with_result(session_id, agent_session_id.clone(),
-                                None, Some(error), Some("executor_failed".into())),
+                                None, Some(error), Some("executor_failed".into()),
+                                stderr),
                             true, retry_config).await;
                         break SessionExit::Done;
                     }
@@ -430,7 +434,8 @@ async fn run_session(
                                         &SyncRequest::with_result(session_id,
                                             agent_session_id.clone(),
                                             None, Some(format!("Bad task payload: {e}")),
-                                            Some("internal_error".into())),
+                                            Some("internal_error".into()),
+                                            None),
                                         true, retry_config).await;
                                 }
                             }
@@ -448,7 +453,8 @@ async fn run_session(
                     }
                     Ok(SyncResponse::SessionComplete { .. }) => {
                         if turns_in_flight > 0 {
-                            // Defer until current turn completes — don't stop mid-turn
+                            // Cancel the in-progress turn so the executor can SIGTERM the subprocess
+                            let _ = cmd_tx.send(AgentCommand::Cancel);
                             completing = true;
                             continue;
                         } else {

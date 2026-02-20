@@ -61,16 +61,17 @@ def test_cors_allows_scheduler_own_origin(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_cors_allows_vite_dev_server_in_dev_mode(test_database):
-    """Test that scheduler allows Vite dev server (port 5173) in DEV_MODE."""
+    """Test that scheduler allows Vite dev server (port + 1000) in DEV_MODE."""
     original_dev_mode = os.environ.get("DEV_MODE")
     try:
         os.environ["DEV_MODE"] = "1"
 
         with scheduler_context(db_url=test_database) as scheduler:
             scheduler_url = scheduler["url"]
+            vite_port = scheduler["port"] + 1000
 
             headers = {
-                "Origin": "http://localhost:5173",
+                "Origin": f"http://localhost:{vite_port}",
                 "Access-Control-Request-Method": "POST",
             }
 
@@ -81,7 +82,7 @@ def test_cors_allows_vite_dev_server_in_dev_mode(test_database):
             )
 
             allow_origin = response.headers.get("Access-Control-Allow-Origin", "")
-            assert allow_origin == "http://localhost:5173", (
+            assert allow_origin == f"http://localhost:{vite_port}", (
                 f"Scheduler in DEV_MODE should allow Vite origin, got: {allow_origin}"
             )
     finally:

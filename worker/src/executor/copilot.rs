@@ -12,7 +12,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
 
-use super::{AgentCommand, AgentEvent, ErrorKind, ExecutorHandle, SessionConfig, TurnResult};
+use super::{
+    AgentCommand, AgentEvent, ErrorKind, ExecutorHandle, SessionConfig, StderrBuffer, TurnResult,
+    new_stderr_buffer, push_stderr_line, snapshot_stderr,
+};
 
 // --- Protocol types (Rust ↔ Node JSON Lines) ---
 
@@ -171,12 +174,15 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         }
     });
 
-    // Stderr drain: forward to tracing at debug level
+    // Stderr drain: capture to buffer + forward to tracing
+    let stderr_buf = new_stderr_buffer();
+    let buf_clone = stderr_buf.clone();
     tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
             tracing::debug!(target: "copilot_executor", "{}", line);
+            push_stderr_line(&buf_clone, line);
         }
     });
 
@@ -212,6 +218,7 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         config.cwd,
         mcp_servers,
         copilot_config,
+        stderr_buf,
     ));
 
     Ok(ExecutorHandle {
@@ -233,6 +240,7 @@ async fn background_task(
     cwd: String,
     mcp_servers: serde_json::Value,
     copilot_config: CopilotConfig,
+    stderr_buf: StderrBuffer,
 ) {
     let mut agent_session_id: Option<String> = None;
     let mut last_content: Option<serde_json::Value> = None;
@@ -280,11 +288,14 @@ async fn background_task(
                                     if let Some(ref sid) = result.session_id {
                                         agent_session_id = Some(sid.clone());
                                     }
-                                    let turn = map_result_to_turn(
+                                    let mut turn = map_result_to_turn(
                                         result,
                                         agent_session_id.clone(),
                                         last_content.take(),
                                     );
+                                    if turn.error.is_some() {
+                                        turn.stderr = snapshot_stderr(&stderr_buf);
+                                    }
                                     let _ = event_tx.send(AgentEvent::TurnComplete(turn));
                                 }
                                 Err(e) => {
@@ -293,6 +304,7 @@ async fn background_task(
                                         error: Some(format!("malformed result event: {e}")),
                                         error_kind: Some(ErrorKind::ExecutorFailed),
                                         output: None,
+                                        stderr: snapshot_stderr(&stderr_buf),
                                     }));
                                 }
                             },
@@ -305,6 +317,7 @@ async fn background_task(
                                             error: Some(err.message),
                                             error_kind: Some(ErrorKind::ExecutorFailed),
                                             output: None,
+                                            stderr: snapshot_stderr(&stderr_buf),
                                         }));
                                     }
                                     Err(e) => {
@@ -313,6 +326,7 @@ async fn background_task(
                                             error: Some(format!("malformed error event: {e}")),
                                             error_kind: Some(ErrorKind::ExecutorFailed),
                                             output: None,
+                                            stderr: snapshot_stderr(&stderr_buf),
                                         }));
                                     }
                                 }
@@ -330,6 +344,7 @@ async fn background_task(
                         };
                         let _ = event_tx.send(AgentEvent::ProcessDied {
                             error: format!("copilot executor process died ({exit_info})"),
+                            stderr: snapshot_stderr(&stderr_buf),
                         });
                         break;
                     }
@@ -353,6 +368,7 @@ async fn background_task(
                                 if let Err(e) = write_command(&mut stdin, &cmd).await {
                                     let _ = event_tx.send(AgentEvent::ProcessDied {
                                         error: format!("failed to write start command: {e}"),
+                                        stderr: snapshot_stderr(&stderr_buf),
                                     });
                                     break;
                                 }
@@ -363,6 +379,7 @@ async fn background_task(
                                     error: Some(format!("bad task payload: {e}")),
                                     error_kind: Some(ErrorKind::ExecutorFailed),
                                     output: None,
+                                    stderr: None,
                                 }));
                             }
                         }
@@ -488,6 +505,7 @@ fn map_result_to_turn(
         error,
         error_kind,
         output,
+        stderr: None, // caller attaches stderr snapshot when needed
     }
 }
 

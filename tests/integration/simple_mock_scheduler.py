@@ -20,6 +20,7 @@ class SessionResult(BaseModel):
     output: Optional[Any] = None
     error: Optional[str] = None
     errorKind: Optional[str] = None
+    stderr: Optional[str] = None
 
     class Config:
         extra = "forbid"
