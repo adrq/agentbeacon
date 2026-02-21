@@ -21,6 +21,7 @@ from tests.testhelpers import (
     start_worker_with_retry_config,
     wait_for_port,
 )
+from tests.integration.worker_test_helpers import get_agent_output
 
 BASE_DIR = Path(__file__).parent.parent.parent
 
@@ -160,11 +161,11 @@ def test_worker_handles_task_with_output():
         results = _get_results(url)
         result = results[0]
 
-        # output field should contain agent response
-        assert "output" in result and result["output"] is not None, (
-            f"Result should include output with agent response: {result}"
+        # Output is delivered via mid-turn events (or sync result as fallback)
+        output = get_agent_output(url, "sess-out-1")
+        assert output is not None, (
+            f"Expected agent output from events or sync: {result}"
         )
-        output = result["output"]
         assert output["role"] == "agent", f"Output role should be 'agent': {output}"
         assert len(output["parts"]) > 0, f"Output should have parts: {output}"
 

@@ -314,13 +314,27 @@ async fn background_task(
                     Some(JsonRpcMessage::Response(_)) => {
                         // Stale response from previous request, ignore
                     }
-                    Some(JsonRpcMessage::Notification(notif)) => {
-                        if notif.method == "session/update"
-                            && let Some(history) = phase.update_history_mut()
-                            && let Err(e) = handle_session_update(&notif.params, history)
-                        {
-                            tracing::warn!(error = %e, "failed to process session/update");
+                    Some(JsonRpcMessage::Notification(notif)) if notif.method == "session/update" => {
+                        if let Some(history) = phase.update_history_mut() {
+                            match handle_session_update(&notif.params, history) {
+                                Ok(()) => {
+                                    if let Some(last_msg) = history.last() {
+                                        let parts: Vec<_> = last_msg.parts.iter()
+                                            .filter_map(|p| serde_json::to_value(p).ok())
+                                            .collect();
+                                        let _ = event_tx.send(AgentEvent::Message {
+                                            output: serde_json::json!({"role": &last_msg.role, "parts": parts}),
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "failed to process session/update");
+                                }
+                            }
                         }
+                    }
+                    Some(JsonRpcMessage::Notification(_)) => {
+                        // Non-session/update notifications (e.g. permission requests) — ignored
                     }
                     Some(JsonRpcMessage::Request(req)) => {
                         if req.method == "session/request_permission" {

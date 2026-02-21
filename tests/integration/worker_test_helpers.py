@@ -128,6 +128,53 @@ def get_results(scheduler_url):
     return resp.json()
 
 
+def get_events(scheduler_url):
+    """Get all mid-turn message events posted by worker."""
+    resp = requests.get(f"{scheduler_url}/test/events", timeout=5)
+    return resp.json()
+
+
+def get_agent_output(scheduler_url, session_id="sess-1"):
+    """Get agent output from mid-turn events, falling back to sync results.
+
+    With mid-turn forwarding, output is delivered via POST /api/worker/events
+    and suppressed in the sync result. This helper collects output from events
+    first, then falls back to sync results for backward compatibility.
+    """
+    events = get_events(scheduler_url)
+    session_events = [e for e in events if e.get("sessionId") == session_id]
+
+    all_parts = []
+    for evt in session_events:
+        payload = evt.get("payload", {})
+        if (
+            isinstance(payload, dict)
+            and payload.get("role") == "agent"
+            and "parts" in payload
+        ):
+            all_parts.extend(payload["parts"])
+
+    if all_parts:
+        return {"role": "agent", "parts": all_parts}
+
+    # Fallback: aggregate sync results (for agents that don't emit mid-turn messages)
+    results = get_results(scheduler_url)
+    fallback_parts = []
+    for r in results:
+        output = r.get("output")
+        if (
+            r.get("sessionId") == session_id
+            and isinstance(output, dict)
+            and "parts" in output
+        ):
+            fallback_parts.extend(output["parts"])
+
+    if fallback_parts:
+        return {"role": "agent", "parts": fallback_parts}
+
+    return None
+
+
 def poll_until(predicate, timeout=15, interval=0.3):
     """Poll until predicate returns True or timeout."""
     start = time.time()

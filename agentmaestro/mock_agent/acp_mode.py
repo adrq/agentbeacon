@@ -17,6 +17,7 @@ from .coordination_scenarios import (
     HandoffScenario,
 )
 from .demo_scenario import DemoScenario
+from .showcase_scenario import ShowcaseScenario
 from .file_logger import log_task_completion
 
 CANCELLATION_POLL_INTERVAL = 0.1
@@ -130,6 +131,7 @@ class ACPHandler:
         mcp_client = self.jsonrpc_dispatcher.mcp_client
         scenarios = {
             "demo": lambda: DemoScenario(session_id, mcp_client),
+            "showcase": lambda: ShowcaseScenario(session_id, mcp_client),
             "delegate": lambda: DelegateScenario(
                 session_id, mcp_client, self.delegate_to
             ),

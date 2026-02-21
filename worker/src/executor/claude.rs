@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 
 use super::{
     AgentCommand, AgentEvent, ErrorKind, ExecutorHandle, SessionConfig, StderrBuffer, TurnResult,
-    new_stderr_buffer, push_stderr_line, snapshot_stderr,
+    build_output_message, new_stderr_buffer, push_stderr_line, snapshot_stderr,
 };
 
 // --- Protocol types (Rust ↔ Node JSON Lines) ---
@@ -263,10 +263,11 @@ async fn background_task(
                             }
                             "message" => {
                                 if let Ok(msg) = serde_json::from_value::<MessageEvent>(event)
-                                    && let Some(content) = msg.content
+                                    && let Some(ref content) = msg.content
+                                    && let Some(structured) = build_output_message(content)
                                 {
-                                    let _ = event_tx.send(AgentEvent::Message { output: content.clone() });
-                                    last_content = Some(content);
+                                    let _ = event_tx.send(AgentEvent::Message { output: structured.clone() });
+                                    last_content = Some(structured);
                                 }
                             }
                             "result" => match serde_json::from_value::<ResultEvent>(event) {
@@ -372,6 +373,7 @@ async fn background_task(
                         }
                     }
                     Some(AgentCommand::Prompt(text)) => {
+                        last_content = None;
                         if !started {
                             // Buffer until agent is initialized
                             pending_prompts.push(text);
@@ -473,25 +475,12 @@ fn map_result_to_turn(
         ),
     };
 
-    // Build output in the same shape as ACP adapter: {"role": "agent", "parts": [...]}
+    // last_content is already in structured format from build_output_message()
     let output = if error.is_none() {
         result
             .result
             .map(|text| serde_json::json!({"role": "agent", "parts": [{"kind": "text", "text": text}]}))
-            .or_else(|| last_content.and_then(|c| {
-                // Extract text from SDK content blocks (array of {type: "text", text: "..."})
-                if let serde_json::Value::Array(items) = c {
-                    let parts: Vec<serde_json::Value> = items.into_iter().filter_map(|item| {
-                        let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                        if text.is_empty() { return None; }
-                        Some(serde_json::json!({"kind": "text", "text": text}))
-                    }).collect();
-                    if parts.is_empty() { return None; }
-                    Some(serde_json::json!({"role": "agent", "parts": parts}))
-                } else {
-                    Some(serde_json::json!({"role": "agent", "parts": [{"kind": "text", "text": c.to_string()}]}))
-                }
-            }))
+            .or(last_content)
     } else {
         None
     };

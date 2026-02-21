@@ -21,6 +21,7 @@ from tests.integration.worker_test_helpers import (
     enqueue_prompt,
     mark_complete,
     get_sync_log,
+    get_events,
     get_results,
     poll_until,
 )
@@ -122,9 +123,12 @@ def test_prompt_queued_during_turn_delivered_after(mock_scheduler):
         assert len(results) == 2
         assert results[0]["sessionId"] == "sess-1"
         assert results[1]["sessionId"] == "sess-1"
-        # Verify the second result is the echo of the mid-turn follow-up
-        assert results[1]["output"] is not None
-        assert "mid-turn follow-up" in str(results[1]["output"])
+        # Verify the follow-up was processed (output arrives via mid-turn events)
+        events = get_events(scheduler_url)
+        event_text = str([e.get("payload") for e in events])
+        assert "mid-turn follow-up" in event_text, (
+            f"Events should contain echoed follow-up prompt: {event_text}"
+        )
     finally:
         mark_complete(scheduler_url)
         time.sleep(1)
@@ -165,9 +169,27 @@ def test_multiple_prompts_queued_during_turn(mock_scheduler):
         assert len(results) == 3
         for r in results:
             assert r["sessionId"] == "sess-1"
-        # Verify ordering: follow-ups delivered in queue order
-        assert "first mid-turn msg" in str(results[1]["output"])
-        assert "second mid-turn msg" in str(results[2]["output"])
+        # Verify follow-ups were processed in order (output via mid-turn events)
+        events = get_events(scheduler_url)
+        event_payloads = [str(e.get("payload")) for e in events]
+        first_idx = next(
+            (i for i, p in enumerate(event_payloads) if "first mid-turn msg" in p),
+            None,
+        )
+        second_idx = next(
+            (i for i, p in enumerate(event_payloads) if "second mid-turn msg" in p),
+            None,
+        )
+        assert first_idx is not None, (
+            f"Events should contain first follow-up echo: {event_payloads}"
+        )
+        assert second_idx is not None, (
+            f"Events should contain second follow-up echo: {event_payloads}"
+        )
+        assert first_idx < second_idx, (
+            f"First follow-up (idx {first_idx}) should precede "
+            f"second (idx {second_idx}) in event sequence"
+        )
     finally:
         mark_complete(scheduler_url)
         time.sleep(1)

@@ -183,6 +183,7 @@ complete_sessions: set[str] = set()
 command_queue: List[str] = []
 results: List[Dict[str, Any]] = []
 sync_log: List[Dict[str, Any]] = []
+worker_events: List[Dict[str, Any]] = []
 
 
 @app.post("/api/worker/sync")
@@ -275,6 +276,13 @@ def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
     return NoActionResponse()
 
 
+@app.post("/api/worker/events")
+def worker_event(request: Dict[str, Any]) -> StatusResponse:
+    """Accept mid-turn message events from the worker."""
+    worker_events.append(request)
+    return StatusResponse(status="event received")
+
+
 @app.post("/test/enqueue_session")
 def enqueue_session(request: EnqueueSessionRequest) -> StatusResponse:
     """Test endpoint: add a session assignment to the queue."""
@@ -328,6 +336,12 @@ def get_sync_log() -> List[Dict[str, Any]]:
     return sync_log
 
 
+@app.get("/test/events")
+def get_worker_events() -> List[Dict[str, Any]]:
+    """Test endpoint: retrieve all worker message events."""
+    return worker_events
+
+
 @app.get("/api/health")
 def health_check() -> HealthResponse:
     """Health check endpoint."""
@@ -343,6 +357,7 @@ def clear_all() -> StatusResponse:
     command_queue.clear()
     results.clear()
     sync_log.clear()
+    worker_events.clear()
     return StatusResponse(status="cleared")
 
 

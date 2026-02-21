@@ -89,10 +89,8 @@ pub struct TurnResult {
 pub enum AgentEvent {
     /// Agent SDK initialized with a session ID
     Init { session_id: String },
-    /// Agent produced output (message content) — informational only,
-    /// the background task accumulates these internally and includes
-    /// the final message in TurnComplete(TurnResult.output).
-    #[allow(dead_code)]
+    /// Agent produced output (message content) during a turn.
+    /// Forwarded to the scheduler in real-time by the worker main loop.
     Message { output: serde_json::Value },
     /// Agent turn completed (success or error).
     /// TurnResult.output contains the accumulated last_content from
@@ -125,6 +123,47 @@ pub struct ExecutorHandle {
     pub event_rx: mpsc::UnboundedReceiver<AgentEvent>,
     /// Join handle for the background executor task
     pub task_handle: tokio::task::JoinHandle<()>,
+}
+
+/// Map a single SDK content block to an A2A-compatible message part.
+/// Matches the `Part::Data` pattern used by the ACP executor.
+pub fn content_block_to_part(item: &serde_json::Value) -> Option<serde_json::Value> {
+    match item.get("type").and_then(|t| t.as_str()).unwrap_or("text") {
+        "text" => {
+            let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("");
+            if text.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({"kind": "text", "text": text}))
+        }
+        "tool_use" => Some(serde_json::json!({
+            "kind": "data",
+            "data": {
+                "type": "tool_call",
+                "toolCallId": item.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                "title": item.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                "status": "completed",
+            }
+        })),
+        "thinking" => {
+            let text = item.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
+            if text.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({"kind": "data", "data": {"type": "thinking", "text": text}}))
+        }
+        _ => None,
+    }
+}
+
+/// Convert raw SDK content blocks into a structured `{role: "agent", parts: [...]}` message.
+pub fn build_output_message(content_blocks: &serde_json::Value) -> Option<serde_json::Value> {
+    let blocks = content_blocks.as_array()?;
+    let parts: Vec<_> = blocks.iter().filter_map(content_block_to_part).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({"role": "agent", "parts": parts}))
 }
 
 /// Extract prompt text from task_payload — shared by stdio-bridge executors (Claude, Copilot).

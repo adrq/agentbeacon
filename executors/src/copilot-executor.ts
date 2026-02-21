@@ -15,6 +15,7 @@ import { emit } from "./common/stdio-bridge.js";
 
 let currentSession: CopilotSession | null = null;
 let aborted = false;
+let pendingBlocks: Record<string, unknown>[] = [];
 
 const commandQueue: Command[] = [];
 let queueResolve: (() => void) | null = null;
@@ -111,25 +112,40 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       sessionId: session.sessionId,
     });
 
-    // Subscribe to assistant message events
+    // Reset pending blocks for this session. Tool/reasoning blocks are
+    // buffered until the next assistant.message, then flushed together
+    // so each message event carries the structured parts that preceded it.
+    pendingBlocks = [];
+
     session.on("assistant.message", (event) => {
+      // Flush any accumulated tool/reasoning blocks before the text message
+      pendingBlocks.push({ type: "text", text: event.data.content });
       emit({
         type: "message",
         role: "assistant",
-        content: [{ type: "text", text: event.data.content }],
+        content: [...pendingBlocks],
       });
+      pendingBlocks = [];
     });
 
-    // Log tool execution events to stderr
     session.on("tool.execution_start", (event) => {
       process.stderr.write(
         `[copilot] tool start: ${event.data.toolName}\n`,
       );
+      pendingBlocks.push({
+        type: "tool_use",
+        id: event.data.toolCallId,
+        name: event.data.toolName,
+      });
     });
     session.on("tool.execution_complete", (event) => {
       process.stderr.write(
         `[copilot] tool complete: ${event.data.toolCallId}\n`,
       );
+    });
+
+    session.on("assistant.reasoning", (event) => {
+      pendingBlocks.push({ type: "thinking", thinking: event.data.content });
     });
 
     // Handle session errors — unknown/untyped errors are fatal,
@@ -179,6 +195,15 @@ async function runSession(startCmd: StartCommand): Promise<void> {
 function emitTurnResult(
   result: { data: { content: string } } | undefined,
 ): void {
+  // Flush any accumulated tool/reasoning blocks that weren't followed by an assistant.message
+  if (pendingBlocks.length > 0) {
+    emit({
+      type: "message",
+      role: "assistant",
+      content: [...pendingBlocks],
+    });
+    pendingBlocks = [];
+  }
   if (result === undefined) {
     if (aborted) {
       emit({

@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::app::{AppState, EventNotification};
 use crate::db;
+use crate::error::SchedulerError;
 use crate::queue::TaskAssignment;
 
 const LONG_POLL_TIMEOUT_SECS: u64 = 30;
@@ -648,4 +649,39 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
     }
 
     Ok(Json(WorkerSyncResponse::NoAction))
+}
+
+// --- Mid-turn message event endpoint ---
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerMessageRequest {
+    pub session_id: String,
+    pub execution_id: String,
+    pub payload: serde_json::Value,
+}
+
+/// Handle mid-turn message events POSTed by the worker during an active turn.
+pub async fn handle_worker_event(
+    State(state): State<AppState>,
+    Json(request): Json<WorkerMessageRequest>,
+) -> Result<StatusCode, SchedulerError> {
+    let payload_str = serde_json::to_string(&request.payload)
+        .map_err(|e| SchedulerError::ValidationFailed(format!("invalid payload: {e}")))?;
+
+    let event_id = db::events::insert(
+        &state.db_pool,
+        &request.execution_id,
+        Some(&request.session_id),
+        "message",
+        &payload_str,
+    )
+    .await?;
+
+    let _ = state.event_broadcast.send(EventNotification {
+        execution_id: request.execution_id,
+        event_id,
+    });
+
+    Ok(StatusCode::CREATED)
 }

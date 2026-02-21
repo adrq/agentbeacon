@@ -22,6 +22,7 @@ from tests.testhelpers import (
     start_worker_with_retry_config,
     wait_for_port,
 )
+from tests.integration.worker_test_helpers import get_agent_output
 
 BASE_DIR = Path(__file__).parent.parent.parent
 
@@ -144,11 +145,11 @@ def test_worker_completes_session_with_output():
         assert result["sessionId"] == "sess-async-1"
         assert result["agentSessionId"] is not None
 
-        # Verify output was captured from agent
-        assert result.get("output") is not None, (
-            f"Result should include output: {result}"
+        # Output is delivered via mid-turn events (or sync result as fallback)
+        output = get_agent_output(url, "sess-async-1")
+        assert output is not None, (
+            f"Expected agent output from events or sync: {result}"
         )
-        output = result["output"]
         assert output["role"] == "agent"
         assert len(output["parts"]) > 0
     finally:
@@ -285,9 +286,20 @@ def test_worker_handles_multi_turn_session():
             f"{results[0]['agentSessionId']} vs {results[1]['agentSessionId']}"
         )
 
-        # Both results should have output
-        for i, r in enumerate(results):
-            assert r.get("output") is not None, f"Turn {i + 1} should have output: {r}"
+        # Both turns should produce output (via mid-turn events or sync)
+        output = get_agent_output(url, "sess-multi-1")
+        assert output is not None, (
+            "Expected agent output from events or sync for multi-turn session"
+        )
+        assert len(output["parts"]) > 0
+        # Verify both turns contributed output (mock agent echoes prompt text)
+        parts_text = str(output["parts"])
+        assert "first turn" in parts_text, (
+            f"Turn 1 output missing from events: {parts_text}"
+        )
+        assert "second turn" in parts_text, (
+            f"Turn 2 output missing from events: {parts_text}"
+        )
     finally:
         _mark_complete(f"http://localhost:{port}", "sess-multi-1")
         time.sleep(0.5)

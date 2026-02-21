@@ -24,6 +24,7 @@ from tests.integration.worker_test_helpers import (
     start_worker,
     clear_state,
     enqueue_session,
+    get_agent_output,
     get_results,
     mark_complete,
     poll_until,
@@ -171,9 +172,10 @@ def test_quickstart_scenario_3_session_updates_in_history(mock_scheduler):
         assert results[0]["error"] is None, (
             f"Task should complete successfully: {results[0]}"
         )
-        output = results[0]["output"]
+        # Output arrives via mid-turn events (or sync result as fallback)
+        output = get_agent_output(url)
         assert output is not None, (
-            f"Output should contain accumulated agent messages: {results[0]}"
+            "Output should contain accumulated agent messages from events"
         )
         parts = output.get("parts", []) if isinstance(output, dict) else []
         assert len(parts) >= 2, (

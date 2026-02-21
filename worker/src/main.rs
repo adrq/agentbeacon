@@ -15,7 +15,8 @@ use crate::executor::{
     AgentCommand, AgentEvent, ExecutorHandle, SessionConfig, extract_prompt_text, start_executor,
 };
 use crate::sync::{
-    RetryConfig, SyncRequest, SyncResponse, perform_sync_long_poll, perform_sync_with_retry,
+    RetryConfig, SyncRequest, SyncResponse, WorkerMessageEvent, perform_sync_long_poll,
+    perform_sync_with_retry, post_worker_message,
 };
 
 /// How a session exited — lets the caller distinguish normal completion from shutdown.
@@ -193,6 +194,20 @@ fn start_long_poll<'a>(
     })
 }
 
+/// Drains mid-turn message events from the channel and POSTs them to the scheduler.
+/// Serializes delivery to prevent burst-induced resource exhaustion.
+async fn message_sender_task(
+    client: reqwest::Client,
+    scheduler_url: String,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<WorkerMessageEvent>,
+) {
+    while let Some(event) = rx.recv().await {
+        if let Err(e) = post_worker_message(&client, &scheduler_url, &event).await {
+            tracing::warn!(error = %e, "failed to forward mid-turn message");
+        }
+    }
+}
+
 async fn run_session(
     args: &Args,
     client: &reqwest::Client,
@@ -276,8 +291,16 @@ async fn run_session(
         task_handle,
     } = executor;
 
+    // Mid-turn message forwarding channel + sender task
+    let (msg_fwd_tx, msg_fwd_rx) = tokio::sync::mpsc::unbounded_channel::<WorkerMessageEvent>();
+    let sender_client = client.clone();
+    let sender_url = args.scheduler_url.clone();
+    let sender_handle = tokio::spawn(async move {
+        message_sender_task(sender_client, sender_url, msg_fwd_rx).await;
+    });
+
     // Start the agent with the initial task payload
-    let _ = cmd_tx.send(AgentCommand::Start(initial_task.task_payload));
+    let _ = cmd_tx.send(AgentCommand::Start(initial_task.task_payload.clone()));
 
     // Long-poll is NOT started yet — defer until agent is initialized (Init event)
     // or the first TurnComplete. This prevents premature task delivery before the
@@ -288,6 +311,7 @@ async fn run_session(
     let mut turns_in_flight: usize = 1; // starts at 1 — processing initial prompt
     let mut cancelling = false;
     let mut completing = false;
+    let mut mid_turn_forwarded = false;
 
     let exit = loop {
         tokio::select! {
@@ -305,6 +329,14 @@ async fn run_session(
                             || result.error_kind.as_ref()
                                 .is_some_and(|ek| ek.as_str() == "cancelled");
 
+                        // Suppress output if already forwarded via mid-turn messages
+                        let output_for_sync = if mid_turn_forwarded {
+                            None
+                        } else {
+                            result.output
+                        };
+                        mid_turn_forwarded = false;
+
                         // Drop any in-flight long-poll future before sending
                         // sync-with-result (side-effect: cancels the request).
                         drop(poll_fut.take());
@@ -313,7 +345,7 @@ async fn run_session(
                         let response = match perform_sync_with_retry(client, &args.scheduler_url,
                             &SyncRequest::with_result(session_id,
                                 agent_session_id.clone(),
-                                result.output, result.error,
+                                output_for_sync, result.error,
                                 result.error_kind.map(|ek| ek.as_str().to_string()),
                                 result.stderr,
                             ), true, retry_config,
@@ -389,9 +421,13 @@ async fn run_session(
                             ));
                         }
                     }
-                    Some(AgentEvent::Message { .. }) => {
-                        // Informational — content accumulation handled by executor
-                        // background task.
+                    Some(AgentEvent::Message { output }) => {
+                        mid_turn_forwarded = true;
+                        let _ = msg_fwd_tx.send(WorkerMessageEvent {
+                            session_id: session_id.to_string(),
+                            execution_id: initial_task.execution_id.clone(),
+                            payload: output,
+                        });
                     }
                     Some(AgentEvent::ProcessDied { error, stderr }) => {
                         // Report failure to scheduler
@@ -479,9 +515,11 @@ async fn run_session(
         }
     };
 
-    // Graceful shutdown: drop cmd_tx to signal background task, await it
+    // Graceful shutdown: drop channels to signal background tasks, await them
     drop(cmd_tx);
+    drop(msg_fwd_tx);
     let _ = task_handle.await;
+    let _ = sender_handle.await;
 
     Ok(exit)
 }

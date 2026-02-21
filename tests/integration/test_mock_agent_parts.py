@@ -21,6 +21,7 @@ from tests.integration.worker_test_helpers import (
     start_worker,
     clear_state,
     enqueue_session,
+    get_agent_output,
     get_results,
     mark_complete,
     poll_until,
@@ -35,12 +36,13 @@ def mock_scheduler():
     pm.release_port(port)
 
 
-def _get_output_parts(results):
-    """Extract agent output parts from the first result."""
+def _get_output_parts(url):
+    """Extract agent output parts from events or sync results."""
+    results = get_results(url)
     assert len(results) == 1, f"Expected 1 result, got {len(results)}"
     assert results[0]["error"] is None, f"Unexpected error: {results[0]}"
-    output = results[0].get("output")
-    assert output is not None, "Expected non-null output"
+    output = get_agent_output(url)
+    assert output is not None, "Expected non-null output from events or sync"
     assert output["role"] == "agent"
     return output["parts"]
 
@@ -54,7 +56,7 @@ def test_send_markdown_produces_text_part(mock_scheduler):
     worker = start_worker(url)
     try:
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
-        parts = _get_output_parts(get_results(url))
+        parts = _get_output_parts(url)
 
         text_parts = [p for p in parts if p.get("kind") == "text"]
         assert len(text_parts) >= 1, f"Expected at least one text part, got: {parts}"
@@ -79,7 +81,7 @@ def test_send_tool_call_produces_data_part(mock_scheduler):
     worker = start_worker(url)
     try:
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
-        parts = _get_output_parts(get_results(url))
+        parts = _get_output_parts(url)
 
         data_parts = [p for p in parts if p.get("kind") == "data"]
         tool_call_parts = [
@@ -107,7 +109,7 @@ def test_send_plan_produces_data_part(mock_scheduler):
     worker = start_worker(url)
     try:
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
-        parts = _get_output_parts(get_results(url))
+        parts = _get_output_parts(url)
 
         data_parts = [p for p in parts if p.get("kind") == "data"]
         plan_parts = [p for p in data_parts if p["data"].get("type") == "plan"]
@@ -133,7 +135,7 @@ def test_send_mode_update_produces_data_part(mock_scheduler):
     worker = start_worker(url)
     try:
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
-        parts = _get_output_parts(get_results(url))
+        parts = _get_output_parts(url)
 
         data_parts = [p for p in parts if p.get("kind") == "data"]
         mode_parts = [p for p in data_parts if p["data"].get("type") == "mode_change"]
@@ -158,7 +160,7 @@ def test_send_commands_update_produces_data_part(mock_scheduler):
     worker = start_worker(url)
     try:
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
-        parts = _get_output_parts(get_results(url))
+        parts = _get_output_parts(url)
 
         data_parts = [p for p in parts if p.get("kind") == "data"]
         cmd_parts = [
@@ -188,7 +190,7 @@ def test_send_thought_produces_data_part(mock_scheduler):
     worker = start_worker(url)
     try:
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
-        parts = _get_output_parts(get_results(url))
+        parts = _get_output_parts(url)
 
         data_parts = [p for p in parts if p.get("kind") == "data"]
         thinking_parts = [p for p in data_parts if p["data"].get("type") == "thinking"]
@@ -213,7 +215,7 @@ def test_send_tool_call_update_produces_data_part(mock_scheduler):
     worker = start_worker(url)
     try:
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
-        parts = _get_output_parts(get_results(url))
+        parts = _get_output_parts(url)
 
         data_parts = [p for p in parts if p.get("kind") == "data"]
         update_parts = [

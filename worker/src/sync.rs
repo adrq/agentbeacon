@@ -139,6 +139,34 @@ impl SyncRequest {
     }
 }
 
+// --- Mid-turn message forwarding ---
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerMessageEvent {
+    pub session_id: String,
+    pub execution_id: String,
+    pub payload: serde_json::Value,
+}
+
+pub async fn post_worker_message(
+    client: &reqwest::Client,
+    scheduler_url: &str,
+    event: &WorkerMessageEvent,
+) -> Result<()> {
+    let url = format!("{scheduler_url}/api/worker/events");
+    let response = client
+        .post(&url)
+        .json(event)
+        .send()
+        .await
+        .context("failed to post worker message event")?;
+    if !response.status().is_success() {
+        anyhow::bail!("worker event POST failed: status {}", response.status());
+    }
+    Ok(())
+}
+
 // --- HTTP functions ---
 
 /// Parse response body as SyncResponse, logging raw body on failure.

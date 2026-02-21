@@ -98,6 +98,19 @@ async fn bootstrap(cli: Cli) -> Result<()> {
             .await
             .context("Failed to seed Demo Agent")?;
 
+            let showcase_id = uuid::Uuid::new_v4().to_string();
+            db::agents::create(
+                &db_pool,
+                &showcase_id,
+                "Showcase Agent",
+                "acp",
+                r#"{"command":"uv","args":["run","python","-m","agentmaestro.mock_agent","--mode","acp","--scenario","showcase"],"timeout":60}"#,
+                Some("Non-interactive demo of all event types"),
+                None,
+            )
+            .await
+            .context("Failed to seed Showcase Agent")?;
+
             let claude_id = uuid::Uuid::new_v4().to_string();
             db::agents::create(
                 &db_pool,
@@ -110,7 +123,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
             )
             .await
             .context("Failed to seed Claude Code agent")?;
-            info!("Seeded 2 default agents");
+            info!("Seeded 3 default agents");
         }
     }
 
