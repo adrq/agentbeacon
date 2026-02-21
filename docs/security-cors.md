@@ -1,11 +1,11 @@
 # CORS Configuration
 
-AgentMaestro enforces restricted Cross-Origin Resource Sharing (CORS) policies to prevent unauthorized access from arbitrary web origins.
+AgentBeacon enforces restricted Cross-Origin Resource Sharing (CORS) policies to prevent unauthorized access from arbitrary web origins.
 
 ## Default Allowed Origins
 
 1. **Scheduler's Own Origin**: `http://localhost:{port}` (always allowed)
-2. **Vite Dev Server**: `http://localhost:5173` (only when `DEV_MODE=1`)
+2. **Vite Dev Server**: `http://localhost:{port+1000}` (only when `DEV_MODE=1`)
 
 ## Configuration
 
@@ -15,10 +15,10 @@ Add additional origins via the `CORS_ALLOWED_ORIGINS` environment variable:
 
 ```bash
 # Single origin
-CORS_ALLOWED_ORIGINS="http://localhost:3000" ./bin/agentmaestro-scheduler
+CORS_ALLOWED_ORIGINS="http://localhost:3000" ./bin/agentbeacon-scheduler
 
 # Multiple origins (comma-separated)
-CORS_ALLOWED_ORIGINS="http://localhost:3000,http://localhost:8080" ./bin/agentmaestro-scheduler
+CORS_ALLOWED_ORIGINS="http://localhost:3000,http://localhost:8080" ./bin/agentbeacon-scheduler
 ```
 
 ### Allowed Methods
@@ -43,7 +43,7 @@ Credentials (cookies, HTTP authentication) are enabled for approved origins.
 ### Production
 
 ```bash
-./bin/agentmaestro-scheduler --port 9456
+./bin/agentbeacon-scheduler --port 9456
 
 # Allowed: http://localhost:9456
 ```
@@ -51,10 +51,10 @@ Credentials (cookies, HTTP authentication) are enabled for approved origins.
 ### Development
 
 ```bash
-DEV_MODE=1 ./bin/agentmaestro-scheduler --port 9456
+DEV_MODE=1 ./bin/agentbeacon-scheduler --port 9456
 
 # Allowed:
-# - http://localhost:5173 (Vite)
+# - http://localhost:10456 (Vite dev server, port+1000)
 # - http://localhost:9456 (scheduler)
 ```
 
@@ -62,7 +62,7 @@ DEV_MODE=1 ./bin/agentmaestro-scheduler --port 9456
 
 ```bash
 CORS_ALLOWED_ORIGINS="http://localhost:3000,https://app.example.com" \
-  ./bin/agentmaestro-scheduler --port 9456
+  ./bin/agentbeacon-scheduler --port 9456
 
 # Allowed:
 # - http://localhost:3000

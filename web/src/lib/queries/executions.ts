@@ -1,5 +1,5 @@
 import { createQuery, createMutation, useQueryClient } from '@tanstack/svelte-query';
-import type { CreateExecutionResponse } from '../types';
+import type { CreateExecutionResponse, ExecutionDetail } from '../types';
 import { api } from '../api';
 
 const terminalStatuses = new Set(['completed', 'failed', 'canceled']);
@@ -21,10 +21,9 @@ export function executionDetailQuery(id: () => string | null) {
     queryFn: () => api.getExecution(id()!),
     enabled: !!id(),
     refetchInterval: (query) => {
-      const status = (query.state.data as { execution?: { status?: string } } | undefined)
-        ?.execution?.status;
+      const status = (query.state.data as ExecutionDetail | undefined)?.execution?.status;
       if (status && terminalStatuses.has(status)) return false;
-      return 3000;
+      return 10_000; // SSE delivers events in real-time; poll is a safety net
     },
   }));
 }
@@ -32,12 +31,17 @@ export function executionDetailQuery(id: () => string | null) {
 export function sessionEventsQuery(
   sessionId: () => string | null | undefined,
   isTerminal?: () => boolean,
+  sseActive?: () => boolean,
 ) {
   return createQuery(() => ({
     queryKey: ['session-events', sessionId()],
     queryFn: () => api.getSessionEvents(sessionId()!),
     enabled: !!sessionId(),
-    refetchInterval: isTerminal?.() ? false : 3000,
+    refetchInterval: () => {
+      if (isTerminal?.()) return false;
+      if (sseActive?.()) return false;
+      return 3000;
+    },
   }));
 }
 

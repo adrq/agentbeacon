@@ -65,8 +65,24 @@ function getProcessor() {
   return processorPromise;
 }
 
+// Cache rendered HTML to avoid re-running the unified pipeline for the same text.
+// Agent messages are immutable (append-only events), so cache entries are never
+// invalidated. Bounded to 500 entries as a safety net against unbounded growth.
+const renderCache = new Map<string, string>();
+const CACHE_MAX = 500;
+
 export async function renderMarkdown(text: string): Promise<string> {
+  const cached = renderCache.get(text);
+  if (cached !== undefined) return cached;
+
   const processor = await getProcessor();
-  const result = await processor.process(text);
-  return String(result);
+  const result = String(await processor.process(text));
+
+  if (renderCache.size >= CACHE_MAX) {
+    const firstKey = renderCache.keys().next().value!;
+    renderCache.delete(firstKey);
+  }
+  renderCache.set(text, result);
+
+  return result;
 }

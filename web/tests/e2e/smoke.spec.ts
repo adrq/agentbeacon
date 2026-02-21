@@ -1,28 +1,5 @@
 import { test, expect } from '@playwright/test';
-
-const API_URL = process.env.API_URL ?? 'http://localhost:9456';
-
-async function apiPost(path: string, body: unknown) {
-  const res = await fetch(`${API_URL}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
-  return res.json();
-}
-
-async function apiGet(path: string) {
-  const res = await fetch(`${API_URL}${path}`);
-  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
-  return res.json();
-}
-
-async function ensureAgent(): Promise<{ id: string; name: string }> {
-  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
-  if (agents.length > 0) return agents[0];
-  throw new Error('No agents seeded — run scripts/seed_agents.py first');
-}
+import { apiPost, apiGet, ensureDirectAgent, API_URL } from './helpers';
 
 async function ensureProject(): Promise<{ id: string; name: string }> {
   const projects: { id: string; name: string }[] = await apiGet('/api/projects');
@@ -75,27 +52,25 @@ test('app loads with header and new button', async ({ page }) => {
 test('theme toggle switches between light and dark', async ({ page }) => {
   await page.goto('/');
 
-  const toggle = page.getByRole('button', { name: /theme/i });
+  const toggle = page.getByRole('button', { name: /Activate .+ theme/ });
   await expect(toggle).toBeVisible();
 
   await toggle.click();
-  await expect(page.getByRole('button', { name: /theme/i })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Activate .+ theme/ })).toBeVisible();
 });
 
 test('create execution via modal', async ({ page }) => {
-  const agent = await ensureAgent();
+  const agent = await ensureDirectAgent();
   const project = await ensureProject();
 
   await page.goto('/');
   await page.getByRole('button', { name: '+ New' }).click();
 
-  await expect(page.getByRole('dialog', { name: 'New Execution' })).toBeVisible();
+  const dialog = page.getByRole('dialog', { name: 'New Execution' });
+  await expect(dialog).toBeVisible();
 
-  // Select project
-  await page.getByLabel('Project').selectOption(project.id);
-
-  // Select agent
-  await page.getByLabel('Agent').selectOption(agent.id);
+  await dialog.getByLabel('Project', { exact: true }).selectOption(project.id);
+  await dialog.getByLabel('Agent').selectOption(agent.id);
 
   await page.getByRole('textbox', { name: 'Task' }).fill('Playwright smoke test task');
   await page.getByRole('textbox', { name: /title/i }).fill('Smoke test');
@@ -108,7 +83,7 @@ test('create execution via modal', async ({ page }) => {
 });
 
 test('full question-answer flow', async ({ page }) => {
-  const agent = await ensureAgent();
+  const agent = await ensureDirectAgent();
 
   const exec = await apiPost('/api/executions', {
     agent_id: agent.id,
@@ -128,7 +103,6 @@ test('full question-answer flow', async ({ page }) => {
 
   await page.goto(`/#/execution/${execId}`);
 
-  // Wait for question to appear via polling
   const questionCard = page.locator('.question-card');
   await expect(questionCard).toBeVisible({ timeout: 10000 });
 
@@ -149,14 +123,11 @@ test('full question-answer flow', async ({ page }) => {
 test('navigation between views', async ({ page }) => {
   await page.goto('/');
 
-  // Navigate to Projects
   await page.getByRole('link', { name: 'Projects' }).click();
   await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
 
-  // Navigate to Agents
   await page.getByRole('link', { name: 'Agents' }).click();
   await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
 
-  // Navigate back to Executions
   await page.getByRole('link', { name: 'Executions' }).click();
 });

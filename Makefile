@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-sqlite test-postgres test-int test-all run clean pre-commit dev-backend dev-frontend
+.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-sqlite test-postgres test-int test-e2e test-all run clean pre-commit dev-backend dev-frontend
 
 # Default target
 all: build executors build-frontend
@@ -48,7 +48,7 @@ build-worker:
 # Run Rust unit tests with both SQLite and PostgreSQL
 test:
 	@echo "=== Running Rust tests with SQLite ==="
-	cargo test -- test-threads=1
+	cargo test -- --test-threads=1
 	@echo ""
 	@echo "=== Running Rust tests with PostgreSQL ==="
 	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test cargo test -- --test-threads=1
@@ -57,7 +57,7 @@ test:
 
 test-sqlite:
 	@echo "Running Rust tests with SQLite..."
-	cargo test -- test-threads=1
+	cargo test -- --test-threads=1
 
 test-postgres:
 	@echo "Running Rust tests with PostgreSQL..."
@@ -68,12 +68,17 @@ test-int: build
 	@echo "Running Python integration tests with Rust binaries..."
 	uv run pytest -v tests
 
+# Boot system, seed agents, run Playwright E2E tests, tear down
+test-e2e: all
+	@echo "Starting E2E test environment..."
+	@AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9456} ./scripts/e2e.sh --fresh --run-tests
+
 test-all: test test-int
 
 # Run target
 run: build
-	@echo "Starting AgentBeacon server..."
-	./bin/agentbeacon
+	@echo "Starting AgentBeacon on port $${AGENTBEACON_PORT:-9456}..."
+	./bin/agentbeacon --scheduler-port $${AGENTBEACON_PORT:-9456}
 
 # Clean build artifacts
 clean:
@@ -91,10 +96,10 @@ pre-commit:
 
 # Development mode - run scheduler in dev mode
 dev-backend:
-	@echo "Starting Rust scheduler in development mode..."
-	DEV_MODE=1 cargo run --bin agentbeacon-scheduler
+	@echo "Starting scheduler in dev mode on port $${AGENTBEACON_PORT:-9456}..."
+	DEV_MODE=1 cargo run --bin agentbeacon-scheduler -- --port $${AGENTBEACON_PORT:-9456}
 
 # Development mode - run frontend dev server
 dev-frontend:
-	@echo "Starting Vite dev server..."
-	cd web && npm run dev
+	@echo "Starting Vite dev server (proxy → port $${AGENTBEACON_PORT:-9456})..."
+	cd web && AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9456} npm run dev

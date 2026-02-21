@@ -1,28 +1,31 @@
 import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 
+const beaconPort = parseInt(process.env.AGENTBEACON_PORT || '9456', 10);
+const vitePort = parseInt(process.env.VITE_DEV_PORT || '', 10) || (beaconPort + 1000);
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [svelte()],
   server: {
-    port: 5173,
+    port: vitePort,
     proxy: {
       '/api': {
-        target: 'http://localhost:9456',
+        target: `http://localhost:${beaconPort}`,
         changeOrigin: true
       },
       '/.well-known': {
-        target: 'http://localhost:9456',
+        target: `http://localhost:${beaconPort}`,
         changeOrigin: true
       },
       '/rpc': {
-        target: 'http://localhost:9456',
+        target: `http://localhost:${beaconPort}`,
         changeOrigin: true
       }
     }
   },
   build: {
-    outDir: 'dist',  // Shared build location for both Go and Rust implementations
+    outDir: 'dist',
     emptyOutDir: true
   }
 })

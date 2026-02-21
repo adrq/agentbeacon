@@ -1,23 +1,34 @@
 import { test, expect } from '@playwright/test';
+import { apiPost, apiGet, apiDelete } from './helpers';
 
-const API_URL = process.env.API_URL ?? 'http://localhost:9456';
+const TEST_AGENT_NAMES = ['E2E Test Agent', 'Edit Agent', 'Renamed Agent', 'Delete Agent'];
 
-async function apiPost(path: string, body: unknown) {
-  const res = await fetch(`${API_URL}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
-  return res.json();
+const createdAgentIds: string[] = [];
+
+async function cleanupTestAgents() {
+  for (const id of createdAgentIds) {
+    try { await apiDelete(`/api/agents/${id}`); } catch { /* best effort */ }
+  }
+  createdAgentIds.length = 0;
+
+  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  for (const agent of agents) {
+    if (TEST_AGENT_NAMES.includes(agent.name)) {
+      try { await apiDelete(`/api/agents/${agent.id}`); } catch { /* best effort */ }
+    }
+  }
 }
 
-test('add agent via template', async ({ page }) => {
-  await page.goto('/#/agents');
+test.afterEach(async () => {
+  await cleanupTestAgents();
+});
 
+test('add agent via template', async ({ page }) => {
+  await cleanupTestAgents();
+
+  await page.goto('/#/agents');
   await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
 
-  // Use a quick-add template (or the "Add Agent" button)
   await page.getByRole('button', { name: 'Add Agent' }).click();
 
   const dialog = page.getByRole('dialog');
@@ -37,13 +48,13 @@ test('edit agent', async ({ page }) => {
     agent_type: 'acp',
     config: { command: 'echo', args: [], timeout: 60 },
   });
+  createdAgentIds.push(agent.id);
 
   await page.goto('/#/agents');
   await expect(page.getByText('Edit Agent')).toBeVisible();
 
-  // Click the edit link on the agent card
   const card = page.locator('.agent-card', { hasText: 'Edit Agent' });
-  await card.getByText('Edit').click();
+  await card.getByRole('button', { name: 'Edit' }).click();
 
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
@@ -62,14 +73,14 @@ test('delete agent', async ({ page }) => {
     agent_type: 'acp',
     config: { command: 'echo', args: [], timeout: 60 },
   });
+  createdAgentIds.push(agent.id);
 
   await page.goto('/#/agents');
   await expect(page.getByText('Delete Agent')).toBeVisible();
 
   const card = page.locator('.agent-card', { hasText: 'Delete Agent' });
-  await card.getByText('Delete').click();
+  await card.getByRole('button', { name: 'Delete' }).click();
 
-  // AlertDialog confirmation
   const alertDialog = page.getByRole('alertdialog');
   await expect(alertDialog).toBeVisible();
   await alertDialog.getByRole('button', { name: 'Delete' }).click();

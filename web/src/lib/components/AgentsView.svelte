@@ -169,7 +169,7 @@
       {/if}
       <div class="modal-actions">
         <AlertDialog.Cancel class="alert-btn alert-btn-ghost">Cancel</AlertDialog.Cancel>
-        <AlertDialog.Action class="alert-btn alert-btn-primary" onclick={handleDelete}>
+        <AlertDialog.Action class="alert-btn alert-btn-danger" onclick={handleDelete}>
           {deleteMut.isPending ? 'Deleting...' : 'Delete'}
         </AlertDialog.Action>
       </div>
@@ -365,31 +365,4 @@
     gap: 0.5rem;
   }
 
-  :global(.alert-btn) {
-    padding: 0.375rem 0.75rem;
-    border-radius: 0.375rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    border: none;
-    cursor: pointer;
-    transition: opacity 0.15s;
-  }
-
-  :global(.alert-btn-ghost) {
-    background: transparent;
-    color: hsl(var(--foreground));
-  }
-
-  :global(.alert-btn-ghost:hover) {
-    background: hsl(var(--muted) / 0.5);
-  }
-
-  :global(.alert-btn-primary) {
-    background: hsl(var(--primary));
-    color: hsl(var(--primary-foreground));
-  }
-
-  :global(.alert-btn-primary:hover) {
-    filter: brightness(1.1);
-  }
 </style>

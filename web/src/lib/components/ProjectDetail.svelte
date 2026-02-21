@@ -125,7 +125,7 @@
         {/if}
         <div class="modal-actions">
           <AlertDialog.Cancel class="alert-btn alert-btn-ghost">Cancel</AlertDialog.Cancel>
-          <AlertDialog.Action class="alert-btn alert-btn-primary" onclick={handleDelete}>
+          <AlertDialog.Action class="alert-btn alert-btn-danger" onclick={handleDelete}>
             {deleteMut.isPending ? 'Deleting...' : 'Delete'}
           </AlertDialog.Action>
         </div>

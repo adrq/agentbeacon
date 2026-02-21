@@ -5,13 +5,15 @@
   import { createExecutionMutation } from '../queries/executions';
   import { router } from '../router';
   import Button from './ui/button.svelte';
+  import type { ExecutionPrefill } from './ExecutionDetail.svelte';
 
   interface Props {
     onclose?: () => void;
     initialProjectId?: string | null;
+    prefill?: ExecutionPrefill | null;
   }
 
-  let { onclose, initialProjectId = null }: Props = $props();
+  let { onclose, initialProjectId = null, prefill = null }: Props = $props();
 
   const agents = agentsQuery();
   const projects = projectsQuery();
@@ -27,6 +29,18 @@
   let showAdvanced = $state(false);
   let error: string | null = $state(null);
 
+  // Apply prefill values once on mount (not on every reactive change)
+  let prefillApplied = false;
+  $effect.pre(() => {
+    if (prefill && !prefillApplied) {
+      prefillApplied = true;
+      if (prefill.projectId) selectedProjectId = prefill.projectId;
+      if (prefill.agentId) selectedAgentId = prefill.agentId;
+      if (prefill.prompt) task = prefill.prompt;
+      if (prefill.title) title = prefill.title;
+    }
+  });
+
   let enabledAgents = $derived((agents.data ?? []).filter(a => a.enabled));
   let projectList = $derived(projects.data ?? []);
   let selectedProject = $derived(projectList.find(p => p.id === selectedProjectId) ?? null);
@@ -36,16 +50,16 @@
     !!selectedAgentId && task.trim().length > 0 && (!!selectedProjectId || !!cwd.trim()) && !submitting
   );
 
-  // Auto-select agent when only one is available
+  // Auto-select agent when only one is available (skip when prefilled)
   $effect(() => {
-    if (!selectedAgentId && enabledAgents.length === 1) {
+    if (!prefill && !selectedAgentId && enabledAgents.length === 1) {
       selectedAgentId = enabledAgents[0].id;
     }
   });
 
-  // When project is selected, auto-set agent to project's default and clear branch if non-git
+  // When project is selected, auto-set agent to project's default and clear branch if non-git (skip when prefilled)
   $effect(() => {
-    if (selectedProject) {
+    if (!prefill && selectedProject) {
       if (selectedProject.default_agent_id) {
         const defaultAgent = enabledAgents.find(a => a.id === selectedProject!.default_agent_id);
         if (defaultAgent) {
@@ -112,7 +126,7 @@
   <Dialog.Portal>
     <Dialog.Overlay class="modal-overlay" />
     <Dialog.Content class="modal-content" aria-describedby={undefined}>
-      <Dialog.Title class="modal-title">New Execution</Dialog.Title>
+      <Dialog.Title class="modal-title">{prefill ? 'Re-run Execution' : 'New Execution'}</Dialog.Title>
 
       <div class="field">
         <label class="field-label" for="exec-project">Project</label>

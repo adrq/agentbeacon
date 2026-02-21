@@ -5,6 +5,7 @@
   import SplitPanel from './SplitPanel.svelte';
   import ExecutionList from './ExecutionList.svelte';
   import ExecutionDetail from './ExecutionDetail.svelte';
+  import type { ExecutionPrefill } from './ExecutionDetail.svelte';
   import EmptyState from './EmptyState.svelte';
   import DecisionQueue from './DecisionQueue.svelte';
   import ActivityFeed from './ActivityFeed.svelte';
@@ -14,12 +15,28 @@
   import AgentsView from './AgentsView.svelte';
 
   let showNewModal = $state(false);
+  let rerunPrefill = $state<ExecutionPrefill | null>(null);
 
   const execsQuery = executionsQuery();
   let hasExecutions = $derived((execsQuery.data ?? []).length > 0);
+
+  function handleNewExecution() {
+    rerunPrefill = null;
+    showNewModal = true;
+  }
+
+  function handleRerun(prefill: ExecutionPrefill) {
+    rerunPrefill = prefill;
+    showNewModal = true;
+  }
+
+  function handleModalClose() {
+    showNewModal = false;
+    rerunPrefill = null;
+  }
 </script>
 
-<AppHeader onnewexecution={() => showNewModal = true} />
+<AppHeader onnewexecution={handleNewExecution} />
 
 <div class="shell-body">
   <SplitPanel storageKey="beacon-sidebar-width" initialLeftWidth={22} minWidth={15} maxWidth={40}>
@@ -31,7 +48,7 @@
     {#snippet right()}
       <div class="main-content">
         {#if $currentScreen === 'ExecutionDetail' && $selectedExecutionId}
-          <ExecutionDetail executionId={$selectedExecutionId} />
+          <ExecutionDetail executionId={$selectedExecutionId} onrerun={handleRerun} />
         {:else if $currentScreen === 'Projects'}
           <ProjectsView />
         {:else if $currentScreen === 'ProjectDetail' && $selectedProjectId}
@@ -52,7 +69,7 @@
 </div>
 
 {#if showNewModal}
-  <NewExecutionModal onclose={() => showNewModal = false} />
+  <NewExecutionModal onclose={handleModalClose} prefill={rerunPrefill} />
 {/if}
 
 <style>

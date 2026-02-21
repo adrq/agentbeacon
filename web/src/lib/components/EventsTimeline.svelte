@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event } from '../types';
-  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isToolCallActivity, isThinkingData, isPlanData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isToolCallActivity, isToolCallUpdate, isThinkingData, isPlanData } from '../types';
   interface Props {
     events: Event[];
   }
@@ -47,11 +47,12 @@
 
     if (isStateChangePayload(ev.payload)) {
       const p = ev.payload;
+      const isFailed = p.to === 'failed';
       return [{
         key: `${ev.id}`,
         time,
-        icon: '\u25CF',
-        iconClass: 'state-change',
+        icon: isFailed ? '\u2716' : '\u25CF',
+        iconClass: isFailed ? 'error' : 'state-change',
         text: p.from ? `${p.from} \u2192 ${p.to}` : `started \u2192 ${p.to}`,
       }];
     }
@@ -84,6 +85,8 @@
             entries.push({ key, time, icon: '\u2713', iconClass: 'handoff', text: `Child completed: "${truncate(d.message, 80)}"` });
           } else if (isToolCallActivity(d)) {
             entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: d.title });
+          } else if (isToolCallUpdate(d)) {
+            entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: `${d.title} \u2014 ${d.status}` });
           } else if (isThinkingData(d)) {
             entries.push({ key, time, icon: '\u22EF', iconClass: 'agent', text: truncate(d.text, 200) });
           } else if (isPlanData(d)) {
@@ -129,7 +132,7 @@
       <div class="timeline-empty">No events yet</div>
     {:else}
       {#each parsed as ev (ev.key)}
-        <div class="timeline-entry">
+        <div class="timeline-entry" class:error-entry={ev.iconClass === 'error'}>
           <span class="ev-time">{ev.time}</span>
           <span class="ev-icon {ev.iconClass}">{ev.icon}</span>
           <span class="ev-text">{ev.text}</span>
@@ -175,6 +178,14 @@
     background: hsl(var(--muted) / 0.5);
   }
 
+  .timeline-entry.error-entry {
+    background: hsl(var(--status-danger) / 0.08);
+  }
+
+  .timeline-entry.error-entry:hover {
+    background: hsl(var(--status-danger) / 0.14);
+  }
+
   .ev-time {
     font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
@@ -192,6 +203,7 @@
   }
 
   .ev-icon.state-change { color: hsl(var(--muted-foreground)); }
+  .ev-icon.error { color: hsl(var(--status-danger)); }
   .ev-icon.question { color: hsl(var(--status-attention)); }
   .ev-icon.fyi { color: hsl(var(--status-working)); }
   .ev-icon.delegate { color: hsl(var(--status-working)); }
@@ -203,5 +215,9 @@
     flex: 1;
     word-break: break-word;
     color: hsl(var(--foreground));
+  }
+
+  .error-entry .ev-text {
+    color: hsl(var(--status-danger));
   }
 </style>

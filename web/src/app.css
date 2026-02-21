@@ -102,6 +102,44 @@
 
 .markdown-body a { color: hsl(var(--primary)); text-decoration: underline; }
 
+/* AlertDialog button styles (used by AlertDialog.Cancel / AlertDialog.Action across views) */
+.alert-btn {
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.alert-btn-ghost {
+  background: transparent;
+  color: hsl(var(--foreground));
+}
+
+.alert-btn-ghost:hover {
+  background: hsl(var(--muted) / 0.5);
+}
+
+.alert-btn-primary {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.alert-btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.alert-btn-danger {
+  background: hsl(var(--destructive));
+  color: hsl(var(--destructive-foreground));
+}
+
+.alert-btn-danger:hover {
+  filter: brightness(1.1);
+}
+
 /* Shiki dual-theme toggle */
 .shiki { color: var(--shiki-dark); background-color: var(--shiki-dark-bg); }
 .shiki span { color: var(--shiki-dark); }

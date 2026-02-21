@@ -98,6 +98,7 @@ export type DataPartPayload =
   | DelegateData
   | HandoffResultData
   | ToolCallActivityData
+  | ToolCallUpdateData
   | ThinkingData
   | PlanData
   | { type: string; [key: string]: unknown };
@@ -133,10 +134,17 @@ export interface HandoffResultData {
 
 export interface ToolCallActivityData {
   type: 'tool_call';
-  tool_call_id: string;
+  toolCallId: string;
   title: string;
   status?: string;
   kind?: string;
+}
+
+export interface ToolCallUpdateData {
+  type: 'tool_call_update';
+  toolCallId: string;
+  title?: string;
+  status?: string;
 }
 
 export interface ThinkingData {
@@ -152,6 +160,8 @@ export interface PlanData {
 export interface StateChangePayload {
   from: string | null;
   to: string;
+  error?: string;
+  stderr?: string;
 }
 
 // Response types
@@ -190,6 +200,10 @@ export function isHandoffResultData(d: DataPartPayload): d is HandoffResultData 
 
 export function isToolCallActivity(d: DataPartPayload): d is ToolCallActivityData {
   return d.type === 'tool_call';
+}
+
+export function isToolCallUpdate(d: DataPartPayload): d is ToolCallUpdateData {
+  return d.type === 'tool_call_update';
 }
 
 export function isThinkingData(d: DataPartPayload): d is ThinkingData {

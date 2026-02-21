@@ -81,12 +81,12 @@
 </script>
 
 {#if inputSessionId && !submitted}
-  <div class="question-banner">
+  <div class="question-banner" class:loading={questions.length === 0}>
     <div class="banner-header">
       <span class="banner-icon">&#x26A0;</span>
       <span class="banner-title">
         {#if questions.length === 0}
-          LOADING QUESTION...
+          Loading question&hellip;
         {:else if questions.length <= 1}
           QUESTION
         {:else}
@@ -227,6 +227,16 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  .question-banner.loading {
+    border-color: hsl(var(--muted-foreground) / 0.2);
+    background: hsl(var(--muted-foreground) / 0.03);
+  }
+
+  .question-banner.loading .banner-icon,
+  .question-banner.loading .banner-title {
+    color: hsl(var(--muted-foreground));
   }
 
   .submitted-icon {

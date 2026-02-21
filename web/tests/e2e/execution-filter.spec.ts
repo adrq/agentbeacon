@@ -1,66 +1,52 @@
 import { test, expect } from '@playwright/test';
+import { apiPost, apiDelete, ensureDirectAgent, waitForWorkerIdle } from './helpers';
 
-const API_URL = process.env.API_URL ?? 'http://localhost:9456';
+const cleanupProjectIds: string[] = [];
 
-async function apiPost(path: string, body: unknown) {
-  const res = await fetch(`${API_URL}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
-  return res.json();
-}
-
-async function apiGet(path: string) {
-  const res = await fetch(`${API_URL}${path}`);
-  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
-  return res.json();
-}
-
-async function ensureAgent(): Promise<{ id: string; name: string }> {
-  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
-  if (agents.length > 0) return agents[0];
-  throw new Error('No agents seeded');
-}
+test.afterEach(async () => {
+  await waitForWorkerIdle();
+  for (const id of cleanupProjectIds) {
+    try { await apiDelete(`/api/projects/${id}`); } catch { /* best effort */ }
+  }
+  cleanupProjectIds.length = 0;
+});
 
 test('filter execution list by project', async ({ page }) => {
-  const agent = await ensureAgent();
+  const agent = await ensureDirectAgent();
   const projectA = await apiPost('/api/projects', { name: 'Filter A', path: '/tmp' });
   const projectB = await apiPost('/api/projects', { name: 'Filter B', path: '/tmp' });
+  cleanupProjectIds.push(projectA.id, projectB.id);
 
-  // Create executions in both projects
-  await apiPost('/api/executions', {
+  const execA = await apiPost('/api/executions', {
     agent_id: agent.id,
     prompt: 'Task for A',
     title: 'Exec A',
     project_id: projectA.id,
   });
-  await apiPost('/api/executions', {
+  const execB = await apiPost('/api/executions', {
     agent_id: agent.id,
     prompt: 'Task for B',
     title: 'Exec B',
     project_id: projectB.id,
   });
-
   await page.goto('/');
 
-  // Wait for executions to load
-  await expect(page.getByText('Exec A')).toBeVisible({ timeout: 10000 });
-  await expect(page.getByText('Exec B')).toBeVisible();
+  const execList = page.locator('.exec-list, .execution-list, main');
 
-  // Filter by project A
+  const execAItem = execList.locator('.exec-item', { hasText: 'Exec A' }).first();
+  const execBItem = execList.locator('.exec-item', { hasText: 'Exec B' }).first();
+
+  await expect(execAItem).toBeVisible({ timeout: 10000 });
+  await expect(execBItem).toBeVisible();
+
   const filter = page.getByLabel('Filter by project');
   await filter.selectOption(projectA.id);
 
-  // Exec A should remain visible; Exec B should be filtered out
-  await expect(page.getByText('Exec A')).toBeVisible({ timeout: 10000 });
-  await expect(page.getByText('Exec B')).not.toBeVisible({ timeout: 10000 });
+  await expect(execAItem).toBeVisible({ timeout: 10000 });
+  await expect(execBItem).not.toBeVisible({ timeout: 10000 });
 
-  // Reset filter
   await filter.selectOption('');
 
-  // Both visible again
-  await expect(page.getByText('Exec A')).toBeVisible({ timeout: 10000 });
-  await expect(page.getByText('Exec B')).toBeVisible({ timeout: 10000 });
+  await expect(execAItem).toBeVisible({ timeout: 10000 });
+  await expect(execBItem).toBeVisible({ timeout: 10000 });
 });
