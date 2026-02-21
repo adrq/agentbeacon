@@ -143,65 +143,65 @@
 
 <style>
   .question-banner {
-    margin: 0.75rem 1rem;
-    padding: 1rem;
-    border: 2px solid hsl(var(--status-attention) / 0.4);
-    border-radius: 0.5rem;
-    background: hsl(var(--status-attention) / 0.05);
+    margin: 0.5rem 0.75rem;
+    padding: 0.625rem 0.75rem;
+    border: 1.5px solid hsl(var(--status-attention) / 0.35);
+    border-radius: 0.375rem;
+    background: hsl(var(--status-attention) / 0.04);
   }
 
   .banner-header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.75rem;
+    gap: 0.375rem;
+    margin-bottom: 0.5rem;
   }
 
   .banner-icon {
     color: hsl(var(--status-attention));
-    font-size: 1rem;
+    font-size: 0.8125rem;
   }
 
   .banner-title {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 700;
     letter-spacing: 0.05em;
     color: hsl(var(--status-attention));
   }
 
   .banner-meta {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
   }
 
   .banner-questions {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.5rem;
   }
 
   .banner-error {
-    margin-top: 0.5rem;
-    padding: 0.375rem 0.625rem;
+    margin-top: 0.375rem;
+    padding: 0.25rem 0.5rem;
     border-radius: 0.25rem;
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
   }
 
   .banner-actions {
     display: flex;
     justify-content: flex-end;
-    margin-top: 0.75rem;
+    margin-top: 0.5rem;
   }
 
   .submit-btn {
-    padding: 0.5rem 1.25rem;
+    padding: 0.375rem 1rem;
     border-radius: 0.375rem;
     border: none;
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     font-weight: 600;
     cursor: pointer;
     transition: opacity 0.15s;
@@ -217,16 +217,16 @@
   }
 
   .submitted-banner {
-    margin: 0.75rem 1rem;
-    padding: 0.75rem 1rem;
+    margin: 0.5rem 0.75rem;
+    padding: 0.5rem 0.75rem;
     border-radius: 0.375rem;
     background: hsl(var(--status-success) / 0.1);
     color: hsl(var(--status-success));
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     font-weight: 500;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.375rem;
   }
 
   .question-banner.loading {

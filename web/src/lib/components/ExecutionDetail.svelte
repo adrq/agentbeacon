@@ -249,6 +249,12 @@
 
     <div class="events-header">
       <span class="section-heading">Events</span>
+      {#if !isTerminal}
+        <span class="sse-indicator" class:connected={sseActive} title={sseActive ? 'Live (SSE)' : 'Polling'}>
+          <span class="sse-dot"></span>
+          <span class="sse-label">{sseActive ? 'Live' : 'Polling'}</span>
+        </span>
+      {/if}
       <div class="view-toggle" role="tablist" aria-label="Event view mode">
         <button
           class="toggle-btn"
@@ -359,9 +365,47 @@
   .events-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 0.5rem;
     padding: 0.5rem 1rem 0.375rem;
     flex-shrink: 0;
+  }
+
+  .events-header .section-heading {
+    margin-right: auto;
+  }
+
+  .sse-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+    padding: 0.1875rem 0.5rem 0.1875rem 0.375rem;
+    border-radius: 999px;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--muted) / 0.2);
+  }
+
+  .sse-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: hsl(var(--muted-foreground) / 0.4);
+  }
+
+  .sse-indicator.connected {
+    border-color: hsl(var(--status-success) / 0.3);
+    background: hsl(var(--status-success) / 0.08);
+  }
+
+  .sse-indicator.connected .sse-dot {
+    background: hsl(var(--status-success));
+    box-shadow: 0 0 6px hsl(var(--status-success) / 0.5);
+  }
+
+  .sse-indicator.connected .sse-label {
+    color: hsl(var(--status-success));
   }
 
   .view-toggle {

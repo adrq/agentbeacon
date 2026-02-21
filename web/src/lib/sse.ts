@@ -2,7 +2,6 @@ import type { Event as BeaconEvent } from './types';
 
 export interface SSEConnection {
   close: () => void;
-  readonly connected: boolean;
 }
 
 const MAX_CONSECUTIVE_ERRORS = 3;
@@ -22,6 +21,7 @@ export function connectExecutionSSE(
   let consecutiveErrors = 0;
   let closed = false;
   let connected = false;
+  let disconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   const url = `/api/executions/${encodeURIComponent(executionId)}/events/stream`;
   const source = new EventSource(url);
@@ -29,6 +29,8 @@ export function connectExecutionSSE(
   source.onopen = () => {
     connected = true;
     consecutiveErrors = 0;
+    clearTimeout(disconnectTimer);
+    console.log('[SSE] Connected to', url);
     onConnected?.();
   };
 
@@ -46,28 +48,32 @@ export function connectExecutionSSE(
     if (closed) return;
 
     if (source.readyState === EventSource.CLOSED) {
-      // Server returned non-200 (e.g., 404 — endpoint not deployed yet)
       connected = false;
       closed = true;
       source.close();
-      console.warn('SSE connection failed, falling back to polling');
+      clearTimeout(disconnectTimer);
+      console.warn('[SSE] Connection closed by server (non-200 or endpoint missing), falling back to polling');
       onDisconnected?.();
       return;
     }
 
     // Transient disconnect — EventSource auto-reconnects.
-    // Mark disconnected immediately so polling re-enables during the
-    // reconnect window (onopen will restore connected state).
+    // Debounce onDisconnected to avoid toggling polling on/off during
+    // brief reconnect windows (onopen cancels the timer).
     if (connected) {
       connected = false;
-      onDisconnected?.();
+      clearTimeout(disconnectTimer);
+      disconnectTimer = setTimeout(() => onDisconnected?.(), 2000);
     }
 
     consecutiveErrors++;
+    console.warn(`[SSE] Transient error (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}), auto-reconnecting`);
     if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
       closed = true;
       source.close();
-      console.warn('SSE: too many consecutive errors, falling back to polling');
+      clearTimeout(disconnectTimer);
+      console.warn('[SSE] Too many consecutive errors, falling back to polling permanently');
+      onDisconnected?.();
     }
   };
 
@@ -76,10 +82,8 @@ export function connectExecutionSSE(
       if (closed) return;
       closed = true;
       connected = false;
+      clearTimeout(disconnectTimer);
       source.close();
-    },
-    get connected() {
-      return connected;
     },
   };
 }

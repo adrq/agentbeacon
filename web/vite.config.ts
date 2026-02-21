@@ -12,17 +12,26 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: `http://localhost:${beaconPort}`,
-        changeOrigin: true
+        changeOrigin: true,
+        // Prevent http-proxy from buffering SSE responses
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            if (proxyRes.headers['content-type']?.includes('text/event-stream')) {
+              proxyRes.headers['cache-control'] = 'no-cache';
+              proxyRes.headers['x-accel-buffering'] = 'no';
+            }
+          });
+        },
       },
       '/.well-known': {
         target: `http://localhost:${beaconPort}`,
-        changeOrigin: true
+        changeOrigin: true,
       },
       '/rpc': {
         target: `http://localhost:${beaconPort}`,
-        changeOrigin: true
-      }
-    }
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     outDir: 'dist',

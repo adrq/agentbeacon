@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import {
-  ensureDirectAgent, ensureDemoAgent, createExecution,
+  ensureDirectAgent, ensureDemoAgent, ensureShowcaseAgent, createExecution,
   waitForWorkerIdle, waitForWorkerPickup, waitForTurnEnd,
 } from './helpers';
 
@@ -161,5 +161,77 @@ test('theme toggle preserves syntax highlighting', async ({ page }) => {
   await expect(page.locator('.shiki').first()).toBeVisible();
 
   await page.getByRole('button', { name: /Activate .+ theme/ }).click();
+  await expect(page.locator('.shiki').first()).toBeVisible();
+});
+
+// --- Test 8: Showcase scenario renders all event types ---
+// Requires Showcase Agent pre-seeded via scripts/seed_agents.py (run by scripts/e2e.sh).
+
+test('showcase scenario: all renderer types in log and chat views', async ({ page }) => {
+  await waitForWorkerIdle();
+
+  const agent = await ensureShowcaseAgent();
+  const { execId } = await createExecution(agent.id, 'Full showcase', 'Showcase test');
+  await waitForWorkerPickup(execId, 15000);
+
+  await page.goto(`/#/execution/${execId}`);
+
+  // Wait for the final markdown event to appear in log view
+  const markdownEntry = page.locator('.timeline-entry').filter({ hasText: 'Refactoring Complete' });
+  await expect(markdownEntry).toBeVisible({ timeout: 30000 });
+
+  // Log view: verify all event types rendered
+  // Thinking (ellipsis icon)
+  const thinkingEntry = page.locator('.timeline-entry').filter({ hasText: 'analyze the codebase' });
+  await expect(thinkingEntry).toBeVisible();
+  await expect(thinkingEntry.locator('.ev-icon')).toContainText('\u22EF');
+
+  // Tool calls (gear icon)
+  const readFileEntry = page.locator('.timeline-entry').filter({ hasText: 'read_file(src/config.rs)' });
+  await expect(readFileEntry).toBeVisible();
+  await expect(readFileEntry.locator('.ev-icon')).toContainText('\u2699');
+
+  const grepEntry = page.locator('.timeline-entry').filter({ hasText: 'grep(TODO|FIXME' });
+  await expect(grepEntry).toBeVisible();
+
+  const writeEntry = page.locator('.timeline-entry').filter({ hasText: 'write_file(' });
+  await expect(writeEntry).toBeVisible();
+
+  // Plan (hamburger icon)
+  const planEntry = page.locator('.timeline-entry').filter({ hasText: 'Plan (4 steps)' });
+  await expect(planEntry).toBeVisible();
+  await expect(planEntry.locator('.ev-icon')).toContainText('\u2630');
+
+  // Tool call update (completed)
+  const updateEntry = page.locator('.timeline-entry').filter({ hasText: 'Write src/config.rs' });
+  await expect(updateEntry).toBeVisible();
+
+  // Message chunks
+  const msgEntry = page.locator('.timeline-entry').filter({ hasText: 'Found the configuration module' });
+  await expect(msgEntry).toBeVisible();
+
+  // Switch to chat view and verify renderers
+  await page.getByRole('tab', { name: 'Chat' }).click();
+
+  // ThinkingBlock (collapsible)
+  const thinkingBlock = page.locator('.thinking-block').first();
+  await expect(thinkingBlock).toBeVisible({ timeout: 10000 });
+  await expect(thinkingBlock).toContainText('Thinking...');
+
+  // ToolCallCard
+  const toolCard = page.locator('.tool-card').first();
+  await expect(toolCard).toBeVisible();
+  await expect(toolCard).toContainText('read_file');
+
+  // Markdown rendering: heading, table, code block, list
+  const markdown = page.locator('.agent-bubble .markdown-body').last();
+  await expect(markdown.locator('h1')).toBeVisible();
+  await expect(markdown.locator('h1')).toContainText('Refactoring Complete');
+  await expect(markdown.locator('table')).toBeVisible();
+  await expect(markdown.locator('pre')).toBeVisible();
+  await expect(markdown.locator('li').first()).toBeVisible();
+  await expect(markdown.locator('blockquote')).toBeVisible();
+
+  // Syntax highlighting
   await expect(page.locator('.shiki').first()).toBeVisible();
 });

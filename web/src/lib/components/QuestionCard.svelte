@@ -173,55 +173,55 @@
 
 <style>
   .question-card {
-    padding: 1rem;
+    padding: 0.625rem 0.75rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.5rem;
+    border-radius: 0.375rem;
     background: hsl(var(--card));
   }
 
   .question-label {
-    font-size: 0.6875rem;
+    font-size: 0.625rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: hsl(var(--muted-foreground));
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.375rem;
   }
 
   .question-text {
-    font-size: 0.9375rem;
+    font-size: 0.8125rem;
     font-weight: 600;
     color: hsl(var(--foreground));
-    margin-bottom: 0.5rem;
-    line-height: 1.4;
+    margin-bottom: 0.375rem;
+    line-height: 1.35;
   }
 
   .question-context {
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     color: hsl(var(--muted-foreground));
-    line-height: 1.5;
-    margin-bottom: 0.75rem;
+    line-height: 1.4;
+    margin-bottom: 0.5rem;
   }
 
   .options-list {
     display: flex;
     flex-direction: column;
-    gap: 0.375rem;
+    gap: 0.25rem;
   }
 
   .options-radio-group {
     display: flex;
     flex-direction: column;
-    gap: 0.375rem;
+    gap: 0.25rem;
   }
 
   .option-card {
     display: flex;
     align-items: flex-start;
-    gap: 0.625rem;
-    padding: 0.625rem 0.75rem;
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.375rem;
+    border-radius: 0.25rem;
     background: transparent;
     cursor: pointer;
     text-align: left;
@@ -239,10 +239,10 @@
   }
 
   .option-radio {
-    width: 1rem;
-    height: 1rem;
+    width: 0.875rem;
+    height: 0.875rem;
     border-radius: 50%;
-    border: 2px solid hsl(var(--border));
+    border: 1.5px solid hsl(var(--border));
     display: flex;
     align-items: center;
     justify-content: center;
@@ -255,8 +255,8 @@
   }
 
   .radio-fill {
-    width: 0.5rem;
-    height: 0.5rem;
+    width: 0.4375rem;
+    height: 0.4375rem;
     border-radius: 50%;
     background: hsl(var(--primary));
   }
@@ -268,28 +268,28 @@
 
   .option-label {
     display: block;
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     font-weight: 600;
     color: hsl(var(--foreground));
   }
 
   .option-desc {
     display: block;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
-    margin-top: 0.125rem;
-    line-height: 1.4;
+    margin-top: 0.0625rem;
+    line-height: 1.35;
   }
 
   .other-input, .free-text-input {
     width: 100%;
-    margin-top: 0.375rem;
-    padding: 0.5rem;
+    margin-top: 0.25rem;
+    padding: 0.375rem;
     border: 1px solid hsl(var(--border));
     border-radius: 0.25rem;
     background: hsl(var(--background));
     color: hsl(var(--foreground));
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
     resize: vertical;
     font-family: inherit;
   }

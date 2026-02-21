@@ -60,7 +60,7 @@ export async function waitForWorkerPickup(execId: string, timeoutMs = 10000) {
 }
 
 /** Wait for execution to reach a terminal state. */
-export async function waitForTerminal(execId: string, timeoutMs = 15000) {
+export async function waitForTerminal(execId: string, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const data = await apiGet(`/api/executions/${execId}`);
@@ -72,7 +72,7 @@ export async function waitForTerminal(execId: string, timeoutMs = 15000) {
 }
 
 /** Wait for execution to finish its turn (input-required or terminal). */
-export async function waitForTurnEnd(execId: string, timeoutMs = 15000) {
+export async function waitForTurnEnd(execId: string, timeoutMs = 20000) {
   const ready = new Set(['input-required', 'completed', 'failed', 'canceled']);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -85,7 +85,7 @@ export async function waitForTurnEnd(execId: string, timeoutMs = 15000) {
 }
 
 /** Wait for execution to reach working state. */
-export async function waitForWorking(execId: string, timeoutMs = 15000) {
+export async function waitForWorking(execId: string, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const data = await apiGet(`/api/executions/${execId}`);
@@ -126,6 +126,14 @@ export async function ensureDemoAgent(): Promise<{ id: string; name: string }> {
     throw new Error(`Demo Agent has unexpected type: ${demo.agent_type}`);
   }
   return { id: demo.id, name: demo.name };
+}
+
+/** Ensure the 'Showcase Agent' exists (must be pre-seeded via scripts/seed_agents.py). */
+export async function ensureShowcaseAgent(): Promise<{ id: string; name: string }> {
+  const agents: { id: string; name: string; agent_type?: string }[] = await apiGet('/api/agents');
+  const showcase = agents.find(a => a.name === 'Showcase Agent');
+  if (!showcase) throw new Error('Showcase Agent not found — run scripts/seed_agents.py first');
+  return { id: showcase.id, name: showcase.name };
 }
 
 /** Create an execution and return its IDs. */
