@@ -9,6 +9,8 @@ const MIGRATION_0002: &str =
     include_str!("../../migrations/0002_rename_workspaces_to_projects.sql");
 const MIGRATION_0002_PG: &str =
     include_str!("../../migrations/0002_pg_rename_workspaces_to_projects.sql");
+const MIGRATION_0003: &str = include_str!("../../migrations/0003_add_msg_seq.sql");
+const MIGRATION_0003_PG: &str = include_str!("../../migrations/0003_pg_add_msg_seq.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -136,7 +138,16 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     } else {
         MIGRATION_0002
     };
-    let migrations = vec![(MIGRATION_0001, 1), (migration_0002, 2)];
+    let migration_0003 = if is_postgres {
+        MIGRATION_0003_PG
+    } else {
+        MIGRATION_0003
+    };
+    let migrations = vec![
+        (MIGRATION_0001, 1),
+        (migration_0002, 2),
+        (migration_0003, 3),
+    ];
 
     // Process each migration
     for (migration_sql, version) in migrations {

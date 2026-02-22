@@ -33,6 +33,14 @@ pub struct SessionState {
     pub agent_session_id: Option<String>,
 }
 
+/// A single turn message with dedup sequence number
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnMessagePayload {
+    pub msg_seq: i64,
+    pub payload: serde_json::Value,
+}
+
 /// Worker reporting a just-finished agent turn with the agent's native session ID
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,7 +49,7 @@ pub struct SessionResult {
     #[serde(default)]
     pub agent_session_id: Option<String>,
     #[serde(default)]
-    pub output: Option<serde_json::Value>,
+    pub turn_messages: Vec<TurnMessagePayload>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
@@ -103,38 +111,45 @@ pub async fn handle_worker_sync(
             }
         }
 
-        // Emit agent message event if output is present
-        if let Some(ref output) = result.output {
+        // Insert turn messages with dedup (mid-turn POSTs may have already inserted some)
+        if !result.turn_messages.is_empty() {
             match db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
                 Ok(session) => {
-                    let payload_str = serde_json::to_string(output).unwrap();
-                    match db::events::insert(
-                        &state.db_pool,
-                        &session.execution_id,
-                        Some(&result.session_id),
-                        "message",
-                        &payload_str,
-                    )
-                    .await
-                    {
-                        Ok(event_id) => {
-                            let _ = state.event_broadcast.send(EventNotification {
-                                execution_id: session.execution_id.clone(),
-                                event_id,
-                            });
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                session_id = %result.session_id,
-                                execution_id = %session.execution_id,
-                                error = %e,
-                                "failed to insert agent message event"
-                            );
+                    for msg in &result.turn_messages {
+                        let payload_str = serde_json::to_string(&msg.payload).unwrap();
+                        match db::events::insert_with_dedup(
+                            &state.db_pool,
+                            &session.execution_id,
+                            &result.session_id,
+                            "message",
+                            &payload_str,
+                            msg.msg_seq,
+                        )
+                        .await
+                        {
+                            Ok(Some(event_id)) => {
+                                let _ = state.event_broadcast.send(EventNotification {
+                                    execution_id: session.execution_id.clone(),
+                                    event_id,
+                                });
+                            }
+                            Ok(None) => {
+                                // Already delivered via mid-turn POST — skip broadcast
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    session_id = %result.session_id,
+                                    execution_id = %session.execution_id,
+                                    msg_seq = msg.msg_seq,
+                                    error = %e,
+                                    "failed to insert agent message event"
+                                );
+                            }
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("failed to emit agent message event: {e}");
+                    tracing::warn!("failed to emit agent message events: {e}");
                 }
             }
         }
@@ -658,6 +673,7 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
 pub struct WorkerMessageRequest {
     pub session_id: String,
     pub execution_id: String,
+    pub msg_seq: i64,
     pub payload: serde_json::Value,
 }
 
@@ -666,22 +682,38 @@ pub async fn handle_worker_event(
     State(state): State<AppState>,
     Json(request): Json<WorkerMessageRequest>,
 ) -> Result<StatusCode, SchedulerError> {
+    // Resolve execution_id server-side to prevent misattribution.
+    // The dedup index is (session_id, msg_seq) — a wrong execution_id would
+    // win the race and block the correct sync-path insert.
+    let session = db::sessions::get_by_id(&state.db_pool, &request.session_id).await?;
+
+    if session.execution_id != request.execution_id {
+        tracing::warn!(
+            session_id = %request.session_id,
+            expected_execution_id = %session.execution_id,
+            received_execution_id = %request.execution_id,
+            "worker event execution_id mismatch, using server value"
+        );
+    }
+
     let payload_str = serde_json::to_string(&request.payload)
         .map_err(|e| SchedulerError::ValidationFailed(format!("invalid payload: {e}")))?;
 
-    let event_id = db::events::insert(
+    if let Some(event_id) = db::events::insert_with_dedup(
         &state.db_pool,
-        &request.execution_id,
-        Some(&request.session_id),
+        &session.execution_id,
+        &request.session_id,
         "message",
         &payload_str,
+        request.msg_seq,
     )
-    .await?;
-
-    let _ = state.event_broadcast.send(EventNotification {
-        execution_id: request.execution_id,
-        event_id,
-    });
+    .await?
+    {
+        let _ = state.event_broadcast.send(EventNotification {
+            execution_id: session.execution_id,
+            event_id,
+        });
+    }
 
     Ok(StatusCode::CREATED)
 }

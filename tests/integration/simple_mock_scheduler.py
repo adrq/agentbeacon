@@ -12,12 +12,22 @@ app = FastAPI()
 # Pydantic Models for session-based sync protocol
 
 
+class TurnMessage(BaseModel):
+    """A single turn message with dedup sequence number."""
+
+    msgSeq: int
+    payload: Any
+
+    class Config:
+        extra = "forbid"
+
+
 class SessionResult(BaseModel):
     """Worker-reported session result."""
 
     sessionId: str
     agentSessionId: Optional[str] = None
-    output: Optional[Any] = None
+    turnMessages: Optional[List[TurnMessage]] = None
     error: Optional[str] = None
     errorKind: Optional[str] = None
     stderr: Optional[str] = None

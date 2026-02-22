@@ -85,6 +85,8 @@ pub struct EventResponse {
     pub session_id: Option<String>,
     pub event_type: String,
     pub payload: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub msg_seq: Option<i64>,
     pub created_at: String,
 }
 
@@ -97,6 +99,7 @@ impl From<db::events::Event> for EventResponse {
             session_id: e.session_id,
             event_type: e.event_type,
             payload: payload_value,
+            msg_seq: e.msg_seq,
             created_at: e.created_at.to_rfc3339(),
         }
     }

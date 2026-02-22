@@ -15,8 +15,8 @@ use crate::executor::{
     AgentCommand, AgentEvent, ExecutorHandle, SessionConfig, extract_prompt_text, start_executor,
 };
 use crate::sync::{
-    RetryConfig, SyncRequest, SyncResponse, WorkerMessageEvent, perform_sync_long_poll,
-    perform_sync_with_retry, post_worker_message,
+    RetryConfig, SyncRequest, SyncResponse, TurnMessage, WorkerMessageEvent,
+    perform_sync_long_poll, perform_sync_with_retry, post_worker_message,
 };
 
 /// How a session exited — lets the caller distinguish normal completion from shutdown.
@@ -272,7 +272,7 @@ async fn run_session(
                 &SyncRequest::with_result(
                     session_id,
                     None,
-                    None,
+                    Vec::new(),
                     Some(format!("{e:#}")),
                     Some("executor_failed".into()),
                     None,
@@ -311,7 +311,8 @@ async fn run_session(
     let mut turns_in_flight: usize = 1; // starts at 1 — processing initial prompt
     let mut cancelling = false;
     let mut completing = false;
-    let mut mid_turn_forwarded = false;
+    let mut msg_seq: i64 = 0;
+    let mut turn_messages: Vec<TurnMessage> = Vec::new();
 
     let exit = loop {
         tokio::select! {
@@ -329,13 +330,17 @@ async fn run_session(
                             || result.error_kind.as_ref()
                                 .is_some_and(|ek| ek.as_str() == "cancelled");
 
-                        // Suppress output if already forwarded via mid-turn messages
-                        let output_for_sync = if mid_turn_forwarded {
-                            None
-                        } else {
-                            result.output
-                        };
-                        mid_turn_forwarded = false;
+                        let mut messages_for_sync = std::mem::take(&mut turn_messages);
+
+                        // Fallback: if no mid-turn messages were streamed but the
+                        // executor produced a final output, synthesize one entry so
+                        // the result isn't silently dropped.
+                        if messages_for_sync.is_empty()
+                            && let Some(output) = result.output.clone()
+                        {
+                            msg_seq += 1;
+                            messages_for_sync.push(TurnMessage { msg_seq, payload: output });
+                        }
 
                         // Drop any in-flight long-poll future before sending
                         // sync-with-result (side-effect: cancels the request).
@@ -345,7 +350,7 @@ async fn run_session(
                         let response = match perform_sync_with_retry(client, &args.scheduler_url,
                             &SyncRequest::with_result(session_id,
                                 agent_session_id.clone(),
-                                output_for_sync, result.error,
+                                messages_for_sync, result.error,
                                 result.error_kind.map(|ek| ek.as_str().to_string()),
                                 result.stderr,
                             ), true, retry_config,
@@ -376,7 +381,7 @@ async fn run_session(
                                             &args.scheduler_url,
                                             &SyncRequest::with_result(session_id,
                                                 agent_session_id.clone(),
-                                                None, Some(format!("Bad task payload: {e}")),
+                                                Vec::new(), Some(format!("Bad task payload: {e}")),
                                                 Some("internal_error".into()),
                                                 None),
                                             true, retry_config).await;
@@ -422,18 +427,20 @@ async fn run_session(
                         }
                     }
                     Some(AgentEvent::Message { output }) => {
-                        mid_turn_forwarded = true;
+                        msg_seq += 1;
+                        turn_messages.push(TurnMessage { msg_seq, payload: output.clone() });
                         let _ = msg_fwd_tx.send(WorkerMessageEvent {
                             session_id: session_id.to_string(),
                             execution_id: initial_task.execution_id.clone(),
+                            msg_seq,
                             payload: output,
                         });
                     }
                     Some(AgentEvent::ProcessDied { error, stderr }) => {
-                        // Report failure to scheduler
+                        let messages_for_sync = std::mem::take(&mut turn_messages);
                         let _ = perform_sync_with_retry(client, &args.scheduler_url,
                             &SyncRequest::with_result(session_id, agent_session_id.clone(),
-                                None, Some(error), Some("executor_failed".into()),
+                                messages_for_sync, Some(error), Some("executor_failed".into()),
                                 stderr),
                             true, retry_config).await;
                         break SessionExit::Done;
@@ -469,7 +476,7 @@ async fn run_session(
                                         &args.scheduler_url,
                                         &SyncRequest::with_result(session_id,
                                             agent_session_id.clone(),
-                                            None, Some(format!("Bad task payload: {e}")),
+                                            Vec::new(), Some(format!("Bad task payload: {e}")),
                                             Some("internal_error".into()),
                                             None),
                                         true, retry_config).await;

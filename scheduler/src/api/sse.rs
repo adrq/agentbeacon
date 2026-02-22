@@ -165,6 +165,7 @@ mod tests {
             session_id: None,
             event_type: event_type.into(),
             payload: payload.into(),
+            msg_seq: None,
             created_at: chrono::Utc::now(),
         }
     }

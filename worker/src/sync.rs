@@ -29,14 +29,21 @@ pub struct SessionState {
     pub agent_session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnMessage {
+    pub msg_seq: i64,
+    pub payload: serde_json::Value,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionResult {
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub turn_messages: Vec<TurnMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,7 +121,7 @@ impl SyncRequest {
     pub fn with_result(
         session_id: &str,
         agent_session_id: Option<String>,
-        output: Option<serde_json::Value>,
+        turn_messages: Vec<TurnMessage>,
         error: Option<String>,
         error_kind: Option<String>,
         stderr: Option<String>,
@@ -130,7 +137,7 @@ impl SyncRequest {
             session_result: Some(SessionResult {
                 session_id: session_id.to_string(),
                 agent_session_id,
-                output,
+                turn_messages,
                 error,
                 error_kind,
                 stderr,
@@ -146,6 +153,7 @@ impl SyncRequest {
 pub struct WorkerMessageEvent {
     pub session_id: String,
     pub execution_id: String,
+    pub msg_seq: i64,
     pub payload: serde_json::Value,
 }
 
@@ -307,7 +315,7 @@ mod tests {
         let request = SyncRequest::with_result(
             "sess-1",
             Some("agent-sess-1".to_string()),
-            None,
+            Vec::new(),
             None,
             None,
             None,
@@ -318,25 +326,37 @@ mod tests {
     }
 
     #[test]
-    fn test_session_result_with_output_serializes() {
-        let output = json!({"role": "agent", "parts": [{"kind": "text", "text": "hello"}]});
+    fn test_session_result_with_turn_messages_serializes() {
+        let msgs = vec![
+            TurnMessage {
+                msg_seq: 1,
+                payload: json!({"role": "agent", "parts": [{"kind": "text", "text": "hello"}]}),
+            },
+            TurnMessage {
+                msg_seq: 2,
+                payload: json!({"role": "agent", "parts": [{"kind": "text", "text": "world"}]}),
+            },
+        ];
         let request = SyncRequest::with_result(
             "sess-1",
             Some("agent-sess-1".to_string()),
-            Some(output.clone()),
+            msgs,
             None,
             None,
             None,
         );
         let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["sessionResult"]["output"], output);
+        let turn_msgs = value["sessionResult"]["turnMessages"].as_array().unwrap();
+        assert_eq!(turn_msgs.len(), 2);
+        assert_eq!(turn_msgs[0]["msgSeq"], 1);
+        assert_eq!(turn_msgs[1]["msgSeq"], 2);
     }
 
     #[test]
-    fn test_session_result_without_output_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, None, None, None, None);
+    fn test_session_result_without_turn_messages_omits_field() {
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None);
         let value = serde_json::to_value(&request).unwrap();
-        assert!(value["sessionResult"].get("output").is_none());
+        assert!(value["sessionResult"].get("turnMessages").is_none());
     }
 
     #[test]
@@ -344,7 +364,7 @@ mod tests {
         let request = SyncRequest::with_result(
             "sess-1",
             None,
-            None,
+            Vec::new(),
             Some("executor failed".to_string()),
             None,
             None,
@@ -355,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_session_result_without_error_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, None, None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("error").is_none());
     }
@@ -365,7 +385,7 @@ mod tests {
         let request = SyncRequest::with_result(
             "sess-1",
             None,
-            None,
+            Vec::new(),
             Some("budget limit hit".to_string()),
             Some("budget_exceeded".to_string()),
             None,
@@ -377,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_session_result_without_error_kind_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, None, None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("errorKind").is_none());
     }
@@ -387,7 +407,7 @@ mod tests {
         let request = SyncRequest::with_result(
             "sess-1",
             None,
-            None,
+            Vec::new(),
             Some("crash".to_string()),
             Some("executor_failed".to_string()),
             Some("Error: module not found\n    at require".to_string()),
@@ -401,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_session_result_without_stderr_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, None, None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("stderr").is_none());
     }

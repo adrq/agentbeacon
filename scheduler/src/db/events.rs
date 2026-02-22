@@ -13,6 +13,7 @@ pub struct Event {
     pub session_id: Option<String>, // nullable for execution-level events
     pub event_type: String,         // "message" | "state_change"
     pub payload: String,            // JSON
+    pub msg_seq: Option<i64>,       // monotonic per session, for dedup
     pub created_at: DateTime<Utc>,
 }
 
@@ -42,6 +43,34 @@ pub async fn insert(
     Ok(id)
 }
 
+/// Insert with dedup on (session_id, msg_seq). Returns Some(id) if newly
+/// inserted, None if a row with this session_id+msg_seq already exists.
+pub async fn insert_with_dedup(
+    pool: &DbPool,
+    execution_id: &str,
+    session_id: &str,
+    event_type: &str,
+    payload: &str,
+    msg_seq: i64,
+) -> Result<Option<i64>, SchedulerError> {
+    let sql = pool.prepare_query(
+        "INSERT INTO events (execution_id, session_id, event_type, payload, msg_seq) \
+         VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT (session_id, msg_seq) DO NOTHING \
+         RETURNING id",
+    );
+    let row = sqlx::query(&sql)
+        .bind(execution_id)
+        .bind(session_id)
+        .bind(event_type)
+        .bind(payload)
+        .bind(msg_seq)
+        .fetch_optional(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("insert event dedup failed: {e}")))?;
+    Ok(row.map(|r| r.get("id")))
+}
+
 pub async fn list_by_execution(
     pool: &DbPool,
     execution_id: &str,
@@ -49,7 +78,7 @@ pub async fn list_by_execution(
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at FROM events WHERE execution_id = ? ORDER BY id ASC",
+        "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {} as created_at FROM events WHERE execution_id = ? ORDER BY id ASC",
         created_fmt
     );
 
@@ -69,7 +98,7 @@ pub async fn list_by_session(
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at FROM events WHERE session_id = ? ORDER BY id ASC",
+        "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {} as created_at FROM events WHERE session_id = ? ORDER BY id ASC",
         created_fmt
     );
 
@@ -90,7 +119,7 @@ pub async fn list_by_execution_since(
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, session_id, event_type, payload, {} as created_at \
+        "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {} as created_at \
          FROM events WHERE execution_id = ? AND id > ? ORDER BY id ASC",
         created_fmt
     );
@@ -112,6 +141,7 @@ fn parse_event_row(row: sqlx::any::AnyRow) -> Result<Event, SchedulerError> {
         session_id: row.get("session_id"),
         event_type: row.get("event_type"),
         payload: row.get("payload"),
+        msg_seq: row.get("msg_seq"),
         created_at: parse_timestamp(&row, "created_at")?,
     })
 }

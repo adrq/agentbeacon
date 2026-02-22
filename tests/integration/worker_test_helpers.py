@@ -137,9 +137,9 @@ def get_events(scheduler_url):
 def get_agent_output(scheduler_url, session_id="sess-1"):
     """Get agent output from mid-turn events, falling back to sync results.
 
-    With mid-turn forwarding, output is delivered via POST /api/worker/events
-    and suppressed in the sync result. This helper collects output from events
-    first, then falls back to sync results for backward compatibility.
+    Mid-turn messages are posted in real-time and also included in sync results
+    (dedup via msg_seq). This helper reads events first (most common path),
+    falling back to turnMessages in sync results.
     """
     events = get_events(scheduler_url)
     session_events = [e for e in events if e.get("sessionId") == session_id]
@@ -157,17 +157,20 @@ def get_agent_output(scheduler_url, session_id="sess-1"):
     if all_parts:
         return {"role": "agent", "parts": all_parts}
 
-    # Fallback: aggregate sync results (for agents that don't emit mid-turn messages)
+    # Fallback: aggregate sync results via turn_messages
     results = get_results(scheduler_url)
     fallback_parts = []
     for r in results:
-        output = r.get("output")
-        if (
-            r.get("sessionId") == session_id
-            and isinstance(output, dict)
-            and "parts" in output
-        ):
-            fallback_parts.extend(output["parts"])
+        if r.get("sessionId") != session_id:
+            continue
+        for msg in r.get("turnMessages") or []:
+            payload = msg.get("payload", {})
+            if (
+                isinstance(payload, dict)
+                and payload.get("role") == "agent"
+                and "parts" in payload
+            ):
+                fallback_parts.extend(payload["parts"])
 
     if fallback_parts:
         return {"role": "agent", "parts": fallback_parts}
