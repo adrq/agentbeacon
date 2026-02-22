@@ -163,16 +163,31 @@ pub async fn post_worker_message(
     event: &WorkerMessageEvent,
 ) -> Result<()> {
     let url = format!("{scheduler_url}/api/worker/events");
-    let response = client
-        .post(&url)
-        .json(event)
-        .send()
-        .await
-        .context("failed to post worker message event")?;
-    if !response.status().is_success() {
-        anyhow::bail!("worker event POST failed: status {}", response.status());
+    let max_attempts = 3;
+    let retry_delay = Duration::from_millis(200);
+
+    for attempt in 1..=max_attempts {
+        match client.post(&url).json(event).send().await {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                if attempt == max_attempts {
+                    anyhow::bail!("worker event POST failed: status {}", response.status());
+                }
+                tracing::debug!(
+                    attempt, status = %response.status(),
+                    "worker event POST failed, retrying"
+                );
+            }
+            Err(e) => {
+                if attempt == max_attempts {
+                    return Err(e).context("failed to post worker message event");
+                }
+                tracing::debug!(attempt, error = %e, "worker event POST failed, retrying");
+            }
+        }
+        tokio::time::sleep(retry_delay).await;
     }
-    Ok(())
+    unreachable!()
 }
 
 // --- HTTP functions ---

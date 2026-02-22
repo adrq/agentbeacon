@@ -106,11 +106,19 @@ test('tool_call renders as ToolCallCard in chat view', async ({ page }) => {
   await waitForTurnEnd(execId);
 
   await page.goto(`/#/execution/${execId}`);
+
+  // StatusBadge shows "Awaiting Input" (not legacy "Needs Answer")
+  await expect(page.locator('.badge').getByText('Awaiting Input')).toBeVisible({ timeout: 10000 });
+
   await page.getByRole('tab', { name: 'Chat' }).click();
 
   const toolCard = page.locator('.tool-card').first();
   await expect(toolCard).toBeVisible({ timeout: 15000 });
   await expect(toolCard).toContainText('Read file');
+
+  // ExecutionList banner shows "awaiting input" (not "questions waiting")
+  await page.goto('/');
+  await expect(page.locator('.attention-banner')).toContainText('awaiting input', { timeout: 10000 });
 });
 
 // --- Test 6: ThinkingBlock renderer ---

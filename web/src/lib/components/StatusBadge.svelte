@@ -11,7 +11,7 @@
   const labels: Record<ExecutionStatus, string> = {
     'submitted': 'Submitted',
     'working': 'Working',
-    'input-required': 'Needs Answer',
+    'input-required': 'Awaiting Input',
     'completed': 'Completed',
     'failed': 'Failed',
     'canceled': 'Canceled',

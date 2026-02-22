@@ -33,6 +33,7 @@
       lastBatchId = newBatchId;
       questions = extracted;
       allAnswered = false;
+      submitted = false;
     }
   });
 
@@ -80,7 +81,7 @@
   }
 </script>
 
-{#if inputSessionId && !submitted}
+{#if inputSessionId && !submitted && (questions.length > 0 || events.length === 0)}
   <div class="question-banner" class:loading={questions.length === 0}>
     <div class="banner-header">
       <span class="banner-icon">&#x26A0;</span>

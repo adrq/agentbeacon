@@ -57,9 +57,9 @@
   {/if}
 
   {#if inputRequiredCount > 0}
-    <button class="attention-banner" onclick={handleAttentionClick} aria-label="Jump to first execution needing answers">
+    <button class="attention-banner" onclick={handleAttentionClick} aria-label="Jump to first execution awaiting input">
       <span class="attention-icon" aria-hidden="true">!</span>
-      <span>{inputRequiredCount} question{inputRequiredCount > 1 ? 's' : ''} waiting</span>
+      <span>{inputRequiredCount} awaiting input</span>
     </button>
   {/if}
 
