@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { ThinkingData } from '../../types';
+  import type { NormalizedThinking } from '../../normalize';
 
   interface Props {
-    data: ThinkingData;
+    data: NormalizedThinking;
     compact?: boolean;
   }
 

@@ -1,11 +1,14 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Event, Agent, SessionSummary, ToolCallActivityData, ToolCallUpdateData, ThinkingData } from '../types';
-  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isToolCallActivity, isToolCallUpdate, isThinkingData, isPlanData } from '../types';
+  import type { Event, Agent, SessionSummary, AgentType } from '../types';
+  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isPlanData } from '../types';
+  import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
   import Markdown from './Markdown.svelte';
   import ToolCallCard from './renderers/ToolCallCard.svelte';
+  import ToolResultCard from './renderers/ToolResultCard.svelte';
   import ThinkingBlock from './renderers/ThinkingBlock.svelte';
+  import DataFallback from './renderers/DataFallback.svelte';
   import ErrorPanel from './renderers/ErrorPanel.svelte';
 
   interface Props {
@@ -83,10 +86,18 @@
     | { type: 'user'; text: string; time: string; key: string }
     | { type: 'state'; text: string; time: string; key: string }
     | { type: 'tool'; icon: string; text: string; time: string; key: string }
-    | { type: 'tool_call'; data: ToolCallActivityData | ToolCallUpdateData; time: string; key: string }
-    | { type: 'thinking'; data: ThinkingData; time: string; key: string }
+    | { type: 'tool_call'; data: NormalizedToolCall; time: string; key: string }
+    | { type: 'tool_result'; data: NormalizedToolResult; time: string; key: string }
+    | { type: 'thinking'; data: NormalizedThinking; time: string; key: string }
+    | { type: 'data_fallback'; data: Record<string, unknown>; time: string; key: string }
     | { type: 'error'; message: string; stderr?: string; time: string; key: string }
     | { type: 'fyi'; text: string; time: string; key: string };
+
+  function resolveAgentType(sessionId: string | null): AgentType {
+    const session = sessions.find(s => s.id === sessionId);
+    const agent = agents.find(a => a.id === session?.agent_id);
+    return agent?.agent_type ?? 'acp';
+  }
 
   function parseEntries(evs: Event[]): ChatEntry[] {
     const entries: ChatEntry[] = [];
@@ -98,7 +109,6 @@
 
       if (isStateChangePayload(ev.payload)) {
         const p = ev.payload;
-        // Emit error entry when transitioning to failed
         if (p.to === 'failed') {
           entries.push({
             type: 'error',
@@ -119,32 +129,63 @@
 
       if (isMessagePayload(ev.payload)) {
         const msg = ev.payload;
+        const agentType = resolveAgentType(ev.session_id);
 
         for (const part of msg.parts) {
           if (part.kind === 'data') {
-            const d = part.data as import('../types').DataPartPayload;
-            if (isAskUserData(d)) {
-              if (d.batch_index > 0) continue;
-              if (d.importance === 'fyi') {
-                entries.push({ type: 'fyi', text: d.question, time, key: `${ev.id}-${seq++}` });
+            const d = part.data as Record<string, unknown>;
+
+            // Platform events: route to existing renderers
+            if (isAskUserData(d as unknown as import('../types').DataPartPayload)) {
+              const ask = d as unknown as import('../types').AskUserData;
+              if (ask.batch_index > 0) continue;
+              if (ask.importance === 'fyi') {
+                entries.push({ type: 'fyi', text: ask.question, time, key: `${ev.id}-${seq++}` });
               } else {
-                const text = d.batch_size > 1
-                  ? `${d.question}\n(+ ${d.batch_size - 1} more question${d.batch_size > 2 ? 's' : ''})`
-                  : d.question;
+                const text = ask.batch_size > 1
+                  ? `${ask.question}\n(+ ${ask.batch_size - 1} more question${ask.batch_size > 2 ? 's' : ''})`
+                  : ask.question;
                 entries.push({ type: 'tool', icon: '\u26A0', text, time, key: `${ev.id}-${seq++}` });
               }
-            } else if (isDelegateData(d)) {
-              entries.push({ type: 'tool', icon: '\u2192', text: `Delegated to ${d.agent}`, time, key: `${ev.id}-${seq++}` });
-            } else if (isHandoffResultData(d)) {
-              entries.push({ type: 'tool', icon: '\u2713', text: `Child completed: ${d.message}`, time, key: `${ev.id}-${seq++}` });
-            } else if (isToolCallActivity(d) || isToolCallUpdate(d)) {
-              entries.push({ type: 'tool_call', data: d, time, key: `${ev.id}-${seq++}` });
-            } else if (isThinkingData(d)) {
-              entries.push({ type: 'thinking', data: d, time, key: `${ev.id}-${seq++}` });
-            } else if (isPlanData(d)) {
-              entries.push({ type: 'tool', icon: '\u2630', text: `Plan (${d.entries.length} steps)`, time, key: `${ev.id}-${seq++}` });
-            } else {
-              entries.push({ type: 'tool', icon: '\u25A1', text: `[${d.type}]`, time, key: `${ev.id}-${seq++}` });
+              continue;
+            }
+            if (isDelegateData(d as unknown as import('../types').DataPartPayload)) {
+              const del = d as unknown as import('../types').DelegateData;
+              entries.push({ type: 'tool', icon: '\u2192', text: `Delegated to ${del.agent}`, time, key: `${ev.id}-${seq++}` });
+              continue;
+            }
+            if (isHandoffResultData(d as unknown as import('../types').DataPartPayload)) {
+              const hr = d as unknown as import('../types').HandoffResultData;
+              entries.push({ type: 'tool', icon: '\u2713', text: `Child completed: ${hr.message}`, time, key: `${ev.id}-${seq++}` });
+              continue;
+            }
+
+            // Normalize SDK/ACP data parts
+            const norm = normalizeDataPart(agentType, d);
+            switch (norm.normalized) {
+              case 'tool_call':
+                entries.push({ type: 'tool_call', data: norm, time, key: `${ev.id}-${seq++}` });
+                break;
+              case 'tool_result':
+                entries.push({ type: 'tool_result', data: norm, time, key: `${ev.id}-${seq++}` });
+                break;
+              case 'thinking':
+                entries.push({ type: 'thinking', data: norm, time, key: `${ev.id}-${seq++}` });
+                break;
+              case 'unknown': {
+                const rawType = norm.raw.type as string | undefined;
+                if (rawType === 'plan' && isPlanData(norm.raw as unknown as import('../types').DataPartPayload)) {
+                  const plan = norm.raw as unknown as import('../types').PlanData;
+                  entries.push({ type: 'tool', icon: '\u2630', text: `Plan (${plan.entries.length} steps)`, time, key: `${ev.id}-${seq++}` });
+                } else if (rawType === 'current_mode_update') {
+                  entries.push({ type: 'tool', icon: '\u25A1', text: `[mode_change]`, time, key: `${ev.id}-${seq++}` });
+                } else if (rawType === 'available_commands_update') {
+                  entries.push({ type: 'tool', icon: '\u25A1', text: `[available_commands]`, time, key: `${ev.id}-${seq++}` });
+                } else {
+                  entries.push({ type: 'data_fallback', data: norm.raw, time, key: `${ev.id}-${seq++}` });
+                }
+                break;
+              }
             }
           } else if (part.kind === 'file') {
             const name = 'file' in part && typeof part.file === 'object' && part.file && 'name' in part.file
@@ -158,24 +199,13 @@
               entries.push({ type: 'agent', text, agentLabel, time, key: `${ev.id}-${seq++}` });
             }
           } else {
-            // Fallback for unknown part kinds (tool-use, tool-result, thinking, cost, etc.)
             const label = part.kind;
             const detail = 'text' in part && typeof part.text === 'string'
               ? part.text
               : 'name' in part && typeof part.name === 'string'
                 ? part.name
                 : '';
-            // Route tool-use / tool-result fallbacks to ToolCallCard
-            if (label === 'tool-use' || label === 'tool-result') {
-              entries.push({
-                type: 'tool_call',
-                data: { type: 'tool_call', toolCallId: '', title: detail || label },
-                time,
-                key: `${ev.id}-${seq++}`,
-              });
-            } else {
-              entries.push({ type: 'tool', icon: '\u25A1', text: detail ? `[${label}] ${detail}` : `[${label}]`, time, key: `${ev.id}-${seq++}` });
-            }
+            entries.push({ type: 'tool', icon: '\u25A1', text: detail ? `[${label}] ${detail}` : `[${label}]`, time, key: `${ev.id}-${seq++}` });
           }
         }
       }
@@ -216,9 +246,17 @@
           <div class="chat-row tool-row">
             <ToolCallCard data={entry.data} />
           </div>
+        {:else if entry.type === 'tool_result'}
+          <div class="chat-row tool-row">
+            <ToolResultCard data={entry.data} />
+          </div>
         {:else if entry.type === 'thinking'}
           <div class="chat-row tool-row">
             <ThinkingBlock data={entry.data} />
+          </div>
+        {:else if entry.type === 'data_fallback'}
+          <div class="chat-row tool-row">
+            <DataFallback data={entry.data} />
           </div>
         {:else if entry.type === 'error'}
           <div class="chat-row tool-row">

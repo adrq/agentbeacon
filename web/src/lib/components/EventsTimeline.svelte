@@ -1,12 +1,21 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Event } from '../types';
-  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isToolCallActivity, isToolCallUpdate, isThinkingData, isPlanData } from '../types';
+  import type { Event, Agent, SessionSummary, AgentType } from '../types';
+  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isPlanData } from '../types';
+  import { normalizeDataPart } from '../normalize';
   interface Props {
     events: Event[];
+    agents?: Agent[];
+    sessions?: SessionSummary[];
   }
 
-  let { events }: Props = $props();
+  let { events, agents = [], sessions = [] }: Props = $props();
+
+  function resolveAgentType(sessionId: string | null): AgentType {
+    const session = sessions.find(s => s.id === sessionId);
+    const agent = agents.find(a => a.id === session?.agent_id);
+    return agent?.agent_type ?? 'acp';
+  }
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
 
@@ -60,39 +69,66 @@
     if (isMessagePayload(ev.payload)) {
       const msg = ev.payload;
       const entries: ParsedEvent[] = [];
+      const agentType = resolveAgentType(ev.session_id);
 
       for (let i = 0; i < msg.parts.length; i++) {
         const part = msg.parts[i];
         const key = `${ev.id}-${i}`;
 
         if (part.kind === 'data') {
-          const d = part.data as import('../types').DataPartPayload;
+          const d = part.data as Record<string, unknown>;
 
-          if (isAskUserData(d)) {
-            if (d.batch_index > 0) continue;
-
-            if (d.importance === 'fyi') {
-              entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(d.question, 80)}` });
+          // Platform events
+          if (isAskUserData(d as unknown as import('../types').DataPartPayload)) {
+            const ask = d as unknown as import('../types').AskUserData;
+            if (ask.batch_index > 0) continue;
+            if (ask.importance === 'fyi') {
+              entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(ask.question, 80)}` });
             } else {
-              const qText = d.batch_size > 1
-                ? `Asked ${d.batch_size} questions: "${truncate(d.question, 60)}" + ${d.batch_size - 1} more`
-                : `Asked: "${truncate(d.question, 80)}"`;
+              const qText = ask.batch_size > 1
+                ? `Asked ${ask.batch_size} questions: "${truncate(ask.question, 60)}" + ${ask.batch_size - 1} more`
+                : `Asked: "${truncate(ask.question, 80)}"`;
               entries.push({ key, time, icon: '\u26A0', iconClass: 'question', text: qText });
             }
-          } else if (isDelegateData(d)) {
-            entries.push({ key, time, icon: '\u2192', iconClass: 'delegate', text: `Delegated to ${d.agent}` });
-          } else if (isHandoffResultData(d)) {
-            entries.push({ key, time, icon: '\u2713', iconClass: 'handoff', text: `Child completed: "${truncate(d.message, 80)}"` });
-          } else if (isToolCallActivity(d)) {
-            entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: d.title });
-          } else if (isToolCallUpdate(d)) {
-            entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: `${d.title} \u2014 ${d.status}` });
-          } else if (isThinkingData(d)) {
-            entries.push({ key, time, icon: '\u22EF', iconClass: 'agent', text: truncate(d.text, 200) });
-          } else if (isPlanData(d)) {
-            entries.push({ key, time, icon: '\u2630', iconClass: 'agent', text: `Plan (${d.entries.length} steps)` });
-          } else {
-            entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[${d.type}]` });
+            continue;
+          }
+          if (isDelegateData(d as unknown as import('../types').DataPartPayload)) {
+            const del = d as unknown as import('../types').DelegateData;
+            entries.push({ key, time, icon: '\u2192', iconClass: 'delegate', text: `Delegated to ${del.agent}` });
+            continue;
+          }
+          if (isHandoffResultData(d as unknown as import('../types').DataPartPayload)) {
+            const hr = d as unknown as import('../types').HandoffResultData;
+            entries.push({ key, time, icon: '\u2713', iconClass: 'handoff', text: `Child completed: "${truncate(hr.message, 80)}"` });
+            continue;
+          }
+
+          // Normalize SDK/ACP data parts
+          const norm = normalizeDataPart(agentType, d);
+          switch (norm.normalized) {
+            case 'tool_call':
+              entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: norm.title || 'Unknown tool' });
+              break;
+            case 'tool_result':
+              entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: `Result (${norm.toolCallId})` });
+              break;
+            case 'thinking':
+              entries.push({ key, time, icon: '\u22EF', iconClass: 'agent', text: truncate(norm.text, 200) });
+              break;
+            case 'unknown': {
+              const rawType = norm.raw.type as string | undefined;
+              if (rawType === 'plan' && isPlanData(norm.raw as unknown as import('../types').DataPartPayload)) {
+                const plan = norm.raw as unknown as import('../types').PlanData;
+                entries.push({ key, time, icon: '\u2630', iconClass: 'agent', text: `Plan (${plan.entries.length} steps)` });
+              } else if (rawType === 'current_mode_update') {
+                entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[mode_change]` });
+              } else if (rawType === 'available_commands_update') {
+                entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[available_commands]` });
+              } else {
+                entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[${rawType ?? 'data'}]` });
+              }
+              break;
+            }
           }
         } else if (part.kind === 'file') {
           const name = 'file' in part && typeof part.file === 'object' && part.file && 'name' in part.file

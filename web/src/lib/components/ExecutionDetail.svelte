@@ -274,7 +274,7 @@
     </div>
 
     {#if viewMode === 'log'}
-      <EventsTimeline {events} />
+      <EventsTimeline {events} {agents} sessions={detail.sessions} />
     {:else}
       <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} />
     {/if}

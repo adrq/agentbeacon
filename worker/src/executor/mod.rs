@@ -126,9 +126,11 @@ pub struct ExecutorHandle {
 }
 
 /// Map a single SDK content block to an A2A-compatible message part.
-/// Matches the `Part::Data` pattern used by the ACP executor.
+/// Text blocks become `kind: "text"`. Everything else passes through raw as
+/// `kind: "data"` — the frontend normalizer handles executor-specific fields.
 pub fn content_block_to_part(item: &serde_json::Value) -> Option<serde_json::Value> {
-    match item.get("type").and_then(|t| t.as_str()).unwrap_or("text") {
+    let block_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("text");
+    match block_type {
         "text" => {
             let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("");
             if text.is_empty() {
@@ -136,23 +138,7 @@ pub fn content_block_to_part(item: &serde_json::Value) -> Option<serde_json::Val
             }
             Some(serde_json::json!({"kind": "text", "text": text}))
         }
-        "tool_use" => Some(serde_json::json!({
-            "kind": "data",
-            "data": {
-                "type": "tool_call",
-                "toolCallId": item.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                "title": item.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                "status": "completed",
-            }
-        })),
-        "thinking" => {
-            let text = item.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
-            if text.is_empty() {
-                return None;
-            }
-            Some(serde_json::json!({"kind": "data", "data": {"type": "thinking", "text": text}}))
-        }
-        _ => None,
+        _ => Some(serde_json::json!({"kind": "data", "data": item})),
     }
 }
 
@@ -255,5 +241,95 @@ mod tests {
         push_stderr_line(&buf, "after".into());
         let snap = snapshot_stderr(&buf).unwrap();
         assert!(snap.contains("after"));
+    }
+
+    // --- content_block_to_part passthrough tests ---
+
+    #[test]
+    fn test_text_block_becomes_kind_text() {
+        let block = serde_json::json!({"type": "text", "text": "hello world"});
+        let part = content_block_to_part(&block).unwrap();
+        assert_eq!(part["kind"], "text");
+        assert_eq!(part["text"], "hello world");
+        assert!(part.get("data").is_none());
+    }
+
+    #[test]
+    fn test_empty_text_block_returns_none() {
+        let block = serde_json::json!({"type": "text", "text": ""});
+        assert!(content_block_to_part(&block).is_none());
+    }
+
+    #[test]
+    fn test_tool_use_passes_through_raw() {
+        let block = serde_json::json!({
+            "type": "tool_use",
+            "id": "toolu_abc123",
+            "name": "Read",
+            "input": {"file_path": "/tmp/test.txt"}
+        });
+        let part = content_block_to_part(&block).unwrap();
+        assert_eq!(part["kind"], "data");
+        let data = &part["data"];
+        assert_eq!(data["type"], "tool_use");
+        assert_eq!(data["id"], "toolu_abc123");
+        assert_eq!(data["name"], "Read");
+        assert_eq!(data["input"]["file_path"], "/tmp/test.txt");
+    }
+
+    #[test]
+    fn test_tool_result_passes_through_raw() {
+        let block = serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_abc123",
+            "content": [{"type": "text", "text": "file contents"}],
+            "is_error": false
+        });
+        let part = content_block_to_part(&block).unwrap();
+        assert_eq!(part["kind"], "data");
+        let data = &part["data"];
+        assert_eq!(data["type"], "tool_result");
+        assert_eq!(data["tool_use_id"], "toolu_abc123");
+        assert_eq!(data["is_error"], false);
+        assert!(data["content"].is_array());
+    }
+
+    #[test]
+    fn test_thinking_passes_through_raw() {
+        let block = serde_json::json!({
+            "type": "thinking",
+            "thinking": "Let me analyze this..."
+        });
+        let part = content_block_to_part(&block).unwrap();
+        assert_eq!(part["kind"], "data");
+        let data = &part["data"];
+        assert_eq!(data["type"], "thinking");
+        assert_eq!(data["thinking"], "Let me analyze this...");
+    }
+
+    #[test]
+    fn test_unknown_block_type_passes_through() {
+        let block = serde_json::json!({
+            "type": "future_block",
+            "some_field": "some_value"
+        });
+        let part = content_block_to_part(&block).unwrap();
+        assert_eq!(part["kind"], "data");
+        assert_eq!(part["data"]["type"], "future_block");
+        assert_eq!(part["data"]["some_field"], "some_value");
+    }
+
+    #[test]
+    fn test_build_output_message_wraps_parts() {
+        let blocks = serde_json::json!([
+            {"type": "text", "text": "hello"},
+            {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}
+        ]);
+        let msg = build_output_message(&blocks).unwrap();
+        assert_eq!(msg["role"], "agent");
+        let parts = msg["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["kind"], "text");
+        assert_eq!(parts[1]["kind"], "data");
     }
 }

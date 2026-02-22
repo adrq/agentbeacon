@@ -457,6 +457,9 @@ class ACPHandler:
                                 "sessionUpdate": "tool_call",
                                 "toolCallId": "tool-123",
                                 "title": "Read file config.json",
+                                "content": [
+                                    {"type": "text", "text": "file contents here"}
+                                ],
                             },
                         },
                     }

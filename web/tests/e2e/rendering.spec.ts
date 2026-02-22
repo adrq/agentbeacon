@@ -37,16 +37,24 @@ test('markdown rendering: heading, table, code block with syntax highlighting', 
 
 // --- Test 2: Structured tool_call rendering ---
 
-test('tool_call renders with gear icon in log view', async ({ page }) => {
+test('tool_call renders with gear icon in log view and enriched card in chat', async ({ page }) => {
   const agent = await ensureDirectAgent();
   const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Tool call test');
   await waitForTurnEnd(execId);
 
   await page.goto(`/#/execution/${execId}`);
 
+  // Log view: gear icon + title
   const entry = page.locator('.timeline-entry').filter({ hasText: 'Read file config.json' });
   await expect(entry).toBeVisible({ timeout: 10000 });
   await expect(entry.locator('.ev-icon')).toContainText('\u2699');
+
+  // Chat view: enriched ToolCallCard with collapsible content
+  await page.getByRole('tab', { name: 'Chat' }).click();
+  const toolCard = page.locator('.tool-card').first();
+  await expect(toolCard).toBeVisible({ timeout: 10000 });
+  await expect(toolCard).toContainText('Read file config.json');
+  await expect(toolCard.locator('details')).toBeVisible();
 });
 
 // --- Test 3: Thinking data rendering ---
@@ -164,7 +172,24 @@ test('theme toggle preserves syntax highlighting', async ({ page }) => {
   await expect(page.locator('.shiki').first()).toBeVisible();
 });
 
-// --- Test 8: Showcase scenario renders all event types ---
+// --- Test 8: Unknown data types render via DataFallback ---
+
+test('unknown data type renders as compact label, not DataFallback JSON', async ({ page }) => {
+  const agent = await ensureDirectAgent();
+  const { execId } = await createExecution(agent.id, 'SEND_MODE_UPDATE', 'Mode update test');
+  await waitForTurnEnd(execId);
+
+  await page.goto(`/#/execution/${execId}`);
+  await page.getByRole('tab', { name: 'Chat' }).click();
+
+  // mode_change is a known type routed to compact renderer, not DataFallback
+  const modeLabel = page.locator('.chat-row').filter({ hasText: 'mode_change' });
+  await expect(modeLabel).toBeVisible({ timeout: 10000 });
+  // Should NOT have a DataFallback JSON viewer (no <pre> with raw JSON)
+  await expect(modeLabel.locator('.fallback-json')).not.toBeVisible();
+});
+
+// --- Test 9: Showcase scenario renders all event types ---
 // Requires Showcase Agent pre-seeded via scripts/seed_agents.py (run by scripts/e2e.sh).
 
 test('showcase scenario: all renderer types in log and chat views', async ({ page }) => {
@@ -218,10 +243,13 @@ test('showcase scenario: all renderer types in log and chat views', async ({ pag
   await expect(thinkingBlock).toBeVisible({ timeout: 10000 });
   await expect(thinkingBlock).toContainText('Thinking...');
 
-  // ToolCallCard
+  // ToolCallCard — enriched with title, collapsible content section
   const toolCard = page.locator('.tool-card').first();
   await expect(toolCard).toBeVisible();
   await expect(toolCard).toContainText('read_file');
+  // Showcase tool calls have content, rendered in a collapsible details
+  const toolCardWithContent = page.locator('.tool-card').filter({ hasText: 'Write src/config.rs' });
+  await expect(toolCardWithContent).toBeVisible();
 
   // Markdown rendering: heading, table, code block, list
   const markdown = page.locator('.agent-bubble .markdown-body').last();

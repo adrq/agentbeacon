@@ -148,7 +148,7 @@ export interface ToolCallUpdateData {
 }
 
 export interface ThinkingData {
-  type: 'thinking';
+  type: 'agent_thought_chunk';
   text: string;
 }
 
@@ -207,7 +207,7 @@ export function isToolCallUpdate(d: DataPartPayload): d is ToolCallUpdateData {
 }
 
 export function isThinkingData(d: DataPartPayload): d is ThinkingData {
-  return d.type === 'thinking';
+  return d.type === 'agent_thought_chunk';
 }
 
 export function isPlanData(d: DataPartPayload): d is PlanData {

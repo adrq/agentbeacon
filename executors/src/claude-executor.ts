@@ -145,6 +145,23 @@ async function main(): Promise<void> {
             role: "assistant",
             content: Array.isArray(content) ? content : [],
           });
+        } else if (msg.type === "user") {
+          const content =
+            "message" in msg && msg.message && typeof msg.message === "object"
+              ? (msg.message as Record<string, unknown>).content
+              : undefined;
+          if (Array.isArray(content)) {
+            const toolResults = content.filter(
+              (b: Record<string, unknown>) => b?.type === "tool_result",
+            );
+            if (toolResults.length > 0) {
+              emit({
+                type: "message",
+                role: "assistant",
+                content: toolResults,
+              });
+            }
+          }
         } else if (msg.type === "result") {
           const m = msg as unknown as Record<string, unknown>;
           const resultEvent: Record<string, unknown> = {
@@ -163,7 +180,7 @@ async function main(): Promise<void> {
           }
           emit(resultEvent as unknown as Event);
         }
-        // Silently skip: user, user replay, stream_event, compact_boundary
+        // Silently skip: user replay, stream_event, compact_boundary
       }
     } catch (e: unknown) {
       sessionGeneration++;

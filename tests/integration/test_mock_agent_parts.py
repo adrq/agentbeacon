@@ -1,13 +1,15 @@
 """Integration tests for Part::Data normalization in worker output.
 
-Verifies that the worker correctly normalizes ACP session/update variants
-into structured Part types:
+Verifies that the worker correctly converts ACP session/update variants
+into Part types. Chunk variants (messages, thoughts) unwrap the ContentBlock
+wrapper. All other variants pass through as raw JSON with sessionUpdate
+renamed to type:
 - SEND_MARKDOWN → Part::Text with markdown content
 - SEND_TOOL_CALL → Part::Data with data.type: "tool_call"
 - SEND_PLAN → Part::Data with data.type: "plan"
-- SEND_MODE_UPDATE → Part::Data with data.type: "mode_change"
-- SEND_COMMANDS_UPDATE → Part::Data with data.type: "available_commands"
-- SEND_THOUGHT → Part::Data with data.type: "thinking"
+- SEND_MODE_UPDATE → Part::Data with data.type: "current_mode_update"
+- SEND_COMMANDS_UPDATE → Part::Data with data.type: "available_commands_update"
+- SEND_THOUGHT → Part::Data with data.type: "agent_thought_chunk"
 - SEND_TOOL_CALL_UPDATE → Part::Data with data.type: "tool_call_update"
 """
 
@@ -94,6 +96,8 @@ def test_send_tool_call_produces_data_part(mock_scheduler):
         tc = tool_call_parts[0]["data"]
         assert "toolCallId" in tc, f"tool_call should have toolCallId: {tc}"
         assert "title" in tc, f"tool_call should have title: {tc}"
+        assert "content" in tc, f"tool_call should include content: {tc}"
+        assert isinstance(tc["content"], list), f"content should be an array: {tc}"
     finally:
         mark_complete(url)
         time.sleep(1)
@@ -127,7 +131,7 @@ def test_send_plan_produces_data_part(mock_scheduler):
 
 
 def test_send_mode_update_produces_data_part(mock_scheduler):
-    """SEND_MODE_UPDATE → Part::Data with data.type: "mode_change"."""
+    """SEND_MODE_UPDATE → Part::Data with data.type: "current_mode_update"."""
     url, _, _ = mock_scheduler
     clear_state(url)
 
@@ -138,13 +142,17 @@ def test_send_mode_update_produces_data_part(mock_scheduler):
         parts = _get_output_parts(url)
 
         data_parts = [p for p in parts if p.get("kind") == "data"]
-        mode_parts = [p for p in data_parts if p["data"].get("type") == "mode_change"]
+        mode_parts = [
+            p for p in data_parts if p["data"].get("type") == "current_mode_update"
+        ]
         assert len(mode_parts) >= 1, (
-            f"Expected at least one Part::Data with type 'mode_change', got: {parts}"
+            f"Expected at least one Part::Data with type 'current_mode_update', got: {parts}"
         )
 
         mode = mode_parts[0]["data"]
-        assert "modeId" in mode, f"mode_change should have modeId: {mode}"
+        assert "currentModeId" in mode, (
+            f"current_mode_update should have currentModeId: {mode}"
+        )
     finally:
         mark_complete(url)
         time.sleep(1)
@@ -152,7 +160,7 @@ def test_send_mode_update_produces_data_part(mock_scheduler):
 
 
 def test_send_commands_update_produces_data_part(mock_scheduler):
-    """SEND_COMMANDS_UPDATE → Part::Data with data.type: "available_commands"."""
+    """SEND_COMMANDS_UPDATE → Part::Data with data.type: "available_commands_update"."""
     url, _, _ = mock_scheduler
     clear_state(url)
 
@@ -164,16 +172,20 @@ def test_send_commands_update_produces_data_part(mock_scheduler):
 
         data_parts = [p for p in parts if p.get("kind") == "data"]
         cmd_parts = [
-            p for p in data_parts if p["data"].get("type") == "available_commands"
+            p
+            for p in data_parts
+            if p["data"].get("type") == "available_commands_update"
         ]
         assert len(cmd_parts) >= 1, (
-            f"Expected at least one Part::Data with type 'available_commands', got: {parts}"
+            f"Expected at least one Part::Data with type 'available_commands_update', got: {parts}"
         )
 
         cmds = cmd_parts[0]["data"]
-        assert "commands" in cmds, f"available_commands should have commands: {cmds}"
-        assert isinstance(cmds["commands"], list), (
-            f"commands should be an array: {cmds}"
+        assert "availableCommands" in cmds, (
+            f"available_commands_update should have availableCommands: {cmds}"
+        )
+        assert isinstance(cmds["availableCommands"], list), (
+            f"availableCommands should be an array: {cmds}"
         )
     finally:
         mark_complete(url)
@@ -182,7 +194,7 @@ def test_send_commands_update_produces_data_part(mock_scheduler):
 
 
 def test_send_thought_produces_data_part(mock_scheduler):
-    """SEND_THOUGHT → Part::Data with data.type: "thinking"."""
+    """SEND_THOUGHT → Part::Data with data.type: "agent_thought_chunk"."""
     url, _, _ = mock_scheduler
     clear_state(url)
 
@@ -193,9 +205,11 @@ def test_send_thought_produces_data_part(mock_scheduler):
         parts = _get_output_parts(url)
 
         data_parts = [p for p in parts if p.get("kind") == "data"]
-        thinking_parts = [p for p in data_parts if p["data"].get("type") == "thinking"]
+        thinking_parts = [
+            p for p in data_parts if p["data"].get("type") == "agent_thought_chunk"
+        ]
         assert len(thinking_parts) >= 1, (
-            f"Expected at least one Part::Data with type 'thinking', got: {parts}"
+            f"Expected at least one Part::Data with type 'agent_thought_chunk', got: {parts}"
         )
 
         thought = thinking_parts[0]["data"]
