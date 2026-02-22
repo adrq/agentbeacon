@@ -2,7 +2,8 @@
 
 Plays a multi-phase sequence across session/prompt calls:
   Phase 0 (initial prompt): sends message chunks + tool call + ask_user via MCP
-  Phase 1 (after user answers): acknowledges answer and completes
+  Phase 1 (after first answer): acknowledges answer, asks a second question via MCP
+  Phase 2 (after second answer): acknowledges answer and completes
 """
 
 import asyncio
@@ -31,8 +32,12 @@ class DemoScenario:
 
         if self.phase == 0:
             return await self._phase_initial(prompt_text)
+        elif self.phase == 1:
+            return await self._phase_after_first_answer(prompt_text)
+        elif self.phase == 2:
+            return await self._phase_after_second_answer(prompt_text)
         else:
-            return await self._phase_after_answer(prompt_text)
+            return "end_turn"
 
     async def _phase_initial(self, prompt_text: str) -> str:
         self._send_message("Analyzing the project...")
@@ -79,13 +84,50 @@ class DemoScenario:
         self.phase = 1
         return "end_turn"
 
-    async def _phase_after_answer(self, prompt_text: str) -> str:
+    async def _phase_after_first_answer(self, prompt_text: str) -> str:
         answer = prompt_text.strip()
         self._send_message(f"Got it, going with: {answer}")
         await asyncio.sleep(self.delay)
+        self._send_message("One more thing — I need a follow-up decision.")
+        await asyncio.sleep(self.delay * 0.5)
 
-        self._send_message("Done! Applied the changes successfully.")
+        if self.mcp_client:
+            try:
+                await self.mcp_client.call_tool(
+                    "ask_user",
+                    {
+                        "questions": [
+                            {
+                                "question": "How should I handle edge cases?",
+                                "options": [
+                                    {
+                                        "label": "Strict validation",
+                                        "description": "Reject invalid inputs",
+                                    },
+                                    {
+                                        "label": "Lenient parsing",
+                                        "description": "Best-effort with fallbacks",
+                                    },
+                                ],
+                            }
+                        ],
+                        "importance": "blocking",
+                    },
+                )
+            except Exception as e:
+                print(f"MCP ask_user (phase 1) failed: {e}", file=sys.stderr)
+                self.phase = 2
+                return "error"
+
         self.phase = 2
+        return "end_turn"
+
+    async def _phase_after_second_answer(self, prompt_text: str) -> str:
+        answer = prompt_text.strip()
+        self._send_message(f"Perfect, using: {answer}")
+        await asyncio.sleep(self.delay)
+        self._send_message("Done! Applied the changes successfully.")
+        self.phase = 3
         return "end_turn"
 
     def _send_message(self, text: str):

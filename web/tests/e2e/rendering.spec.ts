@@ -116,8 +116,14 @@ test('demo scenario: question banner, options, submit, agent resumes', async ({ 
   await expect(page.getByRole('button', { name: /Submit/ })).toBeEnabled();
   await page.getByRole('button', { name: /Submit/ }).click();
 
-  // Don't assert on .submitted-banner — it's transient and the demo agent
-  // may process the answer before Playwright can observe it.
+  // Demo Agent now asks a second question after the first answer.
+  // Wait for the second question to appear (banner resets and shows new batch).
+  await expect(page.locator('.question-text')).toContainText(
+    'How should I handle edge cases?', { timeout: 25000 }
+  );
+  await page.getByRole('radio', { name: /Strict validation/ }).click();
+  await page.getByRole('button', { name: /Submit/ }).click();
+
   await expect(
     page.locator('.timeline-entry').filter({ hasText: 'Done!' })
   ).toBeVisible({ timeout: 20000 });
@@ -125,7 +131,7 @@ test('demo scenario: question banner, options, submit, agent resumes', async ({ 
   await page.getByRole('tab', { name: 'Chat' }).click();
 
   await expect(page.locator('.agent-bubble .markdown-body').first()).toBeVisible({ timeout: 5000 });
-  await expect(page.locator('.user-bubble')).toBeVisible();
+  await expect(page.locator('.user-bubble').first()).toBeVisible();
 });
 
 // --- Test 6: Chat/Log toggle preserves data ---
@@ -265,4 +271,53 @@ test('showcase scenario: all renderer types in log and chat views', async ({ pag
 
   // Syntax highlighting
   await expect(page.locator('.shiki').first()).toBeVisible();
+});
+
+// --- Test 10: Multi-turn Q&A with two question batches ---
+// Verifies the QuestionBanner resets and displays a second question after the first is answered.
+
+test('demo scenario: multi-turn Q&A with two question batches', async ({ page }) => {
+  await waitForWorkerIdle();
+
+  const agent = await ensureDemoAgent();
+  const { execId } = await createExecution(agent.id, 'Test multi-turn', 'Multi-turn Q&A test');
+  await waitForWorkerPickup(execId, 15000);
+
+  await page.goto(`/#/execution/${execId}`);
+
+  // --- First question batch ---
+  const banner = page.locator('.question-banner');
+  await expect(banner).toBeVisible({ timeout: 20000 });
+  await expect(page.locator('.question-text')).toContainText('Which approach should I take?');
+
+  await page.getByRole('radio', { name: /Refactor existing code/ }).click();
+  await page.getByRole('button', { name: /Submit/ }).click();
+
+  // --- Second question batch (key assertion: banner shows new question) ---
+  // The banner transitions from Q1 → submitted → reset → Q2. The text change
+  // is the reliable signal that the full reactive cycle completed.
+  await expect(page.locator('.question-text')).toContainText(
+    'How should I handle edge cases?', { timeout: 25000 }
+  );
+
+  // Verify second batch options are correct
+  await expect(page.getByRole('radio', { name: /Strict validation/ })).toBeVisible();
+  await expect(page.getByRole('radio', { name: /Lenient parsing/ })).toBeVisible();
+
+  await page.getByRole('radio', { name: /Strict validation/ }).click();
+  await page.getByRole('button', { name: /Submit/ }).click();
+
+  // Agent completes — "Done!" appears in timeline
+  await expect(
+    page.locator('.timeline-entry').filter({ hasText: 'Done!' })
+  ).toBeVisible({ timeout: 20000 });
+
+  // Verify both user answers appear in log view (use "User:" prefix to
+  // avoid matching the agent's echo like "Got it, going with: ... Refactor")
+  await expect(
+    page.locator('.timeline-entry').filter({ hasText: 'User: Refactor existing code' })
+  ).toBeVisible();
+  await expect(
+    page.locator('.timeline-entry').filter({ hasText: 'User: Strict validation' })
+  ).toBeVisible();
 });
