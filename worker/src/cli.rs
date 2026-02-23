@@ -40,8 +40,20 @@ pub struct Args {
     /// Path to executors/dist directory (for Claude executor)
     #[arg(long, env = "AGENTBEACON_EXECUTORS_DIR")]
     pub executors_dir: Option<String>,
+
+    /// Max time with no agent output during an active turn before killing it
+    #[arg(long, default_value = "30m", value_parser = parse_inactivity_timeout)]
+    pub inactivity_timeout: Duration,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, humantime::DurationError> {
     humantime::parse_duration(s)
+}
+
+fn parse_inactivity_timeout(s: &str) -> Result<Duration, String> {
+    let d = humantime::parse_duration(s).map_err(|e| e.to_string())?;
+    if d.as_secs() < 1 {
+        return Err("inactivity timeout must be at least 1s".into());
+    }
+    Ok(d)
 }

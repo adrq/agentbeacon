@@ -2,7 +2,7 @@
   import type { Execution } from '../types';
   import { selectedExecutionId } from '../stores/appState';
   import { router } from '../router';
-  import { executionsWithQuestions } from '../stores/questionState';
+  import { executionsWithQuestions, noQuestionExecutions } from '../stores/questionState';
   import ElapsedTime from './ElapsedTime.svelte';
 
   interface Props {
@@ -16,10 +16,15 @@
 
   let selected = $derived($selectedExecutionId === execution.id);
   let needsInput = $derived(execution.status === 'input-required');
-  let hasQuestions = $derived($executionsWithQuestions.has(execution.id));
+  let hasQuestions = $derived(
+    $executionsWithQuestions.has(execution.id) ? true
+    : $noQuestionExecutions.has(execution.id) ? false
+    : needsInput ? undefined
+    : false
+  );
   let isActive = $derived(activeStatuses.has(execution.status));
   let displayTitle = $derived(execution.title ?? execution.id.slice(0, 8));
-  let statusText = $derived(needsInput && !hasQuestions ? 'turn complete'
+  let statusText = $derived(needsInput && hasQuestions === false ? 'turn complete'
     : needsInput ? 'awaiting input'
     : execution.status === 'working' ? 'working'
     : execution.status === 'submitted' ? 'submitted'
@@ -52,7 +57,7 @@
   aria-current={selected || undefined}
 >
   <div class="exec-item-top">
-    <span class="status-indicator" class:working={execution.status === 'working'} class:completed={execution.status === 'completed'} class:failed={execution.status === 'failed'} class:input-required={needsInput && hasQuestions} class:turn-complete={needsInput && !hasQuestions} class:submitted={execution.status === 'submitted'} class:canceled={execution.status === 'canceled'}>
+    <span class="status-indicator" class:working={execution.status === 'working'} class:completed={execution.status === 'completed'} class:failed={execution.status === 'failed'} class:input-required={needsInput && hasQuestions} class:turn-complete={needsInput && hasQuestions === false} class:submitted={execution.status === 'submitted'} class:canceled={execution.status === 'canceled'}>
       {#if needsInput && hasQuestions}!{/if}
     </span>
     <span class="exec-title">{displayTitle}</span>

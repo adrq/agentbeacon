@@ -57,6 +57,11 @@ export const executionsWithQuestions = derived(
   ($visible) => new Set($visible.map(i => i.executionId))
 );
 
+// Executions whose session events were fetched successfully with no questions.
+// Written by QuestionStateProvider each cycle; rebuilt from scratch so stale
+// entries disappear when the execution leaves input-required.
+export const noQuestionExecutions = writable<Set<string>>(new Set());
+
 export function suppressSession(sessionId: string, batchId: string) {
   suppressedSessions.update(s => ({ ...s, [sessionId]: batchId }));
 }

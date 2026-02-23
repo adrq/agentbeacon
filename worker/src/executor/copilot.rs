@@ -219,6 +219,7 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         mcp_servers,
         copilot_config,
         stderr_buf,
+        config.inactivity_timeout,
     ));
 
     Ok(ExecutorHandle {
@@ -241,11 +242,14 @@ async fn background_task(
     mcp_servers: serde_json::Value,
     copilot_config: CopilotConfig,
     stderr_buf: StderrBuffer,
+    inactivity_timeout: std::time::Duration,
 ) {
     let mut agent_session_id: Option<String> = None;
     let mut last_content: Option<serde_json::Value> = None;
     let mut started = false;
     let mut pending_prompts: Vec<String> = Vec::new();
+    let mut turn_active = true; // starts active — processing initial prompt
+    let mut last_activity = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -255,6 +259,7 @@ async fn background_task(
             raw_event = raw_event_rx.recv() => {
                 match raw_event {
                     Some(event) => {
+                        last_activity = tokio::time::Instant::now();
                         let type_field = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
                         match type_field {
@@ -297,9 +302,11 @@ async fn background_task(
                                     if turn.error.is_some() {
                                         turn.stderr = snapshot_stderr(&stderr_buf);
                                     }
+                                    turn_active = false;
                                     let _ = event_tx.send(AgentEvent::TurnComplete(turn));
                                 }
                                 Err(e) => {
+                                    turn_active = false;
                                     let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
                                         agent_session_id: agent_session_id.clone(),
                                         error: Some(format!("malformed result event: {e}")),
@@ -313,6 +320,7 @@ async fn background_task(
                                 last_content = None;
                                 match serde_json::from_value::<ErrorEvent>(event) {
                                     Ok(err) => {
+                                        turn_active = false;
                                         let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
                                             agent_session_id: agent_session_id.clone(),
                                             error: Some(err.message),
@@ -322,6 +330,7 @@ async fn background_task(
                                         }));
                                     }
                                     Err(e) => {
+                                        turn_active = false;
                                         let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
                                             agent_session_id: agent_session_id.clone(),
                                             error: Some(format!("malformed error event: {e}")),
@@ -356,6 +365,8 @@ async fn background_task(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(AgentCommand::Start(task_payload)) => {
+                        turn_active = true;
+                        last_activity = tokio::time::Instant::now();
                         match super::extract_prompt_text(&task_payload) {
                             Ok(prompt_text) => {
                                 let cmd = CopilotCommand::Start {
@@ -375,6 +386,7 @@ async fn background_task(
                                 }
                             }
                             Err(e) => {
+                                turn_active = false;
                                 let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
                                     agent_session_id: agent_session_id.clone(),
                                     error: Some(format!("bad task payload: {e}")),
@@ -386,6 +398,8 @@ async fn background_task(
                         }
                     }
                     Some(AgentCommand::Prompt(text)) => {
+                        turn_active = true;
+                        last_activity = tokio::time::Instant::now();
                         last_content = None;
                         if !started {
                             pending_prompts.push(text);
@@ -427,6 +441,18 @@ async fn background_task(
                         return;
                     }
                 }
+            }
+
+            // Branch 3: Inactivity timeout (only during active turns)
+            _ = tokio::time::sleep_until(last_activity + inactivity_timeout),
+                if turn_active => {
+                let _ = event_tx.send(AgentEvent::ProcessDied {
+                    error: format!("executor stalled: no output for {}s", inactivity_timeout.as_secs()),
+                    stderr: snapshot_stderr(&stderr_buf),
+                });
+                let _ = child.kill().await;
+                reader_handle.abort();
+                return;
             }
         }
     }

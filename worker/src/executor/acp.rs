@@ -159,6 +159,7 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         event_tx,
         acp_session_id,
         stderr_buf,
+        config.inactivity_timeout,
     ));
 
     Ok(ExecutorHandle {
@@ -266,9 +267,11 @@ async fn background_task(
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     session_id: String,
     stderr_buf: StderrBuffer,
+    inactivity_timeout: std::time::Duration,
 ) {
     let mut phase = PromptPhase::Idle;
     let mut pending_prompts: VecDeque<String> = VecDeque::new();
+    let mut last_activity = Instant::now();
 
     loop {
         tokio::select! {
@@ -278,6 +281,7 @@ async fn background_task(
             msg = notification_rx.recv() => {
                 match msg {
                     Some(JsonRpcMessage::Response(resp)) if phase.has_request_id(&resp.id) => {
+                        last_activity = Instant::now();
                         let was_cancelling = phase.is_cancelling();
                         let history = std::mem::replace(&mut phase, PromptPhase::Idle)
                             .take_history();
@@ -290,6 +294,7 @@ async fn background_task(
                                 let parts = vec![serde_json::json!({"type": "text", "text": text})];
                                 match send_prompt(&mut client, &session_id, parts).await {
                                     Ok(request_id) => {
+                                        last_activity = Instant::now();
                                         phase = PromptPhase::AwaitingResponse {
                                             request_id,
                                             update_history: Vec::new(),
@@ -312,9 +317,10 @@ async fn background_task(
                         }
                     }
                     Some(JsonRpcMessage::Response(_)) => {
-                        // Stale response from previous request, ignore
+                        last_activity = Instant::now();
                     }
                     Some(JsonRpcMessage::Notification(notif)) if notif.method == "session/update" => {
+                        last_activity = Instant::now();
                         if let Some(history) = phase.update_history_mut() {
                             match handle_session_update(&notif.params, history) {
                                 Ok(()) => {
@@ -334,9 +340,10 @@ async fn background_task(
                         }
                     }
                     Some(JsonRpcMessage::Notification(_)) => {
-                        // Non-session/update notifications (e.g. permission requests) — ignored
+                        last_activity = Instant::now();
                     }
                     Some(JsonRpcMessage::Request(req)) => {
+                        last_activity = Instant::now();
                         if req.method == "session/request_permission" {
                             let result = if phase.is_cancelling() {
                                 handle_permission_request_cancelled(&mut client, &req.id).await
@@ -358,6 +365,7 @@ async fn background_task(
                         }
                     }
                     Some(JsonRpcMessage::ParseError(line)) => {
+                        last_activity = Instant::now();
                         if phase.is_active() {
                             let truncated: String = line.chars().take(80).collect();
                             tracing::error!(
@@ -417,6 +425,7 @@ async fn background_task(
                         };
                         match send_prompt(&mut client, &session_id, prompt_parts).await {
                             Ok(request_id) => {
+                                last_activity = Instant::now();
                                 phase = PromptPhase::AwaitingResponse {
                                     request_id,
                                     update_history: Vec::new(),
@@ -442,6 +451,7 @@ async fn background_task(
                         let prompt_parts = vec![serde_json::json!({"type": "text", "text": text})];
                         match send_prompt(&mut client, &session_id, prompt_parts).await {
                             Ok(request_id) => {
+                                last_activity = Instant::now();
                                 phase = PromptPhase::AwaitingResponse {
                                     request_id,
                                     update_history: Vec::new(),
@@ -494,6 +504,23 @@ async fn background_task(
                     output: None,
                     stderr: snapshot_stderr(&stderr_buf),
                 }));
+            }
+
+            // Branch 4: Inactivity timeout (only during active, non-cancelling turns)
+            _ = tokio::time::sleep_until(last_activity + inactivity_timeout),
+                if phase.is_active() && !phase.is_cancelling() => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "ACP executor stalled: no output for {}s",
+                    inactivity_timeout.as_secs()
+                );
+                let _ = event_tx.send(AgentEvent::ProcessDied {
+                    error: format!("executor stalled: no output for {}s", inactivity_timeout.as_secs()),
+                    stderr: snapshot_stderr(&stderr_buf),
+                });
+                terminate_subprocess(&mut child).await;
+                reader_handle.abort();
+                return;
             }
         }
     }

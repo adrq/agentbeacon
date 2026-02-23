@@ -6,6 +6,7 @@
   import { extractQuestions } from '../questions';
   import {
     decisionItems, suppressedSessions, submittedBatches, notifyNewDecision,
+    noQuestionExecutions,
     type DecisionItem,
   } from '../stores/questionState';
 
@@ -102,6 +103,18 @@
         });
       }
       // Failed fetches retain their previous cache entry (no update, no delete)
+
+      // Track executions that were fetched successfully with no questions
+      const noQExecs = new Set<string>();
+      for (const result of results) {
+        if (result.status !== 'fulfilled') continue;
+        const { session, events: evts } = result.value;
+        const { questions: qs } = extractQuestions(evts);
+        if (qs.length === 0) noQExecs.add(session.execution_id);
+      }
+      // Remove any that DO have questions (multi-session: one session has, one doesn't)
+      for (const item of itemCache.values()) noQExecs.delete(item.executionId);
+      noQuestionExecutions.set(noQExecs);
 
       const newItems = [...itemCache.values()]
         .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());

@@ -258,6 +258,7 @@ async fn run_session(
         scheduler_url: args.scheduler_url.clone(),
         node_path: args.node_path.clone(),
         executors_dir: args.executors_dir.clone(),
+        inactivity_timeout: args.inactivity_timeout,
     };
 
     // Start executor
@@ -276,6 +277,7 @@ async fn run_session(
                     Some(format!("{e:#}")),
                     Some("executor_failed".into()),
                     None,
+                    false,
                 ),
                 true,
                 retry_config,
@@ -353,6 +355,7 @@ async fn run_session(
                                 messages_for_sync, result.error,
                                 result.error_kind.map(|ek| ek.as_str().to_string()),
                                 result.stderr,
+                                turns_in_flight > 0,
                             ), true, retry_config,
                         ).await {
                             Ok(r) => r,
@@ -383,7 +386,7 @@ async fn run_session(
                                                 agent_session_id.clone(),
                                                 Vec::new(), Some(format!("Bad task payload: {e}")),
                                                 Some("internal_error".into()),
-                                                None),
+                                                None, false),
                                             true, retry_config).await;
                                     }
                                 }
@@ -441,7 +444,7 @@ async fn run_session(
                         let _ = perform_sync_with_retry(client, &args.scheduler_url,
                             &SyncRequest::with_result(session_id, agent_session_id.clone(),
                                 messages_for_sync, Some(error), Some("executor_failed".into()),
-                                stderr),
+                                stderr, false),
                             true, retry_config).await;
                         break SessionExit::Done;
                     }
@@ -478,7 +481,7 @@ async fn run_session(
                                             agent_session_id.clone(),
                                             Vec::new(), Some(format!("Bad task payload: {e}")),
                                             Some("internal_error".into()),
-                                            None),
+                                            None, false),
                                         true, retry_config).await;
                                 }
                             }

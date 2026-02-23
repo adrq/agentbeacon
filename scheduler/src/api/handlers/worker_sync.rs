@@ -56,6 +56,8 @@ pub struct SessionResult {
     pub error_kind: Option<String>,
     #[serde(default)]
     pub stderr: Option<String>,
+    #[serde(default)]
+    pub has_pending_turn: bool,
 }
 
 /// Worker sync response — tagged union
@@ -374,7 +376,9 @@ pub async fn handle_worker_sync(
         let has_error = result.error_kind.is_some() || result.error.is_some();
 
         if !has_error {
-            // Check if a user message was queued during the turn
+            // Check if a user message was queued during the turn (always check,
+            // even when worker has pending turns — a concurrent user message may
+            // have arrived)
             if let Some(task) = state
                 .task_queue
                 .pop_by_session(&result.session_id)
@@ -390,11 +394,13 @@ pub async fn handle_worker_sync(
                 }));
             }
 
-            // No queued tasks — transition to input-required if currently working.
-            // Note: not atomic with pop_by_session above. A concurrent post_message
-            // between the pop and this update could leave us input-required with a
-            // queued task. Acceptable: the worker's next long-poll will pick it up.
-            if let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await
+            // Only transition to input-required if the worker has no pending
+            // turns locally. When has_pending_turn is true, the worker already
+            // has the next prompt queued and will start processing it
+            // immediately — transitioning to input-required would be incorrect.
+            if !result.has_pending_turn
+                && let Ok(session) =
+                    db::sessions::get_by_id(&state.db_pool, &result.session_id).await
                 && session.status == "working"
             {
                 if let Err(e) = db::sessions::update_status(

@@ -6,6 +6,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Bounded ring buffer for capturing subprocess stderr lines.
@@ -75,6 +76,8 @@ pub struct SessionConfig {
     pub node_path: Option<String>,
     /// Override for executors/dist directory (stdio-bridge executors)
     pub executors_dir: Option<String>,
+    /// Max time with no agent output during an active turn before killing it
+    pub inactivity_timeout: Duration,
 }
 
 pub struct TurnResult {

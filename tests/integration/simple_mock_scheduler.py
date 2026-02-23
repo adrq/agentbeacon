@@ -31,6 +31,7 @@ class SessionResult(BaseModel):
     error: Optional[str] = None
     errorKind: Optional[str] = None
     stderr: Optional[str] = None
+    hasPendingTurn: bool = False
 
     class Config:
         extra = "forbid"

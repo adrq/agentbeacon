@@ -36,6 +36,10 @@ pub struct TurnMessage {
     pub payload: serde_json::Value,
 }
 
+fn is_false(v: &bool) -> bool {
+    !v
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionResult {
@@ -50,6 +54,8 @@ pub struct SessionResult {
     pub error_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_pending_turn: bool,
 }
 
 // --- Response types (Deserialize, tagged union) ---
@@ -125,6 +131,7 @@ impl SyncRequest {
         error: Option<String>,
         error_kind: Option<String>,
         stderr: Option<String>,
+        has_pending_turn: bool,
     ) -> Self {
         // Include session_state "running" so scheduler knows we're still in this session
         // and doesn't try to assign us a new one
@@ -141,6 +148,7 @@ impl SyncRequest {
                 error,
                 error_kind,
                 stderr,
+                has_pending_turn,
             }),
         }
     }
@@ -334,6 +342,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["sessionId"], "sess-1");
@@ -359,6 +368,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         let value = serde_json::to_value(&request).unwrap();
         let turn_msgs = value["sessionResult"]["turnMessages"].as_array().unwrap();
@@ -369,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_session_result_without_turn_messages_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("turnMessages").is_none());
     }
@@ -383,6 +393,7 @@ mod tests {
             Some("executor failed".to_string()),
             None,
             None,
+            false,
         );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["error"], "executor failed");
@@ -390,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_session_result_without_error_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("error").is_none());
     }
@@ -404,6 +415,7 @@ mod tests {
             Some("budget limit hit".to_string()),
             Some("budget_exceeded".to_string()),
             None,
+            false,
         );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionResult"]["errorKind"], "budget_exceeded");
@@ -412,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_session_result_without_error_kind_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("errorKind").is_none());
     }
@@ -426,6 +438,7 @@ mod tests {
             Some("crash".to_string()),
             Some("executor_failed".to_string()),
             Some("Error: module not found\n    at require".to_string()),
+            false,
         );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(
@@ -436,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_session_result_without_stderr_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None);
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["sessionResult"].get("stderr").is_none());
     }
@@ -455,6 +468,28 @@ mod tests {
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["sessionState"]["sessionId"], "sess-1");
         assert_eq!(value["sessionState"]["status"], "running");
+    }
+
+    #[test]
+    fn test_has_pending_turn_true_serializes() {
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, true);
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["sessionResult"]["hasPendingTurn"], true);
+    }
+
+    #[test]
+    fn test_has_pending_turn_false_omitted() {
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
+        let value = serde_json::to_value(&request).unwrap();
+        assert!(value["sessionResult"].get("hasPendingTurn").is_none());
+    }
+
+    #[test]
+    fn test_has_pending_turn_true_round_trips_camelcase() {
+        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, true);
+        let json_str = serde_json::to_string(&request).unwrap();
+        assert!(json_str.contains("hasPendingTurn"));
+        assert!(json_str.contains("true"));
     }
 
     #[test]
