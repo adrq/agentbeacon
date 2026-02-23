@@ -2,6 +2,8 @@
   import type { Execution } from '../types';
   import { selectedExecutionId } from '../stores/appState';
   import { router } from '../router';
+  import { executionsWithQuestions } from '../stores/questionState';
+  import ElapsedTime from './ElapsedTime.svelte';
 
   interface Props {
     execution: Execution;
@@ -10,10 +12,15 @@
 
   let { execution, projectName = null }: Props = $props();
 
+  const activeStatuses = new Set(['working', 'input-required', 'submitted']);
+
   let selected = $derived($selectedExecutionId === execution.id);
   let needsInput = $derived(execution.status === 'input-required');
+  let hasQuestions = $derived($executionsWithQuestions.has(execution.id));
+  let isActive = $derived(activeStatuses.has(execution.status));
   let displayTitle = $derived(execution.title ?? execution.id.slice(0, 8));
-  let statusText = $derived(needsInput ? 'awaiting input'
+  let statusText = $derived(needsInput && !hasQuestions ? 'turn complete'
+    : needsInput ? 'awaiting input'
     : execution.status === 'working' ? 'working'
     : execution.status === 'submitted' ? 'submitted'
     : execution.status === 'completed' ? 'completed'
@@ -40,16 +47,22 @@
 <button
   class="exec-item"
   class:selected
-  class:needs-input={needsInput}
+  class:needs-input={needsInput && hasQuestions}
   onclick={handleClick}
   aria-current={selected || undefined}
 >
   <div class="exec-item-top">
-    <span class="status-indicator" class:working={execution.status === 'working'} class:completed={execution.status === 'completed'} class:failed={execution.status === 'failed'} class:input-required={needsInput} class:submitted={execution.status === 'submitted'} class:canceled={execution.status === 'canceled'}>
-      {#if needsInput}!{/if}
+    <span class="status-indicator" class:working={execution.status === 'working'} class:completed={execution.status === 'completed'} class:failed={execution.status === 'failed'} class:input-required={needsInput && hasQuestions} class:turn-complete={needsInput && !hasQuestions} class:submitted={execution.status === 'submitted'} class:canceled={execution.status === 'canceled'}>
+      {#if needsInput && hasQuestions}!{/if}
     </span>
     <span class="exec-title">{displayTitle}</span>
-    <span class="exec-time">{relativeTime(execution.updated_at)}</span>
+    <span class="exec-time">
+      {#if isActive}
+        <ElapsedTime startTime={execution.created_at} />
+      {:else}
+        {relativeTime(execution.updated_at)}
+      {/if}
+    </span>
   </div>
   <div class="exec-item-bottom">
     <span class="exec-status">{statusText}</span>
@@ -124,6 +137,10 @@
     font-size: 0.625rem;
     font-weight: 700;
     color: hsl(var(--primary-foreground));
+  }
+
+  .status-indicator.turn-complete {
+    background: hsl(var(--muted-foreground));
   }
 
   .exec-title {

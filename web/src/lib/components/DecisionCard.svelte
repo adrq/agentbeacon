@@ -2,6 +2,9 @@
   import { composeAnswer, submitAnswer } from '../questions';
   import type { QuestionState } from '../questions';
   import { router } from '../router';
+  import { toasts } from '../stores/toasts';
+  import { markBatchSubmitted, tryClaimSubmit, releaseSubmit } from '../stores/questionState';
+  import { requestNotificationPermission } from '../adapters/standalone';
   import QuestionCard from './QuestionCard.svelte';
 
   interface Props {
@@ -9,11 +12,12 @@
     executionId: string;
     executionTitle: string | null;
     agentName: string;
+    batchId: string;
     questions: QuestionState[];
-    onsubmitted?: (sessionId: string) => void;
+    onsubmitted?: (sessionId: string, batchId: string) => void;
   }
 
-  let { sessionId, executionId, executionTitle, agentName: agentLabel, questions, onsubmitted }: Props = $props();
+  let { sessionId, executionId, executionTitle, agentName: agentLabel, batchId, questions, onsubmitted }: Props = $props();
 
   let submitting = $state(false);
   let error: string | null = $state(null);
@@ -22,11 +26,12 @@
   // Local answer state — avoids mutating the parent's prop
   let answers: string[] = $state(questions.map(() => ''));
 
-  // Reset answers only when the questions prop actually changes identity
-  let prevQuestions = questions;
+  // Reset answers only when a genuinely new question batch arrives (stable batchId),
+  // NOT on every poll cycle which creates fresh question array references.
+  let prevBatchId = batchId;
   $effect(() => {
-    if (questions !== prevQuestions) {
-      prevQuestions = questions;
+    if (batchId !== prevBatchId || questions.length !== answers.length) {
+      prevBatchId = batchId;
       answers = questions.map(() => '');
       allAnswered = false;
     }
@@ -47,13 +52,20 @@
 
   async function handleSubmit() {
     if (!allAnswered || submitting) return;
+    if (!tryClaimSubmit(sessionId, batchId)) return;
     submitting = true;
     error = null;
+    // Request notification permission synchronously from user gesture (before async boundary)
+    requestNotificationPermission();
     try {
       await submitAnswer(sessionId, composeAnswer(buildAnswerQuestions()));
-      onsubmitted?.(sessionId);
+      markBatchSubmitted(sessionId, batchId);
+      releaseSubmit(sessionId, batchId);
+      toasts.success('Answer submitted');
+      onsubmitted?.(sessionId, batchId);
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to submit';
+      releaseSubmit(sessionId, batchId);
     } finally {
       submitting = false;
     }
@@ -76,7 +88,7 @@
   </div>
 
   <div class="card-questions">
-    {#each questions as q, i}
+    {#each questions as q, i (batchId + ':' + i)}
       <QuestionCard
         question={q.questionText}
         context={q.context}

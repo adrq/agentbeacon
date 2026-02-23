@@ -1,21 +1,37 @@
 <script lang="ts">
-  import { currentScreen, selectedExecutionId, selectedProjectId } from '../stores/appState';
+  import { get } from 'svelte/store';
+  import { currentScreen, selectedExecutionId, selectedProjectId, actionPanelCollapsed, userExplicitlyCollapsed } from '../stores/appState';
+  import { decisionCount } from '../stores/questionState';
   import { executionsQuery } from '../queries/executions';
   import AppHeader from './AppHeader.svelte';
+  import NavRail from './NavRail.svelte';
   import SplitPanel from './SplitPanel.svelte';
   import ExecutionList from './ExecutionList.svelte';
   import ExecutionDetail from './ExecutionDetail.svelte';
   import type { ExecutionPrefill } from './ExecutionDetail.svelte';
   import EmptyState from './EmptyState.svelte';
-  import DecisionQueue from './DecisionQueue.svelte';
   import ActivityFeed from './ActivityFeed.svelte';
+  import ActionPanel from './ActionPanel.svelte';
   import NewExecutionModal from './NewExecutionModal.svelte';
   import ProjectsView from './ProjectsView.svelte';
   import ProjectDetail from './ProjectDetail.svelte';
   import AgentsView from './AgentsView.svelte';
+  import QuestionStateProvider from './QuestionStateProvider.svelte';
 
   let showNewModal = $state(false);
   let rerunPrefill = $state<ExecutionPrefill | null>(null);
+
+  // Track tablet breakpoint so we can force-collapse ActionPanel via state (not CSS)
+  let isTablet = $state(false);
+  $effect(() => {
+    const mql = window.matchMedia('(max-width: 1024px)');
+    isTablet = mql.matches;
+    const handler = (e: MediaQueryListEvent) => { isTablet = e.matches; };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  });
+
+  let effectiveCollapsed = $derived(isTablet || $actionPanelCollapsed);
 
   const execsQuery = executionsQuery();
   let hasExecutions = $derived((execsQuery.data ?? []).length > 0);
@@ -34,12 +50,44 @@
     showNewModal = false;
     rerunPrefill = null;
   }
+
+  function toggleActionPanel() {
+    if (isTablet) return; // No-op: panel is force-collapsed at tablet width
+    actionPanelCollapsed.update(v => {
+      const next = !v;
+      if (next) {
+        userExplicitlyCollapsed.set(true);
+      }
+      return next;
+    });
+  }
+
+  // Auto-expand when decisions go from 0 to >0, unless user explicitly collapsed.
+  // Auto-collapse only on transition from >0 to 0 (not every tick at 0).
+  let prevDecisionCount = 0;
+  $effect(() => {
+    const count = $decisionCount;
+    const explicit = get(userExplicitlyCollapsed);
+    const collapsed = get(actionPanelCollapsed);
+
+    if (count > 0 && !explicit && collapsed && !isTablet) {
+      actionPanelCollapsed.set(false);
+    }
+    if (count === 0 && prevDecisionCount > 0) {
+      userExplicitlyCollapsed.set(false);
+      actionPanelCollapsed.set(true);
+    }
+    prevDecisionCount = count;
+  });
 </script>
+
+<QuestionStateProvider />
 
 <AppHeader onnewexecution={handleNewExecution} />
 
 <div class="shell-body">
-  <SplitPanel storageKey="beacon-sidebar-width" initialLeftWidth={22} minWidth={15} maxWidth={40}>
+  <NavRail onToggleDecisions={toggleActionPanel} panelOpen={!effectiveCollapsed} />
+  <SplitPanel storageKey="beacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35}>
     {#snippet left()}
       <div class="sidebar">
         <ExecutionList />
@@ -57,7 +105,6 @@
           <AgentsView />
         {:else if hasExecutions}
           <div class="home-view scroll-thin">
-            <DecisionQueue />
             <ActivityFeed />
           </div>
         {:else}
@@ -66,6 +113,11 @@
       </div>
     {/snippet}
   </SplitPanel>
+  <ActionPanel
+    collapsed={effectiveCollapsed}
+    onToggle={toggleActionPanel}
+    decisionCount={$decisionCount}
+  />
 </div>
 
 {#if showNewModal}
@@ -77,6 +129,7 @@
     flex: 1;
     display: flex;
     min-height: 0;
+    overflow: hidden;
   }
 
   .sidebar {
@@ -95,5 +148,11 @@
   .home-view {
     flex: 1;
     overflow-y: auto;
+  }
+
+  @media (max-width: 768px) {
+    .shell-body {
+      padding-bottom: 48px;
+    }
   }
 </style>

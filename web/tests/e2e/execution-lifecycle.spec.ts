@@ -107,8 +107,8 @@ test('tool_call renders as ToolCallCard in chat view', async ({ page }) => {
 
   await page.goto(`/#/execution/${execId}`);
 
-  // StatusBadge shows "Awaiting Input" (not legacy "Needs Answer")
-  await expect(page.locator('.badge').getByText('Awaiting Input')).toBeVisible({ timeout: 10000 });
+  // StatusBadge shows "Turn Complete" for input-required without pending questions
+  await expect(page.locator('.badge').getByText('Turn Complete')).toBeVisible({ timeout: 10000 });
 
   await page.getByRole('tab', { name: 'Chat' }).click();
 
@@ -116,9 +116,9 @@ test('tool_call renders as ToolCallCard in chat view', async ({ page }) => {
   await expect(toolCard).toBeVisible({ timeout: 15000 });
   await expect(toolCard).toContainText('Read file');
 
-  // ExecutionList banner shows "awaiting input" (not "questions waiting")
+  // Attention banner should NOT show for turn-complete executions (no pending questions)
   await page.goto('/');
-  await expect(page.locator('.attention-banner')).toContainText('awaiting input', { timeout: 10000 });
+  await expect(page.locator('.attention-banner')).not.toBeVisible({ timeout: 5000 });
 });
 
 // --- Test 6: ThinkingBlock renderer ---

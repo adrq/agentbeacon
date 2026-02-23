@@ -103,19 +103,21 @@ test('full question-answer flow', async ({ page }) => {
 
   await page.goto(`/#/execution/${execId}`);
 
-  const questionCard = page.locator('.question-card');
-  await expect(questionCard).toBeVisible({ timeout: 10000 });
+  // Question appears in the QuestionBanner within the execution detail
+  const banner = page.locator('.question-banner');
+  await expect(banner).toBeVisible({ timeout: 10000 });
 
-  await expect(page.getByRole('radio', { name: /React/ })).toBeVisible();
-  await expect(page.getByRole('radio', { name: /Svelte/ })).toBeVisible();
-  await expect(page.getByRole('radio', { name: /Decide for me/ })).toBeVisible();
+  // Scope radio/submit to the banner to avoid matching the ActionPanel's DecisionCard
+  await expect(banner.getByRole('radio', { name: /React/ })).toBeVisible();
+  await expect(banner.getByRole('radio', { name: /Svelte/ })).toBeVisible();
+  await expect(banner.getByRole('radio', { name: /Decide for me/ })).toBeVisible();
 
-  await expect(page.getByRole('button', { name: /Submit/ })).toBeDisabled();
+  await expect(banner.getByRole('button', { name: /Submit/ })).toBeDisabled();
 
-  await page.getByRole('radio', { name: /Svelte/ }).click();
-  await expect(page.getByRole('button', { name: /Submit/ })).toBeEnabled();
+  await banner.getByRole('radio', { name: /Svelte/ }).click();
+  await expect(banner.getByRole('button', { name: /Submit/ })).toBeEnabled();
 
-  await page.getByRole('button', { name: /Submit/ }).click();
+  await banner.getByRole('button', { name: /Submit/ }).click();
 
   await expect(page.getByText('User: Svelte')).toBeVisible({ timeout: 10000 });
 });
@@ -123,11 +125,11 @@ test('full question-answer flow', async ({ page }) => {
 test('navigation between views', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByRole('link', { name: 'Projects' }).click();
+  await page.getByRole('button', { name: 'Projects' }).click();
   await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
 
-  await page.getByRole('link', { name: 'Agents' }).click();
+  await page.getByRole('button', { name: 'Agents' }).click();
   await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
 
-  await page.getByRole('link', { name: 'Executions' }).click();
+  await page.getByRole('button', { name: 'Executions' }).click();
 });

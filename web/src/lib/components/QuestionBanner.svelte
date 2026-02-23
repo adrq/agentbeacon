@@ -2,6 +2,8 @@
   import type { Execution, SessionSummary, Event, Agent } from '../types';
   import { extractQuestions, composeAnswer, submitAnswer } from '../questions';
   import type { QuestionState } from '../questions';
+  import { submittedBatches, markBatchSubmitted, tryClaimSubmit, releaseSubmit } from '../stores/questionState';
+  import { requestNotificationPermission } from '../adapters/standalone';
   import QuestionCard from './QuestionCard.svelte';
 
   interface Props {
@@ -19,11 +21,16 @@
 
   // Derive questions from events but preserve user-typed answers across re-derives
   let questions: QuestionState[] = $state([]);
-  let lastBatchId = '';
+  let lastBatchId = $state('');
   let allAnswered = $state(false);
 
   let inputSessionId = $derived(
     sessions.find(s => s.status === 'input-required')?.id ?? null
+  );
+
+  // Detect cross-surface submission (e.g., answered from ActionPanel)
+  let crossSubmitted = $derived(
+    inputSessionId ? $submittedBatches[inputSessionId] === lastBatchId && lastBatchId !== '' : false
   );
 
   // Update questions only when the batch changes, preserving answers otherwise
@@ -57,15 +64,20 @@
 
   async function handleSubmit() {
     if (!inputSessionId || !allAnswered || submitting) return;
+    if (!tryClaimSubmit(inputSessionId, lastBatchId)) return;
 
     submitting = true;
     error = null;
+    requestNotificationPermission();
 
     try {
       await submitAnswer(inputSessionId, composeAnswer(questions));
+      markBatchSubmitted(inputSessionId, lastBatchId);
+      releaseSubmit(inputSessionId, lastBatchId);
       submitted = true;
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to submit';
+      releaseSubmit(inputSessionId, lastBatchId);
     } finally {
       submitting = false;
     }
@@ -81,7 +93,7 @@
   }
 </script>
 
-{#if inputSessionId && !submitted && (questions.length > 0 || events.length === 0)}
+{#if inputSessionId && !submitted && !crossSubmitted && (questions.length > 0 || events.length === 0)}
   <div class="question-banner" class:loading={questions.length === 0}>
     <div class="banner-header">
       <span class="banner-icon">&#x26A0;</span>
@@ -103,7 +115,7 @@
     </div>
 
     <div class="banner-questions">
-      {#each questions as q, i}
+      {#each questions as q, i (lastBatchId + ':' + i)}
         <QuestionCard
           question={q.questionText}
           context={q.context}
@@ -135,7 +147,7 @@
       </button>
     </div>
   </div>
-{:else if submitted}
+{:else if submitted || crossSubmitted}
   <div class="submitted-banner">
     <span class="submitted-icon">&#x2713;</span>
     Answers submitted. Waiting for agent to resume...

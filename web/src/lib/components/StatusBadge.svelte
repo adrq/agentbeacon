@@ -4,9 +4,10 @@
   interface Props {
     status: ExecutionStatus;
     size?: 'small' | 'medium';
+    hasQuestions?: boolean;
   }
 
-  let { status, size = 'medium' }: Props = $props();
+  let { status, size = 'medium', hasQuestions }: Props = $props();
 
   const labels: Record<ExecutionStatus, string> = {
     'submitted': 'Submitted',
@@ -16,11 +17,19 @@
     'failed': 'Failed',
     'canceled': 'Canceled',
   };
+
+  let label = $derived(
+    status === 'input-required' && hasQuestions === false
+      ? 'Turn Complete'
+      : labels[status]
+  );
+
+  let turnComplete = $derived(status === 'input-required' && hasQuestions === false);
 </script>
 
-<span class="badge {status} {size}">
+<span class="badge {status} {size}" class:turn-complete={turnComplete}>
   <span class="dot"></span>
-  {labels[status]}
+  {label}
 </span>
 
 <style>
@@ -64,6 +73,16 @@
   .input-required .dot {
     background: hsl(var(--status-attention));
     box-shadow: 0 0 4px 1px hsl(var(--status-attention) / 0.5);
+  }
+
+  .input-required.turn-complete {
+    background: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+  }
+
+  .input-required.turn-complete .dot {
+    background: hsl(var(--muted-foreground));
+    box-shadow: none;
   }
 
   .completed { background: hsl(var(--status-success) / 0.15); color: hsl(var(--status-success)); }

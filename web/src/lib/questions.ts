@@ -42,6 +42,12 @@ export function extractQuestions(events: Event[]): { batchId: string; questions:
     }
   }
 
+  // Check if the latest batch was already answered (user message after the ask)
+  const hasAnswer = events.some(ev =>
+    ev.id > latestMaxId && isMessagePayload(ev.payload) && ev.payload.role === 'user'
+  );
+  if (hasAnswer) return { batchId: '', questions: [] };
+
   const batch = batches.get(latestBatchId) ?? [];
   batch.sort((a, b) => a.data.batch_index - b.data.batch_index);
 

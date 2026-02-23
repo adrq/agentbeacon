@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { currentScreen } from '../stores/appState';
   import ThemeToggle from './ThemeToggle.svelte';
   import Button from './ui/button.svelte';
 
@@ -8,12 +7,6 @@
   }
 
   let { onnewexecution }: Props = $props();
-
-  const navItems: { label: string; hash: string; screens: string[] }[] = [
-    { label: 'Executions', hash: '#/', screens: ['Home', 'ExecutionDetail'] },
-    { label: 'Projects', hash: '#/projects', screens: ['Projects', 'ProjectDetail'] },
-    { label: 'Agents', hash: '#/agents', screens: ['Agents'] },
-  ];
 </script>
 
 <header class="app-header">
@@ -32,16 +25,6 @@
       </svg>
       <span class="app-name">AgentBeacon</span>
     </a>
-    <nav class="header-nav" aria-label="Main navigation">
-      {#each navItems as item}
-        <a
-          href={item.hash}
-          class="nav-link"
-          class:active={item.screens.includes($currentScreen)}
-          aria-current={item.screens.includes($currentScreen) ? 'page' : undefined}
-        >{item.label}</a>
-      {/each}
-    </nav>
   </div>
   <div class="header-right">
     <Button variant="default" size="sm" onclick={() => onnewexecution?.()}>
@@ -53,7 +36,7 @@
 
 <style>
   .app-header {
-    height: 3rem;
+    height: 2.5rem;
     flex-shrink: 0;
     display: flex;
     align-items: center;
@@ -88,32 +71,6 @@
     font-size: 1rem;
     letter-spacing: -0.01em;
     user-select: none;
-  }
-
-  .header-nav {
-    display: flex;
-    align-items: center;
-    gap: 0.125rem;
-  }
-
-  .nav-link {
-    padding: 0.25rem 0.625rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: hsl(var(--muted-foreground));
-    text-decoration: none;
-    border-radius: 0.25rem;
-    transition: color 0.15s, background 0.15s;
-  }
-
-  .nav-link:hover {
-    color: hsl(var(--foreground));
-    background: hsl(var(--muted) / 0.5);
-  }
-
-  .nav-link.active {
-    color: hsl(var(--foreground));
-    background: hsl(var(--primary) / 0.1);
   }
 
   .header-right {

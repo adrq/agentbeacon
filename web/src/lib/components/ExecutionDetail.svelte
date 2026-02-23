@@ -10,6 +10,8 @@
   import SessionTree from './SessionTree.svelte';
   import EventsTimeline from './EventsTimeline.svelte';
   import ChatView from './ChatView.svelte';
+  import ElapsedTime from './ElapsedTime.svelte';
+  import { executionsWithQuestions } from '../stores/questionState';
   import Button from './ui/button.svelte';
 
   export interface ExecutionPrefill {
@@ -205,7 +207,7 @@
     <div class="detail-header">
       <div class="detail-title-row">
         <h2 class="detail-title">{displayTitle}</h2>
-        <StatusBadge status={detail.execution.status} />
+        <StatusBadge status={detail.execution.status} hasQuestions={$executionsWithQuestions.has(detail.execution.id)} />
         {#if isCancellable}
           <Button variant="destructive" size="sm" disabled={cancelMut.isPending} onclick={() => { cancelError = null; showCancelDialog = true; }}>
             {cancelMut.isPending ? 'Canceling...' : 'Cancel'}
@@ -222,7 +224,7 @@
           <span>Agent: {agentName(masterSession.agent_id)}</span>
           <span class="meta-sep">&middot;</span>
         {/if}
-        <span>{duration(detail.execution)}</span>
+        <ElapsedTime startTime={detail.execution.created_at} endTime={isTerminal ? (detail.execution.completed_at ?? detail.execution.updated_at) : null} />
       </div>
     </div>
 

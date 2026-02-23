@@ -37,3 +37,20 @@ export const currentScreen = writable<Screen>('Home');
 export const selectedExecutionId = writable<string | null>(null);
 export const selectedProjectId = writable<string | null>(null);
 export const selectedFilterProjectId = writable<string | null>(null);
+
+function createPersistedBoolStore(key: string, defaultValue: boolean) {
+  const initial = typeof window !== 'undefined'
+    ? (localStorage.getItem(key) === 'true' ? true : localStorage.getItem(key) === 'false' ? false : defaultValue)
+    : defaultValue;
+  const store = writable<boolean>(initial);
+  store.subscribe(value => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(key, String(value));
+    }
+  });
+  return store;
+}
+
+export const actionPanelCollapsed = createPersistedBoolStore('beacon-action-panel-collapsed', true);
+export const userExplicitlyCollapsed = writable<boolean>(false);
+export const notificationsEnabled = createPersistedBoolStore('beacon-notifications-enabled', false);
