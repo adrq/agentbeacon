@@ -73,7 +73,7 @@ def test_acp_agent_required_fields_only(mock_scheduler):
         url,
         agent_config={
             "command": "uv",
-            "args": ["run", "python", "-m", "agentmaestro.mock_agent", "--mode", "acp"],
+            "args": ["run", "python", "-m", "agentbeacon.mock_agent", "--mode", "acp"],
         },
         prompt_text="Test minimal config",
     )
@@ -103,7 +103,7 @@ def test_acp_agent_all_optional_fields(mock_scheduler):
         url,
         agent_config={
             "command": "uv",
-            "args": ["run", "python", "-m", "agentmaestro.mock_agent", "--mode", "acp"],
+            "args": ["run", "python", "-m", "agentbeacon.mock_agent", "--mode", "acp"],
             "timeout": 60,
             "env": {"TEST_VAR": "test_value"},
         },

@@ -1,6 +1,6 @@
 # Scheduler Data Model
 
-High-level overview of core data entities and their relationships in the AgentMaestro scheduler.
+High-level overview of core data entities and their relationships in the AgentBeacon scheduler.
 
 ---
 

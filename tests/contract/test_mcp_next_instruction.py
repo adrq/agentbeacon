@@ -62,13 +62,13 @@ def _call_next_instruction(url, token, timeout=10):
     return json.loads(content[0]["text"])
 
 
-def _create_child_session(ctx, agent_id, master_id, exec_id, status="submitted"):
+def _create_child_session(ctx, agent_id, lead_id, exec_id, status="submitted"):
     """Create a child session directly in DB."""
     child_id = str(uuid.uuid4())
     with db_conn(ctx["db_url"]) as conn:
         conn.execute(
             "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, ?)",
-            (child_id, exec_id, master_id, agent_id, status),
+            (child_id, exec_id, lead_id, agent_id, status),
         )
         conn.commit()
     return child_id
@@ -119,17 +119,17 @@ def test_next_instruction_returns_queued_task_immediately(test_database):
 def test_child_next_instruction_gets_initial_prompt(test_database):
     """Child session: delegate puts task in child inbox → child next_instruction gets it."""
     with scheduler_context(db_url=test_database) as ctx:
-        master_agent_id = _seed_agent_with_poll_timeout(
-            ctx["db_url"], name="master", poll_timeout_ms=5000
+        lead_agent_id = _seed_agent_with_poll_timeout(
+            ctx["db_url"], name="lead", poll_timeout_ms=5000
         )
         _ = _seed_agent_with_poll_timeout(
             ctx["db_url"], name="child", poll_timeout_ms=5000
         )
-        _, master_sid = create_execution_via_api(ctx["url"], master_agent_id, "plan")
+        _, lead_sid = create_execution_via_api(ctx["url"], lead_agent_id, "plan")
 
-        # Master delegates to child
+        # Lead delegates to child
         delegate_result = mcp_tools_call(
-            ctx["url"], master_sid, "delegate", {"agent": "child", "prompt": "do work"}
+            ctx["url"], lead_sid, "delegate", {"agent": "child", "prompt": "do work"}
         )
         content = json.loads(delegate_result["content"][0]["text"])
         child_sid = content["session_id"]
@@ -142,25 +142,23 @@ def test_child_next_instruction_gets_initial_prompt(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_master_next_instruction_gets_handoff_result(test_database):
-    """Full round-trip: delegate → child handoff → master next_instruction gets result."""
+def test_lead_next_instruction_gets_handoff_result(test_database):
+    """Full round-trip: delegate → child handoff → lead next_instruction gets result."""
     with scheduler_context(db_url=test_database) as ctx:
-        master_agent_id = _seed_agent_with_poll_timeout(
-            ctx["db_url"], name="master", poll_timeout_ms=5000
+        lead_agent_id = _seed_agent_with_poll_timeout(
+            ctx["db_url"], name="lead", poll_timeout_ms=5000
         )
         _seed_agent_with_poll_timeout(ctx["db_url"], name="child", poll_timeout_ms=5000)
-        exec_id, master_sid = create_execution_via_api(
-            ctx["url"], master_agent_id, "plan"
-        )
+        exec_id, lead_sid = create_execution_via_api(ctx["url"], lead_agent_id, "plan")
 
-        # Drain master's initial task from queue
+        # Drain lead's initial task from queue
         with db_conn(ctx["db_url"]) as conn:
-            conn.execute("DELETE FROM task_queue WHERE session_id = ?", (master_sid,))
+            conn.execute("DELETE FROM task_queue WHERE session_id = ?", (lead_sid,))
             conn.commit()
 
-        # Master delegates
+        # Lead delegates
         delegate_result = mcp_tools_call(
-            ctx["url"], master_sid, "delegate", {"agent": "child", "prompt": "do work"}
+            ctx["url"], lead_sid, "delegate", {"agent": "child", "prompt": "do work"}
         )
         child_sid = json.loads(delegate_result["content"][0]["text"])["session_id"]
 
@@ -177,8 +175,8 @@ def test_master_next_instruction_gets_handoff_result(test_database):
         # Child hands off
         mcp_tools_call(ctx["url"], child_sid, "handoff", {"message": "done with work"})
 
-        # Master next_instruction → should get handoff result as plain text
-        payload = _call_next_instruction(ctx["url"], master_sid, timeout=10)
+        # Lead next_instruction → should get handoff result as plain text
+        payload = _call_next_instruction(ctx["url"], lead_sid, timeout=10)
         assert "task" in payload
         assert isinstance(payload["task"], str)
         assert "[delegated result from child" in payload["task"]
@@ -188,7 +186,7 @@ def test_master_next_instruction_gets_handoff_result(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_ask_user_blocking_then_answer_via_next_instruction(test_database):
-    """Master ask_user(blocking) → user answers via REST → master next_instruction gets answer."""
+    """Lead ask_user(blocking) → user answers via REST → lead next_instruction gets answer."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = _seed_agent_with_poll_timeout(ctx["db_url"], poll_timeout_ms=5000)
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
@@ -205,7 +203,7 @@ def test_ask_user_blocking_then_answer_via_next_instruction(test_database):
             )
             conn.commit()
 
-        # Master asks a blocking question
+        # Lead asks a blocking question
         mcp_tools_call(
             ctx["url"],
             session_id,
@@ -220,7 +218,7 @@ def test_ask_user_blocking_then_answer_via_next_instruction(test_database):
             timeout=5,
         )
 
-        # Master next_instruction → gets plain text user answer
+        # Lead next_instruction → gets plain text user answer
         payload = _call_next_instruction(ctx["url"], session_id, timeout=10)
         assert "task" in payload
         assert isinstance(payload["task"], str)
@@ -230,24 +228,22 @@ def test_ask_user_blocking_then_answer_via_next_instruction(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_concurrent_next_instruction_wakes_on_handoff(test_database):
-    """Master blocks on next_instruction in background, child handoff wakes it."""
+    """Lead blocks on next_instruction in background, child handoff wakes it."""
     with scheduler_context(db_url=test_database) as ctx:
-        master_agent_id = _seed_agent_with_poll_timeout(
-            ctx["db_url"], name="master", poll_timeout_ms=10000
+        lead_agent_id = _seed_agent_with_poll_timeout(
+            ctx["db_url"], name="lead", poll_timeout_ms=10000
         )
         _seed_agent_with_poll_timeout(ctx["db_url"], name="child", poll_timeout_ms=5000)
-        exec_id, master_sid = create_execution_via_api(
-            ctx["url"], master_agent_id, "plan"
-        )
+        exec_id, lead_sid = create_execution_via_api(ctx["url"], lead_agent_id, "plan")
 
-        # Drain master's initial task
+        # Drain lead's initial task
         with db_conn(ctx["db_url"]) as conn:
-            conn.execute("DELETE FROM task_queue WHERE session_id = ?", (master_sid,))
+            conn.execute("DELETE FROM task_queue WHERE session_id = ?", (lead_sid,))
             conn.commit()
 
         # Delegate to child
         delegate_result = mcp_tools_call(
-            ctx["url"], master_sid, "delegate", {"agent": "child", "prompt": "do work"}
+            ctx["url"], lead_sid, "delegate", {"agent": "child", "prompt": "do work"}
         )
         child_sid = json.loads(delegate_result["content"][0]["text"])["session_id"]
 
@@ -261,30 +257,28 @@ def test_concurrent_next_instruction_wakes_on_handoff(test_database):
             )
             conn.commit()
 
-        # Master blocks on next_instruction in a thread
+        # Lead blocks on next_instruction in a thread
         result_holder = [None]
         start_time = [None]
 
-        def master_wait():
+        def lead_wait():
             start_time[0] = time.monotonic()
-            result_holder[0] = _call_next_instruction(
-                ctx["url"], master_sid, timeout=15
-            )
+            result_holder[0] = _call_next_instruction(ctx["url"], lead_sid, timeout=15)
 
-        t = threading.Thread(target=master_wait)
+        t = threading.Thread(target=lead_wait)
         t.start()
 
-        # Give master time to enter long-poll
+        # Give lead time to enter long-poll
         time.sleep(0.5)
 
-        # Child handoff — should wake master
+        # Child handoff — should wake lead
         mcp_tools_call(ctx["url"], child_sid, "handoff", {"message": "all done"})
 
         t.join(timeout=10)
-        assert not t.is_alive(), "Master thread should have returned"
+        assert not t.is_alive(), "Lead thread should have returned"
 
         elapsed = time.monotonic() - start_time[0]
-        assert elapsed < 5.0, f"Master should wake quickly, took {elapsed:.2f}s"
+        assert elapsed < 5.0, f"Lead should wake quickly, took {elapsed:.2f}s"
 
         payload = result_holder[0]
         assert "task" in payload

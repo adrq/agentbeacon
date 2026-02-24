@@ -90,7 +90,7 @@ impl AgentCard {
             skills: vec![Skill {
                 id: "agent-coordination".to_string(),
                 name: "Agent Coordination".to_string(),
-                description: "Coordinate multiple AI agents via master-agent delegation with session-based execution tracking.".to_string(),
+                description: "Coordinate multiple AI agents via lead-agent delegation with session-based execution tracking.".to_string(),
                 input_modes: vec![
                     "application/json".to_string(),
                     "text/plain".to_string(),

@@ -1,6 +1,6 @@
 """Test unified parsing function for mock agent file logging."""
 
-from agentmaestro.mock_agent.file_logger import parse_agent_entry
+from agentbeacon.mock_agent.file_logger import parse_agent_entry
 
 
 def test_bracketed_format_parsing_basic():

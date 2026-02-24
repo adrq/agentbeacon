@@ -102,7 +102,7 @@ def test_401_includes_www_authenticate_header(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_valid_master_token_returns_initialize_response(test_database):
+def test_valid_lead_token_returns_initialize_response(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -121,7 +121,7 @@ def test_valid_child_token_returns_initialize_response(test_database):
     """Child sessions (those with parent_session_id) should also work."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
-        exec_id, master_session_id = create_execution_via_api(
+        exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], agent_id, "test task"
         )
 
@@ -129,7 +129,7 @@ def test_valid_child_token_returns_initialize_response(test_database):
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
                 "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
-                (child_session_id, exec_id, master_session_id, agent_id),
+                (child_session_id, exec_id, lead_session_id, agent_id),
             )
             conn.commit()
 

@@ -1,14 +1,14 @@
-"""Coordination scenarios for E2E testing of master-child delegation.
+"""Coordination scenarios for E2E testing of lead-child delegation.
 
 Each scenario is a phase-based state machine driven by successive session/prompt
 calls. Phases advance on each prompt; marker text is emitted as agent_message_chunk
 notifications so tests can assert on deterministic strings.
 
 Scenarios:
-  DelegateScenario — master delegates to a child, acknowledges handoff result
-  HandoffScenario — child hands off result back to master
-  DelegateAskScenario — master delegates, then asks user after handoff result
-  DelegateMultiScenario — master delegates N children sequentially
+  DelegateScenario — lead delegates to a child, acknowledges handoff result
+  HandoffScenario — child hands off result back to lead
+  DelegateAskScenario — lead delegates, then asks user after handoff result
+  DelegateMultiScenario — lead delegates N children sequentially
 """
 
 import json
@@ -42,7 +42,7 @@ class _BaseScenario:
 
 
 class DelegateScenario(_BaseScenario):
-    """Master agent: delegates to a child, then acknowledges the handoff result.
+    """Lead agent: delegates to a child, then acknowledges the handoff result.
 
     Requires delegate_to (child agent name).
 
@@ -78,7 +78,7 @@ class DelegateScenario(_BaseScenario):
 
 
 class HandoffScenario(_BaseScenario):
-    """Child agent: hands off result back to master.
+    """Child agent: hands off result back to lead.
 
     Phase 0 (initial prompt): calls handoff with message → end_turn
     """
@@ -96,7 +96,7 @@ class HandoffScenario(_BaseScenario):
 
 
 class DelegateAskScenario(_BaseScenario):
-    """Master agent: delegates, receives handoff, then asks the user a question.
+    """Lead agent: delegates, receives handoff, then asks the user a question.
 
     Phase 0 (initial prompt): emits DELEGATE_ASK_PHASE_0, calls delegate → end_turn
     Phase 1 (handoff result):  emits DELEGATE_ASK_PHASE_1, calls ask_user → end_turn
@@ -151,7 +151,7 @@ class DelegateAskScenario(_BaseScenario):
 
 
 class DelegateMultiScenario(_BaseScenario):
-    """Master agent: delegates to N children sequentially, acknowledges each.
+    """Lead agent: delegates to N children sequentially, acknowledges each.
 
     Phase 0: emits DELEGATE_MULTI_PHASE_0, calls delegate N times → end_turn
     Phases 1..N: receives handoff results one at a time,

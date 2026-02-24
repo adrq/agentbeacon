@@ -1,5 +1,5 @@
 [project]
-name = "agentmaestro"
+name = "agentbeacon"
 version = "0.1.0"
 description = "AI agent orchestrator"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mock-agent = "agentmaestro.mock_agent.__main__:main"
+mock-agent = "agentbeacon.mock_agent.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -31,7 +31,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["agentmaestro"]
+packages = ["agentbeacon"]
 
 [tool.pytest.ini_options]
 markers = [

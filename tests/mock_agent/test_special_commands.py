@@ -297,7 +297,7 @@ def test_hang_command_logging_behavior():
 
     # Start a new mock agent process for HANG test
     hang_proc = subprocess.Popen(
-        ["python", "-m", "agentmaestro.mock_agent.stdio_mode"],
+        ["python", "-m", "agentbeacon.mock_agent.stdio_mode"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -338,7 +338,7 @@ def test_hang_command_logging_behavior():
 
 def test_is_special_command_recognizes_send_markdown():
     """SEND_MARKDOWN is recognized as a special command."""
-    from agentmaestro.mock_agent.special_commands import SpecialCommands
+    from agentbeacon.mock_agent.special_commands import SpecialCommands
 
     sc = SpecialCommands()
     assert sc.is_special_command("SEND_MARKDOWN") is True

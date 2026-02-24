@@ -25,7 +25,7 @@ The scheduler returns this payload to workers so they can construct protocol-spe
       "parts": [
         {
           "kind": "text",
-          "text": "Compose a welcome message introducing AgentMaestro to a new teammate."
+          "text": "Compose a welcome message introducing AgentBeacon to a new teammate."
         }
       ]
     },

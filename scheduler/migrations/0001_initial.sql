@@ -1,4 +1,4 @@
--- AgentBeacon target schema: master-agent coordination model
+-- AgentBeacon target schema: lead-agent coordination model
 -- Replaces static DAG workflow model with A2A-aligned execution tracking
 
 -- Schema version tracking

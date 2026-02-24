@@ -13,7 +13,7 @@ def test_automatic_log_file_creation_with_pytest_current_test():
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}
     ):
-        from agentmaestro.mock_agent.file_logger import log_task_completion
+        from agentbeacon.mock_agent.file_logger import log_task_completion
 
         # This should create logs/tests_test_file__test_automatic_creation.log
         log_task_completion("[exec_123][node_1] NOW Initialize system")
@@ -40,7 +40,7 @@ def test_log_entry_format_with_actual_timestamps():
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}
     ):
-        from agentmaestro.mock_agent.file_logger import log_task_completion
+        from agentbeacon.mock_agent.file_logger import log_task_completion
 
         log_task_completion("[exec_456][node_2] NOW Process data")
 
@@ -69,7 +69,7 @@ def test_file_locking_with_concurrent_access_simulation():
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}
     ):
-        from agentmaestro.mock_agent.file_logger import log_task_completion
+        from agentbeacon.mock_agent.file_logger import log_task_completion
 
         # Simulate multiple rapid writes
         log_task_completion("[exec_001][node_a] NOW Task A")
@@ -109,7 +109,7 @@ def test_directory_creation_when_missing():
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}
     ):
-        from agentmaestro.mock_agent.file_logger import log_task_completion
+        from agentbeacon.mock_agent.file_logger import log_task_completion
 
         # Should create directory and succeed
         log_task_completion("[exec_999][node_test] NOW Test with missing directory")
@@ -131,7 +131,7 @@ def test_no_exceptions_raised_on_logging_failures():
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}
     ):
-        from agentmaestro.mock_agent.file_logger import log_task_completion
+        from agentbeacon.mock_agent.file_logger import log_task_completion
 
         # These should not raise exceptions even if they fail internally
         try:
@@ -149,7 +149,7 @@ def test_backward_compatibility_plain_text():
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}
     ):
-        from agentmaestro.mock_agent.file_logger import log_task_completion
+        from agentbeacon.mock_agent.file_logger import log_task_completion
 
         log_task_completion("Just a plain text task without brackets")
 

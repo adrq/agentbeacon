@@ -238,7 +238,7 @@ async fn persist_and_enqueue(
     )
     .await?;
 
-    // Create master session with cwd
+    // Create lead session with cwd
     db::sessions::create(
         db_pool,
         session_id,

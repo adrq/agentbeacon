@@ -27,7 +27,7 @@ BASE_DIR = Path(__file__).parent.parent.parent
 
 ACP_MOCK_CONFIG = {
     "command": "uv",
-    "args": ["run", "python", "-m", "agentmaestro.mock_agent", "--mode", "acp"],
+    "args": ["run", "python", "-m", "agentbeacon.mock_agent", "--mode", "acp"],
     "timeout": 30,
 }
 

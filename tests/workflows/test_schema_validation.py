@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
-pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
-
 import copy
 import json
 from pathlib import Path
@@ -14,6 +10,8 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
+
+pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_SCHEMA_PATH = ROOT / "docs" / "workflow-schema.json"
@@ -112,12 +110,12 @@ def _build_workflow_validator() -> WorkflowValidator:
     a2a_schema = _load_json_schema(A2A_SCHEMA_PATH)
 
     workflow_schema_id = workflow_schema.get(
-        "$id", "https://schemas.agentmaestro.dev/workflow-schema.json"
+        "$id", "https://schemas.agentbeacon.dev/workflow-schema.json"
     )
 
     # Register A2A schema with URI that resolves relative to workflow schema's base URI
     # workflow-schema.json references "a2a-v0.3.0.schema.json" which resolves to this URI
-    a2a_schema_uri = "https://schemas.agentmaestro.dev/a2a-v0.3.0.schema.json"
+    a2a_schema_uri = "https://schemas.agentbeacon.dev/a2a-v0.3.0.schema.json"
 
     registry = Registry().with_resources(
         [

@@ -11,7 +11,7 @@ use crate::db;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpRole {
-    Master,
+    Lead,
     Child,
 }
 
@@ -100,7 +100,7 @@ impl FromRequestParts<AppState> for McpSession {
             }
 
             let role = if session.parent_session_id.is_none() {
-                McpRole::Master
+                McpRole::Lead
             } else {
                 McpRole::Child
             };

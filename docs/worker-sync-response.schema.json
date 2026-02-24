@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://schemas.agentmaestro.dev/worker-sync-response.schema.json",
+  "$id": "https://schemas.agentbeacon.dev/worker-sync-response.schema.json",
   "title": "Worker Sync Response",
   "description": "Response sent by scheduler to worker during sync cycle. Session-based protocol.",
   "oneOf": [

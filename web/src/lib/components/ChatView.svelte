@@ -79,7 +79,7 @@
   }
 
   // Determine the primary agent for context
-  let masterSession = $derived(sessions.find(s => !s.parent_session_id));
+  let leadSession = $derived(sessions.find(s => !s.parent_session_id));
 
   type ChatEntry =
     | { type: 'agent'; text: string; agentLabel: string; time: string; key: string }
@@ -101,7 +101,7 @@
 
   function parseEntries(evs: Event[]): ChatEntry[] {
     const entries: ChatEntry[] = [];
-    const agentLabel = masterSession ? agentName(masterSession.agent_id) : 'Agent';
+    const agentLabel = leadSession ? agentName(leadSession.agent_id) : 'Agent';
     let seq = 0;
 
     for (const ev of evs) {

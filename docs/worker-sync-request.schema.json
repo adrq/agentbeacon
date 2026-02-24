@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://schemas.agentmaestro.dev/worker-sync-request.schema.json",
+  "$id": "https://schemas.agentbeacon.dev/worker-sync-request.schema.json",
   "title": "Worker Sync Request",
   "description": "Request sent by worker to scheduler during sync cycle. Session-based protocol.",
   "type": "object",

@@ -910,7 +910,7 @@ def parse_agent_log(test_name: str) -> List[Dict]:
         List of parsed log entries, each a dict with keys:
         execution_id, node_id, timestamp, task_text
     """
-    from agentmaestro.mock_agent.file_logger import parse_agent_entry
+    from agentbeacon.mock_agent.file_logger import parse_agent_entry
 
     log_file = Path(f"logs/{test_name}.log")
 
@@ -1397,7 +1397,7 @@ def seed_acp_mock_agent(
     config = json.dumps(
         {
             "command": "uv",
-            "args": ["run", "python", "-m", "agentmaestro.mock_agent", "--mode", "acp"],
+            "args": ["run", "python", "-m", "agentbeacon.mock_agent", "--mode", "acp"],
             "timeout": 30,
         }
     )
@@ -1440,7 +1440,7 @@ def seed_acp_scenario_agent(
         "run",
         "python",
         "-m",
-        "agentmaestro.mock_agent",
+        "agentbeacon.mock_agent",
         "--mode",
         "acp",
         "--scenario",

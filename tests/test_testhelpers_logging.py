@@ -85,7 +85,7 @@ def test_parse_agent_log_handles_empty_files():
 def test_parse_agent_log_reuses_unified_parse_function():
     """Test that parse_agent_log reuses the same unified parse_agent_entry function."""
     from tests.testhelpers import parse_agent_log
-    from agentmaestro.mock_agent.file_logger import parse_agent_entry
+    from agentbeacon.mock_agent.file_logger import parse_agent_entry
 
     # Create test log file
     test_name = "test_unified_function"
@@ -160,7 +160,7 @@ def test_parse_agent_log_integration_with_actual_logging():
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/integration::{test_name}"}
     ):
-        from agentmaestro.mock_agent.file_logger import log_task_completion
+        from agentbeacon.mock_agent.file_logger import log_task_completion
         from tests.testhelpers import parse_agent_log
 
         # Use actual logging function to create entries

@@ -1,4 +1,4 @@
-use crate::schemas::{A2A_SCHEMA, AGENTS_SCHEMA, SYNC_REQUEST_SCHEMA, SYNC_RESPONSE_SCHEMA};
+use crate::schemas::{A2A_SCHEMA, SYNC_REQUEST_SCHEMA, SYNC_RESPONSE_SCHEMA};
 use jsonschema::{Draft, Retrieve, Validator};
 use referencing::Uri;
 use serde_json::Value;
@@ -31,10 +31,6 @@ impl InMemoryRetriever {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut schemas = HashMap::new();
 
-        schemas.insert(
-            "agents-schema.json".to_string(),
-            serde_json::from_str(AGENTS_SCHEMA)?,
-        );
         schemas.insert(
             "a2a-v0.3.0.schema.json".to_string(),
             serde_json::from_str(A2A_SCHEMA)?,
@@ -82,10 +78,6 @@ fn build_validator(
 }
 
 lazy_static::lazy_static! {
-    static ref AGENTS_VALIDATOR: Result<Validator, Box<dyn std::error::Error + Send + Sync>> = {
-        build_validator(AGENTS_SCHEMA, "agents")
-    };
-
     static ref SYNC_REQUEST_VALIDATOR: Result<Validator, Box<dyn std::error::Error + Send + Sync>> = {
         build_validator(SYNC_REQUEST_SCHEMA, "sync request")
     };
@@ -97,20 +89,6 @@ lazy_static::lazy_static! {
     static ref A2A_VALIDATOR: Result<Validator, Box<dyn std::error::Error + Send + Sync>> = {
         build_validator(A2A_SCHEMA, "A2A")
     };
-}
-
-pub fn validate_agents_config(config: &Value) -> Result<(), ValidationError> {
-    let validator = AGENTS_VALIDATOR
-        .as_ref()
-        .map_err(|e| ValidationError::InvalidJson(format!("Schema compilation failed: {e}")))?;
-
-    match validator.validate(config) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let error_message = format!("{}: {}", e.instance_path, e);
-            Err(ValidationError::SchemaViolation(vec![error_message]))
-        }
-    }
 }
 
 pub fn validate_sync_request(request: &Value) -> Result<(), ValidationError> {

@@ -217,7 +217,7 @@ pub async fn handle_worker_sync(
                     );
                 }
 
-                // Only propagate to execution for master sessions with failure (not cancellation)
+                // Only propagate to execution for lead sessions with failure (not cancellation)
                 if propagate_to_execution && session.parent_session_id.is_none() {
                     let exec_from =
                         db::executions::get_by_id(&state.db_pool, &session.execution_id)
@@ -444,7 +444,7 @@ pub async fn handle_worker_sync(
                         }
                     }
 
-                    // Propagate to execution for master sessions
+                    // Propagate to execution for lead sessions
                     if session.parent_session_id.is_none() {
                         if let Err(e) = db::executions::update_status(
                             &state.db_pool,

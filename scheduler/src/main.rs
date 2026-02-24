@@ -91,7 +91,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
                 &demo_id,
                 "Demo Agent",
                 "acp",
-                r#"{"command":"uv","args":["run","python","-m","agentmaestro.mock_agent","--mode","acp","--scenario","demo"],"timeout":60}"#,
+                r#"{"command":"uv","args":["run","python","-m","agentbeacon.mock_agent","--mode","acp","--scenario","demo"],"timeout":60}"#,
                 Some("Mock ACP agent for e2e testing"),
                 None,
             )
@@ -104,7 +104,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
                 &showcase_id,
                 "Showcase Agent",
                 "acp",
-                r#"{"command":"uv","args":["run","python","-m","agentmaestro.mock_agent","--mode","acp","--scenario","showcase"],"timeout":60}"#,
+                r#"{"command":"uv","args":["run","python","-m","agentbeacon.mock_agent","--mode","acp","--scenario","showcase"],"timeout":60}"#,
                 Some("Non-interactive demo of all event types"),
                 None,
             )

@@ -64,7 +64,7 @@
     }
   });
 
-  let masterSession = $derived(detail?.sessions.find(s => !s.parent_session_id) ?? null);
+  let leadSession = $derived(detail?.sessions.find(s => !s.parent_session_id) ?? null);
   let displayTitle = $derived(detail?.execution.title ?? executionId.slice(0, 8));
   let isTerminal = $derived(terminalStatuses.has(detail?.execution.status ?? ''));
   let isCancellable = $derived(cancellableStatuses.has(detail?.execution.status ?? ''));
@@ -113,7 +113,7 @@
   });
 
   // Events for the currently viewed session
-  let activeSessionId = $derived(selectedSessionId ?? masterSession?.id ?? null);
+  let activeSessionId = $derived(selectedSessionId ?? leadSession?.id ?? null);
   const eventsQuery = sessionEventsQuery(
     () => activeSessionId,
     () => isTerminal,
@@ -183,7 +183,7 @@
     const exec = detail.execution;
     onrerun({
       projectId: exec.project_id,
-      agentId: masterSession?.agent_id,
+      agentId: leadSession?.agent_id,
       prompt: exec.input,
       title: exec.title ? `Re-run: ${exec.title}` : undefined,
     });
@@ -220,8 +220,8 @@
         {/if}
       </div>
       <div class="detail-meta">
-        {#if masterSession}
-          <span>Agent: {agentName(masterSession.agent_id)}</span>
+        {#if leadSession}
+          <span>Agent: {agentName(leadSession.agent_id)}</span>
           <span class="meta-sep">&middot;</span>
         {/if}
         <ElapsedTime startTime={detail.execution.created_at} endTime={isTerminal ? (detail.execution.completed_at ?? detail.execution.updated_at) : null} />

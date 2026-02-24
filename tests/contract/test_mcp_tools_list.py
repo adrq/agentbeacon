@@ -16,20 +16,20 @@ from tests.testhelpers import (
 
 
 def _create_child_session(ctx, agent_id):
-    """Helper: create execution + child session, return (exec_id, master_id, child_id)."""
-    exec_id, master_id = create_execution_via_api(ctx["url"], agent_id, "test task")
+    """Helper: create execution + child session, return (exec_id, lead_id, child_id)."""
+    exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "test task")
     child_id = str(uuid.uuid4())
     with db_conn(ctx["db_url"]) as conn:
         conn.execute(
             "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
-            (child_id, exec_id, master_id, agent_id),
+            (child_id, exec_id, lead_id, agent_id),
         )
         conn.commit()
-    return exec_id, master_id, child_id
+    return exec_id, lead_id, child_id
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_master_session_gets_delegate_and_ask_user(test_database):
+def test_lead_session_gets_delegate_and_ask_user(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -39,7 +39,7 @@ def test_master_session_gets_delegate_and_ask_user(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_master_does_not_get_handoff(test_database):
+def test_lead_does_not_get_handoff(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -154,11 +154,9 @@ def test_tool_definitions_include_title(test_database):
 def test_tools_call_success_includes_is_error_false(test_database):
     """MCP spec: tool call results should include isError: false on success."""
     with scheduler_context(db_url=test_database) as ctx:
-        master_agent_id = seed_test_agent(ctx["db_url"], name="master-agent")
+        lead_agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         seed_test_agent(ctx["db_url"], name="child-agent")
-        _, session_id = create_execution_via_api(
-            ctx["url"], master_agent_id, "test task"
-        )
+        _, session_id = create_execution_via_api(ctx["url"], lead_agent_id, "test task")
 
         result = mcp_tools_call(
             ctx["url"],

@@ -20,11 +20,11 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  "name": "AgentMaestro Scheduler",
+  "name": "AgentBeacon Scheduler",
   "version": "1.0.0",
   "protocolVersion": "0.3.0",
   "url": "http://localhost:9456",
-  "description": "AgentMaestro scheduler for AI agent workflow orchestration with DAG-based task scheduling and workflow registry support",
+  "description": "AgentBeacon scheduler for AI agent workflow orchestration with DAG-based task scheduling and workflow registry support",
   "preferredTransport": "JSONRPC",
   "defaultInputModes": ["application/x-yaml", "text/plain"],
   "defaultOutputModes": ["application/json"],
@@ -190,7 +190,7 @@ Per A2A v0.3.0 spec, `params` MUST contain a `MessageSendParams` object:
 
 ### Workflow Submission Formats
 
-AgentMaestro supports two formats for workflow submission in `message.parts[0].data`:
+AgentBeacon supports two formats for workflow submission in `message.parts[0].data`:
 
 **Format A - Direct (RECOMMENDED):**
 ```json
@@ -239,10 +239,10 @@ Both formats are supported. **Use Format A (direct) for new code.**
 ### A2A Behavioral Compliance
 
 **Non-Blocking Only**:
-- AgentMaestro scheduler **only supports non-blocking workflow submission**
+- AgentBeacon scheduler **only supports non-blocking workflow submission**
 - Response is always a `Task` object (never a `Message` object)
 - The A2A spec allows `message/send` to return either `Task` OR `Message`
-- AgentMaestro always returns `Task` with `executionId` for later polling
+- AgentBeacon always returns `Task` with `executionId` for later polling
 
 **Blocking Mode Not Supported**:
 - The `MessageSendConfiguration.blocking` parameter is **ignored** if provided

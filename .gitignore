@@ -26,7 +26,7 @@ go.work
 *.sqlite3
 
 # Configuration and data directories
-.agentmaestro/
+.agentbeacon/
 
 # IDE files
 .idea/
@@ -58,7 +58,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-agentmaestro/  # Minimal Python package for dev dependencies only
 
 # Node.js (for web UI and extension)
 node_modules/

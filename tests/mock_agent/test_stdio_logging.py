@@ -10,7 +10,7 @@ def test_bracketed_format_logging_stdio():
     test_name = "test_stdio_bracketed"
 
     with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": f"tests/stdio::{test_name}"}):
-        from agentmaestro.mock_agent.stdio_mode import process_input
+        from agentbeacon.mock_agent.stdio_mode import process_input
 
         # Mock input with bracketed format
         input_text = "[exec_stdio][node_stdio] NOW Handle stdio task"
@@ -41,7 +41,7 @@ def test_plain_text_logging_stdio():
     test_name = "test_stdio_plain"
 
     with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": f"tests/stdio::{test_name}"}):
-        from agentmaestro.mock_agent.stdio_mode import process_input
+        from agentbeacon.mock_agent.stdio_mode import process_input
 
         # Mock input with plain text
         input_text = "plain task without brackets"
@@ -70,7 +70,7 @@ def test_special_commands_integration_stdio():
     test_name = "test_stdio_special_commands"
 
     with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": f"tests/stdio::{test_name}"}):
-        from agentmaestro.mock_agent.stdio_mode import process_input
+        from agentbeacon.mock_agent.stdio_mode import process_input
 
         # Test DELAY command with bracketed format (should complete and log)
         input_text = "[exec_delay][node_delay] NOW DELAY_1"
@@ -97,7 +97,7 @@ def test_multiple_stdio_requests_same_test():
     test_name = "test_stdio_multiple"
 
     with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": f"tests/stdio::{test_name}"}):
-        from agentmaestro.mock_agent.stdio_mode import process_input
+        from agentbeacon.mock_agent.stdio_mode import process_input
 
         # Process multiple inputs
         process_input("[exec_multi][node_1] NOW First task")

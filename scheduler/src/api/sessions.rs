@@ -124,7 +124,7 @@ async fn post_message(
 
         session_status = "working".to_string();
 
-        // Only master sessions propagate status changes to the execution
+        // Only lead sessions propagate status changes to the execution
         if session.parent_session_id.is_none() {
             db::executions::update_status(&state.db_pool, &session.execution_id, "working").await?;
 

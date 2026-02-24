@@ -32,7 +32,7 @@ def _worker_sync(url, payload=None, timeout=10):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_execution_creation_enqueues_task(test_database):
-    """POST /api/executions creates task_queue row for the master session."""
+    """POST /api/executions creates task_queue row for the lead session."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, session_id = create_execution_via_api(
@@ -45,7 +45,7 @@ def test_execution_creation_enqueues_task(test_database):
                 (session_id,),
             ).fetchone()
 
-        assert row is not None, "task_queue should have a row for the master session"
+        assert row is not None, "task_queue should have a row for the lead session"
         assert row[0] == exec_id
         assert row[1] == session_id
 

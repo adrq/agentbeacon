@@ -19,13 +19,13 @@ from tests.testhelpers import (
 def test_handoff_completes_child_session(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
-        exec_id, master_id = create_execution_via_api(ctx["url"], agent_id, "test task")
+        exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         child_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
                 "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'working')",
-                (child_id, exec_id, master_id, agent_id),
+                (child_id, exec_id, lead_id, agent_id),
             )
             conn.commit()
 
@@ -52,13 +52,13 @@ def test_handoff_completes_child_session(test_database):
 def test_handoff_records_event(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
-        exec_id, master_id = create_execution_via_api(ctx["url"], agent_id, "test task")
+        exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         child_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
                 "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'working')",
-                (child_id, exec_id, master_id, agent_id),
+                (child_id, exec_id, lead_id, agent_id),
             )
             conn.commit()
 
@@ -84,13 +84,13 @@ def test_handoff_records_event(test_database):
 def test_handoff_success_includes_is_error_false(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
-        exec_id, master_id = create_execution_via_api(ctx["url"], agent_id, "test task")
+        exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         child_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
                 "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'working')",
-                (child_id, exec_id, master_id, agent_id),
+                (child_id, exec_id, lead_id, agent_id),
             )
             conn.commit()
 
@@ -104,7 +104,7 @@ def test_handoff_success_includes_is_error_false(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_master_cannot_call_handoff(test_database):
+def test_lead_cannot_call_handoff(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")

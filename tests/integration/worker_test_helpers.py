@@ -57,7 +57,7 @@ def enqueue_session(
         "agent_type": "acp",
         "agent_config": {
             "command": "uv",
-            "args": ["run", "python", "-m", "agentmaestro.mock_agent", "--mode", "acp"],
+            "args": ["run", "python", "-m", "agentbeacon.mock_agent", "--mode", "acp"],
             "timeout": 30,
         },
         "sandbox_config": {},

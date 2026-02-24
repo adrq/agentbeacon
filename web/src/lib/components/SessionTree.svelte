@@ -72,7 +72,7 @@
       <span class="tree-branch">&boxur;&horz;</span>
     {/if}
     <span class="node-icon">{statusIcon(s.status)}</span>
-    <span class="node-label">{depth === 0 ? `Master (${agentName(s.agent_id)})` : agentName(s.agent_id)}</span>
+    <span class="node-label">{depth === 0 ? `Lead (${agentName(s.agent_id)})` : agentName(s.agent_id)}</span>
     <span class="node-status">{s.status}</span>
   </button>
   {#each node.children as child}

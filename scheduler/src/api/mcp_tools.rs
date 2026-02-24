@@ -42,7 +42,7 @@ fn validate_tool_args(validator: &Validator, args: &JsonValue) -> Result<(), Jso
 /// Handle tools/list — returns role-filtered tool schemas
 pub fn handle_tools_list(auth: &McpSession, id: Option<JsonValue>) -> JsonRpcResponse {
     let tools = match auth.role {
-        McpRole::Master => vec![
+        McpRole::Lead => vec![
             delegate_schema(),
             ask_user_schema(),
             next_instruction_schema(),
@@ -76,7 +76,7 @@ pub async fn handle_tools_call(
                 "tool not available for this session role",
             ));
         }
-        ("handoff", McpRole::Master) => {
+        ("handoff", McpRole::Lead) => {
             return Err(JsonRpcError::invalid_request(
                 "tool not available for this session role",
             ));
@@ -173,7 +173,7 @@ async fn handle_handoff(
         });
 
         // Look up agent name for context prefix — fallback to agent_id if lookup fails
-        // so the handoff result still reaches the master even if enrichment fails
+        // so the handoff result still reaches the lead even if enrichment fails
         let agent_name = match db::agents::get_by_id(&state.db_pool, &child_session.agent_id).await
         {
             Ok(agent) => agent.name,
@@ -260,35 +260,35 @@ async fn handle_delegate(
         parent_session.cwd.clone()
     };
 
-    // Security: validate child cwd is subdirectory of master session's cwd
-    // Fail closed: if explicit cwd is provided but master has no cwd, reject
+    // Security: validate child cwd is subdirectory of lead session's cwd
+    // Fail closed: if explicit cwd is provided but lead has no cwd, reject
     if let Some(ref child_dir) = child_cwd
         && explicit_cwd.is_some()
     {
-        let master_cwd = find_master_cwd(&state.db_pool, &auth.session_id)
+        let lead_cwd = find_lead_cwd(&state.db_pool, &auth.session_id)
             .await
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
-        let master_dir = master_cwd.ok_or_else(|| {
-            JsonRpcError::invalid_params("cannot verify cwd containment: master session has no cwd")
+        let lead_dir = lead_cwd.ok_or_else(|| {
+            JsonRpcError::invalid_params("cannot verify cwd containment: lead session has no cwd")
         })?;
 
-        let master_canonical = std::fs::canonicalize(&master_dir).map_err(|e| {
-            JsonRpcError::internal_error(&format!("canonicalize master cwd failed: {e}"))
+        let lead_canonical = std::fs::canonicalize(&lead_dir).map_err(|e| {
+            JsonRpcError::internal_error(&format!("canonicalize lead cwd failed: {e}"))
         })?;
         let child_canonical = std::fs::canonicalize(child_dir).map_err(|_| {
             JsonRpcError::invalid_params(&format!("cwd path does not exist: {child_dir}"))
         })?;
 
-        if !child_canonical.starts_with(&master_canonical) {
+        if !child_canonical.starts_with(&lead_canonical) {
             return Err(JsonRpcError::invalid_params(
-                "child cwd must be within master session's directory tree",
+                "child cwd must be within lead session's directory tree",
             ));
         }
     }
 
     let child_session_id = if let Some(existing_id) = resume_session_id {
-        // Resume existing session — verify it belongs to this execution and this master
+        // Resume existing session — verify it belongs to this execution and this lead
         let existing = db::sessions::get_by_id(&state.db_pool, existing_id)
             .await
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
@@ -364,7 +364,7 @@ async fn handle_delegate(
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
-    // Record delegation event on master session
+    // Record delegation event on lead session
     let event_payload = json!({
         "role": "agent",
         "parts": [{"kind": "data", "data": {
@@ -395,8 +395,8 @@ async fn handle_delegate(
     }))
 }
 
-/// Traverse parent_session_id chain to find master session's cwd
-async fn find_master_cwd(
+/// Traverse parent_session_id chain to find lead session's cwd
+async fn find_lead_cwd(
     pool: &crate::db::DbPool,
     session_id: &str,
 ) -> Result<Option<String>, crate::error::SchedulerError> {
@@ -486,7 +486,7 @@ async fn handle_ask_user(
             event_id,
         });
 
-        if auth.role == McpRole::Master {
+        if auth.role == McpRole::Lead {
             let execution = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
                 .await
                 .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
@@ -525,7 +525,7 @@ fn handoff_schema() -> JsonValue {
     json!({
         "name": "handoff",
         "title": "Handoff",
-        "description": "Signal that your work is complete and hand off results to the master agent.",
+        "description": "Signal that your work is complete and hand off results to the lead agent.",
         "inputSchema": {
             "type": "object",
             "properties": {
