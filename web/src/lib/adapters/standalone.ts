@@ -4,11 +4,32 @@ import { notificationsEnabled } from '../stores/appState';
 import { setOnNewDecisionCallback, type DecisionItem } from '../stores/questionState';
 import { get } from 'svelte/store';
 
-const notifiedSessions = new Set<string>();
+const NOTIFIED_KEY = 'agentbeacon-notified-sessions';
 const MAX_NOTIFIED_CACHE = 100;
+
+// Persist across refresh and tabs (localStorage is shared cross-tab, survives refresh)
+const notifiedSessions: Set<string> = (() => {
+  try {
+    const raw = localStorage.getItem(NOTIFIED_KEY);
+    return raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
+  } catch { return new Set<string>(); }
+})();
+
+function persistNotified() {
+  try {
+    localStorage.setItem(NOTIFIED_KEY, JSON.stringify([...notifiedSessions]));
+  } catch { /* quota exceeded — silent */ }
+}
 
 function fireNotification(item: DecisionItem) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+  // Re-read from localStorage so writes from other tabs are visible
+  try {
+    const raw = localStorage.getItem(NOTIFIED_KEY);
+    if (raw) for (const id of JSON.parse(raw) as string[]) notifiedSessions.add(id);
+  } catch { /* ignore parse errors */ }
+
   const notifKey = `${item.sessionId}:${item.batchId}`;
   if (notifiedSessions.has(notifKey)) return;
 
@@ -26,6 +47,7 @@ function fireNotification(item: DecisionItem) {
     const first = notifiedSessions.values().next().value;
     if (first) notifiedSessions.delete(first);
   }
+  persistNotified();
 }
 
 function setupNotificationCallback() {

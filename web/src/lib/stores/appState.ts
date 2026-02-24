@@ -51,6 +51,6 @@ function createPersistedBoolStore(key: string, defaultValue: boolean) {
   return store;
 }
 
-export const actionPanelCollapsed = createPersistedBoolStore('beacon-action-panel-collapsed', true);
+export const actionPanelCollapsed = createPersistedBoolStore('agentbeacon-action-panel-collapsed', true);
 export const userExplicitlyCollapsed = writable<boolean>(false);
-export const notificationsEnabled = createPersistedBoolStore('beacon-notifications-enabled', false);
+export const notificationsEnabled = createPersistedBoolStore('agentbeacon-notifications-enabled', false);

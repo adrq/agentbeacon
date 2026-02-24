@@ -87,7 +87,7 @@
 
 <div class="shell-body">
   <NavRail onToggleDecisions={toggleActionPanel} panelOpen={!effectiveCollapsed} />
-  <SplitPanel storageKey="beacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35}>
+  <SplitPanel storageKey="agentbeacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35}>
     {#snippet left()}
       <div class="sidebar">
         <ExecutionList />

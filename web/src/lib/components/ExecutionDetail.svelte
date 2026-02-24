@@ -55,12 +55,12 @@
 
   // View toggle: log or chat, persisted to localStorage
   type ViewMode = 'log' | 'chat';
-  const storedMode = typeof window !== 'undefined' ? localStorage.getItem('beacon-event-view-mode') : null;
+  const storedMode = typeof window !== 'undefined' ? localStorage.getItem('agentbeacon-event-view-mode') : null;
   let viewMode = $state<ViewMode>(storedMode === 'log' || storedMode === 'chat' ? storedMode : 'log');
 
   $effect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('beacon-event-view-mode', viewMode);
+      localStorage.setItem('agentbeacon-event-view-mode', viewMode);
     }
   });
 
