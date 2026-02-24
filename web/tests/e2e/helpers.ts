@@ -110,7 +110,7 @@ export async function ensureDirectAgent(): Promise<{ id: string; name: string }>
     description: 'Mock ACP agent without scenario for special command tests',
     config: {
       command: 'uv',
-      args: ['run', 'python', '-m', 'agentmaestro.mock_agent', '--mode', 'acp'],
+      args: ['run', 'python', '-m', 'agentbeacon.mock_agent', '--mode', 'acp'],
       timeout: 60,
     },
   });

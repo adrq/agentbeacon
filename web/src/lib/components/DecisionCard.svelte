@@ -6,6 +6,7 @@
   import { markBatchSubmitted, tryClaimSubmit, releaseSubmit } from '../stores/questionState';
   import { requestNotificationPermission } from '../adapters/standalone';
   import QuestionCard from './QuestionCard.svelte';
+  import ElapsedTime from './ElapsedTime.svelte';
 
   interface Props {
     sessionId: string;
@@ -14,10 +15,11 @@
     agentName: string;
     batchId: string;
     questions: QuestionState[];
+    createdAt: string;
     onsubmitted?: (sessionId: string, batchId: string) => void;
   }
 
-  let { sessionId, executionId, executionTitle, agentName: agentLabel, batchId, questions, onsubmitted }: Props = $props();
+  let { sessionId, executionId, executionTitle, agentName: agentLabel, batchId, questions, createdAt, onsubmitted }: Props = $props();
 
   let submitting = $state(false);
   let error: string | null = $state(null);
@@ -81,6 +83,7 @@
     <div class="card-meta">
       <span class="card-title">{executionTitle ?? executionId.slice(0, 8)}</span>
       <span class="card-agent">{agentLabel}</span>
+      <span class="card-waiting">waiting <ElapsedTime startTime={createdAt} /></span>
     </div>
     <button class="view-link" onclick={viewExecution}>
       View execution &rarr;
@@ -161,6 +164,12 @@
     padding: 0.0625rem 0.375rem;
     background: hsl(var(--muted));
     border-radius: 0.25rem;
+    flex-shrink: 0;
+  }
+
+  .card-waiting {
+    font-size: 0.6875rem;
+    color: hsl(var(--status-attention));
     flex-shrink: 0;
   }
 

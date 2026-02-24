@@ -25,6 +25,7 @@
           agentName={item.agentName}
           batchId={item.batchId}
           questions={item.questions}
+          createdAt={item.createdAt}
           onsubmitted={handleSubmitted}
         />
       {/each}

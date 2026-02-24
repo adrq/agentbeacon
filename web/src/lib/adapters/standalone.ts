@@ -7,25 +7,31 @@ import { get } from 'svelte/store';
 const notifiedSessions = new Set<string>();
 const MAX_NOTIFIED_CACHE = 100;
 
+function fireNotification(item: DecisionItem) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const notifKey = `${item.sessionId}:${item.batchId}`;
+  if (notifiedSessions.has(notifKey)) return;
+
+  const question = item.questions[0]?.questionText ?? 'New question';
+  const n = new Notification('AgentBeacon: Question pending', {
+    body: `${item.executionTitle ?? 'Execution'}: ${question}`,
+  });
+  n.onclick = () => {
+    window.focus();
+    window.location.hash = `/execution/${item.executionId}`;
+    n.close();
+  };
+  notifiedSessions.add(notifKey);
+  if (notifiedSessions.size > MAX_NOTIFIED_CACHE) {
+    const first = notifiedSessions.values().next().value;
+    if (first) notifiedSessions.delete(first);
+  }
+}
+
 function setupNotificationCallback() {
   setOnNewDecisionCallback((item: DecisionItem) => {
     if (!get(notificationsEnabled)) return;
-    if (!document.hidden) return;
-    const notifKey = `${item.sessionId}:${item.batchId}`;
-    if (notifiedSessions.has(notifKey)) return;
-
-    if ('Notification' in window && Notification.permission === 'granted') {
-      const question = item.questions[0]?.questionText ?? 'New question';
-      new Notification('AgentBeacon: Question pending', {
-        body: `${item.executionTitle ?? 'Execution'}: ${question}`,
-      });
-      notifiedSessions.add(notifKey);
-      // Prevent unbounded growth — evict oldest entries
-      if (notifiedSessions.size > MAX_NOTIFIED_CACHE) {
-        const first = notifiedSessions.values().next().value;
-        if (first) notifiedSessions.delete(first);
-      }
-    }
+    fireNotification(item);
   });
 }
 
