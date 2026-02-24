@@ -5,14 +5,23 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "lint": "eslint src/",
+    "format:check": "prettier --check src/",
+    "check": "tsc --noEmit && eslint src/ && prettier --check src/",
+    "fix": "eslint --fix src/ && prettier --write src/"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2",
     "@github/copilot-sdk": "0.1.24"
   },
   "devDependencies": {
-    "typescript": "~5.8",
-    "@types/node": "^22"
+    "@types/node": "^22",
+    "@typescript-eslint/eslint-plugin": "^8.56.1",
+    "@typescript-eslint/parser": "^8.56.1",
+    "eslint": "^10.0.2",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.1",
+    "typescript": "~5.8"
   }
 }

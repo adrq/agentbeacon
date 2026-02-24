@@ -36,6 +36,14 @@ repos:
         files: ^web/(src/.*\.(svelte|ts|js|css)|package\.json|tsconfig\..*|svelte\.config\.js|vite\.config\.ts)
         pass_filenames: false
         stages: [pre-commit]
+      - id: executors-check
+        name: executors typecheck + lint + format
+        entry: npm
+        language: system
+        args: [run, --prefix, executors, check]
+        files: ^executors/(src/.*\.ts|package\.json|tsconfig\..*|eslint\.config\.js)$
+        pass_filenames: false
+        stages: [pre-commit]
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.13.1
     hooks:

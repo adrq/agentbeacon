@@ -6,9 +6,22 @@ console.warn = (...args: unknown[]) => console.error(...args);
 console.debug = (...args: unknown[]) => console.error(...args);
 
 import * as readline from "node:readline";
-import { CopilotClient } from "@github/copilot-sdk";
-import type { CopilotSession } from "@github/copilot-sdk";
-import type { Command, StartCommand, Event, McpServerConfig } from "./common/protocol.js";
+import type {
+  Command,
+  StartCommand,
+  McpServerConfig,
+} from "./common/protocol.js";
+import type {
+  CopilotClient as CopilotClientType,
+  CopilotSession,
+  SessionEventPayload,
+} from "@github/copilot-sdk";
+
+const { CopilotClient } = (
+  process.env.AGENTBEACON_MOCK_SDK === "1"
+    ? await import("./mock-copilot-sdk.js")
+    : await import("@github/copilot-sdk")
+) as { CopilotClient: typeof CopilotClientType };
 import { emit } from "./common/stdio-bridge.js";
 
 // --- Command queue (single stdin listener, cancel as side-effect) ---
@@ -59,10 +72,7 @@ async function nextCommand(): Promise<Command> {
 
 // --- Session runner ---
 
-const FATAL_ERROR_CODES = new Set([
-  "connection_closed",
-  "auth_failure",
-]);
+const FATAL_ERROR_CODES = new Set(["connection_closed", "auth_failure"]);
 
 async function runSession(startCmd: StartCommand): Promise<void> {
   const client = new CopilotClient({
@@ -78,7 +88,6 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       ? buildMcpServers(startCmd.mcpServers)
       : undefined;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sessionConfig: Record<string, unknown> = {
       streaming: true,
       onPermissionRequest: async (
@@ -103,8 +112,7 @@ async function runSession(startCmd: StartCommand): Promise<void> {
     if (startCmd.cwd) sessionConfig.workingDirectory = startCmd.cwd;
     if (mcpServers) sessionConfig.mcpServers = mcpServers;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const session = await client.createSession(sessionConfig as any);
+    const session = await client.createSession(sessionConfig);
     currentSession = session;
 
     emit({
@@ -117,50 +125,66 @@ async function runSession(startCmd: StartCommand): Promise<void> {
     // so each message event carries the structured parts that preceded it.
     pendingBlocks = [];
 
-    session.on("assistant.message", (event) => {
-      // Flush any accumulated tool/reasoning blocks before the text message
-      pendingBlocks.push({ type: "text", text: event.data.content });
-      emit({
-        type: "message",
-        role: "assistant",
-        content: [...pendingBlocks],
-      });
-      pendingBlocks = [];
-    });
+    session.on(
+      "assistant.message",
+      (event: SessionEventPayload<"assistant.message">) => {
+        // Flush any accumulated tool/reasoning blocks before the text message
+        pendingBlocks.push({ type: "text", text: event.data.content });
+        emit({
+          type: "message",
+          role: "assistant",
+          content: [...pendingBlocks],
+        });
+        pendingBlocks = [];
+      },
+    );
 
-    session.on("tool.execution_start", (event) => {
-      process.stderr.write(
-        `[copilot] tool start: ${event.data.toolName}\n`,
-      );
-      pendingBlocks.push({
-        type: "tool_use",
-        id: event.data.toolCallId,
-        name: event.data.toolName,
-      });
-    });
-    session.on("tool.execution_complete", (event) => {
-      process.stderr.write(
-        `[copilot] tool complete: ${event.data.toolCallId}\n`,
-      );
-    });
+    session.on(
+      "tool.execution_start",
+      (event: SessionEventPayload<"tool.execution_start">) => {
+        process.stderr.write(`[copilot] tool start: ${event.data.toolName}\n`);
+        pendingBlocks.push({
+          type: "tool_use",
+          id: event.data.toolCallId,
+          name: event.data.toolName,
+        });
+      },
+    );
+    session.on(
+      "tool.execution_complete",
+      (event: SessionEventPayload<"tool.execution_complete">) => {
+        process.stderr.write(
+          `[copilot] tool complete: ${event.data.toolCallId}\n`,
+        );
+      },
+    );
 
-    session.on("assistant.reasoning", (event) => {
-      pendingBlocks.push({ type: "thinking", thinking: event.data.content });
-    });
+    session.on(
+      "assistant.reasoning",
+      (event: SessionEventPayload<"assistant.reasoning">) => {
+        pendingBlocks.push({
+          type: "thinking",
+          thinking: event.data.content,
+        });
+      },
+    );
 
     // Handle session errors — unknown/untyped errors are fatal,
     // only coded errors matching known recoverable patterns are logged.
-    session.on("session.error", (event) => {
-      const errorType = event.data.errorType;
-      const message = event.data.message;
-      if (!errorType || FATAL_ERROR_CODES.has(errorType)) {
-        emit({ type: "error", message });
-      } else {
-        process.stderr.write(
-          `[copilot] recoverable error (${errorType}): ${message}\n`,
-        );
-      }
-    });
+    session.on(
+      "session.error",
+      (event: SessionEventPayload<"session.error">) => {
+        const errorType = event.data.errorType;
+        const message = event.data.message;
+        if (!errorType || FATAL_ERROR_CODES.has(errorType)) {
+          emit({ type: "error", message });
+        } else {
+          process.stderr.write(
+            `[copilot] recoverable error (${errorType}): ${message}\n`,
+          );
+        }
+      },
+    );
 
     // First turn
     aborted = false;

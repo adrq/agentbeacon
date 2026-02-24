@@ -21,9 +21,7 @@ export function parseCommand(line: string): Command | null {
   try {
     return JSON.parse(line) as Command;
   } catch {
-    process.stderr.write(
-      `ignoring malformed stdin line, len=${line.length}\n`,
-    );
+    process.stderr.write(`ignoring malformed stdin line, len=${line.length}\n`);
     return null;
   }
 }

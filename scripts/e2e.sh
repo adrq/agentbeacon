@@ -44,6 +44,7 @@ fi
 
 # Worker needs this to find executors/dist/claude-executor.js
 export AGENTBEACON_EXECUTORS_DIR="${AGENTBEACON_EXECUTORS_DIR:-$(pwd)/executors/dist}"
+export AGENTBEACON_MOCK_SDK="${AGENTBEACON_MOCK_SDK:-1}"
 
 echo "==> Starting orchestrator (scheduler + worker) on port ${AGENTBEACON_PORT}..."
 ./bin/agentbeacon --workers 2 --scheduler-port "$AGENTBEACON_PORT" --worker-poll-interval 1s &

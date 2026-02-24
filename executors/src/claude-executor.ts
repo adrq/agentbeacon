@@ -6,8 +6,12 @@ console.warn = (...args: unknown[]) => console.error(...args);
 console.debug = (...args: unknown[]) => console.error(...args);
 
 import * as readline from "node:readline";
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Command, StartCommand, Event } from "./common/protocol.js";
+
+const { query } =
+  process.env.AGENTBEACON_MOCK_SDK === "1"
+    ? await import("./mock-claude-sdk.js")
+    : await import("@anthropic-ai/claude-agent-sdk");
 import { emit } from "./common/stdio-bridge.js";
 
 // --- Command queue (single stdin listener, cancel as side-effect) ---
@@ -77,7 +81,10 @@ async function* promptStream(
     if (gen !== sessionGeneration) return;
     if (cmd.type === "stop" || cmd.type === "eof") return;
     if (cmd.type === "start") {
-      emit({ type: "error", message: "Received start command during active session" });
+      emit({
+        type: "error",
+        message: "Received start command during active session",
+      });
       return;
     }
     if (cmd.type === "prompt") {
@@ -120,11 +127,17 @@ async function main(): Promise<void> {
       if (cmd.maxBudgetUsd != null) options.maxBudgetUsd = cmd.maxBudgetUsd;
       if (cmd.systemPrompt) options.systemPrompt = cmd.systemPrompt;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const q = query({ prompt: promptStream(cmd, sessionGeneration) as any, options } as any);
+      const q = query({
+        prompt: promptStream(cmd, sessionGeneration),
+        options,
+      });
 
       for await (const msg of q) {
-        if (msg.type === "system" && "subtype" in msg && msg.subtype === "init") {
+        if (
+          msg.type === "system" &&
+          "subtype" in msg &&
+          msg.subtype === "init"
+        ) {
           currentSessionId = msg.session_id;
           const mcpServers =
             "mcp_servers" in msg && Array.isArray(msg.mcp_servers)
@@ -168,9 +181,13 @@ async function main(): Promise<void> {
             type: "result",
             subtype: (m.subtype as string) ?? "success",
             sessionId: currentSessionId,
-            costUsd: typeof m.total_cost_usd === "number" ? m.total_cost_usd : undefined,
+            costUsd:
+              typeof m.total_cost_usd === "number"
+                ? m.total_cost_usd
+                : undefined,
             numTurns: typeof m.num_turns === "number" ? m.num_turns : undefined,
-            durationMs: typeof m.duration_ms === "number" ? m.duration_ms : undefined,
+            durationMs:
+              typeof m.duration_ms === "number" ? m.duration_ms : undefined,
           };
           if (m.subtype === "success" && typeof m.result === "string") {
             resultEvent.result = m.result;

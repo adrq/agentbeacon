@@ -136,6 +136,22 @@ export async function ensureShowcaseAgent(): Promise<{ id: string; name: string 
   return { id: showcase.id, name: showcase.name };
 }
 
+/** Ensure the 'Claude Code' agent exists (must be pre-seeded via scripts/seed_agents.py). */
+export async function ensureClaudeAgent(): Promise<{ id: string; name: string }> {
+  const agents: { id: string; name: string; agent_type?: string }[] = await apiGet('/api/agents');
+  const claude = agents.find(a => a.name === 'Claude Code');
+  if (!claude) throw new Error('Claude Code agent not found — run scripts/seed_agents.py first');
+  return { id: claude.id, name: claude.name };
+}
+
+/** Ensure the 'GitHub Copilot' agent exists (must be pre-seeded via scripts/seed_agents.py). */
+export async function ensureCopilotAgent(): Promise<{ id: string; name: string }> {
+  const agents: { id: string; name: string; agent_type?: string }[] = await apiGet('/api/agents');
+  const copilot = agents.find(a => a.name === 'GitHub Copilot');
+  if (!copilot) throw new Error('GitHub Copilot agent not found — run scripts/seed_agents.py first');
+  return { id: copilot.id, name: copilot.name };
+}
+
 /** Create an execution and return its IDs. */
 export async function createExecution(agentId: string, prompt: string, title: string) {
   const exec = await apiPost('/api/executions', {
