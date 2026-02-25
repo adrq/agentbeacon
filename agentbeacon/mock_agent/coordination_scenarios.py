@@ -99,7 +99,7 @@ class DelegateAskScenario(_BaseScenario):
     """Lead agent: delegates, receives handoff, then asks the user a question.
 
     Phase 0 (initial prompt): emits DELEGATE_ASK_PHASE_0, calls delegate → end_turn
-    Phase 1 (handoff result):  emits DELEGATE_ASK_PHASE_1, calls ask_user → end_turn
+    Phase 1 (handoff result):  emits DELEGATE_ASK_PHASE_1, calls escalate → end_turn
     Phase 2 (user answer):     emits DELEGATE_ASK_PHASE_2_ACK → end_turn
     """
 
@@ -127,7 +127,7 @@ class DelegateAskScenario(_BaseScenario):
         if self.phase == 1:
             self._send_marker("DELEGATE_ASK_PHASE_1")
             await self.mcp_client.call_tool(
-                "ask_user",
+                "escalate",
                 {
                     "questions": [
                         {

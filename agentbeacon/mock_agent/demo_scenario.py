@@ -1,7 +1,7 @@
 """Scripted demo scenario for E2E testing.
 
 Plays a multi-phase sequence across session/prompt calls:
-  Phase 0 (initial prompt): sends message chunks + tool call + ask_user via MCP
+  Phase 0 (initial prompt): sends message chunks + tool call + escalate via MCP
   Phase 1 (after first answer): acknowledges answer, asks a second question via MCP
   Phase 2 (after second answer): acknowledges answer and completes
 """
@@ -52,7 +52,7 @@ class DemoScenario:
         if self.mcp_client:
             try:
                 await self.mcp_client.call_tool(
-                    "ask_user",
+                    "escalate",
                     {
                         "questions": [
                             {
@@ -77,7 +77,7 @@ class DemoScenario:
                     },
                 )
             except Exception as e:
-                print(f"MCP ask_user failed: {e}", file=sys.stderr)
+                print(f"MCP escalate failed: {e}", file=sys.stderr)
                 self.phase = 1
                 return "error"
 
@@ -94,7 +94,7 @@ class DemoScenario:
         if self.mcp_client:
             try:
                 await self.mcp_client.call_tool(
-                    "ask_user",
+                    "escalate",
                     {
                         "questions": [
                             {
@@ -115,7 +115,7 @@ class DemoScenario:
                     },
                 )
             except Exception as e:
-                print(f"MCP ask_user (phase 1) failed: {e}", file=sys.stderr)
+                print(f"MCP escalate (phase 1) failed: {e}", file=sys.stderr)
                 self.phase = 2
                 return "error"
 

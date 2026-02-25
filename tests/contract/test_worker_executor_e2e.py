@@ -69,7 +69,7 @@ def _force_input_required(db_url, exec_id, session_id):
     """Force session+execution to input-required for multi-turn testing.
 
     Bypasses scheduler handler invariants. The real system transitions
-    via ask_user MCP tool; no external API exists for this state change.
+    via escalate MCP tool; no external API exists for this state change.
     """
     with db_conn(db_url) as conn:
         conn.execute(

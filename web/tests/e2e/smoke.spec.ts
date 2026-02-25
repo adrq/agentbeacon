@@ -24,7 +24,7 @@ async function sendQuestion(sessionId: string, question: string, options: { labe
       id: 1,
       method: 'tools/call',
       params: {
-        name: 'ask_user',
+        name: 'escalate',
         arguments: {
           questions: [{
             question,
@@ -38,7 +38,7 @@ async function sendQuestion(sessionId: string, question: string, options: { labe
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`MCP ask_user failed: ${res.status} ${text}`);
+    throw new Error(`MCP escalate failed: ${res.status} ${text}`);
   }
 }
 

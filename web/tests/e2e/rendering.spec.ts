@@ -211,7 +211,7 @@ test('showcase scenario: all renderer types in log and chat views', async ({ pag
   const markdownEntry = page.locator('.timeline-entry').filter({ hasText: 'Refactoring Complete' });
   await expect(markdownEntry).toBeVisible({ timeout: 30000 });
 
-  // Showcase agent completes without ask_user — question banner must NOT appear
+  // Showcase agent completes without escalate — question banner must NOT appear
   await expect(page.locator('.question-banner')).not.toBeVisible();
 
   // Log view: verify all event types rendered

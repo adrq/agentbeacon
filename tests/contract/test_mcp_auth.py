@@ -455,4 +455,4 @@ def test_full_lifecycle_initialize_then_tools_list(test_database):
         assert "result" in tools_data
         tool_names = [t["name"] for t in tools_data["result"]["tools"]]
         assert "delegate" in tool_names
-        assert "ask_user" in tool_names
+        assert "escalate" in tool_names

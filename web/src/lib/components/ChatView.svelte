@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isPlanData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isHandoffResultData, isPlanData } from '../types';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
   import Markdown from './Markdown.svelte';
@@ -136,8 +136,8 @@
             const d = part.data as Record<string, unknown>;
 
             // Platform events: route to existing renderers
-            if (isAskUserData(d as unknown as import('../types').DataPartPayload)) {
-              const ask = d as unknown as import('../types').AskUserData;
+            if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
+              const ask = d as unknown as import('../types').EscalateData;
               if (ask.batch_index > 0) continue;
               if (ask.importance === 'fyi') {
                 entries.push({ type: 'fyi', text: ask.question, time, key: `${ev.id}-${seq++}` });

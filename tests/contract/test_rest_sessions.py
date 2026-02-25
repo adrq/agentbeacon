@@ -36,7 +36,7 @@ def test_list_sessions_filter_by_status(test_database):
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {"questions": [{"question": "test?"}], "importance": "blocking"},
         )
 
@@ -78,7 +78,7 @@ def test_session_events_returns_chronological(test_database):
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {"questions": [{"question": "q1?"}], "importance": "fyi"},
         )
 
@@ -106,7 +106,7 @@ def test_answer_input_required_session_returns_200(test_database):
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {"questions": [{"question": "JWT or cookies?"}], "importance": "blocking"},
         )
 
@@ -127,7 +127,7 @@ def test_answer_transitions_session_to_working(test_database):
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {"questions": [{"question": "which approach?"}], "importance": "blocking"},
         )
 
@@ -153,7 +153,7 @@ def test_answer_transitions_execution_to_working(test_database):
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {"questions": [{"question": "which approach?"}], "importance": "blocking"},
         )
 
@@ -186,7 +186,7 @@ def test_answer_non_input_required_returns_409(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_full_ask_answer_round_trip(test_database):
-    """End-to-end: ask_user -> input-required -> answer -> working -> events verified."""
+    """End-to-end: escalate -> input-required -> answer -> working -> events verified."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         exec_id, session_id = create_execution_via_api(
@@ -197,7 +197,7 @@ def test_full_ask_answer_round_trip(test_database):
         result = mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {
                 "questions": [
                     {
@@ -272,7 +272,7 @@ def test_message_pushes_plain_text_task(test_database):
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {"questions": [{"question": "JWT or cookies?"}], "importance": "blocking"},
         )
 

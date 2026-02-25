@@ -1,4 +1,4 @@
-"""Contract tests for batch ask_user MCP tool."""
+"""Contract tests for batch escalate MCP tool."""
 
 import json
 
@@ -15,7 +15,7 @@ from tests.testhelpers import (
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_single_question_in_array(test_database):
+def test_escalate_single_question_in_array(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -23,7 +23,7 @@ def test_ask_user_single_question_in_array(test_database):
         result = mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {"questions": [{"question": "JWT or cookies?"}]},
         )
 
@@ -35,7 +35,7 @@ def test_ask_user_single_question_in_array(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_batch_creates_multiple_events(test_database):
+def test_escalate_batch_creates_multiple_events(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -43,7 +43,7 @@ def test_ask_user_batch_creates_multiple_events(test_database):
         result = mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {
                 "questions": [
                     {"question": "Q1?"},
@@ -63,16 +63,16 @@ def test_ask_user_batch_creates_multiple_events(test_database):
                 (session_id,),
             ).fetchall()
 
-        ask_events = []
+        escalate_events = []
         for row in events:
             p = json.loads(row[0])
-            if p.get("parts", [{}])[0].get("data", {}).get("type") == "ask_user":
-                ask_events.append(p)
+            if p.get("parts", [{}])[0].get("data", {}).get("type") == "escalate":
+                escalate_events.append(p)
 
-        assert len(ask_events) == 3
+        assert len(escalate_events) == 3
         batch_ids = set()
         indices = []
-        for e in ask_events:
+        for e in escalate_events:
             data = e["parts"][0]["data"]
             batch_ids.add(data["batch_id"])
             indices.append(data["batch_index"])
@@ -81,7 +81,7 @@ def test_ask_user_batch_creates_multiple_events(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_batch_sets_input_required_once(test_database):
+def test_escalate_batch_sets_input_required_once(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -89,7 +89,7 @@ def test_ask_user_batch_sets_input_required_once(test_database):
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {
                 "questions": [
                     {"question": "Q1?"},
@@ -112,7 +112,7 @@ def test_ask_user_batch_sets_input_required_once(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_batch_with_options_and_context(test_database):
+def test_escalate_batch_with_options_and_context(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -120,7 +120,7 @@ def test_ask_user_batch_with_options_and_context(test_database):
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {
                 "questions": [
                     {
@@ -141,20 +141,20 @@ def test_ask_user_batch_with_options_and_context(test_database):
                 (session_id,),
             ).fetchall()
 
-        ask_events = [
+        escalate_events = [
             json.loads(r[0])
             for r in events
             if json.loads(r[0]).get("parts", [{}])[0].get("data", {}).get("type")
-            == "ask_user"
+            == "escalate"
         ]
-        data = ask_events[0]["parts"][0]["data"]
+        data = escalate_events[0]["parts"][0]["data"]
         assert data["context"] == "We need to choose an auth strategy"
         assert len(data["options"]) == 2
         assert data["options"][0]["label"] == "JWT"
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_batch_fyi_does_not_change_status(test_database):
+def test_escalate_batch_fyi_does_not_change_status(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -162,7 +162,7 @@ def test_ask_user_batch_fyi_does_not_change_status(test_database):
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {
                 "questions": [{"question": "FYI: progress update"}],
                 "importance": "fyi",
@@ -177,7 +177,7 @@ def test_ask_user_batch_fyi_does_not_change_status(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_empty_questions_rejected(test_database):
+def test_escalate_empty_questions_rejected(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -186,14 +186,14 @@ def test_ask_user_empty_questions_rejected(test_database):
             ctx["url"],
             session_id,
             "tools/call",
-            params={"name": "ask_user", "arguments": {"questions": []}},
+            params={"name": "escalate", "arguments": {"questions": []}},
         )
 
         assert "error" in data
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_too_many_questions_rejected(test_database):
+def test_escalate_too_many_questions_rejected(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -203,7 +203,7 @@ def test_ask_user_too_many_questions_rejected(test_database):
             session_id,
             "tools/call",
             params={
-                "name": "ask_user",
+                "name": "escalate",
                 "arguments": {
                     "questions": [{"question": f"Q{i}?"} for i in range(5)],
                 },
@@ -214,7 +214,7 @@ def test_ask_user_too_many_questions_rejected(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_options_require_label_and_description(test_database):
+def test_escalate_options_require_label_and_description(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -224,7 +224,7 @@ def test_ask_user_options_require_label_and_description(test_database):
             session_id,
             "tools/call",
             params={
-                "name": "ask_user",
+                "name": "escalate",
                 "arguments": {
                     "questions": [
                         {

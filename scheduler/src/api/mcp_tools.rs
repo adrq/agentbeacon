@@ -24,8 +24,8 @@ static DELEGATE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
     Validator::new(&delegate_schema()["inputSchema"]).expect("delegate schema must compile")
 });
 
-static ASK_USER_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
-    Validator::new(&ask_user_schema()["inputSchema"]).expect("ask_user schema must compile")
+static ESCALATE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
+    Validator::new(&escalate_schema()["inputSchema"]).expect("escalate schema must compile")
 });
 
 fn validate_tool_args(validator: &Validator, args: &JsonValue) -> Result<(), JsonRpcError> {
@@ -44,10 +44,15 @@ pub fn handle_tools_list(auth: &McpSession, id: Option<JsonValue>) -> JsonRpcRes
     let tools = match auth.role {
         McpRole::Lead => vec![
             delegate_schema(),
-            ask_user_schema(),
+            escalate_schema(),
+            handoff_schema(),
             next_instruction_schema(),
         ],
-        McpRole::Child => vec![handoff_schema(), next_instruction_schema()],
+        McpRole::Child => vec![
+            escalate_schema(),
+            handoff_schema(),
+            next_instruction_schema(),
+        ],
     };
 
     JsonRpcResponse::success(id, json!({"tools": tools}))
@@ -69,25 +74,17 @@ pub async fn handle_tools_call(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    // Role enforcement
-    match (tool_name, &auth.role) {
-        ("delegate", McpRole::Child) | ("ask_user", McpRole::Child) => {
-            return Err(JsonRpcError::invalid_request(
-                "tool not available for this session role",
-            ));
-        }
-        ("handoff", McpRole::Lead) => {
-            return Err(JsonRpcError::invalid_request(
-                "tool not available for this session role",
-            ));
-        }
-        _ => {}
+    // Role enforcement: only delegate is restricted (lead-only)
+    if let ("delegate", McpRole::Child) = (tool_name, &auth.role) {
+        return Err(JsonRpcError::invalid_request(
+            "tool not available for this session role",
+        ));
     }
 
     match tool_name {
         "handoff" => handle_handoff(auth, state, arguments).await,
         "delegate" => handle_delegate(auth, state, arguments).await,
-        "ask_user" => handle_ask_user(auth, state, arguments).await,
+        "escalate" => handle_escalate(auth, state, arguments).await,
         "next_instruction" => handle_next_instruction(auth, state).await,
         _ => Err(JsonRpcError::invalid_params(&format!(
             "unknown tool: {tool_name}"
@@ -407,12 +404,12 @@ async fn find_lead_cwd(
     Ok(current.cwd)
 }
 
-async fn handle_ask_user(
+async fn handle_escalate(
     auth: &McpSession,
     state: &AppState,
     args: JsonValue,
 ) -> Result<JsonValue, JsonRpcError> {
-    validate_tool_args(&ASK_USER_VALIDATOR, &args)?;
+    validate_tool_args(&ESCALATE_VALIDATOR, &args)?;
     let questions = args["questions"].as_array().unwrap();
     let importance = args
         .get("importance")
@@ -430,7 +427,7 @@ async fn handle_ask_user(
         let context = q.get("context").and_then(|v| v.as_str());
 
         let mut data = json!({
-            "type": "ask_user",
+            "type": "escalate",
             "question": question,
             "importance": importance,
             "batch_id": batch_id,
@@ -672,11 +669,11 @@ async fn handle_next_instruction(
     }
 }
 
-fn ask_user_schema() -> JsonValue {
+fn escalate_schema() -> JsonValue {
     json!({
-        "name": "ask_user",
-        "title": "Ask User",
-        "description": "Surface one or more questions or notifications to the user as a batch.",
+        "name": "escalate",
+        "title": "Escalate",
+        "description": "Escalate one or more questions or notifications to the parent agent or user.",
         "inputSchema": {
             "type": "object",
             "properties": {

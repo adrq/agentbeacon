@@ -185,8 +185,8 @@ def test_lead_next_instruction_gets_handoff_result(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_blocking_then_answer_via_next_instruction(test_database):
-    """Lead ask_user(blocking) → user answers via REST → lead next_instruction gets answer."""
+def test_escalate_blocking_then_answer_via_next_instruction(test_database):
+    """Lead escalate(blocking) → user answers via REST → lead next_instruction gets answer."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = _seed_agent_with_poll_timeout(ctx["db_url"], poll_timeout_ms=5000)
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
@@ -203,11 +203,11 @@ def test_ask_user_blocking_then_answer_via_next_instruction(test_database):
             )
             conn.commit()
 
-        # Lead asks a blocking question
+        # Lead escalates a blocking question
         mcp_tools_call(
             ctx["url"],
             session_id,
-            "ask_user",
+            "escalate",
             {"questions": [{"question": "which approach?"}], "importance": "blocking"},
         )
 

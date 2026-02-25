@@ -72,13 +72,16 @@ export interface SessionSummary {
 // Full session from GET /api/sessions — same shape as SessionSummary
 export type Session = SessionSummary;
 
+// Platform events use the same shape as message events (role + parts with data payloads)
+export type PlatformPayload = MessagePayload;
+
 // GET /api/sessions/{id}/events
 export interface Event {
   id: number;
   execution_id: string;
   session_id: string | null;
   event_type: EventType;
-  payload: MessagePayload | StateChangePayload;
+  payload: MessagePayload | StateChangePayload | PlatformPayload;
   created_at: string;
 }
 
@@ -94,7 +97,7 @@ export type MessagePart =
   | { kind: string; [key: string]: unknown };
 
 export type DataPartPayload =
-  | AskUserData
+  | EscalateData
   | DelegateData
   | HandoffResultData
   | ToolCallActivityData
@@ -103,8 +106,8 @@ export type DataPartPayload =
   | PlanData
   | { type: string; [key: string]: unknown };
 
-export interface AskUserData {
-  type: 'ask_user';
+export interface EscalateData {
+  type: 'escalate';
   batch_id: string;
   batch_size: number;
   batch_index: number;
@@ -186,8 +189,8 @@ export function isStateChangePayload(p: MessagePayload | StateChangePayload): p 
   return 'to' in p && !('role' in p);
 }
 
-export function isAskUserData(d: DataPartPayload): d is AskUserData {
-  return d.type === 'ask_user';
+export function isEscalateData(d: DataPartPayload): d is EscalateData {
+  return d.type === 'escalate';
 }
 
 export function isDelegateData(d: DataPartPayload): d is DelegateData {

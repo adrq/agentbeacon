@@ -29,44 +29,33 @@ def _create_child_session(ctx, agent_id):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_lead_session_gets_delegate_and_ask_user(test_database):
+def test_lead_session_gets_all_tools(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         tools = mcp_tools_list(ctx["url"], session_id)
-        assert sorted(tools) == ["ask_user", "delegate", "next_instruction"]
+        assert sorted(tools) == ["delegate", "escalate", "handoff", "next_instruction"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_lead_does_not_get_handoff(test_database):
-    with scheduler_context(db_url=test_database) as ctx:
-        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
-        _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
-
-        tools = mcp_tools_list(ctx["url"], session_id)
-        assert "handoff" not in tools
-
-
-@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_child_session_gets_handoff_and_next_instruction(test_database):
+def test_child_session_gets_escalate_handoff_next_instruction(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, _, child_id = _create_child_session(ctx, agent_id)
 
         tools = mcp_tools_list(ctx["url"], child_id)
-        assert sorted(tools) == ["handoff", "next_instruction"]
+        assert sorted(tools) == ["escalate", "handoff", "next_instruction"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_child_does_not_get_delegate_or_ask_user(test_database):
+def test_child_does_not_get_delegate(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, _, child_id = _create_child_session(ctx, agent_id)
 
         tools = mcp_tools_list(ctx["url"], child_id)
         assert "delegate" not in tools
-        assert "ask_user" not in tools
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -104,7 +93,7 @@ def test_delegate_schema_has_agent_and_prompt(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_ask_user_schema_has_questions(test_database):
+def test_escalate_schema_has_questions(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -112,10 +101,10 @@ def test_ask_user_schema_has_questions(test_database):
         data = mcp_call(ctx["url"], session_id, "tools/list")
         tools = {t["name"]: t for t in data["result"]["tools"]}
 
-        ask = tools["ask_user"]
-        props = ask["inputSchema"]["properties"]
+        escalate = tools["escalate"]
+        props = escalate["inputSchema"]["properties"]
         assert "questions" in props
-        assert ask["inputSchema"]["required"] == ["questions"]
+        assert escalate["inputSchema"]["required"] == ["questions"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -165,3 +154,25 @@ def test_tools_call_success_includes_is_error_false(test_database):
             {"agent": "child-agent", "prompt": "do work"},
         )
         assert result.get("isError") is False
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_lead_tool_list_includes_handoff(test_database):
+    """Lead sessions now include handoff in their tool list."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
+        _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
+
+        tools = mcp_tools_list(ctx["url"], session_id)
+        assert "handoff" in tools
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_child_tool_list_includes_escalate(test_database):
+    """Child sessions now include escalate in their tool list."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
+        _, _, child_id = _create_child_session(ctx, agent_id)
+
+        tools = mcp_tools_list(ctx["url"], child_id)
+        assert "escalate" in tools

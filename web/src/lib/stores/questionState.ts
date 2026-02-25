@@ -13,7 +13,7 @@ export interface DecisionItem {
 
 // Written to by QuestionStateProvider component
 export const decisionItems = writable<DecisionItem[]>([]);
-// Value = batchId at time of suppression (unique per ask_user invocation)
+// Value = batchId at time of suppression (unique per escalate invocation)
 export const suppressedSessions = writable<Record<string, string>>({});
 
 // Cross-surface submission guard: tracks which session+batch combos have been submitted

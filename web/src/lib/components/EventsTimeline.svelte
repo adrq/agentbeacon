@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isAskUserData, isDelegateData, isHandoffResultData, isPlanData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isHandoffResultData, isPlanData } from '../types';
   import { normalizeDataPart } from '../normalize';
   interface Props {
     events: Event[];
@@ -79,8 +79,8 @@
           const d = part.data as Record<string, unknown>;
 
           // Platform events
-          if (isAskUserData(d as unknown as import('../types').DataPartPayload)) {
-            const ask = d as unknown as import('../types').AskUserData;
+          if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
+            const ask = d as unknown as import('../types').EscalateData;
             if (ask.batch_index > 0) continue;
             if (ask.importance === 'fyi') {
               entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(ask.question, 80)}` });

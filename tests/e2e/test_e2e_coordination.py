@@ -1,4 +1,4 @@
-"""E2E coordination tests: delegation, handoff, and ask_user round-trips.
+"""E2E coordination tests: delegation, handoff, and escalate round-trips.
 
 Proves the full lead→child→lead flow through real scheduler + worker
 processes using mock ACP agents with scripted coordination scenarios.
@@ -205,8 +205,8 @@ def test_e2e_delegate_multiple(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_e2e_ask_user_round_trip(test_database):
-    """Delegate → child completes → lead asks user → user answers → lead continues."""
+def test_e2e_escalate_round_trip(test_database):
+    """Delegate → child completes → lead escalates → user answers → lead continues."""
     db_url = test_database
 
     with scheduler_context(db_url=db_url) as ctx:
@@ -239,7 +239,7 @@ def test_e2e_ask_user_round_trip(test_database):
                 lambda: _session_status(ctx["db_url"], child_sid) == "completed",
             ), "Child did not complete"
 
-            # 2. Execution goes input-required (lead called ask_user)
+            # 2. Execution goes input-required (lead called escalate)
             assert _poll_until(
                 lambda: _execution_status(ctx["db_url"], exec_id) == "input-required",
             ), (

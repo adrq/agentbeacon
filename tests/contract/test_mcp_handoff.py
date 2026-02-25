@@ -8,7 +8,6 @@ import pytest
 from tests.testhelpers import (
     create_execution_via_api,
     db_conn,
-    mcp_call,
     mcp_tools_call,
     scheduler_context,
     seed_test_agent,
@@ -101,23 +100,3 @@ def test_handoff_success_includes_is_error_false(test_database):
             {"message": "work done"},
         )
         assert result.get("isError") is False
-
-
-@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_lead_cannot_call_handoff(test_database):
-    with scheduler_context(db_url=test_database) as ctx:
-        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
-        _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
-
-        data = mcp_call(
-            ctx["url"],
-            session_id,
-            "tools/call",
-            params={
-                "name": "handoff",
-                "arguments": {"message": "done"},
-            },
-        )
-
-        assert "error" in data
-        assert data["error"]["code"] == -32600

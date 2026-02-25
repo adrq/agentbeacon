@@ -1,5 +1,5 @@
-import type { Event, AskUserData, DataPartPayload } from './types';
-import { isMessagePayload, isAskUserData } from './types';
+import type { Event, EscalateData, DataPartPayload } from './types';
+import { isMessagePayload, isEscalateData } from './types';
 import { api } from './api';
 
 export interface QuestionState {
@@ -10,23 +10,23 @@ export interface QuestionState {
 }
 
 export function extractQuestions(events: Event[]): { batchId: string; questions: QuestionState[] } {
-  const askEvents: { data: AskUserData; event: Event }[] = [];
+  const escalateEvents: { data: EscalateData; event: Event }[] = [];
 
   for (const ev of events) {
     if (isMessagePayload(ev.payload)) {
       for (const part of ev.payload.parts) {
-        if (part.kind === 'data' && isAskUserData(part.data as DataPartPayload) && (part.data as AskUserData).importance === 'blocking') {
-          askEvents.push({ data: part.data as AskUserData, event: ev });
+        if (part.kind === 'data' && isEscalateData(part.data as DataPartPayload) && (part.data as EscalateData).importance === 'blocking') {
+          escalateEvents.push({ data: part.data as EscalateData, event: ev });
         }
       }
     }
   }
 
-  if (askEvents.length === 0) return { batchId: '', questions: [] };
+  if (escalateEvents.length === 0) return { batchId: '', questions: [] };
 
   // Group by batch_id, take latest batch
-  const batches = new Map<string, typeof askEvents>();
-  for (const ae of askEvents) {
+  const batches = new Map<string, typeof escalateEvents>();
+  for (const ae of escalateEvents) {
     const batch = batches.get(ae.data.batch_id) ?? [];
     batch.push(ae);
     batches.set(ae.data.batch_id, batch);
