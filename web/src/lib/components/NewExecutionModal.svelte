@@ -178,26 +178,26 @@
         />
       </div>
 
-      {#if selectedProject?.is_git}
-        <div class="field">
-          <label class="field-label" for="exec-branch">Branch <span class="optional">(optional)</span></label>
-          <input
-            id="exec-branch"
-            class="field-input"
-            type="text"
-            placeholder="feature/my-branch"
-            value={branch}
-            oninput={(e) => handleBranchInput(e.currentTarget.value)}
-            disabled={!!cwd.trim()}
-          />
-        </div>
-      {/if}
-
       <button class="toggle-link" onclick={() => showAdvanced = !showAdvanced}>
         {showAdvanced ? 'Hide' : 'Show'} Advanced
       </button>
 
       {#if showAdvanced}
+        {#if selectedProject?.is_git}
+          <div class="field">
+            <label class="field-label" for="exec-branch">Branch <span class="optional">(optional)</span></label>
+            <input
+              id="exec-branch"
+              class="field-input"
+              type="text"
+              placeholder="Optional: explicit branch name"
+              value={branch}
+              oninput={(e) => handleBranchInput(e.currentTarget.value)}
+              disabled={!!cwd.trim()}
+            />
+            <span class="field-hint">Leave blank for automatic isolated copy</span>
+          </div>
+        {/if}
         <div class="field">
           <label class="field-label" for="exec-cwd">Working Directory <span class="optional">(optional)</span></label>
           <input

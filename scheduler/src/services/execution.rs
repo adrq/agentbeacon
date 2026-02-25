@@ -134,51 +134,39 @@ pub async fn create_execution(
 
     // Working directory resolution + worktree creation
     let (session_cwd, worktree_path) = if let Some(cwd_val) = resolved_cwd_from_param {
-        // Explicit cwd takes priority
+        // A) Explicit cwd takes priority — no worktree
         (cwd_val, None)
     } else if let Some(b) = branch {
-        // Create worktree
+        // B) Explicit branch — create worktree with named branch
         let proj = project.as_ref().unwrap();
         let wt_path = common::execution_dir(&proj.id, &execution_id);
         let wt_path_str = wt_path.to_string_lossy().to_string();
-
-        // Create parent directory
-        if let Some(parent) = wt_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                SchedulerError::Database(format!("create worktree parent directory failed: {e}"))
-            })?;
-        }
-
-        // Run git worktree add
-        let branch_name = format!("beacon/{b}");
-        let output = std::process::Command::new("git")
-            .args([
-                "-C",
-                &proj.path,
-                "worktree",
-                "add",
-                &wt_path_str,
-                "-b",
-                &branch_name,
-            ])
-            .output()
-            .map_err(|e| SchedulerError::Database(format!("git worktree add failed: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(SchedulerError::Database(format!(
-                "git worktree add failed (exit {}): stderr={stderr} stdout={stdout}",
-                output.status
-            )));
-        }
-
+        create_worktree(&proj.path, &wt_path, Some(b))?;
         (wt_path_str.clone(), Some(wt_path_str))
     } else if let Some(ref proj) = project {
-        // Project path as cwd
-        (proj.path.clone(), None)
+        // C) Project exists — auto-worktree for git repos with commits
+        let is_git = Path::new(&proj.path).join(".git").is_dir();
+        let has_commits = if is_git {
+            let output = std::process::Command::new("git")
+                .args(["-C", &proj.path, "rev-parse", "HEAD"])
+                .output()
+                .map_err(|e| SchedulerError::Database(format!("failed to run git: {e}")))?;
+            output.status.success()
+        } else {
+            false
+        };
+
+        if has_commits {
+            let wt_path = common::execution_dir(&proj.id, &execution_id);
+            let wt_path_str = wt_path.to_string_lossy().to_string();
+            create_worktree(&proj.path, &wt_path, None)?;
+            (wt_path_str.clone(), Some(wt_path_str))
+        } else {
+            // Non-git or empty git repo (no commits): use project path directly
+            (proj.path.clone(), None)
+        }
     } else {
-        // Should not reach here due to validation above
+        // D) Should not reach here due to validation above
         return Err(SchedulerError::ValidationFailed(
             "at least project_id or cwd is required".to_string(),
         ));
@@ -205,7 +193,7 @@ pub async fn create_execution(
         && let Some(ref wt) = worktree_path
     {
         tracing::warn!(worktree = %wt, error = %e, "cleaning up worktree after failure");
-        cleanup_worktree(project.as_ref().map(|p| p.path.as_str()), wt);
+        cleanup_worktree(project.as_ref().map(|p| p.path.as_str()), wt, branch);
     }
 
     result
@@ -296,6 +284,12 @@ async fn persist_and_enqueue(
         "cwd": session_cwd,
     });
 
+    // Fetch the created execution before enqueue — if this read fails,
+    // cleanup is safe because nothing has been queued yet.
+    let execution = db::executions::get_by_id(db_pool, execution_id).await?;
+
+    // Enqueue last: the irreversible side effect happens only after all
+    // DB operations succeed, so cleanup never races a queued task.
     task_queue
         .push(TaskAssignment {
             execution_id: execution_id.to_string(),
@@ -304,9 +298,6 @@ async fn persist_and_enqueue(
         })
         .await?;
 
-    // Fetch the created execution to return
-    let execution = db::executions::get_by_id(db_pool, execution_id).await?;
-
     Ok(CreateExecutionResult {
         execution,
         session_id: session_id.to_string(),
@@ -314,12 +305,73 @@ async fn persist_and_enqueue(
     })
 }
 
+/// Create a git worktree at `worktree_path` from the repo at `project_path`.
+/// When `branch` is `None`, creates a detached HEAD worktree.
+/// When `branch` is `Some(name)`, creates a new branch `beacon/{name}`.
+fn create_worktree(
+    project_path: &str,
+    worktree_path: &Path,
+    branch: Option<&str>,
+) -> Result<(), SchedulerError> {
+    if let Some(parent) = worktree_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            SchedulerError::Database(format!("create worktree parent directory failed: {e}"))
+        })?;
+    }
+
+    // Clean up stale worktree entry if path already exists (from a failed previous attempt)
+    if worktree_path.exists() {
+        let _ = std::fs::remove_dir_all(worktree_path);
+        let _ = std::process::Command::new("git")
+            .args(["-C", project_path, "worktree", "prune"])
+            .output();
+    }
+
+    let wt_str = worktree_path.to_string_lossy();
+    let branch_name;
+    let mut args = vec!["-C", project_path, "worktree", "add"];
+
+    if let Some(b) = branch {
+        branch_name = format!("beacon/{b}");
+        args.extend(["-b", branch_name.as_str(), &*wt_str]);
+    } else {
+        args.extend(["--detach", &*wt_str]);
+    }
+
+    let output = std::process::Command::new("git")
+        .args(&args)
+        .output()
+        .map_err(|e| SchedulerError::Database(format!("failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(SchedulerError::Database(format!(
+            "git worktree add failed (exit {}): stderr={stderr} stdout={stdout}",
+            output.status
+        )));
+    }
+
+    Ok(())
+}
+
 /// Best-effort cleanup of a worktree and its directory after a failure.
-fn cleanup_worktree(project_path: Option<&str>, worktree_path: &str) {
+fn cleanup_worktree(project_path: Option<&str>, worktree_path: &str, branch: Option<&str>) {
     if let Some(proj) = project_path {
         let _ = std::process::Command::new("git")
             .args(["-C", proj, "worktree", "remove", "--force", worktree_path])
             .output();
+        // Prune stale entries if remove failed
+        let _ = std::process::Command::new("git")
+            .args(["-C", proj, "worktree", "prune"])
+            .output();
+        // Delete the named branch so retries don't fail with "branch already exists"
+        if let Some(b) = branch {
+            let branch_name = format!("beacon/{b}");
+            let _ = std::process::Command::new("git")
+                .args(["-C", proj, "branch", "-D", &branch_name])
+                .output();
+        }
     }
     // Fallback: remove directory if git worktree remove didn't clean it up
     let _ = std::fs::remove_dir_all(worktree_path);

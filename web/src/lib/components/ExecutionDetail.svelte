@@ -196,6 +196,20 @@
     detail?.execution.status === 'canceled' ? 'Canceled at' : ''
   );
   let completionTime = $derived(detail?.execution.completed_at ?? detail?.execution.updated_at ?? null);
+
+  // Copy-to-clipboard state for working directory
+  let cwdCopied = $state(false);
+  let cwdCopyTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function copyWorkingDir() {
+    const path = detail?.execution.worktree_path;
+    if (!path || !navigator.clipboard?.writeText) return;
+    navigator.clipboard.writeText(path).then(() => {
+      cwdCopied = true;
+      if (cwdCopyTimeout) clearTimeout(cwdCopyTimeout);
+      cwdCopyTimeout = setTimeout(() => { cwdCopied = false; }, 1500);
+    }).catch(() => { /* clipboard not available */ });
+  }
 </script>
 
 {#if loading}
@@ -225,6 +239,17 @@
           <span class="meta-sep">&middot;</span>
         {/if}
         <ElapsedTime startTime={detail.execution.created_at} endTime={isTerminal ? (detail.execution.completed_at ?? detail.execution.updated_at) : null} />
+        {#if detail.execution.worktree_path}
+          <span class="meta-sep">&middot;</span>
+          <span>Working Directory:</span>
+          <button
+            class="working-dir-btn"
+            title="Copy working directory path"
+            onclick={copyWorkingDir}
+          >
+            {cwdCopied ? 'Copied!' : detail.execution.worktree_path}
+          </button>
+        {/if}
       </div>
     </div>
 
@@ -345,6 +370,26 @@
 
   .meta-sep {
     opacity: 0.5;
+  }
+
+  .working-dir-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-size: 0.75rem;
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+    max-width: 20rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+  }
+
+  .working-dir-btn:hover {
+    color: hsl(var(--primary));
   }
 
   .completion-summary {
