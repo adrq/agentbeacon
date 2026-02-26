@@ -444,6 +444,28 @@ pub async fn handle_worker_sync(
                         }
                     }
 
+                    // Turn-complete auto-notification — deliver to parent
+                    if session.parent_session_id.is_some()
+                        && let Some(output_text) =
+                            crate::services::notification::extract_turn_output(
+                                &result.turn_messages,
+                            )
+                        && let Err(e) = crate::services::notification::deliver_to_parent(
+                            &state.db_pool,
+                            &state.task_queue,
+                            &state.event_broadcast,
+                            &result.session_id,
+                            &output_text,
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            session_id = %result.session_id,
+                            error = %e,
+                            "failed to deliver turn-complete to parent"
+                        );
+                    }
+
                     // Propagate to execution for lead sessions
                     if session.parent_session_id.is_none() {
                         if let Err(e) = db::executions::update_status(

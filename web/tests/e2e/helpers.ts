@@ -152,6 +152,40 @@ export async function ensureCopilotAgent(): Promise<{ id: string; name: string }
   return { id: copilot.id, name: copilot.name };
 }
 
+/** Ensure the 'TC Lead Agent' exists (must be pre-seeded via scripts/seed_agents.py). */
+export async function ensureTCLeadAgent(): Promise<{ id: string; name: string }> {
+  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  const agent = agents.find(a => a.name === 'TC Lead Agent');
+  if (!agent) throw new Error('TC Lead Agent not found — run scripts/seed_agents.py first');
+  return { id: agent.id, name: agent.name };
+}
+
+/** Ensure the 'TC Child Agent' exists (must be pre-seeded via scripts/seed_agents.py). */
+export async function ensureTCChildAgent(): Promise<{ id: string; name: string }> {
+  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  const agent = agents.find(a => a.name === 'TC Child Agent');
+  if (!agent) throw new Error('TC Child Agent not found — run scripts/seed_agents.py first');
+  return { id: agent.id, name: agent.name };
+}
+
+/** Poll execution events until one contains the given text. */
+export async function waitForEvent(execId: string, textMatch: string, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const events: { data?: string; event_type?: string }[] = await apiGet(
+      `/api/executions/${execId}/events`,
+    );
+    for (const ev of events) {
+      const haystack = JSON.stringify(ev);
+      if (haystack.includes(textMatch)) return ev;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error(
+    `Event matching "${textMatch}" not found for execution ${execId} within ${timeoutMs}ms`,
+  );
+}
+
 /** Create an execution and return its IDs. */
 export async function createExecution(agentId: string, prompt: string, title: string) {
   const exec = await apiPost('/api/executions', {

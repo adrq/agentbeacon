@@ -258,6 +258,42 @@ pub async fn count_non_terminal_by_agent(
     Ok(row.get::<i64, _>("cnt"))
 }
 
+/// Return all sessions in the subtree rooted at `root_id` (inclusive).
+/// Uses a recursive CTE — works on both SQLite and PostgreSQL.
+pub async fn get_subtree(pool: &DbPool, root_id: &str) -> Result<Vec<Session>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
+    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
+
+    let sql = format!(
+        "WITH RECURSIVE subtree AS (\
+            SELECT id FROM sessions WHERE id = ? \
+            UNION ALL \
+            SELECT s.id FROM sessions s \
+            INNER JOIN subtree st ON s.parent_session_id = st.id \
+        ) \
+        SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
+               s.agent_session_id, s.cwd, s.status, s.coordination_mode, \
+               s.metadata, {cr} as created_at, {up} as updated_at, \
+               {co} as completed_at \
+        FROM sessions s \
+        INNER JOIN subtree st ON s.id = st.id \
+        ORDER BY s.created_at ASC",
+        cr = created_fmt,
+        up = updated_fmt,
+        co = completed_fmt
+    );
+    let query = pool.prepare_query(&sql);
+
+    let rows = sqlx::query(&query)
+        .bind(root_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("get subtree failed: {e}")))?;
+
+    rows.into_iter().map(parse_session_row).collect()
+}
+
 fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> {
     Ok(Session {
         id: row.get("id"),

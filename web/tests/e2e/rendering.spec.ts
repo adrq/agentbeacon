@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
 import {
-  ensureDirectAgent, ensureDemoAgent, ensureShowcaseAgent, createExecution,
-  waitForWorkerIdle, waitForWorkerPickup, waitForTurnEnd,
+  ensureDirectAgent, ensureDemoAgent, ensureShowcaseAgent, ensureTCLeadAgent,
+  ensureTCChildAgent, createExecution,
+  waitForWorkerIdle, waitForWorkerPickup, waitForTurnEnd, waitForEvent,
 } from './helpers';
 
 test.beforeAll(async () => {
@@ -273,7 +274,32 @@ test('showcase scenario: all renderer types in log and chat views', async ({ pag
   await expect(page.locator('.shiki').first()).toBeVisible();
 });
 
-// --- Test 10: Multi-turn Q&A with two question batches ---
+// --- Test 10: Turn-complete event rendering ---
+
+test('turn_complete event renders with return arrow icon in log view', async ({ page }) => {
+  test.setTimeout(60000);
+  await waitForWorkerIdle();
+
+  const lead = await ensureTCLeadAgent();
+  await ensureTCChildAgent();
+
+  const { execId } = await createExecution(lead.id, 'Turn-complete rendering test', 'TC render test');
+  await waitForWorkerPickup(execId, 15000);
+
+  // Wait for turn-complete event to be recorded before navigating to UI
+  await waitForEvent(execId, 'turn_complete', 30000);
+
+  // Navigate to execution — selects lead session by default
+  await page.goto(`/#/execution/${execId}`);
+
+  // Log view: turn_complete event with return arrow icon
+  const tcEntry = page.locator('.timeline-entry').filter({ hasText: 'Child reported' });
+  await expect(tcEntry).toBeVisible({ timeout: 10000 });
+  await expect(tcEntry.locator('.ev-icon')).toContainText('\u21A9');
+  await expect(tcEntry).toContainText('END_TURN_PHASE_0');
+});
+
+// --- Test 11: Multi-turn Q&A with two question batches ---
 // Verifies the QuestionBanner resets and displays a second question after the first is answered.
 
 test('demo scenario: multi-turn Q&A with two question batches', async ({ page }) => {

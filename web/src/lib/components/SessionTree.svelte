@@ -1,14 +1,40 @@
 <script lang="ts">
   import type { SessionSummary, Agent } from '../types';
+  import { api } from '../api';
 
   interface Props {
     sessions: SessionSummary[];
     agents: Agent[];
     selectedSessionId?: string | null;
     onselectsession?: (sessionId: string | null) => void;
+    onstatuschange?: () => void;
   }
 
-  let { sessions, agents, selectedSessionId = null, onselectsession }: Props = $props();
+  let { sessions, agents, selectedSessionId = null, onselectsession, onstatuschange }: Props = $props();
+
+  async function handleCancel(e: Event, sessionId: string) {
+    e.stopPropagation();
+    try {
+      await api.cancelSession(sessionId);
+      onstatuschange?.();
+    } catch (err) {
+      console.error('Failed to cancel session:', err);
+    }
+  }
+
+  async function handleComplete(e: Event, sessionId: string) {
+    e.stopPropagation();
+    try {
+      await api.completeSession(sessionId);
+      onstatuschange?.();
+    } catch (err) {
+      console.error('Failed to complete session:', err);
+    }
+  }
+
+  function isNonTerminal(status: string): boolean {
+    return !['completed', 'failed', 'canceled'].includes(status);
+  }
 
   interface TreeNode {
     session: SessionSummary;
@@ -62,7 +88,8 @@
 
 {#snippet renderNode(node: TreeNode, depth: number)}
   {@const s = node.session}
-  <button
+  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+  <div
     class="tree-node {s.status}"
     class:active={selectedSessionId === s.id}
     style="padding-left: {1 + depth * 1}rem"
@@ -74,7 +101,17 @@
     <span class="node-icon">{statusIcon(s.status)}</span>
     <span class="node-label">{depth === 0 ? `Lead (${agentName(s.agent_id)})` : agentName(s.agent_id)}</span>
     <span class="node-status">{s.status}</span>
-  </button>
+    {#if isNonTerminal(s.status)}
+      <button class="action-btn cancel-btn" title="Cancel session" onclick={(e) => handleCancel(e, s.id)}>
+        &#x2717;
+      </button>
+    {/if}
+    {#if s.status === 'input-required'}
+      <button class="action-btn complete-btn" title="Complete session" onclick={(e) => handleComplete(e, s.id)}>
+        &#x2713;
+      </button>
+    {/if}
+  </div>
   {#each node.children as child}
     {@render renderNode(child, depth + 1)}
   {/each}
@@ -155,5 +192,36 @@
     font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
     flex-shrink: 0;
+  }
+
+  .action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    border: none;
+    border-radius: 0.25rem;
+    background: transparent;
+    cursor: pointer;
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.1s, color 0.1s, background 0.1s;
+  }
+
+  .tree-node:hover .action-btn {
+    opacity: 1;
+  }
+
+  .cancel-btn:hover {
+    color: hsl(var(--status-danger));
+    background: hsl(var(--status-danger) / 0.1);
+  }
+
+  .complete-btn:hover {
+    color: hsl(var(--status-success));
+    background: hsl(var(--status-success) / 0.1);
   }
 </style>

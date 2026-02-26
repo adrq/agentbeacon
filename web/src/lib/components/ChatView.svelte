@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isHandoffResultData, isPlanData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isHandoffResultData, isTurnCompleteData, isPlanData } from '../types';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
   import Markdown from './Markdown.svelte';
@@ -157,6 +157,11 @@
             if (isHandoffResultData(d as unknown as import('../types').DataPartPayload)) {
               const hr = d as unknown as import('../types').HandoffResultData;
               entries.push({ type: 'tool', icon: '\u2713', text: `Child completed: ${hr.message}`, time, key: `${ev.id}-${seq++}` });
+              continue;
+            }
+            if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
+              const tc = d as unknown as import('../types').TurnCompleteData;
+              entries.push({ type: 'tool', icon: '\u21A9', text: `Child reported: ${tc.message}`, time, key: `${ev.id}-${seq++}` });
               continue;
             }
 

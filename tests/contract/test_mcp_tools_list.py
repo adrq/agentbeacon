@@ -35,7 +35,13 @@ def test_lead_session_gets_all_tools(test_database):
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
         tools = mcp_tools_list(ctx["url"], session_id)
-        assert sorted(tools) == ["delegate", "escalate", "handoff", "next_instruction"]
+        assert sorted(tools) == [
+            "delegate",
+            "escalate",
+            "handoff",
+            "next_instruction",
+            "release",
+        ]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

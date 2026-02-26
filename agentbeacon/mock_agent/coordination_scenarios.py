@@ -150,6 +150,71 @@ class DelegateAskScenario(_BaseScenario):
         return "end_turn"
 
 
+class EndTurnScenario(_BaseScenario):
+    """Child agent: just does end_turn on each prompt (goes to input-required).
+
+    Phase N (each prompt): emits END_TURN_PHASE_{N} -> end_turn
+    """
+
+    async def handle_prompt(self, prompt_text: str) -> str:
+        self._send_marker(f"END_TURN_PHASE_{self.phase}")
+        self.phase += 1
+        return "end_turn"
+
+
+class DelegateReleaseScenario(_BaseScenario):
+    """Lead agent: delegates to a child, then releases the child on next prompt.
+
+    Requires delegate_to (child agent name).
+
+    Phase 0 (initial prompt): emits RELEASE_PHASE_0, calls delegate -> end_turn
+    Phase 1 (auto-notification from child turn-complete): acknowledges -> end_turn
+    Phase 2 (triggered by user message): calls release on child_session_id -> end_turn
+    """
+
+    def __init__(self, session_id: str, mcp_client: McpClient, delegate_to: str):
+        super().__init__(session_id, mcp_client)
+        if not delegate_to:
+            raise ValueError("DelegateReleaseScenario requires delegate_to")
+        self.delegate_to = delegate_to
+        self.child_session_id = None
+
+    async def handle_prompt(self, prompt_text: str) -> str:
+        if self.phase == 0:
+            self._send_marker("RELEASE_PHASE_0")
+            result = await self.mcp_client.call_tool(
+                "delegate",
+                {"agent": self.delegate_to, "prompt": f"Child task: {prompt_text}"},
+            )
+            # Parse child session_id from delegate result
+            content = result.get("content", [])
+            if content:
+                data = json.loads(content[0].get("text", "{}"))
+                self.child_session_id = data.get("session_id")
+            self.phase = 1
+            return "end_turn"
+
+        if self.phase == 1:
+            # Turn-complete auto-notification from child — just acknowledge
+            self._send_marker("RELEASE_PHASE_1_NOTIFY_ACK")
+            self.phase = 2
+            return "end_turn"
+
+        if self.phase == 2 and self.child_session_id:
+            self._send_marker("RELEASE_PHASE_2")
+            await self.mcp_client.call_tool(
+                "release",
+                {"session_id": self.child_session_id},
+            )
+            self._send_marker("RELEASE_PHASE_2_ACK")
+            self.phase = 3
+            return "end_turn"
+
+        self._send_marker(f"RELEASE_PHASE_{self.phase}")
+        self.phase += 1
+        return "end_turn"
+
+
 class DelegateMultiScenario(_BaseScenario):
     """Lead agent: delegates to N children sequentially, acknowledges each.
 

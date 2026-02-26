@@ -13,7 +13,9 @@ from .jsonrpc import JSONRPCDispatcher
 from .coordination_scenarios import (
     DelegateAskScenario,
     DelegateMultiScenario,
+    DelegateReleaseScenario,
     DelegateScenario,
+    EndTurnScenario,
     HandoffScenario,
 )
 from .demo_scenario import DemoScenario
@@ -141,6 +143,10 @@ class ACPHandler:
             ),
             "delegate-multi": lambda: DelegateMultiScenario(
                 session_id, mcp_client, self.delegate_to, self.delegate_count
+            ),
+            "end-turn": lambda: EndTurnScenario(session_id, mcp_client),
+            "delegate-release": lambda: DelegateReleaseScenario(
+                session_id, mcp_client, self.delegate_to
             ),
         }
         factory = scenarios.get(self.scenario)

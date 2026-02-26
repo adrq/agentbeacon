@@ -140,19 +140,36 @@ async fn cancel_execution(
         )));
     }
 
-    // Cancel all non-terminal sessions
+    // Terminate all sessions via cascade from root session
+    use crate::services::cascade::{CascadeMode, terminate_subtree};
+
     let sessions = db::sessions::list_by_execution(&state.db_pool, &id).await?;
-    for session in &sessions {
+    // Find root session (no parent) and cascade from there
+    if let Some(root) = sessions.iter().find(|s| s.parent_session_id.is_none()) {
+        terminate_subtree(
+            &state.db_pool,
+            &root.id,
+            true,
+            CascadeMode::Cancel,
+            &state.event_broadcast,
+            &state.task_queue,
+        )
+        .await?;
+    }
+
+    // Safety sweep: cancel any sessions not reachable from the root tree.
+    // Re-fetch to get current statuses after terminate_subtree.
+    let remaining = db::sessions::list_by_execution(&state.db_pool, &id).await?;
+    for session in &remaining {
         if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
             db::sessions::update_status(&state.db_pool, &session.id, "canceled").await?;
-
-            let session_state_event = json!({"from": session.status, "to": "canceled"});
+            let sweep_event = json!({"from": session.status, "to": "canceled"});
             let event_id = db::events::insert(
                 &state.db_pool,
                 &id,
                 Some(&session.id),
                 "state_change",
-                &serde_json::to_string(&session_state_event).unwrap(),
+                &serde_json::to_string(&sweep_event).unwrap(),
             )
             .await?;
             let _ = state.event_broadcast.send(EventNotification {
@@ -162,11 +179,11 @@ async fn cancel_execution(
         }
     }
 
+    // Wake workers so they discover canceled sessions immediately
+    state.task_queue.wake_waiters();
+
     // Cancel the execution itself
     db::executions::update_status(&state.db_pool, &id, "canceled").await?;
-
-    // Wake long-polling workers so they discover the cancel immediately
-    state.task_queue.wake_waiters();
 
     let exec_state_event = json!({"from": exec.status, "to": "canceled"});
     let event_id = db::events::insert(

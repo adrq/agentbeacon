@@ -28,6 +28,10 @@ static ESCALATE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
     Validator::new(&escalate_schema()["inputSchema"]).expect("escalate schema must compile")
 });
 
+static RELEASE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
+    Validator::new(&release_schema()["inputSchema"]).expect("release schema must compile")
+});
+
 fn validate_tool_args(validator: &Validator, args: &JsonValue) -> Result<(), JsonRpcError> {
     validator.validate(args).map_err(|err| {
         let path = err.instance_path.to_string();
@@ -44,6 +48,7 @@ pub fn handle_tools_list(auth: &McpSession, id: Option<JsonValue>) -> JsonRpcRes
     let tools = match auth.role {
         McpRole::Lead => vec![
             delegate_schema(),
+            release_schema(),
             escalate_schema(),
             handoff_schema(),
             next_instruction_schema(),
@@ -74,8 +79,11 @@ pub async fn handle_tools_call(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    // Role enforcement: only delegate is restricted (lead-only)
-    if let ("delegate", McpRole::Child) = (tool_name, &auth.role) {
+    // Role enforcement: delegate and release are restricted (lead-only)
+    if matches!(
+        (tool_name, &auth.role),
+        ("delegate" | "release", McpRole::Child)
+    ) {
         return Err(JsonRpcError::invalid_request(
             "tool not available for this session role",
         ));
@@ -84,6 +92,7 @@ pub async fn handle_tools_call(
     match tool_name {
         "handoff" => handle_handoff(auth, state, arguments).await,
         "delegate" => handle_delegate(auth, state, arguments).await,
+        "release" => handle_release(auth, state, arguments).await,
         "escalate" => handle_escalate(auth, state, arguments).await,
         "next_instruction" => handle_next_instruction(auth, state).await,
         _ => Err(JsonRpcError::invalid_params(&format!(
@@ -390,6 +399,113 @@ async fn handle_delegate(
         "content": [{"type": "text", "text": result_text}],
         "isError": false
     }))
+}
+
+async fn handle_release(
+    auth: &McpSession,
+    state: &AppState,
+    args: JsonValue,
+) -> Result<JsonValue, JsonRpcError> {
+    validate_tool_args(&RELEASE_VALIDATOR, &args)?;
+    let target_session_id = args["session_id"].as_str().unwrap();
+
+    // Look up target session
+    let target = db::sessions::get_by_id(&state.db_pool, target_session_id)
+        .await
+        .map_err(|e| match e {
+            crate::error::SchedulerError::NotFound(_) => {
+                JsonRpcError::invalid_params(&format!("session not found: {target_session_id}"))
+            }
+            _ => JsonRpcError::internal_error(&e.to_string()),
+        })?;
+
+    // Defense-in-depth: verify same execution (consistent with delegate resume path)
+    if target.execution_id != auth.execution_id {
+        return Err(JsonRpcError::invalid_params(
+            "session does not belong to this execution",
+        ));
+    }
+
+    // Authority: caller must be parent of target
+    if target.parent_session_id.as_deref() != Some(&auth.session_id) {
+        return Err(JsonRpcError::invalid_params(
+            "session is not a child of this session",
+        ));
+    }
+
+    // State: target must be input-required
+    if target.status != "input-required" {
+        return Err(JsonRpcError::invalid_params(&format!(
+            "cannot release session in '{}' state (must be 'input-required')",
+            target.status
+        )));
+    }
+
+    // Cascade terminate the target and its subtree
+    use crate::services::cascade::{CascadeMode, terminate_subtree};
+
+    let result = terminate_subtree(
+        &state.db_pool,
+        target_session_id,
+        true, // include root — target itself transitions to completed
+        CascadeMode::Release,
+        &state.event_broadcast,
+        &state.task_queue,
+    )
+    .await
+    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+
+    // Log release event on the parent (caller) session
+    let release_event = json!({
+        "role": "agent",
+        "parts": [{"kind": "data", "data": {
+            "type": "release",
+            "target_session_id": target_session_id,
+            "sessions_terminated": result.sessions_terminated
+        }}]
+    });
+    let event_id = db::events::insert(
+        &state.db_pool,
+        &auth.execution_id,
+        Some(&auth.session_id),
+        "platform",
+        &serde_json::to_string(&release_event).unwrap(),
+    )
+    .await
+    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    let _ = state.event_broadcast.send(EventNotification {
+        execution_id: auth.execution_id.clone(),
+        event_id,
+    });
+
+    let result_text = serde_json::to_string(&json!({
+        "released": true,
+        "sessions_terminated": result.sessions_terminated
+    }))
+    .unwrap();
+
+    Ok(json!({
+        "content": [{"type": "text", "text": result_text}],
+        "isError": false
+    }))
+}
+
+fn release_schema() -> JsonValue {
+    json!({
+        "name": "release",
+        "title": "Release",
+        "description": "Terminate a child session and free its resources. The child must be in 'input-required' state. Also terminates any descendants.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session ID of the child to release (returned by delegate)"
+                }
+            },
+            "required": ["session_id"]
+        }
+    })
 }
 
 /// Traverse parent_session_id chain to find lead session's cwd

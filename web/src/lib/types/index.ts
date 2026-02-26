@@ -100,6 +100,7 @@ export type DataPartPayload =
   | EscalateData
   | DelegateData
   | HandoffResultData
+  | TurnCompleteData
   | ToolCallActivityData
   | ToolCallUpdateData
   | ThinkingData
@@ -131,6 +132,12 @@ export interface DelegateData {
 
 export interface HandoffResultData {
   type: 'handoff_result';
+  child_session_id: string;
+  message: string;
+}
+
+export interface TurnCompleteData {
+  type: 'turn_complete';
   child_session_id: string;
   message: string;
 }
@@ -199,6 +206,10 @@ export function isDelegateData(d: DataPartPayload): d is DelegateData {
 
 export function isHandoffResultData(d: DataPartPayload): d is HandoffResultData {
   return d.type === 'handoff_result';
+}
+
+export function isTurnCompleteData(d: DataPartPayload): d is TurnCompleteData {
+  return d.type === 'turn_complete';
 }
 
 export function isToolCallActivity(d: DataPartPayload): d is ToolCallActivityData {

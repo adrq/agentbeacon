@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isHandoffResultData, isPlanData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isHandoffResultData, isTurnCompleteData, isPlanData } from '../types';
   import { normalizeDataPart } from '../normalize';
   interface Props {
     events: Event[];
@@ -100,6 +100,11 @@
           if (isHandoffResultData(d as unknown as import('../types').DataPartPayload)) {
             const hr = d as unknown as import('../types').HandoffResultData;
             entries.push({ key, time, icon: '\u2713', iconClass: 'handoff', text: `Child completed: "${truncate(hr.message, 80)}"` });
+            continue;
+          }
+          if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
+            const tc = d as unknown as import('../types').TurnCompleteData;
+            entries.push({ key, time, icon: '\u21A9', iconClass: 'handoff', text: `Child reported: "${truncate(tc.message, 80)}"` });
             continue;
           }
 

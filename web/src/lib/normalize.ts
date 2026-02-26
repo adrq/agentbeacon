@@ -32,7 +32,7 @@ export function normalizeDataPart(agentType: AgentType, raw: Record<string, unkn
   const type = raw.type as string | undefined;
 
   // Platform events handled separately in ChatView
-  if (type === 'escalate' || type === 'delegate' || type === 'handoff_result')
+  if (type === 'escalate' || type === 'delegate' || type === 'handoff_result' || type === 'turn_complete')
     return { normalized: 'unknown', raw };
 
   switch (agentType) {

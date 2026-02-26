@@ -1,45 +1,15 @@
 import { test, expect } from '@playwright/test';
-import { apiPost, apiGet, ensureDirectAgent, API_URL } from './helpers';
+import {
+  apiPost, apiGet, ensureDirectAgent, ensureDemoAgent, ensureTCLeadAgent,
+  ensureTCChildAgent, createExecution, waitForWorkerPickup, waitForEvent,
+  waitForWorkerIdle,
+} from './helpers';
 
 async function ensureProject(): Promise<{ id: string; name: string }> {
   const projects: { id: string; name: string }[] = await apiGet('/api/projects');
   if (projects.length > 0) return projects[0];
   const result = await apiPost('/api/projects', { name: 'smoke-test', path: '/tmp' });
   return { id: result.id, name: result.name };
-}
-
-async function claimSession() {
-  await apiPost('/api/worker/sync', {});
-}
-
-async function sendQuestion(sessionId: string, question: string, options: { label: string; description: string }[]) {
-  const res = await fetch(`${API_URL}/mcp`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${sessionId}`,
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: {
-        name: 'escalate',
-        arguments: {
-          questions: [{
-            question,
-            header: 'Test',
-            options,
-            multiSelect: false,
-          }],
-        },
-      },
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`MCP escalate failed: ${res.status} ${text}`);
-  }
 }
 
 test('app loads with header and new button', async ({ page }) => {
@@ -83,43 +53,60 @@ test('create execution via modal', async ({ page }) => {
 });
 
 test('full question-answer flow', async ({ page }) => {
-  const agent = await ensureDirectAgent();
+  await waitForWorkerIdle();
 
-  const exec = await apiPost('/api/executions', {
-    agent_id: agent.id,
-    prompt: 'E2E question flow test',
-    title: 'Q&A flow test',
-    cwd: '/tmp',
-  });
-  const execId = exec.execution.id;
-  const sessionId = exec.session_id;
-
-  await claimSession();
-
-  await sendQuestion(sessionId, 'Which framework should we use for this project?', [
-    { label: 'React', description: 'Component-based UI library' },
-    { label: 'Svelte', description: 'Compile-time reactive framework' },
-  ]);
+  const agent = await ensureDemoAgent();
+  const { execId } = await createExecution(agent.id, 'Smoke Q&A test', 'Q&A flow test');
+  await waitForWorkerPickup(execId, 15000);
 
   await page.goto(`/#/execution/${execId}`);
 
   // Question appears in the QuestionBanner within the execution detail
   const banner = page.locator('.question-banner');
-  await expect(banner).toBeVisible({ timeout: 10000 });
+  await expect(banner).toBeVisible({ timeout: 20000 });
 
   // Scope radio/submit to the banner to avoid matching the ActionPanel's DecisionCard
-  await expect(banner.getByRole('radio', { name: /React/ })).toBeVisible();
-  await expect(banner.getByRole('radio', { name: /Svelte/ })).toBeVisible();
+  await expect(banner.getByRole('radio', { name: /Refactor existing code/ })).toBeVisible();
+  await expect(banner.getByRole('radio', { name: /Write new module/ })).toBeVisible();
   await expect(banner.getByRole('radio', { name: /Decide for me/ })).toBeVisible();
 
   await expect(banner.getByRole('button', { name: /Submit/ })).toBeDisabled();
 
-  await banner.getByRole('radio', { name: /Svelte/ }).click();
+  await banner.getByRole('radio', { name: /Refactor existing code/ }).click();
   await expect(banner.getByRole('button', { name: /Submit/ })).toBeEnabled();
 
   await banner.getByRole('button', { name: /Submit/ }).click();
 
-  await expect(page.getByText('User: Svelte')).toBeVisible({ timeout: 10000 });
+  await expect(
+    page.locator('.timeline-entry').filter({ hasText: 'User: Refactor existing code' })
+  ).toBeVisible({ timeout: 10000 });
+});
+
+test('turn-complete delivers child output to parent', async ({ page }) => {
+  test.setTimeout(60000);
+  await waitForWorkerIdle();
+
+  const lead = await ensureTCLeadAgent();
+  // Ensure child agent is seeded too
+  await ensureTCChildAgent();
+
+  const { execId } = await createExecution(lead.id, 'Turn-complete E2E test', 'TC round-trip');
+  await waitForWorkerPickup(execId, 15000);
+
+  // Wait for turn-complete event to be recorded before navigating to UI
+  await waitForEvent(execId, 'turn_complete', 30000);
+
+  // Navigate to execution and verify turn_complete renders
+  await page.goto(`/#/execution/${execId}`);
+
+  const tcEntry = page.locator('.timeline-entry').filter({ hasText: 'Child reported' });
+  await expect(tcEntry).toBeVisible({ timeout: 10000 });
+  await expect(tcEntry).toContainText('END_TURN_PHASE_0');
+
+  // Switch to chat view and verify rendering there too
+  await page.getByRole('tab', { name: 'Chat' }).click();
+  const chatEntry = page.locator('.tool-card').filter({ hasText: 'Child reported' });
+  await expect(chatEntry).toBeVisible({ timeout: 5000 });
 });
 
 test('navigation between views', async ({ page }) => {

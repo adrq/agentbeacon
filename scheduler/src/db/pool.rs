@@ -398,6 +398,31 @@ mod tests {
     }
 
     #[test]
+    fn test_recursive_cte_placeholder_conversion() {
+        // First recursive CTE in the codebase — verify sqlparser handles it correctly.
+        // If sqlparser fails to tokenize, convert_placeholders_to_postgres silently
+        // returns the original SQL (with ?), which fails at runtime on PostgreSQL.
+        let cte_sql = "WITH RECURSIVE subtree AS (\
+            SELECT id FROM sessions WHERE id = ? \
+            UNION ALL \
+            SELECT s.id FROM sessions s \
+            INNER JOIN subtree st ON s.parent_session_id = st.id \
+        ) \
+        SELECT s.id FROM sessions s \
+        INNER JOIN subtree st ON s.id = st.id \
+        ORDER BY s.created_at ASC";
+        let result = convert_placeholders_to_postgres(cte_sql);
+        assert!(
+            result.contains("$1"),
+            "Recursive CTE placeholder must be converted to $1. Got: {result}"
+        );
+        assert!(
+            !result.contains('?'),
+            "No ? placeholders should remain. Got: {result}"
+        );
+    }
+
+    #[test]
     fn test_timestamp_formatting_rationale() {
         // This test documents WHY we need AT TIME ZONE 'UTC' for PostgreSQL
         //

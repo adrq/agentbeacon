@@ -1,42 +1,8 @@
 import { test, expect } from '@playwright/test';
 import {
-  apiPost, apiGet, ensureDirectAgent, ensureDemoAgent,
-  createExecution, waitForTurnEnd, waitForWorkerIdle, API_URL,
+  ensureDirectAgent, ensureDemoAgent,
+  createExecution, waitForWorkerPickup, waitForWorkerIdle,
 } from './helpers';
-
-async function claimSession() {
-  await apiPost('/api/worker/sync', {});
-}
-
-async function sendQuestion(sessionId: string, question: string, options: { label: string; description: string }[]) {
-  const res = await fetch(`${API_URL}/mcp`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${sessionId}`,
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: {
-        name: 'escalate',
-        arguments: {
-          questions: [{
-            question,
-            header: 'Test',
-            options,
-            multiSelect: false,
-          }],
-        },
-      },
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`MCP escalate failed: ${res.status} ${text}`);
-  }
-}
 
 test.beforeEach(async () => {
   await waitForWorkerIdle(30000);
@@ -65,29 +31,23 @@ test('action panel collapses when no decisions pending', async ({ page }) => {
 });
 
 test('action panel shows decisions and auto-expands on question arrival', async ({ page }) => {
-  const agent = await ensureDirectAgent();
-  const { execId, sessionId } = await createExecution(agent.id, 'Layout test', 'Layout Q&A');
-  await claimSession();
+  const agent = await ensureDemoAgent();
+  const { execId } = await createExecution(agent.id, 'Layout test', 'Layout Q&A');
+  await waitForWorkerPickup(execId, 15000);
 
   await page.goto(`/#/execution/${execId}`);
 
-  // Send a question
-  await sendQuestion(sessionId, 'Pick a color', [
-    { label: 'Red', description: 'Warm color' },
-    { label: 'Blue', description: 'Cool color' },
-  ]);
-
   // Action panel should auto-expand with the decision
   const panel = page.getByRole('complementary', { name: 'Decisions panel' });
-  await expect(panel.getByText('DECISIONS (1)')).toBeVisible({ timeout: 10000 });
-  await expect(panel.getByText('Pick a color')).toBeVisible();
+  await expect(panel.getByText('DECISIONS (1)')).toBeVisible({ timeout: 20000 });
+  await expect(panel.getByText('Which approach should I take?')).toBeVisible();
 
   // NavRail badge should show count
   const decisionsBtn = page.getByRole('button', { name: 'Toggle decisions panel' });
   await expect(decisionsBtn.getByText('1')).toBeVisible();
 
   // Answer from the action panel
-  await panel.getByRole('radio', { name: /Red/ }).click();
+  await panel.getByRole('radio', { name: /Refactor existing code/ }).click();
   await panel.getByRole('button', { name: /Submit/ }).click();
 
   // Toast should appear
@@ -116,25 +76,19 @@ test('execution search filters the list', async ({ page }) => {
 });
 
 test('action panel stays collapsed at tablet width even with pending decisions', async ({ page }) => {
-  const agent = await ensureDirectAgent();
-  const { execId, sessionId } = await createExecution(agent.id, 'Tablet test', 'Tablet Q&A');
-  await claimSession();
+  const agent = await ensureDemoAgent();
+  const { execId } = await createExecution(agent.id, 'Tablet test', 'Tablet Q&A');
+  await waitForWorkerPickup(execId, 15000);
 
-  // Resize to tablet width BEFORE the question arrives
+  // Resize to tablet width BEFORE navigating
   await page.setViewportSize({ width: 900, height: 700 });
   await page.goto(`/#/execution/${execId}`);
-
-  // Send a question — at desktop this would auto-expand the panel
-  await sendQuestion(sessionId, 'Tablet question', [
-    { label: 'A', description: 'Option A' },
-    { label: 'B', description: 'Option B' },
-  ]);
 
   const panel = page.getByRole('complementary', { name: 'Decisions panel' });
 
   // Wait for the question to propagate through polling, then verify panel stays collapsed
   const badge = panel.locator('.collapsed-badge');
-  await expect(badge).toBeVisible({ timeout: 15000 });
+  await expect(badge).toBeVisible({ timeout: 20000 });
   await expect(badge).toHaveText(/\d+/);
 
   // Panel must stay collapsed (showing expand button, not the expanded header)
@@ -143,16 +97,12 @@ test('action panel stays collapsed at tablet width even with pending decisions',
 });
 
 test('elapsed time appears for running executions', async ({ page }) => {
-  const agent = await ensureDirectAgent();
-  const { execId, sessionId } = await createExecution(agent.id, 'Timer test', 'Timer Exec');
-  await claimSession();
-
-  await sendQuestion(sessionId, 'Wait question', [
-    { label: 'Yes', description: 'Confirm' },
-  ]);
+  const agent = await ensureDemoAgent();
+  const { execId } = await createExecution(agent.id, 'Timer test', 'Timer Exec');
+  await waitForWorkerPickup(execId, 15000);
 
   await page.goto(`/#/execution/${execId}`);
 
   // Elapsed time should be visible in the detail header (scope to main-content to avoid sidebar match)
-  await expect(page.locator('.main-content .elapsed-time')).toBeVisible({ timeout: 10000 });
+  await expect(page.locator('.main-content .elapsed-time')).toBeVisible({ timeout: 20000 });
 });

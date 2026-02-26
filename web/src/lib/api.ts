@@ -169,6 +169,14 @@ export class AgentBeaconAPI {
     return this.fetchJSON<Event[]>(`/sessions/${sessionId}/events`);
   }
 
+  async cancelSession(sessionId: string): Promise<{ canceled: boolean; sessions_terminated: number }> {
+    return this.fetchJSON(`/sessions/${sessionId}/cancel`, { method: 'POST' });
+  }
+
+  async completeSession(sessionId: string): Promise<{ completed: boolean; sessions_terminated: number }> {
+    return this.fetchJSON(`/sessions/${sessionId}/complete`, { method: 'POST' });
+  }
+
   async postMessage(
     sessionId: string,
     message: string
