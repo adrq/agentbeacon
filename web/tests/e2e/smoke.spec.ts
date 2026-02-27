@@ -49,7 +49,8 @@ test('create execution via modal', async ({ page }) => {
 
   await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 5000 });
   await expect(page.getByRole('heading', { name: 'Smoke test' })).toBeVisible();
-  await expect(page.getByText('Submitted', { exact: true })).toBeVisible();
+  // Worker may pick up the execution before this assertion fires, so accept any active status
+  await expect(page.getByText(/Submitted|Working|Turn Complete|Awaiting Input/)).toBeVisible();
 });
 
 test('full question-answer flow', async ({ page }) => {

@@ -1,12 +1,12 @@
 <script lang="ts">
   import { Dialog } from 'bits-ui';
-  import type { Agent, AgentType } from '../types';
-  import { createAgentMutation, updateAgentMutation } from '../queries/agents';
+  import type { Agent } from '../types';
+  import { createAgentMutation, updateAgentMutation, driversQuery, createDriverMutation } from '../queries/agents';
   import Button from './ui/button.svelte';
 
   interface AgentTemplate {
     name: string;
-    agent_type: string;
+    platform: string;
     description: string;
     config: Record<string, unknown>;
   }
@@ -14,21 +14,24 @@
   interface Props {
     agent?: Agent | null;
     template?: AgentTemplate | null;
+    driverId?: string | null;
     onsubmit?: () => void;
     oncancel?: () => void;
   }
 
-  let { agent = null, template = null, onsubmit, oncancel }: Props = $props();
+  let { agent = null, template = null, driverId = null, onsubmit, oncancel }: Props = $props();
 
   const createMut = createAgentMutation();
   const updateMut = updateAgentMutation();
+  const drivers = driversQuery();
+  const createDriverMut = createDriverMutation();
 
   let isOpen = $state(true);
   let isEdit = $derived(!!agent);
 
   let name = $state(agent?.name ?? template?.name ?? '');
   let description = $state(agent?.description ?? template?.description ?? '');
-  let agentType = $state<string>(agent?.agent_type ?? template?.agent_type ?? 'claude_sdk');
+  let selectedDriverId = $state<string>(agent?.driver_id ?? driverId ?? '');
   let configText = $state(JSON.stringify(agent?.config ?? template?.config ?? {}, null, 2));
   let sandboxConfigText = $state(
     agent?.sandbox_config ? JSON.stringify(agent.sandbox_config, null, 2) : ''
@@ -39,14 +42,15 @@
 
   let submitting = $derived(createMut.isPending || updateMut.isPending);
 
-  const agentTypes: { value: AgentType; label: string }[] = [
-    { value: 'claude_sdk', label: 'Claude SDK' },
-    { value: 'codex_sdk', label: 'Codex SDK' },
-    { value: 'copilot_sdk', label: 'Copilot SDK' },
-    { value: 'opencode_sdk', label: 'OpenCode SDK' },
-    { value: 'acp', label: 'ACP' },
-    { value: 'a2a', label: 'A2A' },
-  ];
+  // Platform labels for display
+  const platformLabels: Record<string, string> = {
+    claude_sdk: 'Claude SDK',
+    codex_sdk: 'Codex SDK',
+    copilot_sdk: 'Copilot SDK',
+    opencode_sdk: 'OpenCode SDK',
+    acp: 'ACP',
+    a2a: 'A2A',
+  };
 
   function parseJSON(text: string): Record<string, unknown> | null {
     try {
@@ -62,6 +66,7 @@
 
   let canSubmit = $derived.by(() => {
     if (!name.trim() || submitting) return false;
+    if (!isEdit && !selectedDriverId) return false;
     const config = parseJSON(configText);
     if (!config) return false;
     if (sandboxConfigText.trim() && !parseJSON(sandboxConfigText)) return false;
@@ -105,7 +110,7 @@
         await createMut.mutateAsync({
           name: name.trim(),
           description: description.trim() || null,
-          agent_type: agentType as AgentType,
+          driver_id: selectedDriverId,
           config,
           sandbox_config: sandboxConfig,
         });
@@ -119,6 +124,10 @@
   function handleClose() {
     isOpen = false;
     oncancel?.();
+  }
+
+  function driverLabel(d: { name: string; platform: string }): string {
+    return `${d.name} (${platformLabels[d.platform] ?? d.platform})`;
   }
 </script>
 
@@ -151,19 +160,20 @@
       </div>
 
       <div class="field">
-        <label class="field-label" for="agent-type-select">Agent Type</label>
+        <label class="field-label" for="agent-driver-select">Driver</label>
         <select
-          id="agent-type-select"
+          id="agent-driver-select"
           class="field-select"
-          bind:value={agentType}
+          bind:value={selectedDriverId}
           disabled={isEdit}
         >
-          {#each agentTypes as t}
-            <option value={t.value}>{t.label}</option>
+          <option value="" disabled>Select a driver...</option>
+          {#each drivers.data ?? [] as d}
+            <option value={d.id}>{driverLabel(d)}</option>
           {/each}
         </select>
         {#if isEdit}
-          <span class="field-hint">Agent type cannot be changed after creation.</span>
+          <span class="field-hint">Driver cannot be changed after creation.</span>
         {/if}
       </div>
 

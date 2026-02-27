@@ -1344,6 +1344,51 @@ def db_conn(db_url):
         raise ValueError(f"Unsupported db_url scheme: {db_url}")
 
 
+def _ensure_driver(conn, agent_type):
+    """Return driver_id for agent_type, creating driver if needed."""
+    row = conn.execute(
+        "SELECT id FROM drivers WHERE platform = ?", (agent_type,)
+    ).fetchone()
+    if row:
+        return row[0]
+    driver_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO drivers (id, name, platform, config) VALUES (?, ?, ?, '{}')",
+        (driver_id, agent_type, agent_type),
+    )
+    return driver_id
+
+
+def seed_test_driver(
+    db_url: str,
+    name: str = "claude_sdk",
+    platform: str = "claude_sdk",
+    driver_id: str = None,
+) -> str:
+    """Insert a test driver directly into the database.
+
+    Args:
+        db_url: Database URL (sqlite:... or postgres://...)
+        name: Driver name
+        platform: Driver platform
+        driver_id: Driver ID (generated UUID if None)
+
+    Returns:
+        str: Driver ID
+    """
+    if driver_id is None:
+        driver_id = str(uuid.uuid4())
+
+    with db_conn(db_url) as conn:
+        conn.execute(
+            "INSERT INTO drivers (id, name, platform, config) VALUES (?, ?, ?, '{}')",
+            (driver_id, name, platform),
+        )
+        conn.commit()
+
+    return driver_id
+
+
 def seed_test_agent(
     db_url: str,
     name: str = "test-agent",
@@ -1352,6 +1397,8 @@ def seed_test_agent(
     enabled: bool = True,
 ) -> str:
     """Insert a test agent directly into the database.
+
+    Auto-creates driver for agent_type if one doesn't exist.
 
     Args:
         db_url: Database URL (sqlite:... or postgres://...)
@@ -1367,9 +1414,10 @@ def seed_test_agent(
         agent_id = str(uuid.uuid4())
 
     with db_conn(db_url) as conn:
+        driver_id = _ensure_driver(conn, agent_type)
         conn.execute(
-            "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, ?, '{}', ?)",
-            (agent_id, name, agent_type, enabled),
+            "INSERT INTO agents (id, name, agent_type, driver_id, config, enabled) VALUES (?, ?, ?, ?, '{}', ?)",
+            (agent_id, name, agent_type, driver_id, enabled),
         )
         conn.commit()
 
@@ -1403,9 +1451,10 @@ def seed_acp_mock_agent(
     )
 
     with db_conn(db_url) as conn:
+        driver_id = _ensure_driver(conn, "acp")
         conn.execute(
-            "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, 'acp', ?, ?)",
-            (agent_id, name, config, True),
+            "INSERT INTO agents (id, name, agent_type, driver_id, config, enabled) VALUES (?, ?, 'acp', ?, ?, ?)",
+            (agent_id, name, driver_id, config, True),
         )
         conn.commit()
 
@@ -1454,9 +1503,10 @@ def seed_acp_scenario_agent(
     config = json.dumps({"command": "uv", "args": args, "timeout": 60})
 
     with db_conn(db_url) as conn:
+        driver_id = _ensure_driver(conn, "acp")
         conn.execute(
-            "INSERT INTO agents (id, name, agent_type, config, enabled) VALUES (?, ?, 'acp', ?, ?)",
-            (agent_id, name, config, True),
+            "INSERT INTO agents (id, name, agent_type, driver_id, config, enabled) VALUES (?, ?, 'acp', ?, ?, ?)",
+            (agent_id, name, driver_id, config, True),
         )
         conn.commit()
 
@@ -1697,10 +1747,29 @@ def create_project_via_api(scheduler_url: str, name: str, path: str = None) -> d
     return resp.json()
 
 
+def ensure_driver_via_api(scheduler_url: str, platform: str = "acp") -> str:
+    """Find or create a driver for the given platform, return driver_id."""
+    resp = httpx.get(f"{scheduler_url}/api/drivers", timeout=5)
+    assert resp.status_code == 200
+    for driver in resp.json():
+        if driver["platform"] == platform:
+            return driver["id"]
+
+    resp = httpx.post(
+        f"{scheduler_url}/api/drivers",
+        json={"name": platform, "platform": platform},
+        timeout=5,
+    )
+    assert resp.status_code == 201, (
+        f"create driver failed: {resp.status_code} {resp.text}"
+    )
+    return resp.json()["id"]
+
+
 def create_agent_via_api(
     scheduler_url: str,
     name: str,
-    agent_type: str = "acp",
+    driver_id: str = None,
     config: dict = None,
     description: str = None,
 ) -> dict:
@@ -1709,7 +1778,7 @@ def create_agent_via_api(
     Args:
         scheduler_url: Base URL of the scheduler
         name: Agent name
-        agent_type: Agent type
+        driver_id: Driver ID (auto-resolved from 'acp' platform if None)
         config: Agent config (defaults to minimal valid config)
         description: Optional description
 
@@ -1719,7 +1788,10 @@ def create_agent_via_api(
     if config is None:
         config = {"command": "echo", "args": ["test"], "timeout": 60}
 
-    payload = {"name": name, "agent_type": agent_type, "config": config}
+    if driver_id is None:
+        driver_id = ensure_driver_via_api(scheduler_url)
+
+    payload = {"name": name, "driver_id": driver_id, "config": config}
     if description is not None:
         payload["description"] = description
 

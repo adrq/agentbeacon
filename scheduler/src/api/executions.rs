@@ -33,7 +33,8 @@ pub struct ExecutionDetailResponse {
 /// Request body for creating an execution
 #[derive(Debug, Deserialize)]
 pub struct CreateExecutionRequest {
-    pub agent_id: String,
+    pub agent_id: Option<String>,
+    pub agent_ids: Option<Vec<String>>,
     pub prompt: String,
     pub project_id: Option<String>,
     pub title: Option<String>,
@@ -94,10 +95,58 @@ async fn create_execution_handler(
     State(state): State<AppState>,
     Json(req): Json<CreateExecutionRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
+    // Resolve lead agent_id: accept agent_id (singular) or agent_ids (array), not both
+    let (lead_agent_id, all_agent_ids) = match (&req.agent_id, &req.agent_ids) {
+        (Some(_), Some(_)) => {
+            return Err(SchedulerError::ValidationFailed(
+                "provide agent_id or agent_ids, not both".to_string(),
+            ));
+        }
+        (None, None) => {
+            return Err(SchedulerError::ValidationFailed(
+                "agent_id or agent_ids is required".to_string(),
+            ));
+        }
+        (Some(id), None) => (id.clone(), vec![id.clone()]),
+        (None, Some(ids)) => {
+            if ids.is_empty() {
+                return Err(SchedulerError::ValidationFailed(
+                    "agent_ids must be non-empty".to_string(),
+                ));
+            }
+            let mut seen = std::collections::HashSet::new();
+            let deduped: Vec<String> = ids
+                .iter()
+                .filter(|id| seen.insert((*id).clone()))
+                .cloned()
+                .collect();
+            (ids[0].clone(), deduped)
+        }
+    };
+
+    // Validate all agent IDs exist and are enabled
+    for aid in &all_agent_ids {
+        let agent = db::agents::get_by_id(&state.db_pool, aid)
+            .await
+            .map_err(|e| match e {
+                SchedulerError::NotFound(_) => {
+                    SchedulerError::ValidationFailed(format!("agent not found: {aid}"))
+                }
+                other => other,
+            })?;
+        if !agent.enabled {
+            return Err(SchedulerError::ValidationFailed(format!(
+                "agent is disabled: {aid}"
+            )));
+        }
+    }
+
+    let agent_id_refs: Vec<&str> = all_agent_ids.iter().map(|s| s.as_str()).collect();
     let result = execution::create_execution(
         &state.db_pool,
         &state.task_queue,
-        &req.agent_id,
+        &lead_agent_id,
+        &agent_id_refs,
         &req.prompt,
         req.project_id.as_deref(),
         req.title.as_deref(),
@@ -108,8 +157,6 @@ async fn create_execution_handler(
     .await?;
 
     // Broadcast for the initial "submitted" event created by the service.
-    // We don't have the event_id, but sending event_id=0 triggers a DB backfill
-    // on the SSE handler, which picks up the new event correctly.
     let _ = state.event_broadcast.send(EventNotification {
         execution_id: result.execution.id.clone(),
         event_id: 0,
@@ -217,6 +264,25 @@ async fn execution_events(
     Ok(Json(events.into_iter().map(Into::into).collect()))
 }
 
+/// Get agents associated with an execution (GET /api/executions/:id/agents)
+async fn execution_agents_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<crate::api::agents::AgentResponse>>, SchedulerError> {
+    // Verify execution exists
+    db::executions::get_by_id(&state.db_pool, &id).await?;
+
+    let agent_ids = db::execution_agents::list_by_execution(&state.db_pool, &id).await?;
+
+    let mut agents = Vec::new();
+    for aid in agent_ids {
+        if let Ok(agent) = db::agents::get_by_id(&state.db_pool, &aid).await {
+            agents.push(crate::api::agents::AgentResponse::from(agent));
+        }
+    }
+    Ok(Json(agents))
+}
+
 /// Execution routes
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -230,4 +296,5 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(cancel_execution),
         )
         .route("/api/executions/{id}/events", get(execution_events))
+        .route("/api/executions/{id}/agents", get(execution_agents_handler))
 }

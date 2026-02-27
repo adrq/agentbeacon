@@ -14,6 +14,8 @@ const MIGRATION_0003_PG: &str = include_str!("../../migrations/0003_pg_add_msg_s
 const MIGRATION_0004: &str = include_str!("../../migrations/0004_add_parent_session_index.sql");
 const MIGRATION_0004_PG: &str =
     include_str!("../../migrations/0004_pg_add_parent_session_index.sql");
+const MIGRATION_0005: &str = include_str!("../../migrations/0005_data_model_split.sql");
+const MIGRATION_0005_PG: &str = include_str!("../../migrations/0005_pg_data_model_split.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -151,11 +153,17 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     } else {
         MIGRATION_0004
     };
+    let migration_0005 = if is_postgres {
+        MIGRATION_0005_PG
+    } else {
+        MIGRATION_0005
+    };
     let migrations = vec![
         (MIGRATION_0001, 1),
         (migration_0002, 2),
         (migration_0003, 3),
         (migration_0004, 4),
+        (migration_0005, 5),
     ];
 
     // Process each migration
@@ -167,7 +175,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
 
         // Migration 0002 uses DROP TABLE which triggers CASCADE with foreign_keys ON.
         // Disable FKs before the migration and re-enable after.
-        let needs_fk_disable = !is_postgres && version == 2;
+        let needs_fk_disable = !is_postgres && (version == 2 || version == 5);
         if needs_fk_disable {
             pool.as_ref()
                 .execute("PRAGMA foreign_keys = OFF")

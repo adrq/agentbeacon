@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { apiPost, apiGet, apiDelete } from './helpers';
+import { apiPost, apiGet, apiDelete, ensureDriver } from './helpers';
 
 const TEST_AGENT_NAMES = ['E2E Test Agent', 'Edit Agent', 'Renamed Agent', 'Delete Agent'];
 
@@ -35,7 +35,7 @@ test('add agent via template', async ({ page }) => {
   await expect(dialog).toBeVisible();
 
   await dialog.getByLabel('Name').fill('E2E Test Agent');
-  await dialog.getByLabel('Agent Type').selectOption('acp');
+  await dialog.getByLabel('Driver').selectOption({ label: 'acp (ACP)' });
   await dialog.getByRole('button', { name: 'Add' }).click();
 
   await expect(dialog).not.toBeVisible({ timeout: 5000 });
@@ -43,9 +43,10 @@ test('add agent via template', async ({ page }) => {
 });
 
 test('edit agent', async ({ page }) => {
+  const driverId = await ensureDriver('acp');
   const agent = await apiPost('/api/agents', {
     name: 'Edit Agent',
-    agent_type: 'acp',
+    driver_id: driverId,
     config: { command: 'echo', args: [], timeout: 60 },
   });
   createdAgentIds.push(agent.id);
@@ -68,9 +69,10 @@ test('edit agent', async ({ page }) => {
 });
 
 test('delete agent', async ({ page }) => {
+  const driverId = await ensureDriver('acp');
   const agent = await apiPost('/api/agents', {
     name: 'Delete Agent',
-    agent_type: 'acp',
+    driver_id: driverId,
     config: { command: 'echo', args: [], timeout: 60 },
   });
   createdAgentIds.push(agent.id);

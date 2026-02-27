@@ -1,4 +1,4 @@
-"""Contract test: verify all 9 target tables exist with correct structure.
+"""Contract test: verify all target tables exist with correct structure.
 
 Uses a real scheduler instance to verify the migration produces the expected schema.
 """
@@ -12,9 +12,11 @@ from tests.testhelpers import scheduler_context
 EXPECTED_TABLES = [
     "schema_migrations",
     "config",
+    "drivers",
     "agents",
     "projects",
     "executions",
+    "execution_agents",
     "sessions",
     "events",
     "artifacts",
@@ -32,17 +34,30 @@ EXPECTED_COLUMNS = {
         "created_at",
         "updated_at",
     ],
+    "drivers": [
+        "id",
+        "name",
+        "platform",
+        "config",
+        "created_at",
+        "updated_at",
+    ],
     "agents": [
         "id",
         "name",
         "description",
         "agent_type",
+        "driver_id",
         "config",
         "sandbox_config",
         "enabled",
         "deleted_at",
         "created_at",
         "updated_at",
+    ],
+    "execution_agents": [
+        "execution_id",
+        "agent_id",
     ],
     "executions": [
         "id",
@@ -155,19 +170,29 @@ def test_executions_status_check_constraint():
             conn.close()
 
 
-def test_agents_type_check_constraint():
-    """Verify CHECK constraint on agents.agent_type rejects invalid values."""
+def test_agents_type_no_check_constraint():
+    """After DM migration, agent_type CHECK constraint is removed.
+
+    Platform validation now happens via drivers.platform at the API layer.
+    The DB allows any agent_type value.
+    """
     with scheduler_context() as ctx:
         db_path = ctx["db_path"]
         assert db_path is not None
 
         conn = sqlite3.connect(db_path)
         try:
-            with pytest.raises(sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO agents (id, name, agent_type, config) VALUES ('test', 'test', 'invalid_type', '{}')"
-                )
+            conn.execute(
+                "INSERT INTO agents (id, name, agent_type, config) VALUES ('test', 'test', 'invalid_type', '{}')"
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT agent_type FROM agents WHERE id = 'test'"
+            ).fetchone()
+            assert row[0] == "invalid_type"
         finally:
+            conn.execute("DELETE FROM agents WHERE id = 'test'")
+            conn.commit()
             conn.close()
 
 
@@ -213,6 +238,8 @@ def test_indexes_present():
             expected_indexes = [
                 "idx_agents_enabled",
                 "idx_agents_name_active",
+                "idx_agents_driver_id",
+                "idx_execution_agents_agent_id",
                 "idx_projects_path",
                 "idx_executions_project_id",
                 "idx_executions_status",

@@ -1,5 +1,4 @@
 import { createQuery, createMutation, useQueryClient } from '@tanstack/svelte-query';
-import type { AgentType } from '../types';
 import { api } from '../api';
 
 export function agentsQuery() {
@@ -9,13 +8,44 @@ export function agentsQuery() {
   }));
 }
 
+export function driversQuery() {
+  return createQuery(() => ({
+    queryKey: ['drivers'],
+    queryFn: () => api.getDrivers(),
+  }));
+}
+
+export function createDriverMutation() {
+  const queryClient = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (req: {
+      name: string;
+      platform: string;
+      config?: Record<string, unknown>;
+    }) => api.createDriver(req),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['drivers'] });
+    },
+  }));
+}
+
+export function deleteDriverMutation() {
+  const queryClient = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (id: string) => api.deleteDriver(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['drivers'] });
+    },
+  }));
+}
+
 export function createAgentMutation() {
   const queryClient = useQueryClient();
   return createMutation(() => ({
     mutationFn: (req: {
       name: string;
       description?: string | null;
-      agent_type: AgentType;
+      driver_id: string;
       config: Record<string, unknown>;
       sandbox_config?: Record<string, unknown> | null;
     }) => api.createAgent(req),

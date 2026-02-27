@@ -12,6 +12,7 @@ pub struct Agent {
     pub name: String,
     pub description: Option<String>,
     pub agent_type: String,
+    pub driver_id: Option<String>,
     pub config: String,                 // JSON
     pub sandbox_config: Option<String>, // JSON
     pub enabled: bool,
@@ -20,6 +21,7 @@ pub struct Agent {
     pub updated_at: DateTime<Utc>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create(
     pool: &DbPool,
     id: &str,
@@ -28,9 +30,10 @@ pub async fn create(
     config: &str,
     description: Option<&str>,
     sandbox_config: Option<&str>,
+    driver_id: Option<&str>,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO agents (id, name, description, agent_type, config, sandbox_config) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agents (id, name, description, agent_type, driver_id, config, sandbox_config) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
 
     sqlx::query(&query)
@@ -38,12 +41,12 @@ pub async fn create(
         .bind(name)
         .bind(description)
         .bind(agent_type)
+        .bind(driver_id)
         .bind(config)
         .bind(sandbox_config)
         .execute(pool.as_ref())
         .await
         .map_err(|e| {
-            // Detect unique constraint violation for name
             let err_str = e.to_string();
             if err_str.contains("UNIQUE")
                 || err_str.contains("unique")
@@ -62,7 +65,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Agent, SchedulerError>
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, description, agent_type, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE id = ? AND deleted_at IS NULL",
+        "SELECT id, name, description, agent_type, driver_id, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE id = ? AND deleted_at IS NULL",
         created_fmt, updated_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -81,7 +84,7 @@ pub async fn get_by_name(pool: &DbPool, name: &str) -> Result<Agent, SchedulerEr
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, description, agent_type, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE name = ? AND deleted_at IS NULL",
+        "SELECT id, name, description, agent_type, driver_id, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE name = ? AND deleted_at IS NULL",
         created_fmt, updated_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -100,7 +103,7 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Agent>, SchedulerError> {
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, description, agent_type, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE deleted_at IS NULL ORDER BY name",
+        "SELECT id, name, description, agent_type, driver_id, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE deleted_at IS NULL ORDER BY name",
         created_fmt, updated_fmt
     );
 
@@ -238,6 +241,7 @@ fn parse_agent_row(row: sqlx::any::AnyRow) -> Result<Agent, SchedulerError> {
         name: row.get("name"),
         description: row.get("description"),
         agent_type: row.get("agent_type"),
+        driver_id: row.get("driver_id"),
         config: row.get("config"),
         sandbox_config: row.get("sandbox_config"),
         enabled: parse_bool(&row, "enabled"),

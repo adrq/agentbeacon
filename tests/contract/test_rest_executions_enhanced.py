@@ -8,6 +8,7 @@ import pytest
 from tests.testhelpers import (
     create_execution_via_api,
     create_project_via_api,
+    db_conn,
     scheduler_context,
     seed_test_agent,
 )
@@ -518,6 +519,115 @@ def test_create_execution_empty_prompt_returns_400(test_database):
                 "agent_id": agent_id,
                 "prompt": "   ",
                 "cwd": tempfile.gettempdir(),
+            },
+            timeout=5,
+        )
+        assert resp.status_code == 400
+
+
+# --- Agent pool and junction tests ---
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_execution_with_agent_id_populates_junction(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="junction-test")
+        exec_id, _ = create_execution_via_api(
+            ctx["url"], agent_id=agent_id, prompt="test", cwd="/tmp"
+        )
+
+        with db_conn(ctx["db_url"]) as conn:
+            rows = conn.execute(
+                "SELECT agent_id FROM execution_agents WHERE execution_id = ?",
+                (exec_id,),
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == agent_id
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_execution_with_agent_ids_populates_junction(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent1 = seed_test_agent(
+            ctx["db_url"], name="pool-agent-1", agent_type="claude_sdk"
+        )
+        agent2 = seed_test_agent(
+            ctx["db_url"], name="pool-agent-2", agent_type="claude_sdk"
+        )
+
+        resp = httpx.post(
+            f"{ctx['url']}/api/executions",
+            json={
+                "agent_ids": [agent1, agent2],
+                "prompt": "multi-agent test",
+                "cwd": "/tmp",
+            },
+            timeout=5,
+        )
+        assert resp.status_code == 201
+        exec_id = resp.json()["execution"]["id"]
+
+        with db_conn(ctx["db_url"]) as conn:
+            rows = conn.execute(
+                "SELECT agent_id FROM execution_agents WHERE execution_id = ?",
+                (exec_id,),
+            ).fetchall()
+        agent_ids = {r[0] for r in rows}
+        assert agent_ids == {agent1, agent2}
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_execution_agents_discovery_returns_pool(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent1 = seed_test_agent(
+            ctx["db_url"], name="disc-agent-1", agent_type="claude_sdk"
+        )
+        agent2 = seed_test_agent(
+            ctx["db_url"], name="disc-agent-2", agent_type="claude_sdk"
+        )
+
+        resp = httpx.post(
+            f"{ctx['url']}/api/executions",
+            json={
+                "agent_ids": [agent1, agent2],
+                "prompt": "discovery test",
+                "cwd": "/tmp",
+            },
+            timeout=5,
+        )
+        assert resp.status_code == 201
+        exec_id = resp.json()["execution"]["id"]
+
+        disc_resp = httpx.get(
+            f"{ctx['url']}/api/executions/{exec_id}/agents", timeout=5
+        )
+        assert disc_resp.status_code == 200
+        returned_ids = {a["id"] for a in disc_resp.json()}
+        assert returned_ids == {agent1, agent2}
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_execution_requires_agent_id_or_agent_ids(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        resp = httpx.post(
+            f"{ctx['url']}/api/executions",
+            json={"prompt": "no agent", "cwd": "/tmp"},
+            timeout=5,
+        )
+        assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_execution_rejects_both_agent_id_and_agent_ids(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="both-test")
+        resp = httpx.post(
+            f"{ctx['url']}/api/executions",
+            json={
+                "agent_id": agent_id,
+                "agent_ids": [agent_id],
+                "prompt": "both",
+                "cwd": "/tmp",
             },
             timeout=5,
         )

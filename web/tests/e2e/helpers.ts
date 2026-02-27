@@ -98,15 +98,25 @@ export async function waitForWorking(execId: string, timeoutMs = 20000) {
   throw new Error(`Execution ${execId} did not reach working state within ${timeoutMs}ms`);
 }
 
+/** Find or create a driver for the given platform, return its id. */
+export async function ensureDriver(platform: string): Promise<string> {
+  const drivers: { id: string; platform: string }[] = await apiGet('/api/drivers');
+  const existing = drivers.find(d => d.platform === platform);
+  if (existing) return existing.id;
+  const result = await apiPost('/api/drivers', { name: platform, platform });
+  return result.id;
+}
+
 /** Ensure the 'Mock Agent (Direct)' exists, creating if needed. */
 export async function ensureDirectAgent(): Promise<{ id: string; name: string }> {
   const agents: { id: string; name: string }[] = await apiGet('/api/agents');
   const existing = agents.find(a => a.name === 'Mock Agent (Direct)');
   if (existing) return { id: existing.id, name: existing.name };
 
+  const driverId = await ensureDriver('acp');
   const result = await apiPost('/api/agents', {
     name: 'Mock Agent (Direct)',
-    agent_type: 'acp',
+    driver_id: driverId,
     description: 'Mock ACP agent without scenario for special command tests',
     config: {
       command: 'uv',

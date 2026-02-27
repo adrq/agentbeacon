@@ -90,9 +90,11 @@ def cleanup_postgres_database(request):
                 "events",  # Child of sessions
                 "artifacts",  # Child of projects/sessions
                 "task_queue",  # Child of executions/sessions
+                "execution_agents",  # Child of executions/agents
                 "sessions",  # Child of executions
                 "executions",  # Child of projects
-                "agents",  # Standalone
+                "agents",  # References drivers
+                "drivers",  # Standalone
                 "projects",  # Standalone
                 "config",  # Standalone
             ]

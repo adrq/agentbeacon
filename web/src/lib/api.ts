@@ -1,5 +1,5 @@
 import type {
-  Agent, AgentType, Execution, ExecutionDetail, Session, Event, Project,
+  Agent, Driver, Execution, ExecutionDetail, Session, Event, Project,
   CreateExecutionResponse, PostMessageResponse,
 } from './types';
 
@@ -80,6 +80,36 @@ export class AgentBeaconAPI {
     return this.fetchNoContent(`/projects/${id}`, { method: 'DELETE' });
   }
 
+  // Drivers
+  async getDrivers(): Promise<Driver[]> {
+    return this.fetchJSON<Driver[]>('/drivers');
+  }
+
+  async createDriver(req: {
+    name: string;
+    platform: string;
+    config?: Record<string, unknown>;
+  }): Promise<Driver> {
+    return this.fetchJSON('/drivers', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async updateDriver(id: string, req: {
+    name?: string;
+    config?: Record<string, unknown>;
+  }): Promise<Driver> {
+    return this.fetchJSON(`/drivers/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async deleteDriver(id: string): Promise<void> {
+    return this.fetchNoContent(`/drivers/${id}`, { method: 'DELETE' });
+  }
+
   // Agents
   async getAgents(): Promise<Agent[]> {
     return this.fetchJSON<Agent[]>('/agents');
@@ -88,7 +118,7 @@ export class AgentBeaconAPI {
   async createAgent(req: {
     name: string;
     description?: string | null;
-    agent_type: AgentType;
+    driver_id: string;
     config: Record<string, unknown>;
     sandbox_config?: Record<string, unknown> | null;
   }): Promise<Agent> {
@@ -113,6 +143,10 @@ export class AgentBeaconAPI {
 
   async deleteAgent(id: string): Promise<void> {
     return this.fetchNoContent(`/agents/${id}`, { method: 'DELETE' });
+  }
+
+  async getExecutionAgents(executionId: string): Promise<Agent[]> {
+    return this.fetchJSON<Agent[]>(`/executions/${executionId}/agents`);
   }
 
   // Executions

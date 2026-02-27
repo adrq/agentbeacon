@@ -31,6 +31,21 @@ struct Cli {
     db_url: Option<String>,
 }
 
+/// Ensure a driver exists for the given platform, creating one if needed.
+async fn ensure_driver(db_pool: &db::DbPool, platform: &str) -> Result<String> {
+    match db::drivers::get_by_platform(db_pool, platform).await {
+        Ok(driver) => Ok(driver.id),
+        Err(scheduler::error::SchedulerError::NotFound(_)) => {
+            let id = uuid::Uuid::new_v4().to_string();
+            db::drivers::create(db_pool, &id, platform, platform, "{}")
+                .await
+                .context("Failed to create driver")?;
+            Ok(id)
+        }
+        Err(e) => Err(anyhow::anyhow!("Failed to query driver: {e}")),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI arguments
@@ -85,6 +100,11 @@ async fn bootstrap(cli: Cli) -> Result<()> {
             .context("Failed to count agents")?;
         if agent_count == 0 {
             info!("Seeding default agents...");
+
+            // Ensure drivers exist for seed agent platforms
+            let acp_driver_id = ensure_driver(&db_pool, "acp").await?;
+            let claude_driver_id = ensure_driver(&db_pool, "claude_sdk").await?;
+
             let demo_id = uuid::Uuid::new_v4().to_string();
             db::agents::create(
                 &db_pool,
@@ -94,6 +114,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
                 r#"{"command":"uv","args":["run","python","-m","agentbeacon.mock_agent","--mode","acp","--scenario","demo"],"timeout":60}"#,
                 Some("Mock ACP agent for e2e testing"),
                 None,
+                Some(&acp_driver_id),
             )
             .await
             .context("Failed to seed Demo Agent")?;
@@ -107,6 +128,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
                 r#"{"command":"uv","args":["run","python","-m","agentbeacon.mock_agent","--mode","acp","--scenario","showcase"],"timeout":60}"#,
                 Some("Non-interactive demo of all event types"),
                 None,
+                Some(&acp_driver_id),
             )
             .await
             .context("Failed to seed Showcase Agent")?;
@@ -120,6 +142,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
                 r#"{"command":"claude","args":[],"timeout":300,"env":{},"state_dir":"~/.claude"}"#,
                 Some("Claude Code via Agent SDK"),
                 None,
+                Some(&claude_driver_id),
             )
             .await
             .context("Failed to seed Claude Code agent")?;

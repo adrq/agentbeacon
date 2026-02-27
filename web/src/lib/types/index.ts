@@ -20,11 +20,21 @@ export interface Project {
   updated_at: string;
 }
 
+export interface Driver {
+  id: string;
+  name: string;
+  platform: string;
+  config: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
   description: string | null;
   agent_type: AgentType;
+  driver_id: string | null;
   enabled: boolean;
   config: Record<string, unknown>;
   sandbox_config: Record<string, unknown> | null;

@@ -1,12 +1,14 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
-  import { agentsQuery, deleteAgentMutation } from '../queries/agents';
+  import { agentsQuery, deleteAgentMutation, driversQuery, createDriverMutation } from '../queries/agents';
   import type { Agent } from '../types';
   import Button from './ui/button.svelte';
   import AgentForm from './AgentForm.svelte';
 
   const agents = agentsQuery();
+  const drivers = driversQuery();
   const deleteMut = deleteAgentMutation();
+  const createDriverMut = createDriverMutation();
 
   let showCreateForm = $state(false);
   let editingAgent = $state<Agent | null>(null);
@@ -15,7 +17,7 @@
 
   interface AgentTemplate {
     name: string;
-    agent_type: string;
+    platform: string;
     description: string;
     config: Record<string, unknown>;
   }
@@ -23,33 +25,50 @@
   const templates: AgentTemplate[] = [
     {
       name: 'Claude Code',
-      agent_type: 'claude_sdk',
+      platform: 'claude_sdk',
       description: 'Claude Code via Agent SDK',
       config: { command: 'claude', args: [], timeout: 300, env: {}, state_dir: '~/.claude' },
     },
     {
       name: 'Copilot',
-      agent_type: 'copilot_sdk',
+      platform: 'copilot_sdk',
       description: 'GitHub Copilot Coding Agent',
       config: { command: 'copilot-agent', args: [], timeout: 300, env: {} },
     },
     {
       name: 'Codex',
-      agent_type: 'codex_sdk',
+      platform: 'codex_sdk',
       description: 'OpenAI Codex CLI Agent',
       config: { command: 'codex', args: [], timeout: 300, env: {} },
     },
     {
       name: 'OpenCode',
-      agent_type: 'opencode_sdk',
+      platform: 'opencode_sdk',
       description: 'OpenCode Agent',
       config: { command: 'opencode', args: [], timeout: 300, env: {} },
     },
   ];
 
   let templateForCreate = $state<AgentTemplate | null>(null);
+  let resolvedDriverId = $state<string | null>(null);
 
-  function handleTemplateClick(template: AgentTemplate) {
+  async function handleTemplateClick(template: AgentTemplate) {
+    // Find or auto-create driver for this platform
+    const existing = (drivers.data ?? []).find(d => d.platform === template.platform);
+    if (existing) {
+      resolvedDriverId = existing.id;
+    } else {
+      try {
+        const created = await createDriverMut.mutateAsync({
+          name: template.platform,
+          platform: template.platform,
+        });
+        resolvedDriverId = created.id;
+      } catch (e) {
+        console.error('Failed to create driver for template:', e);
+        resolvedDriverId = null;
+      }
+    }
     templateForCreate = template;
     showCreateForm = true;
   }
@@ -57,6 +76,7 @@
   function handleCreateClose() {
     showCreateForm = false;
     templateForCreate = null;
+    resolvedDriverId = null;
     editingAgent = null;
   }
 
@@ -151,6 +171,7 @@
   <AgentForm
     agent={editingAgent}
     template={templateForCreate}
+    driverId={resolvedDriverId}
     onsubmit={handleFormSubmit}
     oncancel={handleCreateClose}
   />

@@ -12,21 +12,13 @@ use crate::app::AppState;
 use crate::db;
 use crate::error::SchedulerError;
 
-const VALID_AGENT_TYPES: &[&str] = &[
-    "claude_sdk",
-    "codex_sdk",
-    "copilot_sdk",
-    "opencode_sdk",
-    "acp",
-    "a2a",
-];
-
 #[derive(Debug, Serialize)]
 pub struct AgentResponse {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
     pub agent_type: String,
+    pub driver_id: Option<String>,
     pub config: serde_json::Value,
     pub sandbox_config: Option<serde_json::Value>,
     pub enabled: bool,
@@ -51,6 +43,7 @@ impl From<db::agents::Agent> for AgentResponse {
             name: a.name,
             description: a.description,
             agent_type: a.agent_type,
+            driver_id: a.driver_id,
             config,
             sandbox_config,
             enabled: a.enabled,
@@ -64,7 +57,7 @@ impl From<db::agents::Agent> for AgentResponse {
 pub struct CreateAgentRequest {
     pub name: String,
     pub description: Option<String>,
-    pub agent_type: String,
+    pub driver_id: String,
     pub config: serde_json::Value,
     pub sandbox_config: Option<serde_json::Value>,
 }
@@ -73,7 +66,7 @@ pub struct CreateAgentRequest {
 pub struct UpdateAgentRequest {
     pub name: Option<String>,
     pub description: Option<Option<String>>,
-    pub agent_type: Option<serde_json::Value>, // presence triggers 400
+    pub driver_id: Option<serde_json::Value>, // presence triggers 400
     pub config: Option<serde_json::Value>,
     pub sandbox_config: Option<Option<serde_json::Value>>,
     pub enabled: Option<bool>,
@@ -115,14 +108,17 @@ async fn create_agent(
         ));
     }
 
-    // Validate agent_type
-    if !VALID_AGENT_TYPES.contains(&req.agent_type.as_str()) {
-        return Err(SchedulerError::ValidationFailed(format!(
-            "invalid agent_type: {}. Must be one of: {}",
-            req.agent_type,
-            VALID_AGENT_TYPES.join(", ")
-        )));
-    }
+    // Look up driver, derive agent_type from driver.platform
+    let driver = db::drivers::get_by_id(&state.db_pool, &req.driver_id)
+        .await
+        .map_err(|e| match e {
+            SchedulerError::NotFound(_) => {
+                SchedulerError::ValidationFailed(format!("driver not found: {}", req.driver_id))
+            }
+            other => other,
+        })?;
+    let resolved_agent_type = driver.platform;
+    let resolved_driver_id = driver.id;
 
     // Validate config is a JSON object
     if !req.config.is_object() {
@@ -143,10 +139,11 @@ async fn create_agent(
         &state.db_pool,
         &id,
         name,
-        &req.agent_type,
+        &resolved_agent_type,
         &config_str,
         req.description.as_deref(),
         sandbox_str.as_deref(),
+        Some(&resolved_driver_id),
     )
     .await?;
 
@@ -159,10 +156,10 @@ async fn update_agent(
     Path(id): Path<String>,
     Json(req): Json<UpdateAgentRequest>,
 ) -> Result<Json<AgentResponse>, SchedulerError> {
-    // Reject agent_type in body
-    if req.agent_type.is_some() {
+    // Reject driver_id in body (immutable)
+    if req.driver_id.is_some() {
         return Err(SchedulerError::ValidationFailed(
-            "agent_type is immutable".to_string(),
+            "driver_id is immutable".to_string(),
         ));
     }
 

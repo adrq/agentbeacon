@@ -6,6 +6,7 @@ pub mod agent_card;
 pub mod agents;
 pub mod auth;
 pub mod config;
+pub mod drivers;
 pub mod executions;
 pub mod handlers;
 pub mod health;
@@ -25,6 +26,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(health::routes())
         .merge(agents::routes())
+        .merge(drivers::routes())
         .merge(executions::routes())
         .merge(projects::routes())
         .merge(config::routes())

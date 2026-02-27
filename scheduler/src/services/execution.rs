@@ -19,6 +19,7 @@ pub async fn create_execution(
     db_pool: &DbPool,
     task_queue: &TaskQueue,
     agent_id: &str,
+    agent_ids: &[&str],
     prompt: &str,
     project_id: Option<&str>,
     title: Option<&str>,
@@ -186,6 +187,7 @@ pub async fn create_execution(
         &session_id,
         &agent,
         &session_cwd,
+        agent_ids,
     )
     .await;
 
@@ -212,6 +214,7 @@ async fn persist_and_enqueue(
     session_id: &str,
     agent: &db::agents::Agent,
     session_cwd: &str,
+    agent_ids: &[&str],
 ) -> Result<CreateExecutionResult, SchedulerError> {
     // Store input as plain prompt string
     db::executions::create(
@@ -283,6 +286,10 @@ async fn persist_and_enqueue(
         "message": a2a_message,
         "cwd": session_cwd,
     });
+
+    // Populate execution_agents junction before enqueue so the relationship
+    // is committed before the worker can pick up the task.
+    db::execution_agents::insert_batch(db_pool, execution_id, agent_ids).await?;
 
     // Fetch the created execution before enqueue — if this read fails,
     // cleanup is safe because nothing has been queued yet.
