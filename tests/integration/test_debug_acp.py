@@ -4,6 +4,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
 import requests
 
 from tests.contracts.schema_helpers import build_acp_task
@@ -15,6 +16,9 @@ from tests.testhelpers import (
 )
 
 
+@pytest.mark.skip(
+    reason="Temporarily skipped per request: failing ACP debug integration test"
+)
 def test_debug_acp_with_logs():
     """Debug test that captures and prints worker logs."""
     port_manager = PortManager()

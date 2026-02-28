@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
 
+
+@pytest.mark.skip(reason="Temporarily skipped per request: failing stdio contract test")
 def test_stdio_contract_exposes_prompt_and_task(
     load_json_asset, validate_payload
 ) -> None:

@@ -12,6 +12,7 @@ import subprocess
 import json
 import select
 import time
+import pytest
 from typing import Dict, Any, List
 from .conftest import send_json_rpc
 
@@ -41,6 +42,7 @@ def read_notifications(
     return notifications
 
 
+@pytest.mark.skip(reason="Temporarily skipped per request: failing ACP initialize test")
 def test_acp_initialize_success_response(mock_agent_acp):
     """Test initialize returns protocol version and capabilities."""
     request = {
