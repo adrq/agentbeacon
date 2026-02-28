@@ -158,214 +158,89 @@ pub async fn handle_worker_sync(
 
         // Handle error_kind (checked BEFORE error field for correct cancelled handling)
         if let Some(ref ek) = result.error_kind {
-            let (target_state, propagate_to_execution) = match ek.as_str() {
-                "cancelled" => ("canceled", false),
-                _ => ("failed", true),
-            };
-
-            tracing::warn!(
-                session_id = %result.session_id,
-                error_kind = %ek,
-                error = ?result.error,
-                "Worker reported session {target_state}"
-            );
-
-            if let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
-                let mut event_payload = json!({
-                    "from": session.status,
-                    "to": target_state,
-                });
-                if let Some(ref error_msg) = result.error {
-                    event_payload["error"] = json!(error_msg);
-                }
-                if let Some(ref stderr_text) = result.stderr {
-                    event_payload["stderr"] = json!(stderr_text);
-                }
-
-                match db::events::insert(
-                    &state.db_pool,
-                    &session.execution_id,
-                    Some(&result.session_id),
-                    "state_change",
-                    &serde_json::to_string(&event_payload).unwrap(),
-                )
-                .await
-                {
-                    Ok(event_id) => {
-                        let _ = state.event_broadcast.send(EventNotification {
-                            execution_id: session.execution_id.clone(),
-                            event_id,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            session_id = %result.session_id,
-                            error = %e,
-                            "failed to insert state_change event"
-                        );
-                    }
-                }
-
-                if let Err(e) =
-                    db::sessions::update_status(&state.db_pool, &result.session_id, target_state)
+            match ek.as_str() {
+                "cancelled" => {
+                    // Cancellation confirmed — cascade was already performed by the
+                    // cancel initiator (session cancel or execution cancel endpoint).
+                    tracing::info!(
+                        session_id = %result.session_id,
+                        "Worker reported session cancelled"
+                    );
+                    if let Ok(session) =
+                        db::sessions::get_by_id(&state.db_pool, &result.session_id).await
+                        && !matches!(session.status.as_str(), "completed" | "failed" | "canceled")
+                    {
+                        if let Err(e) = db::sessions::update_status(
+                            &state.db_pool,
+                            &result.session_id,
+                            "canceled",
+                        )
                         .await
-                {
-                    tracing::error!(
-                        session_id = %result.session_id,
-                        error = %e,
-                        "failed to transition session to {target_state}"
-                    );
-                }
-
-                // Only propagate to execution for lead sessions with failure (not cancellation)
-                if propagate_to_execution && session.parent_session_id.is_none() {
-                    let exec_from =
-                        db::executions::get_by_id(&state.db_pool, &session.execution_id)
-                            .await
-                            .map(|e| e.status)
-                            .unwrap_or_else(|_| "working".into());
-
-                    if let Err(e) = db::executions::update_status(
-                        &state.db_pool,
-                        &session.execution_id,
-                        "failed",
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            execution_id = %session.execution_id,
-                            error = %e,
-                            "failed to transition execution to failed"
-                        );
-                    }
-
-                    let exec_event = json!({"from": exec_from, "to": "failed"});
-                    match db::events::insert(
-                        &state.db_pool,
-                        &session.execution_id,
-                        None,
-                        "state_change",
-                        &serde_json::to_string(&exec_event).unwrap(),
-                    )
-                    .await
-                    {
-                        Ok(event_id) => {
-                            let _ = state.event_broadcast.send(EventNotification {
-                                execution_id: session.execution_id.clone(),
-                                event_id,
-                            });
-                        }
-                        Err(e) => {
+                        {
                             tracing::error!(
-                                execution_id = %session.execution_id,
+                                session_id = %result.session_id,
                                 error = %e,
-                                "failed to insert execution failed state_change event"
+                                "failed to transition session to canceled"
                             );
+                        } else {
+                            let event_payload = json!({
+                                "from": session.status,
+                                "to": "canceled",
+                            });
+                            if let Ok(event_id) = db::events::insert(
+                                &state.db_pool,
+                                &session.execution_id,
+                                Some(&result.session_id),
+                                "state_change",
+                                &serde_json::to_string(&event_payload).unwrap(),
+                            )
+                            .await
+                            {
+                                let _ = state.event_broadcast.send(EventNotification {
+                                    execution_id: session.execution_id.clone(),
+                                    event_id,
+                                });
+                            }
                         }
                     }
+                }
+                _ => {
+                    tracing::warn!(
+                        session_id = %result.session_id,
+                        error_kind = %ek,
+                        error = ?result.error,
+                        "Worker reported session failure"
+                    );
+                    crate::services::crash::handle_session_failure(
+                        &state.db_pool,
+                        &state.task_queue,
+                        &state.event_broadcast,
+                        &result.session_id,
+                        Some(ek.as_str()),
+                        result.error.as_deref(),
+                        result.stderr.as_deref(),
+                    )
+                    .await;
                 }
             }
-        } else if let Some(ref error_msg) = result.error {
-            // Backward compat: error without error_kind (ACP adapter)
+        } else if result.error.is_some() {
+            // No error_kind but error present — fail closed rather than leaving
+            // the session stuck in working.
             tracing::warn!(
                 session_id = %result.session_id,
-                error = %error_msg,
-                "Worker reported session error"
+                error = ?result.error,
+                "Worker reported error without error_kind — treating as failure"
             );
-
-            if let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
-                match db::events::insert(
-                    &state.db_pool,
-                    &session.execution_id,
-                    Some(&result.session_id),
-                    "state_change",
-                    &serde_json::to_string(&{
-                        let mut payload = json!({
-                            "from": session.status,
-                            "to": "failed",
-                            "error": error_msg,
-                        });
-                        if let Some(ref stderr_text) = result.stderr {
-                            payload["stderr"] = json!(stderr_text);
-                        }
-                        payload
-                    })
-                    .unwrap(),
-                )
-                .await
-                {
-                    Ok(event_id) => {
-                        let _ = state.event_broadcast.send(EventNotification {
-                            execution_id: session.execution_id.clone(),
-                            event_id,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            session_id = %result.session_id,
-                            error = %e,
-                            "failed to insert error state_change event"
-                        );
-                    }
-                }
-
-                if let Err(e) =
-                    db::sessions::update_status(&state.db_pool, &result.session_id, "failed").await
-                {
-                    tracing::error!(
-                        session_id = %result.session_id,
-                        error = %e,
-                        "failed to transition session to failed"
-                    );
-                }
-
-                if session.parent_session_id.is_none() {
-                    let exec_from =
-                        db::executions::get_by_id(&state.db_pool, &session.execution_id)
-                            .await
-                            .map(|e| e.status)
-                            .unwrap_or_else(|_| "working".into());
-
-                    if let Err(e) = db::executions::update_status(
-                        &state.db_pool,
-                        &session.execution_id,
-                        "failed",
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            execution_id = %session.execution_id,
-                            error = %e,
-                            "failed to transition execution to failed"
-                        );
-                    }
-
-                    let exec_event = json!({"from": exec_from, "to": "failed"});
-                    match db::events::insert(
-                        &state.db_pool,
-                        &session.execution_id,
-                        None,
-                        "state_change",
-                        &serde_json::to_string(&exec_event).unwrap(),
-                    )
-                    .await
-                    {
-                        Ok(event_id) => {
-                            let _ = state.event_broadcast.send(EventNotification {
-                                execution_id: session.execution_id.clone(),
-                                event_id,
-                            });
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                execution_id = %session.execution_id,
-                                error = %e,
-                                "failed to insert execution failed state_change event"
-                            );
-                        }
-                    }
-                }
-            }
+            crate::services::crash::handle_session_failure(
+                &state.db_pool,
+                &state.task_queue,
+                &state.event_broadcast,
+                &result.session_id,
+                None,
+                result.error.as_deref(),
+                result.stderr.as_deref(),
+            )
+            .await;
         }
     }
 

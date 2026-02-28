@@ -11,10 +11,10 @@ use crate::queue::TaskQueue;
 #[derive(Debug, Clone, Copy)]
 pub enum CascadeMode {
     /// Context-dependent: input-required→completed, working/submitted→canceled.
-    /// Used by release, session complete, crash cascade.
+    /// Used by release, session complete.
     Release,
     /// All non-terminal sessions → canceled.
-    /// Used by execution cancel, session cancel.
+    /// Used by execution cancel, session cancel, crash cascade.
     Cancel,
 }
 
