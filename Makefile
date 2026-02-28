@@ -73,7 +73,8 @@ test-e2e: all
 	@echo "Starting E2E test environment..."
 	@AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9456} ./scripts/e2e.sh --fresh --run-tests
 
-test-all: test test-int
+test-all: test test-int test-e2e
+	@echo "All tests passed successfully!"
 
 # Run target
 run: build

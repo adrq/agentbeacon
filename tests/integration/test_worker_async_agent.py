@@ -48,10 +48,9 @@ def _enqueue_session(scheduler_url, session_id, execution_id, prompt_text):
     """Enqueue a session assignment with ACP mock agent."""
     task_payload = {
         "agent_id": "mock-agent",
-        "agent_type": "acp",
+        "driver": {"platform": "acp", "config": {}},
         "agent_config": ACP_MOCK_CONFIG,
-        "sandbox_config": {},
-        "message": {"parts": [{"kind": "text", "text": prompt_text}]},
+        "message": {"role": "user", "parts": [{"kind": "text", "text": prompt_text}]},
     }
     resp = requests.post(
         f"{scheduler_url}/test/enqueue_session",
@@ -73,7 +72,10 @@ def _enqueue_prompt(scheduler_url, session_id, execution_id, prompt_text):
             "sessionId": session_id,
             "executionId": execution_id,
             "taskPayload": {
-                "message": {"parts": [{"kind": "text", "text": prompt_text}]},
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": prompt_text}],
+                },
             },
         },
         timeout=5,

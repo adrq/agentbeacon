@@ -530,51 +530,51 @@ async fn background_task(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Extract ACP content parts from a task payload (A2A message or plain text).
-/// Returns None if invalid (error already emitted to event_tx).
+/// Extract ACP content parts from a task payload.
+/// All payloads use A2A format: `{message: {role, parts}}`.
 fn extract_acp_content(
     task_payload: &serde_json::Value,
     session_id: &str,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
 ) -> Option<Vec<serde_json::Value>> {
-    if let Some(message) = task_payload.get("message") {
-        let parts = match message.get("parts").and_then(|p| p.as_array()) {
-            Some(p) => p,
-            None => {
-                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                    agent_session_id: Some(session_id.to_string()),
-                    error: Some("message missing parts array".into()),
-                    error_kind: Some(ErrorKind::ExecutorFailed),
-                    output: None,
-                    stderr: None,
-                }));
-                return None;
-            }
-        };
-        match translate_a2a_parts_to_acp_content(parts) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                    agent_session_id: Some(session_id.to_string()),
-                    error: Some(format!("failed to translate parts: {e}")),
-                    error_kind: Some(ErrorKind::ExecutorFailed),
-                    output: None,
-                    stderr: None,
-                }));
-                None
-            }
+    let message = match task_payload.get("message") {
+        Some(m) => m,
+        None => {
+            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                agent_session_id: Some(session_id.to_string()),
+                error: Some("task_payload missing message field".into()),
+                error_kind: Some(ErrorKind::ExecutorFailed),
+                output: None,
+                stderr: None,
+            }));
+            return None;
         }
-    } else if let Some(text) = task_payload.as_str() {
-        Some(vec![serde_json::json!({"type": "text", "text": text})])
-    } else {
-        let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-            agent_session_id: Some(session_id.to_string()),
-            error: Some("unsupported task_payload format".into()),
-            error_kind: Some(ErrorKind::ExecutorFailed),
-            output: None,
-            stderr: None,
-        }));
-        None
+    };
+    let parts = match message.get("parts").and_then(|p| p.as_array()) {
+        Some(p) => p,
+        None => {
+            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                agent_session_id: Some(session_id.to_string()),
+                error: Some("message missing parts array".into()),
+                error_kind: Some(ErrorKind::ExecutorFailed),
+                output: None,
+                stderr: None,
+            }));
+            return None;
+        }
+    };
+    match translate_a2a_parts_to_acp_content(parts) {
+        Ok(translated) => Some(translated),
+        Err(e) => {
+            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                agent_session_id: Some(session_id.to_string()),
+                error: Some(format!("failed to translate parts: {e}")),
+                error_kind: Some(ErrorKind::ExecutorFailed),
+                output: None,
+                stderr: None,
+            }));
+            None
+        }
     }
 }
 

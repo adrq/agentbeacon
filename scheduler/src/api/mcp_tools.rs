@@ -232,13 +232,15 @@ async fn handle_delegate(
     // Build task payload and enqueue
     let mut task_payload = json!({
         "agent_id": agent.id,
-        "agent_type": agent.agent_type,
+        "driver": {
+            "platform": agent.agent_type,
+            "config": sandbox_config,
+        },
         "agent_config": agent_config,
-        "sandbox_config": sandbox_config,
         "message": {
             "role": "user",
             "parts": [{"kind": "text", "text": prompt}]
-        }
+        },
     });
     if let Some(ref dir) = child_cwd {
         task_payload["cwd"] = JsonValue::String(dir.clone());

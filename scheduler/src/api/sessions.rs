@@ -88,7 +88,12 @@ async fn post_message(
     });
 
     // Always: push user message to session's inbox for delivery
-    let message_payload = serde_json::Value::String(format!("[user]\n\n{}", req.message));
+    let message_payload = json!({
+        "message": {
+            "role": "user",
+            "parts": [{"kind": "text", "text": req.message}]
+        },
+    });
     state
         .task_queue
         .push(TaskAssignment {
@@ -297,10 +302,16 @@ async fn notify_parent_of_termination(
         let agent_name = agent_name.replace(['\r', '\n'], " ");
         let agent_name = agent_name.trim();
 
-        let notification = serde_json::Value::String(format!(
+        let formatted_text = format!(
             "[session {} ({}) was {} by user]\n\nThe child session has been terminated.",
             session.id, agent_name, terminal_status
-        ));
+        );
+        let notification = json!({
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": formatted_text}]
+            },
+        });
         state
             .task_queue
             .push(TaskAssignment {

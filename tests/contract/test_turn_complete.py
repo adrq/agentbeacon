@@ -97,10 +97,11 @@ def test_turn_complete_delivers_to_parent(test_database):
 
         assert row is not None, "task_queue should have delivery for parent"
         payload = json.loads(row[0])
-        assert isinstance(payload, str)
-        assert "[turn complete from" in payload
-        assert child_id in payload
-        assert "auth done" in payload
+        assert isinstance(payload, dict)
+        text = payload["message"]["parts"][0]["text"]
+        assert "[turn complete from" in text
+        assert child_id in text
+        assert "auth done" in text
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -285,8 +286,9 @@ def test_turn_complete_parent_long_poll_wakes(test_database):
         data = result_holder[0]
         assert data["type"] == "prompt_delivery"
         assert data["sessionId"] == lead_id
-        assert isinstance(data["task"]["taskPayload"], str)
-        assert "woke parent" in data["task"]["taskPayload"]
+        assert isinstance(data["task"]["taskPayload"], dict)
+        text = data["task"]["taskPayload"]["message"]["parts"][0]["text"]
+        assert "woke parent" in text
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -326,4 +328,5 @@ def test_turn_complete_claude_sdk_format(test_database):
 
         assert row is not None, "Claude SDK format should still deliver"
         payload = json.loads(row[0])
-        assert "claude sdk output" in payload
+        text = payload["message"]["parts"][0]["text"]
+        assert "claude sdk output" in text

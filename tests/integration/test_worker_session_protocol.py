@@ -162,28 +162,33 @@ def test_worker_receives_prompt_delivery(mock_scheduler):
         cleanup_processes([worker])
 
 
-def test_worker_receives_string_prompt_delivery(mock_scheduler):
-    """Worker processes a string taskPayload (user reply format)."""
+def test_worker_receives_a2a_prompt_delivery(mock_scheduler):
+    """Worker processes an A2A format taskPayload (user reply format)."""
     scheduler_url, _, _ = mock_scheduler
     _clear_state(scheduler_url)
 
     _enqueue_session(scheduler_url)
 
-    # Queue a string prompt (user answer format) instead of object
+    # Queue an A2A format prompt (user answer format)
     resp = requests.post(
         f"{scheduler_url}/test/enqueue_prompt",
         json={
             "sessionId": "sess-1",
             "executionId": "exec-1",
-            "taskPayload": "[user]\n\nfollow-up as plain string",
+            "taskPayload": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "follow-up as A2A message"}],
+                }
+            },
         },
         timeout=5,
     )
-    assert resp.status_code == 200, f"Enqueue string prompt failed: {resp.text}"
+    assert resp.status_code == 200, f"Enqueue A2A prompt failed: {resp.text}"
 
     worker = _start_worker(scheduler_url)
     try:
-        # Wait for two results (initial object prompt + string follow-up)
+        # Wait for two results (initial prompt + A2A follow-up)
         assert _poll_until(lambda: len(_get_results(scheduler_url)) >= 2, timeout=30), (
             f"Expected 2 results, got {len(_get_results(scheduler_url))}: {_get_results(scheduler_url)}"
         )
@@ -259,14 +264,14 @@ def test_worker_invalid_agent_graceful(mock_scheduler):
     # Enqueue session with broken agent config
     bad_payload = {
         "agent_id": "bad-agent",
-        "agent_type": "acp",
+        "driver": {"platform": "acp", "config": {}},
         "agent_config": {
             "command": "/nonexistent/path/to/agent",
             "args": [],
             "timeout": 5,
         },
-        "sandbox_config": {},
         "message": {
+            "role": "user",
             "parts": [{"kind": "text", "text": "hello"}],
         },
     }

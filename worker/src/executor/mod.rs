@@ -156,31 +156,30 @@ pub fn build_output_message(content_blocks: &serde_json::Value) -> Option<serde_
 }
 
 /// Extract prompt text from task_payload — shared by stdio-bridge executors (Claude, Copilot).
-/// ACP has its own extraction logic (different wire format).
+/// All payloads use A2A format: `{message: {role, parts}}`.
+/// Text headers (e.g. "[turn complete from ...]") are baked into parts by the producer.
 pub(crate) fn extract_prompt_text(task_payload: &serde_json::Value) -> Result<String> {
-    if let Some(message) = task_payload.get("message") {
-        let parts = message
-            .get("parts")
-            .and_then(|p| p.as_array())
-            .ok_or_else(|| anyhow::anyhow!("message missing parts array"))?;
-        let texts: Vec<&str> = parts
-            .iter()
-            .filter_map(|p| {
-                if p.get("kind").and_then(|k| k.as_str()) == Some("text") {
-                    p.get("text").and_then(|t| t.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        Ok(texts.join("\n"))
-    } else if let Some(text) = task_payload.as_str() {
-        Ok(text.to_string())
-    } else {
-        Err(anyhow::anyhow!(
-            "unsupported task_payload format: expected object with message or string"
-        ))
+    let message = task_payload
+        .get("message")
+        .ok_or_else(|| anyhow::anyhow!("task_payload missing message field"))?;
+    let parts = message
+        .get("parts")
+        .and_then(|p| p.as_array())
+        .ok_or_else(|| anyhow::anyhow!("message missing parts array"))?;
+    let texts: Vec<&str> = parts
+        .iter()
+        .filter_map(|p| {
+            if p.get("kind").and_then(|k| k.as_str()) == Some("text") {
+                p.get("text").and_then(|t| t.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if texts.is_empty() {
+        anyhow::bail!("message.parts contains no text parts");
     }
+    Ok(texts.join("\n"))
 }
 
 /// Factory: create ExecutorHandle based on agent_type from task payload.
@@ -334,5 +333,48 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["kind"], "text");
         assert_eq!(parts[1]["kind"], "data");
+    }
+
+    // --- extract_prompt_text tests ---
+
+    #[test]
+    fn test_extract_prompt_text_a2a() {
+        let payload = serde_json::json!({
+            "message": {"role": "user", "parts": [{"kind": "text", "text": "hello"}]},
+        });
+        assert_eq!(extract_prompt_text(&payload).unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_extract_prompt_text_with_baked_header() {
+        let payload = serde_json::json!({
+            "message": {"role": "user", "parts": [
+                {"kind": "text", "text": "[turn complete from child \u{00b7} session s1]\n\ndone"}
+            ]},
+        });
+        let text = extract_prompt_text(&payload).unwrap();
+        assert!(text.starts_with("[turn complete from child"));
+        assert!(text.contains("done"));
+    }
+
+    #[test]
+    fn test_extract_prompt_text_missing_message_errors() {
+        let payload = serde_json::json!({});
+        assert!(extract_prompt_text(&payload).is_err());
+    }
+
+    #[test]
+    fn test_extract_prompt_text_missing_parts_errors() {
+        let payload = serde_json::json!({"message": {"role": "user"}});
+        assert!(extract_prompt_text(&payload).is_err());
+    }
+
+    #[test]
+    fn test_extract_prompt_text_no_text_parts_errors() {
+        let payload = serde_json::json!({
+            "message": {"role": "user", "parts": [{"kind": "image", "data": "base64..."}]},
+        });
+        let err = extract_prompt_text(&payload).unwrap_err();
+        assert!(err.to_string().contains("no text parts"));
     }
 }

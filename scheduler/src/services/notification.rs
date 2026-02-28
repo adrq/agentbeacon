@@ -86,10 +86,16 @@ pub async fn deliver_to_parent(
     }
 
     // Format and push to parent's inbox
-    let delivery_payload = serde_json::Value::String(format!(
+    let formatted_text = format!(
         "[turn complete from {} \u{00b7} session {}]\n\n{}",
         agent_name, child_session_id, turn_output
-    ));
+    );
+    let delivery_payload = json!({
+        "message": {
+            "role": "user",
+            "parts": [{"kind": "text", "text": formatted_text}]
+        },
+    });
     task_queue
         .push(TaskAssignment {
             execution_id: child_session.execution_id.clone(),

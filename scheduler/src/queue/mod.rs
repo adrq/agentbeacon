@@ -140,7 +140,7 @@ mod tests {
             session_id: session_id.to_string(),
             task_payload: serde_json::json!({
                 "agent_id": "agent-1",
-                "agent_type": "acp",
+                "driver": {"platform": "acp", "config": {}},
                 "message": {"role": "user", "parts": [{"kind": "text", "text": "Test task"}]}
             }),
         }

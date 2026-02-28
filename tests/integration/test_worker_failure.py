@@ -88,14 +88,16 @@ def test_worker_handles_agent_process_failure():
             "exec-fail-1",
             {
                 "agent_id": "bad-agent",
-                "agent_type": "acp",
+                "driver": {"platform": "acp", "config": {}},
                 "agent_config": {
                     "command": "/nonexistent/path/to/agent",
                     "args": [],
                     "timeout": 5,
                 },
-                "sandbox_config": {},
-                "message": {"parts": [{"kind": "text", "text": "hello"}]},
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "hello"}],
+                },
             },
         )
 
@@ -135,9 +137,8 @@ def test_worker_handles_malformed_task_data():
             "exec-malformed-1",
             {
                 "agent_id": "mock-agent",
-                "agent_type": "acp",
+                "driver": {"platform": "acp", "config": {}},
                 "agent_config": ACP_MOCK_CONFIG,
-                "sandbox_config": {},
                 # No "message" field
             },
         )
@@ -177,14 +178,16 @@ def test_worker_surfaces_adapter_rejection():
             "exec-reject-1",
             {
                 "agent_id": "bad-config-agent",
-                "agent_type": "acp",
+                "driver": {"platform": "acp", "config": {}},
                 "agent_config": {
                     "command": "",
                     "args": [],
                     "timeout": 5,
                 },
-                "sandbox_config": {},
-                "message": {"parts": [{"kind": "text", "text": "hello"}]},
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "hello"}],
+                },
             },
         )
 
@@ -249,7 +252,7 @@ def test_worker_handles_orchestrator_connection_loss():
 
 
 def test_worker_fails_on_unknown_agent():
-    """Worker reports error for unsupported agent_type."""
+    """Worker reports error for unsupported driver platform."""
     pm = PortManager()
     port = pm.allocate_scheduler_port()
     processes = []
@@ -266,10 +269,12 @@ def test_worker_fails_on_unknown_agent():
             "exec-unknown-1",
             {
                 "agent_id": "unknown-agent",
-                "agent_type": "nonexistent_protocol",
+                "driver": {"platform": "nonexistent_protocol", "config": {}},
                 "agent_config": {"command": "echo", "args": ["hi"]},
-                "sandbox_config": {},
-                "message": {"parts": [{"kind": "text", "text": "hello"}]},
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "hello"}],
+                },
             },
         )
 

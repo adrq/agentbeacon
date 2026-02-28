@@ -259,12 +259,12 @@ def test_full_ask_answer_round_trip(test_database):
         assert "question_event_id" not in user_events[0]["payload"]
 
 
-# --- /message endpoint: plain-text task payload tests ---
+# --- /message endpoint: A2A task payload tests ---
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_message_pushes_plain_text_task(test_database):
-    """POST /message pushes a plain text string (not typed JSON) to the task queue."""
+def test_message_pushes_a2a_task(test_database):
+    """POST /message pushes an A2A message payload to the task queue."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
@@ -290,6 +290,10 @@ def test_message_pushes_plain_text_task(test_database):
 
         # Find the user answer payload (skip the initial bootstrap task)
         payloads = [json.loads(r[0]) for r in rows]
-        text_payloads = [p for p in payloads if isinstance(p, str)]
-        assert len(text_payloads) >= 1
-        assert text_payloads[-1] == "[user]\n\nJWT"
+        message_payloads = [
+            p
+            for p in payloads
+            if isinstance(p, dict) and "message" in p and "driver" not in p
+        ]
+        assert len(message_payloads) >= 1
+        assert message_payloads[-1]["message"]["parts"][0]["text"] == "JWT"

@@ -329,9 +329,11 @@ async fn persist_and_enqueue(
 
     let task_payload = json!({
         "agent_id": agent.id,
-        "agent_type": agent.agent_type,
+        "driver": {
+            "platform": agent.agent_type,
+            "config": sandbox_config,
+        },
         "agent_config": agent_config,
-        "sandbox_config": sandbox_config,
         "message": a2a_message,
         "cwd": session_cwd,
     });

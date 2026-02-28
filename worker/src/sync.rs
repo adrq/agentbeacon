@@ -509,9 +509,9 @@ mod tests {
                 "sessionId": "sess-1",
                 "taskPayload": {
                     "agent_id": "agent-1",
-                    "agent_type": "acp",
+                    "driver": {"platform": "acp", "config": {}},
                     "agent_config": {"command": "uv", "args": ["run", "agent"]},
-                    "message": "hello"
+                    "message": {"role": "user", "parts": [{"kind": "text", "text": "hello"}]}
                 }
             }
         });
@@ -521,7 +521,7 @@ mod tests {
                 assert_eq!(session_id, "sess-1");
                 assert_eq!(task.execution_id, "exec-1");
                 assert_eq!(task.session_id, "sess-1");
-                assert_eq!(task.task_payload["agent_type"], "acp");
+                assert_eq!(task.task_payload["driver"]["platform"], "acp");
             }
             _ => panic!("expected SessionAssigned"),
         }
@@ -535,14 +535,23 @@ mod tests {
             "task": {
                 "executionId": "exec-1",
                 "sessionId": "sess-1",
-                "taskPayload": "[user]\n\nyes, use JWT"
+                "taskPayload": {
+                    "message": {
+                        "role": "user",
+                        "parts": [{"kind": "text", "text": "yes, use JWT"}]
+                    }
+                }
             }
         });
         let response: SyncResponse = serde_json::from_value(json).unwrap();
         match response {
             SyncResponse::PromptDelivery { session_id, task } => {
                 assert_eq!(session_id, "sess-1");
-                assert!(task.task_payload.is_string());
+                assert!(task.task_payload.is_object());
+                assert_eq!(
+                    task.task_payload["message"]["parts"][0]["text"],
+                    "yes, use JWT"
+                );
             }
             _ => panic!("expected PromptDelivery"),
         }

@@ -51,7 +51,7 @@ def test_execution_creation_enqueues_task(test_database):
 
         payload = json.loads(row[2])
         assert payload["agent_id"] == agent_id
-        assert payload["agent_type"] == "claude_sdk"
+        assert payload["driver"]["platform"] == "claude_sdk"
         assert payload["message"]["parts"][0]["text"] == "implement auth"
 
 
@@ -91,10 +91,20 @@ def test_worker_sync_delivers_prompt(test_database):
         data = _worker_sync(ctx["url"])
         assert data["type"] == "session_assigned"
 
-        # Push a new task to the session inbox (plain text with role prefix)
+        # Push a new task to the session inbox (A2A format with baked header)
         with db_conn(ctx["db_url"]) as conn:
             payload = json.dumps(
-                "[delegated result from test-agent \u00b7 session fake-child]\n\nchild done"
+                {
+                    "message": {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "kind": "text",
+                                "text": "[turn complete from test-agent \u00b7 session fake-child]\n\nchild done",
+                            }
+                        ],
+                    }
+                }
             )
             conn.execute(
                 "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
@@ -115,8 +125,10 @@ def test_worker_sync_delivers_prompt(test_database):
 
         assert data["type"] == "prompt_delivery"
         assert data["sessionId"] == session_id
-        assert isinstance(data["task"]["taskPayload"], str)
-        assert "child done" in data["task"]["taskPayload"]
+        assert isinstance(data["task"]["taskPayload"], dict)
+        assert (
+            "child done" in data["task"]["taskPayload"]["message"]["parts"][0]["text"]
+        )
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -176,8 +188,8 @@ def test_worker_sync_long_poll_wakes(test_database):
 
         data = result_holder[0]
         assert data["type"] == "prompt_delivery"
-        assert isinstance(data["task"]["taskPayload"], str)
-        assert data["task"]["taskPayload"] == "[user]\n\nwake up"
+        assert isinstance(data["task"]["taskPayload"], dict)
+        assert data["task"]["taskPayload"]["message"]["parts"][0]["text"] == "wake up"
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

@@ -217,21 +217,42 @@ async fn run_session(
 ) -> Result<SessionExit> {
     let task_payload = &initial_task.task_payload;
 
-    let agent_type = task_payload
-        .get("agent_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("acp")
-        .to_string();
+    let driver = task_payload
+        .get("driver")
+        .unwrap_or(&serde_json::Value::Null);
+
+    let agent_type = match driver.get("platform").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => {
+            let e =
+                anyhow::anyhow!("task_payload missing driver.platform — cannot select executor");
+            tracing::error!(error = %e, "Invalid task payload");
+            let _ = perform_sync_with_retry(
+                client,
+                &args.scheduler_url,
+                &SyncRequest::with_result(
+                    session_id,
+                    None,
+                    Vec::new(),
+                    Some(format!("{e:#}")),
+                    Some("executor_failed".into()),
+                    None,
+                    false,
+                ),
+                true,
+                retry_config,
+            )
+            .await;
+            return Err(e);
+        }
+    };
 
     let agent_config = task_payload
         .get("agent_config")
         .cloned()
         .unwrap_or_default();
 
-    let sandbox_config = task_payload
-        .get("sandbox_config")
-        .cloned()
-        .unwrap_or_default();
+    let sandbox_config = driver.get("config").cloned().unwrap_or_default();
 
     let cwd = task_payload
         .get("cwd")

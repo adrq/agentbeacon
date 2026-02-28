@@ -47,10 +47,9 @@ def _enqueue_acp_session(
     """Enqueue a session with custom ACP agent config."""
     task_payload = {
         "agent_id": "mock-agent",
-        "agent_type": "acp",
+        "driver": {"platform": "acp", "config": {}},
         "agent_config": agent_config,
-        "sandbox_config": {},
-        "message": {"parts": [{"kind": "text", "text": prompt_text}]},
+        "message": {"role": "user", "parts": [{"kind": "text", "text": prompt_text}]},
     }
     resp = requests.post(
         f"{url}/test/enqueue_session",
