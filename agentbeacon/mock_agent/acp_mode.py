@@ -16,7 +16,6 @@ from .coordination_scenarios import (
     DelegateReleaseScenario,
     DelegateScenario,
     EndTurnScenario,
-    HandoffScenario,
 )
 from .demo_scenario import DemoScenario
 from .showcase_scenario import ShowcaseScenario
@@ -137,7 +136,6 @@ class ACPHandler:
             "delegate": lambda: DelegateScenario(
                 session_id, mcp_client, self.delegate_to
             ),
-            "handoff": lambda: HandoffScenario(session_id, mcp_client),
             "delegate-ask": lambda: DelegateAskScenario(
                 session_id, mcp_client, self.delegate_to
             ),

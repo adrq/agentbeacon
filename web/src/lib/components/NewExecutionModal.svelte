@@ -26,6 +26,8 @@
   let title = $state('');
   let branch = $state('');
   let cwd = $state('');
+  let maxDepth = $state('');
+  let maxWidth = $state('');
   let showAdvanced = $state(false);
   let error: string | null = $state(null);
 
@@ -98,6 +100,8 @@
     error = null;
 
     const prompt = task.trim();
+    const parsedDepth = maxDepth !== '' ? parseInt(String(maxDepth), 10) : undefined;
+    const parsedWidth = maxWidth !== '' ? parseInt(String(maxWidth), 10) : undefined;
     const req = {
       agent_id: selectedAgentId,
       prompt,
@@ -105,6 +109,8 @@
       ...(selectedProjectId && { project_id: selectedProjectId }),
       ...(branch.trim() && { branch: branch.trim() }),
       ...(cwd.trim() && { cwd: cwd.trim() }),
+      ...(parsedDepth !== undefined && !isNaN(parsedDepth) && { max_depth: parsedDepth }),
+      ...(parsedWidth !== undefined && !isNaN(parsedWidth) && { max_width: parsedWidth }),
     };
 
     try {
@@ -210,6 +216,32 @@
             disabled={!!branch.trim()}
           />
           <span class="field-hint">Overrides project path. Mutually exclusive with branch.</span>
+        </div>
+        <div class="field">
+          <label class="field-label" for="exec-max-depth">Max Depth <span class="optional">(default: 2)</span></label>
+          <input
+            id="exec-max-depth"
+            class="field-input"
+            type="number"
+            min="1"
+            max="10"
+            placeholder="2"
+            bind:value={maxDepth}
+          />
+          <span class="field-hint">Maximum delegation depth (1 = flat, no sub-leads)</span>
+        </div>
+        <div class="field">
+          <label class="field-label" for="exec-max-width">Max Width <span class="optional">(default: 5)</span></label>
+          <input
+            id="exec-max-width"
+            class="field-input"
+            type="number"
+            min="1"
+            max="50"
+            placeholder="5"
+            bind:value={maxWidth}
+          />
+          <span class="field-hint">Maximum active children per agent</span>
         </div>
       {/if}
 

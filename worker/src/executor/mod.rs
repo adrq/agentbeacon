@@ -110,7 +110,7 @@ pub enum AgentEvent {
 pub enum AgentCommand {
     /// Initial prompt with full config (task_payload JSON)
     Start(serde_json::Value),
-    /// Follow-up prompt (user message, handoff result, etc.)
+    /// Follow-up prompt (user message, turn-complete result, etc.)
     Prompt(String),
     /// Cancel current turn
     Cancel,

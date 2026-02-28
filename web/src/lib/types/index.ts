@@ -3,7 +3,6 @@ export type ExecutionStatus =
   | 'completed' | 'failed' | 'canceled';
 
 export type SessionStatus = ExecutionStatus;
-export type CoordinationMode = 'sdk' | 'mcp_poll';
 export type EventType = 'message' | 'state_change' | 'platform';
 export type Theme = 'light' | 'dark';
 export type Screen = 'Home' | 'ExecutionDetail' | 'Projects' | 'ProjectDetail' | 'Agents';
@@ -52,6 +51,8 @@ export interface Execution {
   title: string | null;
   input: string;
   metadata: Record<string, unknown>;
+  max_depth: number;
+  max_width: number;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -72,7 +73,7 @@ export interface SessionSummary {
   agent_session_id: string | null;
   cwd: string | null;
   status: SessionStatus;
-  coordination_mode: CoordinationMode;
+  coordination_mode: string;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;

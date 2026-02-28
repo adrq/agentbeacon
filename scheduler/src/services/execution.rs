@@ -26,6 +26,8 @@ pub async fn create_execution(
     cwd: Option<&str>,
     branch: Option<&str>,
     context_id: Option<&str>,
+    max_depth: Option<i64>,
+    max_width: Option<i64>,
 ) -> Result<CreateExecutionResult, SchedulerError> {
     // Validate prompt non-empty
     if prompt.trim().is_empty() {
@@ -127,6 +129,47 @@ pub async fn create_execution(
         ));
     }
 
+    // Resolve hierarchy limits from explicit params or config defaults
+    let resolved_max_depth = if let Some(d) = max_depth {
+        d
+    } else {
+        match db::config::get(db_pool, "max_depth").await {
+            Ok(c) => c.value.parse::<i64>().unwrap_or_else(|_| {
+                tracing::warn!(
+                    "config 'max_depth' has invalid value '{}', using default 2",
+                    c.value
+                );
+                2
+            }),
+            Err(_) => 2,
+        }
+    };
+    let resolved_max_width = if let Some(w) = max_width {
+        w
+    } else {
+        match db::config::get(db_pool, "max_width").await {
+            Ok(c) => c.value.parse::<i64>().unwrap_or_else(|_| {
+                tracing::warn!(
+                    "config 'max_width' has invalid value '{}', using default 5",
+                    c.value
+                );
+                5
+            }),
+            Err(_) => 5,
+        }
+    };
+
+    if !(1..=10).contains(&resolved_max_depth) {
+        return Err(SchedulerError::ValidationFailed(
+            "max_depth must be between 1 and 10".to_string(),
+        ));
+    }
+    if !(1..=50).contains(&resolved_max_width) {
+        return Err(SchedulerError::ValidationFailed(
+            "max_width must be between 1 and 50".to_string(),
+        ));
+    }
+
     let execution_id = Uuid::new_v4().to_string();
     let session_id = Uuid::new_v4().to_string();
     let effective_context_id = context_id
@@ -188,6 +231,8 @@ pub async fn create_execution(
         &agent,
         &session_cwd,
         agent_ids,
+        resolved_max_depth,
+        resolved_max_width,
     )
     .await;
 
@@ -215,6 +260,8 @@ async fn persist_and_enqueue(
     agent: &db::agents::Agent,
     session_cwd: &str,
     agent_ids: &[&str],
+    max_depth: i64,
+    max_width: i64,
 ) -> Result<CreateExecutionResult, SchedulerError> {
     // Store input as plain prompt string
     db::executions::create(
@@ -226,6 +273,8 @@ async fn persist_and_enqueue(
         None, // parent_execution_id
         title,
         worktree_path,
+        max_depth,
+        max_width,
     )
     .await?;
 

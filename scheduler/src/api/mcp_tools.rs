@@ -1,5 +1,4 @@
 use std::sync::LazyLock;
-use std::time::Duration;
 
 use jsonschema::Validator;
 use serde_json::{Value as JsonValue, json};
@@ -10,15 +9,6 @@ use crate::api::jsonrpc::{JsonRpcError, JsonRpcResponse};
 use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::queue::TaskAssignment;
-
-const DEFAULT_POLL_TIMEOUT_MS: u64 = 50_000;
-const MAX_POLL_TIMEOUT_MS: u64 = 300_000;
-
-// Compiled JSON Schema validators for MCP tool arguments.
-// Schemas are extracted from the tool definitions served via tools/list.
-static HANDOFF_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
-    Validator::new(&handoff_schema()["inputSchema"]).expect("handoff schema must compile")
-});
 
 static DELEGATE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
     Validator::new(&delegate_schema()["inputSchema"]).expect("delegate schema must compile")
@@ -43,21 +33,14 @@ fn validate_tool_args(validator: &Validator, args: &JsonValue) -> Result<(), Jso
     })
 }
 
-/// Handle tools/list — returns role-filtered tool schemas
+/// Handle tools/list — returns role-filtered tool schemas per D18 table
 pub fn handle_tools_list(auth: &McpSession, id: Option<JsonValue>) -> JsonRpcResponse {
-    let tools = match auth.role {
-        McpRole::Lead => vec![
-            delegate_schema(),
-            release_schema(),
-            escalate_schema(),
-            handoff_schema(),
-            next_instruction_schema(),
-        ],
-        McpRole::Child => vec![
-            escalate_schema(),
-            handoff_schema(),
-            next_instruction_schema(),
-        ],
+    let at_max_depth = auth.depth >= auth.max_depth;
+    let tools = match (&auth.role, at_max_depth) {
+        (McpRole::RootLead, false) => vec![delegate_schema(), release_schema(), escalate_schema()],
+        (McpRole::RootLead, true) => vec![escalate_schema()],
+        (McpRole::SubLead, _) => vec![delegate_schema(), release_schema()],
+        (McpRole::Leaf, _) => vec![],
     };
 
     JsonRpcResponse::success(id, json!({"tools": tools}))
@@ -79,144 +62,36 @@ pub async fn handle_tools_call(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    // Role enforcement: delegate and release are restricted (lead-only)
-    if matches!(
-        (tool_name, &auth.role),
-        ("delegate" | "release", McpRole::Child)
-    ) {
+    // Leaf: no tools available
+    if auth.role == McpRole::Leaf {
         return Err(JsonRpcError::invalid_request(
-            "tool not available for this session role",
+            "no tools available for this session role",
+        ));
+    }
+
+    // delegate/release: requires not at max depth
+    if matches!(tool_name, "delegate" | "release") && auth.depth >= auth.max_depth {
+        return Err(JsonRpcError::invalid_request(&format!(
+            "Cannot {}: maximum hierarchy depth ({}) reached. Handle this work directly.",
+            tool_name, auth.max_depth
+        )));
+    }
+
+    // escalate: root-lead-only
+    if tool_name == "escalate" && auth.role != McpRole::RootLead {
+        return Err(JsonRpcError::invalid_request(
+            "escalate is only available to the root lead agent",
         ));
     }
 
     match tool_name {
-        "handoff" => handle_handoff(auth, state, arguments).await,
         "delegate" => handle_delegate(auth, state, arguments).await,
         "release" => handle_release(auth, state, arguments).await,
         "escalate" => handle_escalate(auth, state, arguments).await,
-        "next_instruction" => handle_next_instruction(auth, state).await,
         _ => Err(JsonRpcError::invalid_params(&format!(
             "unknown tool: {tool_name}"
         ))),
     }
-}
-
-async fn handle_handoff(
-    auth: &McpSession,
-    state: &AppState,
-    args: JsonValue,
-) -> Result<JsonValue, JsonRpcError> {
-    validate_tool_args(&HANDOFF_VALIDATOR, &args)?;
-    let message = args["message"].as_str().unwrap();
-
-    // Record message event
-    let msg_payload = json!({
-        "role": "agent",
-        "parts": [{"kind": "data", "data": {"type": "handoff", "message": message}}]
-    });
-    let event_id = db::events::insert(
-        &state.db_pool,
-        &auth.execution_id,
-        Some(&auth.session_id),
-        "platform",
-        &serde_json::to_string(&msg_payload).unwrap(),
-    )
-    .await
-    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-    let _ = state.event_broadcast.send(EventNotification {
-        execution_id: auth.execution_id.clone(),
-        event_id,
-    });
-
-    // Update session to completed
-    db::sessions::update_status(&state.db_pool, &auth.session_id, "completed")
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-    // Record state_change event
-    let state_event = json!({"from": auth.status, "to": "completed"});
-    let event_id = db::events::insert(
-        &state.db_pool,
-        &auth.execution_id,
-        Some(&auth.session_id),
-        "state_change",
-        &serde_json::to_string(&state_event).unwrap(),
-    )
-    .await
-    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-    let _ = state.event_broadcast.send(EventNotification {
-        execution_id: auth.execution_id.clone(),
-        event_id,
-    });
-
-    // Deliver handoff result to parent session's inbox
-    let child_session = db::sessions::get_by_id(&state.db_pool, &auth.session_id)
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-    if let Some(parent_id) = &child_session.parent_session_id {
-        // Record a message event on the parent session for audit/UI
-        let parent_msg = json!({
-            "role": "agent",
-            "parts": [{"kind": "data", "data": {
-                "type": "handoff_result",
-                "child_session_id": auth.session_id,
-                "message": message
-            }}]
-        });
-        let event_id = db::events::insert(
-            &state.db_pool,
-            &auth.execution_id,
-            Some(parent_id),
-            "platform",
-            &serde_json::to_string(&parent_msg).unwrap(),
-        )
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-        let _ = state.event_broadcast.send(EventNotification {
-            execution_id: auth.execution_id.clone(),
-            event_id,
-        });
-
-        // Look up agent name for context prefix — fallback to agent_id if lookup fails
-        // so the handoff result still reaches the lead even if enrichment fails
-        let agent_name = match db::agents::get_by_id(&state.db_pool, &child_session.agent_id).await
-        {
-            Ok(agent) => agent.name,
-            Err(e) => {
-                tracing::warn!(
-                    agent_id = %child_session.agent_id,
-                    error = %e,
-                    "failed to look up agent name for handoff prefix, using agent_id"
-                );
-                child_session.agent_id.clone()
-            }
-        };
-
-        // Sanitize agent name to prevent control chars breaking the prefix format
-        let agent_name = agent_name.replace(['\r', '\n'], " ");
-        let agent_name = agent_name.trim();
-
-        // Push to parent session's inbox so next_instruction can deliver it
-        let handoff_payload = serde_json::Value::String(format!(
-            "[delegated result from {} \u{00b7} session {}]\n\n{}",
-            agent_name, auth.session_id, message
-        ));
-        state
-            .task_queue
-            .push(TaskAssignment {
-                execution_id: auth.execution_id.clone(),
-                session_id: parent_id.clone(),
-                task_payload: handoff_payload,
-            })
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-    }
-
-    Ok(json!({
-        "content": [{"type": "text", "text": "{\"status\": \"completed\"}"}],
-        "isError": false
-    }))
 }
 
 async fn handle_delegate(
@@ -322,18 +197,27 @@ async fn handle_delegate(
 
         existing_id.to_string()
     } else {
-        // Create new child session with cwd
+        // Atomic width-guarded creation — only for new delegations, not resumes
         let new_id = Uuid::new_v4().to_string();
-        db::sessions::create(
+        let created = db::sessions::create_with_width_guard(
             &state.db_pool,
             &new_id,
             &auth.execution_id,
             &agent.id,
-            Some(&auth.session_id),
+            &auth.session_id,
             child_cwd.as_deref(),
+            auth.max_width,
         )
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+
+        if !created {
+            return Err(JsonRpcError::invalid_params(&format!(
+                "Cannot delegate: maximum active children ({}) reached. \
+                 Release idle children or wait for completions.",
+                auth.max_width
+            )));
+        }
         new_id
     };
 
@@ -599,7 +483,7 @@ async fn handle_escalate(
             event_id,
         });
 
-        if auth.role == McpRole::Lead {
+        if auth.role == McpRole::RootLead {
             let execution = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
                 .await
                 .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
@@ -634,24 +518,6 @@ async fn handle_escalate(
     }))
 }
 
-fn handoff_schema() -> JsonValue {
-    json!({
-        "name": "handoff",
-        "title": "Handoff",
-        "description": "Signal that your work is complete and hand off results to the lead agent.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "Summary of work done, approach, decisions, and open questions"
-                }
-            },
-            "required": ["message"]
-        }
-    })
-}
-
 fn delegate_schema() -> JsonValue {
     json!({
         "name": "delegate",
@@ -682,114 +548,11 @@ fn delegate_schema() -> JsonValue {
     })
 }
 
-async fn handle_next_instruction(
-    auth: &McpSession,
-    state: &AppState,
-) -> Result<JsonValue, JsonRpcError> {
-    // Auto-detect coordination mode on first call
-    let session = db::sessions::get_by_id(&state.db_pool, &auth.session_id)
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-    if session.coordination_mode != "mcp_poll" {
-        db::sessions::update_coordination_mode(&state.db_pool, &auth.session_id, "mcp_poll")
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-    }
-
-    // Read poll_timeout_ms from agent config
-    let agent = db::agents::get_by_id(&state.db_pool, &auth.agent_id)
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-    let agent_config: JsonValue = serde_json::from_str(&agent.config).unwrap_or_else(|_| json!({}));
-    let poll_timeout_ms = agent_config
-        .get("poll_timeout_ms")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(DEFAULT_POLL_TIMEOUT_MS)
-        .min(MAX_POLL_TIMEOUT_MS);
-
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(poll_timeout_ms);
-
-    // Long-poll loop: register notified BEFORE checking inbox to avoid
-    // missing a push that fires between pop and select!
-    loop {
-        let notified = state.task_queue.notified();
-
-        if let Some(task) = state
-            .task_queue
-            .pop_by_session(&auth.session_id)
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?
-        {
-            // Unwrap bootstrap objects: MCP-poll agents only need the prompt text,
-            // not the worker-specific fields (agent_id, agent_type, agent_config).
-            let payload = if task.task_payload.is_object() {
-                if let Some(message) = task.task_payload.get("message") {
-                    let role = message
-                        .get("role")
-                        .and_then(|r| r.as_str())
-                        .unwrap_or("user");
-                    // Aggregate all text parts (not just the first)
-                    let text: String = message
-                        .get("parts")
-                        .and_then(|p| p.as_array())
-                        .map(|parts| {
-                            parts
-                                .iter()
-                                .filter(|p| p.get("kind").and_then(|k| k.as_str()) == Some("text"))
-                                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        })
-                        .unwrap_or_default();
-                    if text.is_empty() {
-                        // Can't extract text — serialize the object so the agent
-                        // always gets a string (consistent contract)
-                        let json_str =
-                            serde_json::to_string(&task.task_payload).unwrap_or_default();
-                        serde_json::Value::String(format!("[{role}]\n\n{json_str}"))
-                    } else {
-                        serde_json::Value::String(format!("[{role}]\n\n{text}"))
-                    }
-                } else {
-                    task.task_payload
-                }
-            } else {
-                task.task_payload
-            };
-            let result_text = serde_json::to_string(&json!({"task": payload})).unwrap();
-            return Ok(json!({
-                "content": [{"type": "text", "text": result_text}],
-                "isError": false
-            }));
-        }
-
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            let result_text = serde_json::to_string(&json!({"timed_out": true})).unwrap();
-            return Ok(json!({
-                "content": [{"type": "text", "text": result_text}],
-                "isError": false
-            }));
-        }
-
-        tokio::select! {
-            _ = notified => {
-                // A push happened — loop back and check our session's inbox
-            }
-            _ = tokio::time::sleep(remaining) => {
-                // Deadline reached — will return timed_out on next iteration
-            }
-        }
-    }
-}
-
 fn escalate_schema() -> JsonValue {
     json!({
         "name": "escalate",
         "title": "Escalate",
-        "description": "Escalate one or more questions or notifications to the parent agent or user.",
+        "description": "Escalate one or more questions or notifications to the user.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -834,19 +597,6 @@ fn escalate_schema() -> JsonValue {
                 }
             },
             "required": ["questions"]
-        }
-    })
-}
-
-fn next_instruction_schema() -> JsonValue {
-    json!({
-        "name": "next_instruction",
-        "title": "Next Instruction",
-        "description": "Wait for the next instruction or event. Blocks until a message arrives or timeout.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-            "required": []
         }
     })
 }

@@ -30,10 +30,15 @@ async fn test_concurrent_config_upsert_no_race() {
     }
 
     let all_configs = list_config(&pool).await.expect("Failed to list config");
+    // Migration seeds max_depth + max_width, plus 1 test_key = 3 total
+    let test_entries: Vec<_> = all_configs
+        .iter()
+        .filter(|c| c.name == "test_key")
+        .collect();
     assert_eq!(
-        all_configs.len(),
+        test_entries.len(),
         1,
-        "Should have exactly 1 config entry after concurrent upserts"
+        "Should have exactly 1 test_key config entry after concurrent upserts"
     );
 
     let config = get_config(&pool, "test_key")

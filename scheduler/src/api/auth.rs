@@ -11,8 +11,9 @@ use crate::db;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpRole {
-    Lead,
-    Child,
+    RootLead,
+    SubLead,
+    Leaf,
 }
 
 pub struct McpSession {
@@ -20,6 +21,9 @@ pub struct McpSession {
     pub execution_id: String,
     pub agent_id: String,
     pub role: McpRole,
+    pub depth: i64,
+    pub max_depth: i64,
+    pub max_width: i64,
     pub status: String,
 }
 
@@ -99,10 +103,20 @@ impl FromRequestParts<AppState> for McpSession {
                 ));
             }
 
+            let execution = db::executions::get_by_id(&db_pool, &session.execution_id)
+                .await
+                .map_err(|e| AuthRejection::InternalError(e.to_string()))?;
+
+            let depth = db::sessions::compute_depth(&db_pool, &session.id, &session.execution_id)
+                .await
+                .map_err(|e| AuthRejection::InternalError(e.to_string()))?;
+
             let role = if session.parent_session_id.is_none() {
-                McpRole::Lead
+                McpRole::RootLead
+            } else if depth >= execution.max_depth {
+                McpRole::Leaf
             } else {
-                McpRole::Child
+                McpRole::SubLead
             };
 
             Ok(McpSession {
@@ -110,6 +124,9 @@ impl FromRequestParts<AppState> for McpSession {
                 execution_id: session.execution_id,
                 agent_id: session.agent_id,
                 role,
+                depth,
+                max_depth: execution.max_depth,
+                max_width: execution.max_width,
                 status: session.status,
             })
         }

@@ -466,6 +466,17 @@ pub async fn handle_worker_sync(
                         );
                     }
 
+                    // Release worker from child sessions after turn completes.
+                    // The child stays input-required; it can be re-activated later
+                    // via delegate(session_id=...) which resets to submitted.
+                    // Without this, the worker long-polls indefinitely for the idle
+                    // child, starving other submitted sessions of workers.
+                    if session.parent_session_id.is_some() {
+                        return Ok(Json(WorkerSyncResponse::SessionComplete {
+                            session_id: result.session_id.clone(),
+                        }));
+                    }
+
                     // Propagate to execution for lead sessions
                     if session.parent_session_id.is_none() {
                         if let Err(e) = db::executions::update_status(
@@ -687,7 +698,7 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
             }));
         }
 
-        // Task was consumed by next_instruction — long-poll for the next one
+        // Task was consumed between enqueue and claim — long-poll for the next one
         return long_poll_session(state, &session.id).await;
     }
 

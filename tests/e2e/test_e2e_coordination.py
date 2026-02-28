@@ -1,4 +1,4 @@
-"""E2E coordination tests: delegation, handoff, and escalate round-trips.
+"""E2E coordination tests: delegation, turn-complete, and escalate round-trips.
 
 Proves the full lead→child→lead flow through real scheduler + worker
 processes using mock ACP agents with scripted coordination scenarios.
@@ -82,15 +82,19 @@ def _execution_status(db_url, exec_id):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_e2e_delegate_handoff(test_database):
-    """Full lead→child→lead round-trip through real processes."""
+def test_e2e_delegate_end_turn(test_database):
+    """Full lead→child→lead round-trip through real processes.
+
+    Child uses end-turn scenario (goes input-required), system delivers
+    turn-complete notification to lead.
+    """
     db_url = test_database
 
     with scheduler_context(db_url=db_url) as ctx:
         lead_id = seed_acp_scenario_agent(
             ctx["db_url"], "lead", "delegate", delegate_to="child-agent"
         )
-        seed_acp_scenario_agent(ctx["db_url"], "child-agent", "handoff")
+        seed_acp_scenario_agent(ctx["db_url"], "child-agent", "end-turn")
 
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"],
@@ -113,24 +117,26 @@ def test_e2e_delegate_handoff(test_database):
             child_sid = children[0][0]
             child_exec_id = children[0][2]
 
-            # 2. Child completes (handoff)
+            # 2. Child goes input-required (end_turn)
             assert _poll_until(
-                lambda: _session_status(ctx["db_url"], child_sid) == "completed",
+                lambda: _session_status(ctx["db_url"], child_sid) == "input-required",
             ), (
-                f"Child session did not complete, status={_session_status(ctx['db_url'], child_sid)}"
+                f"Child session did not go input-required, status={_session_status(ctx['db_url'], child_sid)}"
             )
 
-            # 3. Lead processed handoff result (full round-trip)
+            # 3. Lead processed turn-complete notification (full round-trip)
             assert _poll_until(
                 lambda: _has_marker(ctx["db_url"], lead_sid, "DELEGATE_PHASE_1_ACK"),
-            ), "Lead did not process handoff result (DELEGATE_PHASE_1_ACK not found)"
+            ), (
+                "Lead did not process turn-complete result (DELEGATE_PHASE_1_ACK not found)"
+            )
 
             # 4. Session tree is correct
             assert child_exec_id == exec_id, (
                 f"Child execution_id {child_exec_id} != lead {exec_id}"
             )
 
-            # 5. Execution idle after lead processed handoff result
+            # 5. Execution idle after lead processed turn-complete
             assert _poll_until(
                 lambda: _execution_status(ctx["db_url"], exec_id) == "input-required",
                 timeout=10,
@@ -144,7 +150,7 @@ def test_e2e_delegate_handoff(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_e2e_delegate_multiple(test_database):
-    """Multiple child delegations; results delivered independently."""
+    """Multiple child delegations; turn-complete results delivered independently."""
     db_url = test_database
 
     with scheduler_context(db_url=db_url) as ctx:
@@ -155,7 +161,7 @@ def test_e2e_delegate_multiple(test_database):
             delegate_to="child-agent",
             delegate_count=2,
         )
-        seed_acp_scenario_agent(ctx["db_url"], "child-agent", "handoff")
+        seed_acp_scenario_agent(ctx["db_url"], "child-agent", "end-turn")
 
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"],
@@ -178,19 +184,19 @@ def test_e2e_delegate_multiple(test_database):
                 f"Expected exactly 2 child sessions, got {len(children)}"
             )
 
-            # 2. Both children complete
+            # 2. Both children go input-required (end-turn)
             for child_id, _, _ in children:
                 assert _poll_until(
                     lambda cid=child_id: _session_status(ctx["db_url"], cid)
-                    == "completed",
-                ), f"Child {child_id} did not complete"
+                    == "input-required",
+                ), f"Child {child_id} did not go input-required"
 
-            # 3. Lead processed all handoff results
+            # 3. Lead processed all turn-complete results
             assert _poll_until(
                 lambda: _has_marker(
                     ctx["db_url"], lead_sid, "DELEGATE_MULTI_PHASE_2_ACK"
                 ),
-            ), "Lead did not process all handoff results"
+            ), "Lead did not process all turn-complete results"
 
             assert _has_marker(ctx["db_url"], lead_sid, "DELEGATE_MULTI_PHASE_1_ACK"), (
                 "Lead missing DELEGATE_MULTI_PHASE_1_ACK"
@@ -206,14 +212,14 @@ def test_e2e_delegate_multiple(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_e2e_escalate_round_trip(test_database):
-    """Delegate → child completes → lead escalates → user answers → lead continues."""
+    """Delegate → child end-turn → lead escalates → user answers → lead continues."""
     db_url = test_database
 
     with scheduler_context(db_url=db_url) as ctx:
         lead_id = seed_acp_scenario_agent(
             ctx["db_url"], "lead", "delegate-ask", delegate_to="child-agent"
         )
-        seed_acp_scenario_agent(ctx["db_url"], "child-agent", "handoff")
+        seed_acp_scenario_agent(ctx["db_url"], "child-agent", "end-turn")
 
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"],
@@ -224,7 +230,7 @@ def test_e2e_escalate_round_trip(test_database):
         worker1 = start_worker(ctx["url"], interval="500ms")
         worker2 = start_worker(ctx["url"], interval="500ms")
         try:
-            # 1. Exactly one child created, then completes
+            # 1. Exactly one child created, then goes input-required
             assert _poll_until(
                 lambda: len(_child_sessions(ctx["db_url"], lead_sid)) >= 1,
             ), "Child session was not created"
@@ -236,8 +242,8 @@ def test_e2e_escalate_round_trip(test_database):
             child_sid = children[0][0]
 
             assert _poll_until(
-                lambda: _session_status(ctx["db_url"], child_sid) == "completed",
-            ), "Child did not complete"
+                lambda: _session_status(ctx["db_url"], child_sid) == "input-required",
+            ), "Child did not go input-required"
 
             # 2. Execution goes input-required (lead called escalate)
             assert _poll_until(

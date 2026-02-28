@@ -116,27 +116,87 @@ pub async fn update_status(pool: &DbPool, id: &str, status: &str) -> Result<(), 
     Ok(())
 }
 
-pub async fn update_coordination_mode(
+/// Atomically create a child session only if the parent has fewer than
+/// `max_width` active (non-terminal) children. Returns `true` if the
+/// session was created, `false` if width limit was reached.
+pub async fn create_with_width_guard(
     pool: &DbPool,
     id: &str,
-    mode: &str,
-) -> Result<(), SchedulerError> {
+    execution_id: &str,
+    agent_id: &str,
+    parent_session_id: &str,
+    cwd: Option<&str>,
+    max_width: i64,
+) -> Result<bool, SchedulerError> {
     let query = pool.prepare_query(
-        "UPDATE sessions SET coordination_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, status) \
+         SELECT ?, ?, ?, ?, ?, 'submitted' \
+         WHERE (SELECT COUNT(*) FROM sessions \
+                WHERE parent_session_id = ? \
+                AND status NOT IN ('completed', 'failed', 'canceled')) < ?",
     );
 
     let result = sqlx::query(&query)
-        .bind(mode)
         .bind(id)
+        .bind(execution_id)
+        .bind(parent_session_id)
+        .bind(agent_id)
+        .bind(cwd)
+        .bind(parent_session_id)
+        .bind(max_width)
         .execute(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("update coordination_mode failed: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("create session failed: {e}")))?;
 
-    if result.rows_affected() == 0 {
-        return Err(SchedulerError::NotFound(format!("session not found: {id}")));
-    }
+    Ok(result.rows_affected() > 0)
+}
 
-    Ok(())
+/// Count active (non-terminal) children of a session
+pub async fn count_active_children(
+    pool: &DbPool,
+    parent_session_id: &str,
+) -> Result<i64, SchedulerError> {
+    let query = pool.prepare_query(
+        "SELECT COUNT(*) as cnt FROM sessions WHERE parent_session_id = ? AND status NOT IN ('completed', 'failed', 'canceled')",
+    );
+
+    let row = sqlx::query(&query)
+        .bind(parent_session_id)
+        .fetch_one(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("count active children failed: {e}")))?;
+
+    Ok(row.get::<i64, _>("cnt"))
+}
+
+/// Compute session depth by walking the parent chain via recursive CTE.
+/// Constrained to execution_id to prevent cross-execution traversal.
+pub async fn compute_depth(
+    pool: &DbPool,
+    session_id: &str,
+    execution_id: &str,
+) -> Result<i64, SchedulerError> {
+    let query = pool.prepare_query(
+        "WITH RECURSIVE ancestors(id, parent_session_id, lvl) AS (\
+            SELECT id, parent_session_id, 0 \
+            FROM sessions WHERE id = ? AND execution_id = ? \
+            UNION ALL \
+            SELECT s.id, s.parent_session_id, a.lvl + 1 \
+            FROM sessions s JOIN ancestors a ON s.id = a.parent_session_id \
+            WHERE s.execution_id = ? AND a.lvl < 11 \
+        ) \
+        SELECT COALESCE(MAX(lvl), 0) as depth FROM ancestors",
+    );
+
+    let row = sqlx::query(&query)
+        .bind(session_id)
+        .bind(execution_id)
+        .bind(execution_id)
+        .fetch_one(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("compute depth failed: {e}")))?;
+
+    Ok(row.get::<i64, _>("depth"))
 }
 
 pub async fn list_filtered(
@@ -208,7 +268,7 @@ pub async fn find_assignable(pool: &DbPool) -> Result<Option<Session>, Scheduler
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE coordination_mode = 'sdk' AND status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
         created_fmt, updated_fmt, completed_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -226,7 +286,7 @@ pub async fn find_assignable(pool: &DbPool) -> Result<Option<Session>, Scheduler
 
 pub async fn claim_assignable(pool: &DbPool, id: &str) -> Result<bool, SchedulerError> {
     let query = pool.prepare_query(
-        "UPDATE sessions SET status = 'working', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitted' AND coordination_mode = 'sdk'",
+        "UPDATE sessions SET status = 'working', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitted'",
     );
 
     let result = sqlx::query(&query)

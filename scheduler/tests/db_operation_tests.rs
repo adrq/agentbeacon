@@ -31,11 +31,16 @@ async fn test_config_upsert_sqlite() {
     let all_configs = list_config(&pool)
         .await
         .expect("Failed to list config entries");
+    // Migration seeds max_depth + max_width, plus 1 test_key = 3 total
+    let test_entries: Vec<_> = all_configs
+        .iter()
+        .filter(|c| c.name == "test_key")
+        .collect();
     assert_eq!(
-        all_configs.len(),
+        test_entries.len(),
         1,
-        "SQLite: Should have exactly 1 config entry, found {}",
-        all_configs.len()
+        "SQLite: Should have exactly 1 test_key config entry, found {}",
+        test_entries.len()
     );
 
     pool.close().await;
@@ -70,11 +75,16 @@ async fn test_config_upsert_postgres() {
     let all_configs = list_config(&pool)
         .await
         .expect("Failed to list config entries");
+    // Migration seeds max_depth + max_width, plus 1 test_key_pg = 3 total
+    let test_entries: Vec<_> = all_configs
+        .iter()
+        .filter(|c| c.name == "test_key_pg")
+        .collect();
     assert_eq!(
-        all_configs.len(),
+        test_entries.len(),
         1,
-        "PostgreSQL: Should have exactly 1 config entry, found {}",
-        all_configs.len()
+        "PostgreSQL: Should have exactly 1 test_key_pg config entry, found {}",
+        test_entries.len()
     );
 
     pool.close().await;

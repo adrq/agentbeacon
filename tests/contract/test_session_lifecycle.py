@@ -81,25 +81,6 @@ def test_worker_sync_assigns_sdk_session(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_worker_sync_ignores_mcp_poll_sessions(test_database):
-    """Idle worker sync skips mcp_poll sessions."""
-    with scheduler_context(db_url=test_database) as ctx:
-        agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
-        _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
-
-        # Flip coordination_mode to mcp_poll (simulates next_instruction call)
-        with db_conn(ctx["db_url"]) as conn:
-            conn.execute(
-                "UPDATE sessions SET coordination_mode = 'mcp_poll' WHERE id = ?",
-                (session_id,),
-            )
-            conn.commit()
-
-        data = _worker_sync(ctx["url"])
-        assert data["type"] == "no_action"
-
-
-@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_worker_sync_delivers_prompt(test_database):
     """Waiting worker gets prompt_delivery when task arrives in session inbox."""
     with scheduler_context(db_url=test_database) as ctx:

@@ -5,10 +5,11 @@ calls. Phases advance on each prompt; marker text is emitted as agent_message_ch
 notifications so tests can assert on deterministic strings.
 
 Scenarios:
-  DelegateScenario — lead delegates to a child, acknowledges handoff result
-  HandoffScenario — child hands off result back to lead
-  DelegateAskScenario — lead delegates, then asks user after handoff result
+  DelegateScenario — lead delegates to a child, acknowledges turn-complete result
+  EndTurnScenario — child does end_turn (goes to input-required)
+  DelegateAskScenario — lead delegates, then asks user after turn-complete result
   DelegateMultiScenario — lead delegates N children sequentially
+  DelegateReleaseScenario — lead delegates, then releases the child
 """
 
 import json
@@ -42,12 +43,12 @@ class _BaseScenario:
 
 
 class DelegateScenario(_BaseScenario):
-    """Lead agent: delegates to a child, then acknowledges the handoff result.
+    """Lead agent: delegates to a child, then acknowledges turn-complete.
 
     Requires delegate_to (child agent name).
 
     Phase 0 (initial prompt): emits DELEGATE_PHASE_0, calls delegate → end_turn
-    Phase 1 (handoff result):  emits DELEGATE_PHASE_1_ACK → end_turn
+    Phase 1 (turn-complete):   emits DELEGATE_PHASE_1_ACK → end_turn
     """
 
     def __init__(
@@ -71,35 +72,17 @@ class DelegateScenario(_BaseScenario):
             self.phase = 1
             return "end_turn"
 
-        # Phase 1+: handoff result delivered
+        # Phase 1+: turn-complete notification delivered
         self._send_marker("DELEGATE_PHASE_1_ACK")
         self.phase += 1
         return "end_turn"
 
 
-class HandoffScenario(_BaseScenario):
-    """Child agent: hands off result back to lead.
-
-    Phase 0 (initial prompt): calls handoff with message → end_turn
-    """
-
-    async def handle_prompt(self, prompt_text: str) -> str:
-        if self.phase > 0:
-            return "end_turn"
-        excerpt = prompt_text[:80] if prompt_text else "done"
-        await self.mcp_client.call_tool(
-            "handoff",
-            {"message": f"Completed: {excerpt}"},
-        )
-        self.phase = 1
-        return "end_turn"
-
-
 class DelegateAskScenario(_BaseScenario):
-    """Lead agent: delegates, receives handoff, then asks the user a question.
+    """Lead agent: delegates, receives turn-complete, then asks the user a question.
 
     Phase 0 (initial prompt): emits DELEGATE_ASK_PHASE_0, calls delegate → end_turn
-    Phase 1 (handoff result):  emits DELEGATE_ASK_PHASE_1, calls escalate → end_turn
+    Phase 1 (turn-complete):   emits DELEGATE_ASK_PHASE_1, calls escalate → end_turn
     Phase 2 (user answer):     emits DELEGATE_ASK_PHASE_2_ACK → end_turn
     """
 
@@ -219,7 +202,7 @@ class DelegateMultiScenario(_BaseScenario):
     """Lead agent: delegates to N children sequentially, acknowledges each.
 
     Phase 0: emits DELEGATE_MULTI_PHASE_0, calls delegate N times → end_turn
-    Phases 1..N: receives handoff results one at a time,
+    Phases 1..N: receives turn-complete notifications one at a time,
                  emits DELEGATE_MULTI_PHASE_{n}_ACK → end_turn
     """
 
@@ -250,7 +233,7 @@ class DelegateMultiScenario(_BaseScenario):
             self.phase = 1
             return "end_turn"
 
-        # Phases 1..N: each handoff result
+        # Phases 1..N: each turn-complete notification
         self._send_marker(f"DELEGATE_MULTI_PHASE_{self.phase}_ACK")
         self.phase += 1
         return "end_turn"

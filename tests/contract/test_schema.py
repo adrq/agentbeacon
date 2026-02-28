@@ -69,6 +69,8 @@ EXPECTED_COLUMNS = {
         "title",
         "input",
         "metadata",
+        "max_depth",
+        "max_width",
         "created_at",
         "updated_at",
         "completed_at",

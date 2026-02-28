@@ -41,6 +41,8 @@ pub struct CreateExecutionRequest {
     pub cwd: Option<String>,
     pub branch: Option<String>,
     pub context_id: Option<String>,
+    pub max_depth: Option<i64>,
+    pub max_width: Option<i64>,
 }
 
 /// Response for create execution
@@ -153,6 +155,8 @@ async fn create_execution_handler(
         req.cwd.as_deref(),
         req.branch.as_deref(),
         req.context_id.as_deref(),
+        req.max_depth,
+        req.max_width,
     )
     .await?;
 

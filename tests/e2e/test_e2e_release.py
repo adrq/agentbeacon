@@ -78,7 +78,7 @@ def test_e2e_delegate_release(test_database):
 
     Flow:
     1. Lead (delegate-release) delegates to child (end-turn)
-    2. Child goes input-required (end_turn, no handoff)
+    2. Child goes input-required (end_turn)
     3. Turn-complete auto-notification delivered to lead (phase 1 ack)
     4. Lead goes input-required after acknowledging notification
     5. User sends message to lead to trigger release phase (phase 2)

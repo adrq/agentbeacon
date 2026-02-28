@@ -16,6 +16,8 @@ const MIGRATION_0004_PG: &str =
     include_str!("../../migrations/0004_pg_add_parent_session_index.sql");
 const MIGRATION_0005: &str = include_str!("../../migrations/0005_data_model_split.sql");
 const MIGRATION_0005_PG: &str = include_str!("../../migrations/0005_pg_data_model_split.sql");
+const MIGRATION_0006: &str = include_str!("../../migrations/0006_hierarchy_limits.sql");
+const MIGRATION_0006_PG: &str = include_str!("../../migrations/0006_pg_hierarchy_limits.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -158,12 +160,18 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     } else {
         MIGRATION_0005
     };
+    let migration_0006 = if is_postgres {
+        MIGRATION_0006_PG
+    } else {
+        MIGRATION_0006
+    };
     let migrations = vec![
         (MIGRATION_0001, 1),
         (migration_0002, 2),
         (migration_0003, 3),
         (migration_0004, 4),
         (migration_0005, 5),
+        (migration_0006, 6),
     ];
 
     // Process each migration

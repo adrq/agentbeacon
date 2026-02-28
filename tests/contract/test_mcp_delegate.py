@@ -164,7 +164,8 @@ def test_delegate_nonexistent_agent_returns_error(test_database):
             },
         )
 
-        assert "error" in data
+        assert data["error"]["code"] == -32602
+        assert "agent not found" in data["error"]["message"].lower()
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -184,26 +185,34 @@ def test_delegate_disabled_agent_returns_error(test_database):
             },
         )
 
-        assert "error" in data
+        assert data["error"]["code"] == -32602
+        assert "disabled" in data["error"]["message"].lower()
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_child_cannot_call_delegate(test_database):
+def test_leaf_cannot_call_delegate(test_database):
+    """Leaf (depth >= max_depth) cannot call delegate."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
+        # depth 1 = SubLead (has delegate), depth 2 = Leaf (max_depth=2)
         child_id = str(uuid.uuid4())
+        grandchild_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
                 "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
                 (child_id, exec_id, lead_id, agent_id),
             )
+            conn.execute(
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+                (grandchild_id, exec_id, child_id, agent_id),
+            )
             conn.commit()
 
         data = mcp_call(
             ctx["url"],
-            child_id,
+            grandchild_id,
             "tools/call",
             params={
                 "name": "delegate",
@@ -211,5 +220,5 @@ def test_child_cannot_call_delegate(test_database):
             },
         )
 
-        assert "error" in data
         assert data["error"]["code"] == -32600
+        assert "no tools available" in data["error"]["message"].lower()

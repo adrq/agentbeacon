@@ -1474,7 +1474,7 @@ def seed_acp_scenario_agent(
     Args:
         db_url: Database URL (sqlite:... or postgres://...)
         name: Agent name
-        scenario: Scenario name (delegate, handoff, delegate-ask, delegate-multi)
+        scenario: Scenario name (delegate, end-turn, delegate-ask, delegate-multi, delegate-release)
         delegate_to: Child agent name for delegation scenarios
         delegate_count: Number of children for delegate-multi
         agent_id: Agent ID (generated UUID if None)

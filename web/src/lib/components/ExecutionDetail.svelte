@@ -239,6 +239,10 @@
           <span class="meta-sep">&middot;</span>
         {/if}
         <ElapsedTime startTime={detail.execution.created_at} endTime={isTerminal ? (detail.execution.completed_at ?? detail.execution.updated_at) : null} />
+        <span class="meta-sep">&middot;</span>
+        <span>Depth: {detail.execution.max_depth}</span>
+        <span class="meta-sep">&middot;</span>
+        <span>Width: {detail.execution.max_width}</span>
         {#if detail.execution.worktree_path}
           <span class="meta-sep">&middot;</span>
           <span>Working Directory:</span>

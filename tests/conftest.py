@@ -104,6 +104,14 @@ def cleanup_postgres_database(request):
             for table in tables:
                 cur.execute(f"TRUNCATE TABLE {table} CASCADE")
 
+            # Re-seed migration defaults for config (truncated above)
+            cur.execute(
+                "INSERT INTO config (name, value, created_at, updated_at) "
+                "VALUES ('max_depth', '2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+                "       ('max_width', '5', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
+                "ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value"
+            )
+
             conn.commit()
         finally:
             conn.close()

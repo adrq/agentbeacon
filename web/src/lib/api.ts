@@ -175,6 +175,8 @@ export class AgentBeaconAPI {
     context_id?: string;
     branch?: string;
     cwd?: string;
+    max_depth?: number;
+    max_width?: number;
   }): Promise<CreateExecutionResponse> {
     return this.fetchJSON('/executions', {
       method: 'POST',

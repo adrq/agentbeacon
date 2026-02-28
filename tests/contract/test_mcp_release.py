@@ -194,13 +194,13 @@ def test_release_requires_parent_authority(test_database):
             params={"name": "release", "arguments": {"session_id": child_id}},
         )
 
-        assert "error" in data
+        assert data["error"]["code"] == -32602
         assert "not a child" in data["error"]["message"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_release_rejects_sibling(test_database):
-    """Sibling cannot release sibling (only parent can)."""
+    """Sibling cannot release sibling (not a child of the caller)."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
@@ -219,8 +219,9 @@ def test_release_rejects_sibling(test_database):
             params={"name": "release", "arguments": {"session_id": sibling_b}},
         )
 
-        assert "error" in data
-        assert data["error"]["code"] == -32600
+        assert data["error"]["code"] == -32602
+        # SubLead has release tool, but sibling_b is not its child → authority check fails
+        assert "not a child" in data["error"]["message"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -241,7 +242,7 @@ def test_release_requires_input_required_state(test_database):
             params={"name": "release", "arguments": {"session_id": child_id}},
         )
 
-        assert "error" in data
+        assert data["error"]["code"] == -32602
         assert "input-required" in data["error"]["message"]
 
 
@@ -292,8 +293,8 @@ def test_release_returns_correct_count(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_child_cannot_call_release(test_database):
-    """Child agents cannot call release (leads only)."""
+def test_sub_lead_cannot_release_parent(test_database):
+    """Sub-lead has release but cannot release its parent (not a child of caller)."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -313,5 +314,6 @@ def test_child_cannot_call_release(test_database):
             params={"name": "release", "arguments": {"session_id": lead_id}},
         )
 
-        assert "error" in data
-        assert data["error"]["code"] == -32600
+        assert data["error"]["code"] == -32602
+        # SubLead has release tool, but lead_id is not its child → authority check
+        assert "not a child" in data["error"]["message"]

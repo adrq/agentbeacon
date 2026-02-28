@@ -19,7 +19,7 @@ pub struct TaskAssignment {
 /// providing ACID guarantees. Performance: 1-5ms per operation is negligible compared
 /// to typical task execution times (10-60 seconds for AI agents).
 ///
-/// The `notify` field wakes long-poll waiters (e.g. `next_instruction`) on every push,
+/// The `notify` field wakes long-poll waiters on every push,
 /// so they can check their session's inbox without busy-polling.
 pub struct TaskQueue {
     db_pool: DbPool,

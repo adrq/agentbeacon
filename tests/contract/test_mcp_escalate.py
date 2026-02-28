@@ -145,8 +145,8 @@ def test_escalate_success_includes_is_error_false(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_child_can_call_escalate(test_database):
-    """Child sessions can call escalate — question surfaces at session level."""
+def test_escalate_rejected_for_sub_lead(test_database):
+    """Sub-lead cannot call escalate — root-lead-only restriction."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -159,58 +159,50 @@ def test_child_can_call_escalate(test_database):
             )
             conn.commit()
 
-        result = mcp_tools_call(
+        data = mcp_call(
             ctx["url"],
             child_id,
-            "escalate",
-            {"questions": [{"question": "hello?"}]},
+            "tools/call",
+            params={
+                "name": "escalate",
+                "arguments": {"questions": [{"question": "hello?"}]},
+            },
         )
-
-        content = result["content"]
-        payload = json.loads(content[0]["text"])
-        assert "question_ids" in payload
-
-        # Child session goes input-required, but execution does NOT
-        with db_conn(ctx["db_url"]) as conn:
-            child_status = conn.execute(
-                "SELECT status FROM sessions WHERE id = ?", (child_id,)
-            ).fetchone()[0]
-            exec_status = conn.execute(
-                "SELECT status FROM executions WHERE id = ?", (exec_id,)
-            ).fetchone()[0]
-        assert child_status == "input-required"
-        assert exec_status != "input-required"
+        assert data["error"]["code"] == -32600
+        assert "root lead" in data["error"]["message"].lower()
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_lead_can_call_handoff(test_database):
-    """Lead sessions can call handoff (completes the session)."""
+def test_escalate_rejected_for_leaf(test_database):
+    """Leaf cannot call any tool including escalate."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
-        _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
+        exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "test task")
 
-        # Set session to working so handoff is valid
+        child_id = str(uuid.uuid4())
+        grandchild_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
-                "UPDATE sessions SET status = 'working' WHERE id = ?",
-                (session_id,),
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+                (child_id, exec_id, lead_id, agent_id),
+            )
+            conn.execute(
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+                (grandchild_id, exec_id, child_id, agent_id),
             )
             conn.commit()
 
-        result = mcp_tools_call(
+        data = mcp_call(
             ctx["url"],
-            session_id,
-            "handoff",
-            {"message": "All done"},
+            grandchild_id,
+            "tools/call",
+            params={
+                "name": "escalate",
+                "arguments": {"questions": [{"question": "hello?"}]},
+            },
         )
-
-        assert result.get("isError") is False
-
-        with db_conn(ctx["db_url"]) as conn:
-            row = conn.execute(
-                "SELECT status FROM sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-        assert row[0] == "completed"
+        assert data["error"]["code"] == -32600
+        assert "no tools available" in data["error"]["message"].lower()
 
 
 # --- Type-mismatch validation (jsonschema enforcement) ---
@@ -297,34 +289,6 @@ def test_delegate_agent_wrong_type_rejected(test_database):
             params={
                 "name": "delegate",
                 "arguments": {"agent": 123, "prompt": "do stuff"},
-            },
-        )
-        assert "error" in data
-        assert data["error"]["code"] == -32602
-
-
-@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_handoff_message_wrong_type_rejected(test_database):
-    """handoff with non-string message should be rejected."""
-    with scheduler_context(db_url=test_database) as ctx:
-        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
-        exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "task")
-
-        child_id = str(uuid.uuid4())
-        with db_conn(ctx["db_url"]) as conn:
-            conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
-                (child_id, exec_id, lead_id, agent_id),
-            )
-            conn.commit()
-
-        data = mcp_call(
-            ctx["url"],
-            child_id,
-            "tools/call",
-            params={
-                "name": "handoff",
-                "arguments": {"message": ["not", "a", "string"]},
             },
         )
         assert "error" in data
@@ -436,34 +400,6 @@ def test_delegate_missing_required_field_rejected(test_database):
             params={
                 "name": "delegate",
                 "arguments": {"prompt": "do stuff"},
-            },
-        )
-        assert "error" in data
-        assert data["error"]["code"] == -32602
-
-
-@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_handoff_missing_message_rejected(test_database):
-    """handoff with no arguments should be rejected."""
-    with scheduler_context(db_url=test_database) as ctx:
-        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
-        exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "task")
-
-        child_id = str(uuid.uuid4())
-        with db_conn(ctx["db_url"]) as conn:
-            conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
-                (child_id, exec_id, lead_id, agent_id),
-            )
-            conn.commit()
-
-        data = mcp_call(
-            ctx["url"],
-            child_id,
-            "tools/call",
-            params={
-                "name": "handoff",
-                "arguments": {},
             },
         )
         assert "error" in data
