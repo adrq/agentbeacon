@@ -11,18 +11,18 @@ Testing approach:
 - Assert event sequence and metadata
 """
 
-import pytest
-
-pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
-
-import requests
-import uuid
-import time
 import sqlite3
+import time
+import uuid
+
 import psycopg2
+import pytest
+import requests
 from psycopg2.extras import RealDictCursor
 
 from tests.testhelpers import scheduler_context, get_a2a_endpoint
+
+pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
 
 
 def get_execution_events(db_url: str, execution_id: str) -> list[dict]:

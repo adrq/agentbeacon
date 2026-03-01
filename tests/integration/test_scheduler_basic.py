@@ -5,17 +5,16 @@ starts the scheduler, registers a 2-node sequential workflow (A2A + ACP nodes),
 and uses mock polling to execute both tasks sequentially.
 """
 
-import pytest
-
-pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
-
-import requests
-import uuid
 import time
+import uuid
+
 import pytest
+import requests
 
 from tests.contracts import schema_helpers as contract_schema_helpers
 from tests.testhelpers import scheduler_context
+
+pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

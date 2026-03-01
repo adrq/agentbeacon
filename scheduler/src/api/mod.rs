@@ -18,6 +18,7 @@ pub mod projects;
 pub mod sessions;
 pub mod sse;
 pub mod types;
+pub mod wiki;
 pub mod worker;
 
 /// Build API router with all endpoint modules.
@@ -37,4 +38,5 @@ pub fn routes() -> Router<AppState> {
         .merge(mcp::routes())
         .merge(messages::routes())
         .merge(sessions::routes())
+        .merge(wiki::routes())
 }

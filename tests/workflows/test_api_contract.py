@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 import requests
 
-pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
-
 from tests.testhelpers import scheduler_context
+
+pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
 
 ROOT = Path(__file__).resolve().parents[2]
 GUARDRAILS_DUPLICATE_ID_PATH = ROOT / "examples" / "workflow_invalid_duplicate_id.yaml"

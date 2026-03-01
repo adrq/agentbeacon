@@ -89,6 +89,7 @@ pub struct SessionPromptResult {
     pub error: Option<String>,
 }
 
+#[allow(dead_code)] // Spec parity with ACP session/cancel — params built inline via json!()
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct SessionCancelParams {
     #[serde(rename = "sessionId")]

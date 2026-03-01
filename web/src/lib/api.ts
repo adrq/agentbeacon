@@ -1,6 +1,7 @@
 import type {
   Agent, AgentDiscoveryEntry, Driver, Execution, ExecutionDetail, Session, Event, Project,
   CreateExecutionResponse, PostMessageResponse,
+  WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
 } from './types';
 
 export class AgentBeaconAPI {
@@ -229,6 +230,37 @@ export class AgentBeaconAPI {
 
   async checkReady(): Promise<{ status: string }> {
     return this.fetchJSON('/ready');
+  }
+
+  // Wiki
+  async listWikiPages(projectId: string, q?: string): Promise<WikiPageListItem[]> {
+    const params = q ? `?q=${encodeURIComponent(q)}` : '';
+    return this.fetchJSON<WikiPageListItem[]>(`/projects/${projectId}/wiki/pages${params}`);
+  }
+
+  async getWikiPage(projectId: string, slug: string): Promise<WikiPage> {
+    return this.fetchJSON<WikiPage>(`/projects/${projectId}/wiki/pages/${slug}`);
+  }
+
+  async putWikiPage(projectId: string, slug: string, req: PutWikiPageRequest): Promise<WikiPage> {
+    return this.fetchJSON<WikiPage>(`/projects/${projectId}/wiki/pages/${slug}`, {
+      method: 'PUT',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async deleteWikiPage(projectId: string, slug: string): Promise<void> {
+    return this.fetchNoContent(`/projects/${projectId}/wiki/pages/${slug}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async listWikiRevisions(projectId: string, slug: string): Promise<WikiRevisionListItem[]> {
+    return this.fetchJSON<WikiRevisionListItem[]>(`/projects/${projectId}/wiki/pages/${slug}/revisions`);
+  }
+
+  async getWikiRevision(projectId: string, slug: string, rev: number): Promise<WikiRevision> {
+    return this.fetchJSON<WikiRevision>(`/projects/${projectId}/wiki/pages/${slug}/revisions/${rev}`);
   }
 }
 

@@ -16,21 +16,20 @@ Run with: uv run pytest -k test_orchestrator_scheduler_happy_path
 Tests run against both SQLite and PostgreSQL backends automatically.
 """
 
-import pytest
-
-pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
-
 import os
 import signal
 import subprocess
-import time
 import tempfile
+import time
+
+import pytest
+import requests
 from tests.testhelpers import (
     orchestrator_context,
     cleanup_files,
 )
-import pytest
-import requests
+
+pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
 
 
 class TestOrchestratorSchedulerHappyPath:

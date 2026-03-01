@@ -20,6 +20,12 @@ pub enum SchedulerError {
 
     #[error("conflict: {0}")]
     Conflict(String),
+
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 }
 
 impl IntoResponse for SchedulerError {
@@ -38,6 +44,15 @@ impl IntoResponse for SchedulerError {
                 .into_response(),
             SchedulerError::Conflict(msg) => {
                 (StatusCode::CONFLICT, Json(json!({"error": msg}))).into_response()
+            }
+            SchedulerError::Unauthorized(msg) => (
+                StatusCode::UNAUTHORIZED,
+                [("www-authenticate", "Bearer")],
+                Json(json!({"error": msg})),
+            )
+                .into_response(),
+            SchedulerError::Forbidden(msg) => {
+                (StatusCode::FORBIDDEN, Json(json!({"error": msg}))).into_response()
             }
         }
     }

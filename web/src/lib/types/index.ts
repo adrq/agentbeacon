@@ -239,6 +239,52 @@ export function isPlanData(d: DataPartPayload): d is PlanData {
   return d.type === 'plan';
 }
 
+// Wiki types
+export interface WikiPage {
+  id: string;
+  project_id: string;
+  slug: string;
+  title: string;
+  body: string;
+  revision_number: number;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WikiPageListItem {
+  slug: string;
+  title: string;
+  revision_number: number;
+  updated_by: string | null;
+  updated_at: string;
+}
+
+export interface WikiRevision {
+  revision_number: number;
+  title: string;
+  body: string;
+  summary: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface WikiRevisionListItem {
+  revision_number: number;
+  title: string;
+  summary: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface PutWikiPageRequest {
+  title: string;
+  body: string;
+  revision_number?: number | null;
+  summary?: string;
+}
+
 // GET /api/executions/{id}/agents — session-level discovery
 export interface AgentDiscoveryEntry {
   name: string;

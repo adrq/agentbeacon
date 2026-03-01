@@ -12,15 +12,14 @@ Testing approach:
 - Assert all Playwright tests pass (returncode == 0)
 """
 
-import pytest
-
-pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
-
 import os
 import subprocess
 from pathlib import Path
 
+import pytest
 from tests.testhelpers import orchestrator_context, start_and_wait_for_a2a_agent
+
+pytestmark = pytest.mark.skip(reason="Deferred: DAG model removed")
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

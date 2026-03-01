@@ -87,6 +87,8 @@ def cleanup_postgres_database(request):
             # Truncate all tables in reverse dependency order
             # CASCADE handles any remaining foreign key constraints
             tables = [
+                "wiki_page_revisions",  # Child of wiki_pages
+                "wiki_pages",  # Child of projects
                 "events",  # Child of sessions
                 "artifacts",  # Child of projects/sessions
                 "task_queue",  # Child of executions/sessions

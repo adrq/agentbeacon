@@ -3,7 +3,7 @@
 RUST_STRICT_FLAGS ?= -Dwarnings
 
 # Default target
-all: build executors build-frontend
+all: build-frontend executors build
 
 executors:
 	cd executors && npm install && npm run build
@@ -17,7 +17,7 @@ build-frontend: npm-install
 	cd web && npm run build
 
 # Build Rust binaries and install to bin/
-build: install-bins
+build: build install-bins
 
 # Build all Rust workspace binaries in release mode
 build-rust-workspace:
@@ -48,7 +48,7 @@ build-worker:
 	cp target/release/agentbeacon-worker bin/
 
 # Run Rust unit tests with both SQLite and PostgreSQL
-test:
+test: all
 	@echo "=== Running Rust tests with SQLite ==="
 	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 	@echo ""
@@ -57,16 +57,16 @@ test:
 	@echo ""
 	@echo "All tests passed with both backends"
 
-test-sqlite:
+test-sqlite: all
 	@echo "Running Rust tests with SQLite..."
 	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 
-test-postgres:
+test-postgres: all
 	@echo "Running Rust tests with PostgreSQL..."
 	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 
 # Build Rust binaries and run Python integration tests
-test-int: build
+test-int: all
 	@echo "Running Python integration tests with Rust binaries..."
 	uv run pytest -v tests
 
