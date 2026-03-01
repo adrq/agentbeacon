@@ -4,9 +4,10 @@ Uses a real scheduler instance to verify the migration produces the expected sch
 """
 
 import sqlite3
+
 import pytest
 
-from tests.testhelpers import scheduler_context
+from tests.testhelpers import db_conn, scheduler_context
 
 
 EXPECTED_TABLES = [
@@ -114,46 +115,50 @@ EXPECTED_COLUMNS = {
 }
 
 
-def test_all_tables_present():
-    """Verify all 9 target tables exist after migration."""
-    with scheduler_context() as ctx:
-        db_path = ctx["db_path"]
-        assert db_path is not None, "Expected SQLite database for this test"
-
-        conn = sqlite3.connect(db_path)
-        try:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            )
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_all_tables_present(test_database):
+    """Verify all target tables exist after migration."""
+    with scheduler_context(db_url=test_database) as ctx:
+        with db_conn(ctx["db_url"]) as conn:
+            if ctx["db_url"].startswith("sqlite:"):
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
+                )
             tables = [row[0] for row in cursor.fetchall()]
 
             for expected in EXPECTED_TABLES:
                 assert expected in tables, (
                     f"Table '{expected}' not found. Present: {tables}"
                 )
-        finally:
-            conn.close()
 
 
-def test_table_columns():
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_table_columns(test_database):
     """Verify key columns exist on each table."""
-    with scheduler_context() as ctx:
-        db_path = ctx["db_path"]
-        assert db_path is not None
-
-        conn = sqlite3.connect(db_path)
-        try:
+    with scheduler_context(db_url=test_database) as ctx:
+        with db_conn(ctx["db_url"]) as conn:
             for table, expected_cols in EXPECTED_COLUMNS.items():
-                cursor = conn.execute(f"PRAGMA table_info({table})")
-                actual_cols = [row[1] for row in cursor.fetchall()]
+                if ctx["db_url"].startswith("sqlite:"):
+                    cursor = conn.execute(f"PRAGMA table_info({table})")
+                    actual_cols = [row[1] for row in cursor.fetchall()]
+                else:
+                    cursor = conn.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = %s "
+                        "ORDER BY ordinal_position",
+                        (table,),
+                    )
+                    actual_cols = [row[0] for row in cursor.fetchall()]
 
                 for col in expected_cols:
                     assert col in actual_cols, (
                         f"Column '{col}' not found in table '{table}'. "
                         f"Actual columns: {actual_cols}"
                     )
-        finally:
-            conn.close()
 
 
 def test_executions_status_check_constraint():
