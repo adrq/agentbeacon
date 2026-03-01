@@ -171,6 +171,7 @@ def test_e2e_delegate_multiple(test_database):
 
         worker1 = start_worker(ctx["url"], interval="500ms")
         worker2 = start_worker(ctx["url"], interval="500ms")
+        worker3 = start_worker(ctx["url"], interval="500ms")
         try:
             # 1. Exactly two child sessions created
             assert _poll_until(
@@ -207,7 +208,7 @@ def test_e2e_delegate_multiple(test_database):
                 assert child_exec_id == exec_id
 
         finally:
-            cleanup_processes([worker1, worker2])
+            cleanup_processes([worker1, worker2, worker3])
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

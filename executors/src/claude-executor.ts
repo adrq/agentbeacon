@@ -126,6 +126,7 @@ async function main(): Promise<void> {
       if (cmd.maxTurns != null) options.maxTurns = cmd.maxTurns;
       if (cmd.maxBudgetUsd != null) options.maxBudgetUsd = cmd.maxBudgetUsd;
       if (cmd.systemPrompt) options.systemPrompt = cmd.systemPrompt;
+      if (cmd.resumeSessionId) options.resume = cmd.resumeSessionId;
 
       const q = query({
         prompt: promptStream(cmd, sessionGeneration),

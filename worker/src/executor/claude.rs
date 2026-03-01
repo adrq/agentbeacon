@@ -36,6 +36,8 @@ enum ClaudeCommand {
         max_budget_usd: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resume_session_id: Option<String>,
     },
     #[serde(rename = "prompt", rename_all = "camelCase")]
     Prompt { text: String },
@@ -355,6 +357,10 @@ async fn background_task(
                         last_activity = tokio::time::Instant::now();
                         match super::extract_prompt_text(&task_payload) {
                             Ok(prompt_text) => {
+                                let resume_session_id = task_payload
+                                    .get("resumeSessionId")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
                                 let cmd = ClaudeCommand::Start {
                                     prompt: prompt_text,
                                     cwd: cwd.clone(),
@@ -363,6 +369,7 @@ async fn background_task(
                                     max_turns: claude_config.max_turns,
                                     max_budget_usd: claude_config.max_budget_usd,
                                     system_prompt: claude_config.system_prompt.clone(),
+                                    resume_session_id,
                                 };
                                 if let Err(e) = write_command(&mut stdin, &cmd).await {
                                     let _ = event_tx.send(AgentEvent::ProcessDied {
@@ -609,6 +616,7 @@ mod tests {
             max_turns: Some(50),
             max_budget_usd: Some(5.0),
             system_prompt: None,
+            resume_session_id: None,
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -618,6 +626,42 @@ mod tests {
         assert_eq!(value["maxTurns"], 50);
         assert_eq!(value["maxBudgetUsd"], 5.0);
         assert!(value.get("systemPrompt").is_none());
+        assert!(value.get("resumeSessionId").is_none());
+    }
+
+    #[test]
+    fn test_start_command_with_resume_session_id_serialization() {
+        let cmd = ClaudeCommand::Start {
+            prompt: "Resume task".into(),
+            cwd: "/workspace".into(),
+            mcp_servers: None,
+            model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            system_prompt: None,
+            resume_session_id: Some("sdk-session-abc".into()),
+        };
+        let json_str = serde_json::to_string(&cmd).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(value["type"], "start");
+        assert_eq!(value["resumeSessionId"], "sdk-session-abc");
+    }
+
+    #[test]
+    fn test_start_command_without_resume_omits_field() {
+        let cmd = ClaudeCommand::Start {
+            prompt: "Hello".into(),
+            cwd: "/workspace".into(),
+            mcp_servers: None,
+            model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            system_prompt: None,
+            resume_session_id: None,
+        };
+        let json_str = serde_json::to_string(&cmd).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(value.get("resumeSessionId").is_none());
     }
 
     #[test]

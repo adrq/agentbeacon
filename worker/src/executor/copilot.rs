@@ -34,6 +34,8 @@ enum CopilotCommand {
         system_prompt: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         provider: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resume_session_id: Option<String>,
     },
     #[serde(rename = "prompt", rename_all = "camelCase")]
     Prompt { text: String },
@@ -369,6 +371,10 @@ async fn background_task(
                         last_activity = tokio::time::Instant::now();
                         match super::extract_prompt_text(&task_payload) {
                             Ok(prompt_text) => {
+                                let resume_session_id = task_payload
+                                    .get("resumeSessionId")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
                                 let cmd = CopilotCommand::Start {
                                     prompt: prompt_text,
                                     cwd: cwd.clone(),
@@ -376,6 +382,7 @@ async fn background_task(
                                     model: copilot_config.model.clone(),
                                     system_prompt: copilot_config.system_prompt.clone(),
                                     provider: sanitize_provider(copilot_config.provider.clone()),
+                                    resume_session_id,
                                 };
                                 if let Err(e) = write_command(&mut stdin, &cmd).await {
                                     let _ = event_tx.send(AgentEvent::ProcessDied {
@@ -576,6 +583,7 @@ mod tests {
             model: Some("gpt-5".into()),
             system_prompt: None,
             provider: Some(json!({"type": "openai", "baseUrl": "https://api.openai.com/v1"})),
+            resume_session_id: None,
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -586,6 +594,40 @@ mod tests {
         assert!(value.get("mcpServers").is_some());
         assert_eq!(value["provider"]["type"], "openai");
         assert!(value.get("systemPrompt").is_none());
+        assert!(value.get("resumeSessionId").is_none());
+    }
+
+    #[test]
+    fn test_copilot_start_command_with_resume_session_id_serialization() {
+        let cmd = CopilotCommand::Start {
+            prompt: "Resume task".into(),
+            cwd: "/workspace".into(),
+            mcp_servers: None,
+            model: None,
+            system_prompt: None,
+            provider: None,
+            resume_session_id: Some("cop-session-xyz".into()),
+        };
+        let json_str = serde_json::to_string(&cmd).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(value["type"], "start");
+        assert_eq!(value["resumeSessionId"], "cop-session-xyz");
+    }
+
+    #[test]
+    fn test_copilot_start_command_without_resume_omits_field() {
+        let cmd = CopilotCommand::Start {
+            prompt: "Hello".into(),
+            cwd: "/workspace".into(),
+            mcp_servers: None,
+            model: None,
+            system_prompt: None,
+            provider: None,
+            resume_session_id: None,
+        };
+        let json_str = serde_json::to_string(&cmd).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(value.get("resumeSessionId").is_none());
     }
 
     #[test]

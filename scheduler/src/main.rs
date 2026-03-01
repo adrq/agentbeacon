@@ -2,14 +2,16 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::signal;
+use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use scheduler::{
-    app::{AppState, create_router},
+    app::{AppState, EventNotification, create_router},
     db,
     queue::TaskQueue,
-    telemetry,
+    services, telemetry,
 };
 
 /// AgentBeacon Scheduler - Agent orchestration and execution tracking
@@ -180,10 +182,34 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         info!(public_url = %url, "Using PUBLIC_URL for agent card");
     }
 
+    // Create event broadcast channel (needed by recovery + AppState)
+    let (event_broadcast, _) = broadcast::channel::<EventNotification>(256);
+
+    // Record startup time for recovery orphan detection
+    let startup_time = chrono::Utc::now();
+
+    // Read recovery config
+    let max_recovery_attempts = std::env::var("AGENTBEACON_MAX_RECOVERY_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(2);
+    let recovery_grace_secs = std::env::var("AGENTBEACON_RECOVERY_GRACE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30)
+        .max(3); // Floor: grace period must exceed SQLite's second-precision window
+
     // Build application state and router
-    let app_state = AppState::new(db_pool, task_queue, base_url, public_url, cli.port);
+    let app_state = AppState::new(
+        db_pool,
+        task_queue,
+        base_url,
+        public_url,
+        cli.port,
+        event_broadcast.clone(),
+    );
     let vite_dev_port = app_state.vite_dev_port;
-    let app = create_router(app_state, dev_mode, cli.port);
+    let app = create_router(app_state.clone(), dev_mode, cli.port);
 
     // Bind to port
     let addr = SocketAddr::from(([0, 0, 0, 0], cli.port));
@@ -204,6 +230,34 @@ async fn bootstrap(cli: Cli) -> Result<()> {
             addr
         );
     }
+
+    // Spawn delayed recovery scan (runs after grace period to let workers reconnect)
+    let recovery_pool = app_state.db_pool.clone();
+    let recovery_queue = app_state.task_queue.clone();
+    let recovery_broadcast = event_broadcast.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(recovery_grace_secs)).await;
+        info!(
+            "Running recovery scan (grace period {}s elapsed)...",
+            recovery_grace_secs
+        );
+        let stats = services::recovery::recover_orphaned_sessions(
+            &recovery_pool,
+            &recovery_queue,
+            &recovery_broadcast,
+            max_recovery_attempts,
+            startup_time,
+        )
+        .await;
+        if stats.recovered > 0 || stats.failed > 0 {
+            info!(
+                recovered = stats.recovered,
+                failed = stats.failed,
+                skipped = stats.skipped,
+                "Recovery scan complete"
+            );
+        }
+    });
 
     // Start server with graceful shutdown
     axum::serve(listener, app)

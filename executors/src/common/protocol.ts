@@ -12,6 +12,7 @@ export interface StartCommand {
   maxBudgetUsd?: number;
   systemPrompt?: string;
   provider?: ProviderConfig;
+  resumeSessionId?: string;
 }
 
 // Intentionally loose type — Rust sends opaque JSON, SDK consumes it

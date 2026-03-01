@@ -112,7 +112,15 @@ async function runSession(startCmd: StartCommand): Promise<void> {
     if (startCmd.cwd) sessionConfig.workingDirectory = startCmd.cwd;
     if (mcpServers) sessionConfig.mcpServers = mcpServers;
 
-    const session = await client.createSession(sessionConfig);
+    let session: CopilotSession;
+    if (startCmd.resumeSessionId) {
+      session = await client.resumeSession(
+        startCmd.resumeSessionId,
+        sessionConfig,
+      );
+    } else {
+      session = await client.createSession(sessionConfig);
+    }
     currentSession = session;
 
     emit({

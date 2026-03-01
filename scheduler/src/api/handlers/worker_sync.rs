@@ -341,15 +341,11 @@ pub async fn handle_worker_sync(
                         );
                     }
 
-                    // Release worker from child sessions after turn completes.
-                    // The child stays input-required; it can be re-activated later
-                    // via delegate(session_id=...) which resets to submitted.
-                    // Without this, the worker long-polls indefinitely for the idle
-                    // child, starving other submitted sessions of workers.
+                    // Child sessions: worker stays attached and enters long-poll,
+                    // waiting for the parent (or lateral message) to send more work.
+                    // The subprocess stays alive, preserving in-process state.
                     if session.parent_session_id.is_some() {
-                        return Ok(Json(WorkerSyncResponse::SessionComplete {
-                            session_id: result.session_id.clone(),
-                        }));
+                        return Ok(Json(WorkerSyncResponse::NoAction));
                     }
 
                     // Propagate to execution for lead sessions
@@ -403,6 +399,13 @@ pub async fn handle_worker_sync(
 
     // Step 2: Handle session_state if present
     if let Some(ref session_state) = request.session_state {
+        // Heartbeat: touch updated_at so recovery scan knows this worker is alive
+        if let Err(e) =
+            db::sessions::touch_updated_at(&state.db_pool, &session_state.session_id).await
+        {
+            tracing::warn!(error = %e, session_id = %session_state.session_id, "heartbeat touch failed");
+        }
+
         return match session_state.status.as_str() {
             "waiting_for_event" => long_poll_session(&state, &session_state.session_id).await,
             // "running" or any other status — heartbeat ack

@@ -39,8 +39,8 @@ impl AppState {
         base_url: String,
         public_url: Option<String>,
         port: u16,
+        event_broadcast: broadcast::Sender<EventNotification>,
     ) -> Self {
-        let (event_broadcast, _) = broadcast::channel(256);
         let vite_dev_port = std::env::var("VITE_DEV_PORT")
             .ok()
             .and_then(|v| v.parse().ok())

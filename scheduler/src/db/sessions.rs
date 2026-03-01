@@ -18,6 +18,7 @@ pub struct Session {
     pub coordination_mode: String,
     pub metadata: String, // JSON
     pub slug: String,
+    pub recovery_attempts: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -56,7 +57,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Session, SchedulerErro
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE id = ?",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE id = ?",
         created_fmt, updated_fmt, completed_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -79,7 +80,7 @@ pub async fn list_by_execution(
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE execution_id = ? ORDER BY created_at ASC",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE execution_id = ? ORDER BY created_at ASC",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -215,7 +216,7 @@ pub async fn list_filtered(
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let mut sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE 1=1",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE 1=1",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -274,7 +275,7 @@ pub async fn find_assignable(pool: &DbPool) -> Result<Option<Session>, Scheduler
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
         created_fmt, updated_fmt, completed_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -340,7 +341,8 @@ pub async fn get_subtree(pool: &DbPool, root_id: &str) -> Result<Vec<Session>, S
         ) \
         SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
                s.agent_session_id, s.cwd, s.status, s.coordination_mode, \
-               s.metadata, s.slug, {cr} as created_at, {up} as updated_at, \
+               s.metadata, s.slug, s.recovery_attempts, \
+               {cr} as created_at, {up} as updated_at, \
                {co} as completed_at \
         FROM sessions s \
         INNER JOIN subtree st ON s.id = st.id \
@@ -391,6 +393,134 @@ pub async fn root_slugs(pool: &DbPool, execution_id: &str) -> Result<Vec<String>
     Ok(rows)
 }
 
+/// Touch updated_at for heartbeat — lets the recovery scan distinguish live workers
+pub async fn touch_updated_at(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
+    let query =
+        pool.prepare_query("UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+    sqlx::query(&query)
+        .bind(id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("touch updated_at failed: {e}")))?;
+    Ok(())
+}
+
+/// Find sessions eligible for crash recovery (Tier 2).
+/// Returns sessions that are working/input-required with an agent_session_id,
+/// belonging to resumable agent types, not updated since `updated_before`.
+pub async fn find_recoverable(
+    pool: &DbPool,
+    max_recovery_attempts: i64,
+    updated_before: &str,
+) -> Result<Vec<Session>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
+    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
+
+    // PostgreSQL TIMESTAMPTZ can't compare directly with text; cast the bound param
+    let ts_cast = if pool.is_postgres() {
+        "::timestamptz"
+    } else {
+        ""
+    };
+
+    let sql = format!(
+        "SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
+               s.agent_session_id, s.cwd, s.status, s.coordination_mode, \
+               s.metadata, s.slug, s.recovery_attempts, \
+               {cr} as created_at, {up} as updated_at, \
+               {co} as completed_at \
+        FROM sessions s \
+        JOIN agents a ON s.agent_id = a.id \
+        JOIN executions e ON s.execution_id = e.id \
+        WHERE s.status IN ('working', 'input-required') \
+          AND s.agent_session_id IS NOT NULL \
+          AND s.cwd IS NOT NULL \
+          AND s.recovery_attempts < ? \
+          AND a.agent_type IN ('claude_sdk', 'copilot_sdk') \
+          AND a.deleted_at IS NULL \
+          AND e.status NOT IN ('completed', 'failed', 'canceled') \
+          AND s.updated_at < ?{ts_cast}",
+        cr = created_fmt.replace("created_at", "s.created_at"),
+        up = updated_fmt.replace("updated_at", "s.updated_at"),
+        co = completed_fmt.replace("completed_at", "s.completed_at"),
+    );
+    let query = pool.prepare_query(&sql);
+
+    let rows = sqlx::query(&query)
+        .bind(max_recovery_attempts)
+        .bind(updated_before)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("find recoverable sessions failed: {e}")))?;
+
+    rows.into_iter().map(parse_session_row).collect()
+}
+
+/// Find sessions that have exhausted their recovery budget (for permanent failure).
+pub async fn find_over_budget(
+    pool: &DbPool,
+    max_recovery_attempts: i64,
+    updated_before: &str,
+) -> Result<Vec<Session>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
+    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
+
+    // PostgreSQL TIMESTAMPTZ can't compare directly with text; cast the bound param
+    let ts_cast = if pool.is_postgres() {
+        "::timestamptz"
+    } else {
+        ""
+    };
+
+    let sql = format!(
+        "SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
+               s.agent_session_id, s.cwd, s.status, s.coordination_mode, \
+               s.metadata, s.slug, s.recovery_attempts, \
+               {cr} as created_at, {up} as updated_at, \
+               {co} as completed_at \
+        FROM sessions s \
+        JOIN agents a ON s.agent_id = a.id \
+        JOIN executions e ON s.execution_id = e.id \
+        WHERE s.status IN ('working', 'input-required') \
+          AND s.agent_session_id IS NOT NULL \
+          AND s.recovery_attempts >= ? \
+          AND a.agent_type IN ('claude_sdk', 'copilot_sdk') \
+          AND a.deleted_at IS NULL \
+          AND e.status NOT IN ('completed', 'failed', 'canceled') \
+          AND s.updated_at < ?{ts_cast}",
+        cr = created_fmt.replace("created_at", "s.created_at"),
+        up = updated_fmt.replace("updated_at", "s.updated_at"),
+        co = completed_fmt.replace("completed_at", "s.completed_at"),
+    );
+    let query = pool.prepare_query(&sql);
+
+    let rows = sqlx::query(&query)
+        .bind(max_recovery_attempts)
+        .bind(updated_before)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("find over-budget sessions failed: {e}")))?;
+
+    rows.into_iter().map(parse_session_row).collect()
+}
+
+/// Atomically increment recovery_attempts for a session
+pub async fn increment_recovery_attempts(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
+    let query = pool.prepare_query(
+        "UPDATE sessions SET recovery_attempts = recovery_attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    );
+    sqlx::query(&query)
+        .bind(id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("increment recovery_attempts failed: {e}"))
+        })?;
+    Ok(())
+}
+
 fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> {
     Ok(Session {
         id: row.get("id"),
@@ -403,6 +533,7 @@ fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> 
         coordination_mode: row.get("coordination_mode"),
         metadata: row.get("metadata"),
         slug: row.get("slug"),
+        recovery_attempts: row.get("recovery_attempts"),
         created_at: parse_timestamp(&row, "created_at")?,
         updated_at: parse_timestamp(&row, "updated_at")?,
         completed_at: parse_optional_timestamp(&row, "completed_at"),
