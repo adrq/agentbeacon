@@ -1,5 +1,7 @@
 .PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-sqlite test-postgres test-int test-e2e test-all run clean pre-commit dev-backend dev-frontend
 
+RUST_STRICT_FLAGS ?= -Dwarnings
+
 # Default target
 all: build executors build-frontend
 
@@ -20,7 +22,7 @@ build: install-bins
 # Build all Rust workspace binaries in release mode
 build-rust-workspace:
 	@echo "Building Rust workspace..."
-	cargo build --release
+	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo build --release
 
 # Install Rust binaries to bin/ directory
 install-bins: build-rust-workspace
@@ -34,34 +36,34 @@ install-bins: build-rust-workspace
 # Build only the Rust scheduler binary
 build-scheduler:
 	@echo "Building Rust scheduler..."
-	cargo build --release --bin agentbeacon-scheduler
+	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo build --release --bin agentbeacon-scheduler
 	@mkdir -p bin
 	cp target/release/agentbeacon-scheduler bin/
 
 # Build only the Rust worker binary
 build-worker:
 	@echo "Building Rust worker..."
-	cargo build --release --bin agentbeacon-worker
+	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo build --release --bin agentbeacon-worker
 	@mkdir -p bin
 	cp target/release/agentbeacon-worker bin/
 
 # Run Rust unit tests with both SQLite and PostgreSQL
 test:
 	@echo "=== Running Rust tests with SQLite ==="
-	cargo test -- --test-threads=1
+	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 	@echo ""
 	@echo "=== Running Rust tests with PostgreSQL ==="
-	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test cargo test -- --test-threads=1
+	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 	@echo ""
 	@echo "All tests passed with both backends"
 
 test-sqlite:
 	@echo "Running Rust tests with SQLite..."
-	cargo test -- --test-threads=1
+	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 
 test-postgres:
 	@echo "Running Rust tests with PostgreSQL..."
-	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test cargo test -- --test-threads=1
+	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 
 # Build Rust binaries and run Python integration tests
 test-int: build

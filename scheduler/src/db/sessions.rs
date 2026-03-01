@@ -17,6 +17,7 @@ pub struct Session {
     pub status: String,
     pub coordination_mode: String,
     pub metadata: String, // JSON
+    pub slug: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -29,9 +30,10 @@ pub async fn create(
     agent_id: &str,
     parent_session_id: Option<&str>,
     cwd: Option<&str>,
+    slug: &str,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, status) VALUES (?, ?, ?, ?, ?, 'submitted')",
+        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, status, slug) VALUES (?, ?, ?, ?, ?, 'submitted', ?)",
     );
 
     sqlx::query(&query)
@@ -40,6 +42,7 @@ pub async fn create(
         .bind(parent_session_id)
         .bind(agent_id)
         .bind(cwd)
+        .bind(slug)
         .execute(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("create session failed: {e}")))?;
@@ -53,7 +56,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Session, SchedulerErro
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE id = ?",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE id = ?",
         created_fmt, updated_fmt, completed_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -76,7 +79,7 @@ pub async fn list_by_execution(
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE execution_id = ? ORDER BY created_at ASC",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE execution_id = ? ORDER BY created_at ASC",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -119,6 +122,7 @@ pub async fn update_status(pool: &DbPool, id: &str, status: &str) -> Result<(), 
 /// Atomically create a child session only if the parent has fewer than
 /// `max_width` active (non-terminal) children. Returns `true` if the
 /// session was created, `false` if width limit was reached.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_with_width_guard(
     pool: &DbPool,
     id: &str,
@@ -127,10 +131,11 @@ pub async fn create_with_width_guard(
     parent_session_id: &str,
     cwd: Option<&str>,
     max_width: i64,
+    slug: &str,
 ) -> Result<bool, SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, status) \
-         SELECT ?, ?, ?, ?, ?, 'submitted' \
+        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, status, slug) \
+         SELECT ?, ?, ?, ?, ?, 'submitted', ? \
          WHERE (SELECT COUNT(*) FROM sessions \
                 WHERE parent_session_id = ? \
                 AND status NOT IN ('completed', 'failed', 'canceled')) < ?",
@@ -142,6 +147,7 @@ pub async fn create_with_width_guard(
         .bind(parent_session_id)
         .bind(agent_id)
         .bind(cwd)
+        .bind(slug)
         .bind(parent_session_id)
         .bind(max_width)
         .execute(pool.as_ref())
@@ -209,7 +215,7 @@ pub async fn list_filtered(
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let mut sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE 1=1",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE 1=1",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -268,7 +274,7 @@ pub async fn find_assignable(pool: &DbPool) -> Result<Option<Session>, Scheduler
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, coordination_mode, metadata, slug, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
         created_fmt, updated_fmt, completed_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -334,7 +340,7 @@ pub async fn get_subtree(pool: &DbPool, root_id: &str) -> Result<Vec<Session>, S
         ) \
         SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
                s.agent_session_id, s.cwd, s.status, s.coordination_mode, \
-               s.metadata, {cr} as created_at, {up} as updated_at, \
+               s.metadata, s.slug, {cr} as created_at, {up} as updated_at, \
                {co} as completed_at \
         FROM sessions s \
         INNER JOIN subtree st ON s.id = st.id \
@@ -354,6 +360,37 @@ pub async fn get_subtree(pool: &DbPool, root_id: &str) -> Result<Vec<Session>, S
     rows.into_iter().map(parse_session_row).collect()
 }
 
+/// Get slugs of all siblings (children of the same parent), including terminal.
+/// Includes terminal sessions to match the DB unique index scope and prevent
+/// slug reuse that would cause ambiguity in message history.
+pub async fn sibling_slugs(
+    pool: &DbPool,
+    parent_session_id: &str,
+) -> Result<Vec<String>, SchedulerError> {
+    let query =
+        pool.prepare_query("SELECT slug FROM sessions WHERE parent_session_id = ? AND slug != ''");
+    let rows = sqlx::query_scalar::<_, String>(&query)
+        .bind(parent_session_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("sibling slugs query failed: {e}")))?;
+    Ok(rows)
+}
+
+/// Get slugs of all root sessions in an execution.
+/// Used to ensure slug uniqueness among root sessions within the same execution.
+pub async fn root_slugs(pool: &DbPool, execution_id: &str) -> Result<Vec<String>, SchedulerError> {
+    let query = pool.prepare_query(
+        "SELECT slug FROM sessions WHERE execution_id = ? AND parent_session_id IS NULL AND slug != ''",
+    );
+    let rows = sqlx::query_scalar::<_, String>(&query)
+        .bind(execution_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("root slugs query failed: {e}")))?;
+    Ok(rows)
+}
+
 fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> {
     Ok(Session {
         id: row.get("id"),
@@ -365,6 +402,7 @@ fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> 
         status: row.get("status"),
         coordination_mode: row.get("coordination_mode"),
         metadata: row.get("metadata"),
+        slug: row.get("slug"),
         created_at: parse_timestamp(&row, "created_at")?,
         updated_at: parse_timestamp(&row, "updated_at")?,
         completed_at: parse_optional_timestamp(&row, "completed_at"),

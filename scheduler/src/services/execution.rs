@@ -278,16 +278,43 @@ async fn persist_and_enqueue(
     )
     .await?;
 
-    // Create lead session with cwd
-    db::sessions::create(
-        db_pool,
-        session_id,
-        execution_id,
-        &agent.id,
-        None,
-        Some(session_cwd),
-    )
-    .await?;
+    // Create lead session with cwd.
+    // Retry on slug collision (unique constraint violation from concurrent creation).
+    let existing_root_slugs = db::sessions::root_slugs(db_pool, execution_id).await?;
+    let mut slug = crate::slugs::generate_slug(&existing_root_slugs);
+    let mut created = false;
+    for _ in 0..3 {
+        match db::sessions::create(
+            db_pool,
+            session_id,
+            execution_id,
+            &agent.id,
+            None,
+            Some(session_cwd),
+            &slug,
+        )
+        .await
+        {
+            Ok(()) => {
+                created = true;
+                break;
+            }
+            Err(SchedulerError::Database(msg))
+                if msg.to_lowercase().contains("unique")
+                    || msg.to_lowercase().contains("duplicate key") =>
+            {
+                // Slug collision — regenerate and retry
+                let updated_slugs = db::sessions::root_slugs(db_pool, execution_id).await?;
+                slug = crate::slugs::generate_slug(&updated_slugs);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if !created {
+        return Err(SchedulerError::Database(
+            "create root session failed: slug collision after 3 retries".to_string(),
+        ));
+    }
 
     // Record initial state_change event
     let state_event = json!({"from": null, "to": "submitted"});

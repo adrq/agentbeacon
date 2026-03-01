@@ -8,6 +8,7 @@ use crate::api::auth::{McpRole, McpSession};
 use crate::api::jsonrpc::{JsonRpcError, JsonRpcResponse};
 use crate::app::{AppState, EventNotification};
 use crate::db;
+use crate::error::SchedulerError;
 use crate::queue::TaskAssignment;
 
 static DELEGATE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
@@ -197,26 +198,55 @@ async fn handle_delegate(
 
         existing_id.to_string()
     } else {
-        // Atomic width-guarded creation — only for new delegations, not resumes
+        // Atomic width-guarded creation with slug collision retry.
         let new_id = Uuid::new_v4().to_string();
-        let created = db::sessions::create_with_width_guard(
-            &state.db_pool,
-            &new_id,
-            &auth.execution_id,
-            &agent.id,
-            &auth.session_id,
-            child_cwd.as_deref(),
-            auth.max_width,
-        )
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
+        let mut existing_slugs = db::sessions::sibling_slugs(&state.db_pool, &auth.session_id)
+            .await
+            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+        let mut slug = crate::slugs::generate_slug(&existing_slugs);
+        let mut created = false;
+        for _ in 0..3 {
+            match db::sessions::create_with_width_guard(
+                &state.db_pool,
+                &new_id,
+                &auth.execution_id,
+                &agent.id,
+                &auth.session_id,
+                child_cwd.as_deref(),
+                auth.max_width,
+                &slug,
+            )
+            .await
+            {
+                Ok(true) => {
+                    created = true;
+                    break;
+                }
+                Ok(false) => {
+                    // Width limit reached — no retry will help
+                    return Err(JsonRpcError::invalid_params(&format!(
+                        "Cannot delegate: maximum active children ({}) reached. \
+                         Release idle children or wait for completions.",
+                        auth.max_width
+                    )));
+                }
+                Err(SchedulerError::Database(msg))
+                    if msg.to_lowercase().contains("unique")
+                        || msg.to_lowercase().contains("duplicate key") =>
+                {
+                    // Slug collision — regenerate and retry
+                    existing_slugs = db::sessions::sibling_slugs(&state.db_pool, &auth.session_id)
+                        .await
+                        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+                    slug = crate::slugs::generate_slug(&existing_slugs);
+                }
+                Err(e) => return Err(JsonRpcError::internal_error(&e.to_string())),
+            }
+        }
         if !created {
-            return Err(JsonRpcError::invalid_params(&format!(
-                "Cannot delegate: maximum active children ({}) reached. \
-                 Release idle children or wait for completions.",
-                auth.max_width
-            )));
+            return Err(JsonRpcError::internal_error(
+                "create child session failed: slug collision after 3 retries",
+            ));
         }
         new_id
     };
@@ -394,14 +424,20 @@ fn release_schema() -> JsonValue {
     })
 }
 
-/// Traverse parent_session_id chain to find lead session's cwd
+/// Traverse parent_session_id chain to find lead session's cwd.
+/// Bounded to 100 iterations to guard against data corruption cycles.
 async fn find_lead_cwd(
     pool: &crate::db::DbPool,
     session_id: &str,
 ) -> Result<Option<String>, crate::error::SchedulerError> {
     let mut current = db::sessions::get_by_id(pool, session_id).await?;
-    while let Some(ref parent_id) = current.parent_session_id {
-        current = db::sessions::get_by_id(pool, parent_id).await?;
+    for _ in 0..100 {
+        match current.parent_session_id {
+            Some(ref parent_id) => {
+                current = db::sessions::get_by_id(pool, parent_id).await?;
+            }
+            None => break,
+        }
     }
     Ok(current.cwd)
 }

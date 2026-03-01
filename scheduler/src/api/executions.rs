@@ -268,23 +268,57 @@ async fn execution_events(
     Ok(Json(events.into_iter().map(Into::into).collect()))
 }
 
-/// Get agents associated with an execution (GET /api/executions/:id/agents)
+/// Session-level discovery entry with hierarchical names
+#[derive(Debug, Serialize)]
+struct AgentDiscoveryEntry {
+    name: String,
+    agent_name: String,
+    session_id: String,
+    status: String,
+    parent_name: Option<String>,
+}
+
+/// Get agents/sessions for an execution (GET /api/executions/:id/agents)
+///
+/// Returns session-level discovery with hierarchical names.
 async fn execution_agents_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<crate::api::agents::AgentResponse>>, SchedulerError> {
-    // Verify execution exists
+) -> Result<Json<Vec<AgentDiscoveryEntry>>, SchedulerError> {
     db::executions::get_by_id(&state.db_pool, &id).await?;
 
-    let agent_ids = db::execution_agents::list_by_execution(&state.db_pool, &id).await?;
+    // TODO: compute_hierarchical_names loads sessions internally; we load them
+    // again below for agent_id extraction. Acceptable at current scale (< 20 sessions).
+    let name_tuples =
+        crate::services::messaging::compute_hierarchical_names(&state.db_pool, &id).await?;
+    let name_map: std::collections::HashMap<String, String> = name_tuples.into_iter().collect();
 
-    let mut agents = Vec::new();
-    for aid in agent_ids {
-        if let Ok(agent) = db::agents::get_by_id(&state.db_pool, &aid).await {
-            agents.push(crate::api::agents::AgentResponse::from(agent));
-        }
+    let sessions = db::sessions::list_by_execution(&state.db_pool, &id).await?;
+
+    let agent_ids: Vec<String> = sessions.iter().map(|s| s.agent_id.clone()).collect();
+    let agent_names = db::agents::get_names_by_ids(&state.db_pool, &agent_ids).await?;
+
+    let mut entries = Vec::new();
+    for session in &sessions {
+        let hier_name = name_map.get(&session.id).cloned().unwrap_or_default();
+        let agent_name = agent_names
+            .get(&session.agent_id)
+            .cloned()
+            .unwrap_or_default();
+
+        entries.push(AgentDiscoveryEntry {
+            name: hier_name,
+            agent_name,
+            session_id: session.id.clone(),
+            status: session.status.clone(),
+            parent_name: session
+                .parent_session_id
+                .as_ref()
+                .and_then(|pid| name_map.get(pid).cloned()),
+        });
     }
-    Ok(Json(agents))
+
+    Ok(Json(entries))
 }
 
 /// Execution routes

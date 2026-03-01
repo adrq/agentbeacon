@@ -134,6 +134,42 @@ pub async fn list_by_execution_since(
     rows.into_iter().map(parse_event_row).collect()
 }
 
+/// List message events for a session, optionally filtered by event ID.
+pub async fn list_messages_by_session(
+    pool: &DbPool,
+    session_id: &str,
+    since_id: Option<i64>,
+) -> Result<Vec<Event>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+
+    let sql = if since_id.is_some() {
+        format!(
+            "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {} as created_at \
+             FROM events WHERE session_id = ? AND event_type = 'message' AND id > ? ORDER BY id ASC",
+            created_fmt
+        )
+    } else {
+        format!(
+            "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {} as created_at \
+             FROM events WHERE session_id = ? AND event_type = 'message' ORDER BY id ASC",
+            created_fmt
+        )
+    };
+
+    let prepared = pool.prepare_query(&sql);
+    let mut q = sqlx::query(&prepared).bind(session_id);
+    if let Some(sid) = since_id {
+        q = q.bind(sid);
+    }
+
+    let rows = q
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list messages by session failed: {e}")))?;
+
+    rows.into_iter().map(parse_event_row).collect()
+}
+
 fn parse_event_row(row: sqlx::any::AnyRow) -> Result<Event, SchedulerError> {
     Ok(Event {
         id: row.get("id"),

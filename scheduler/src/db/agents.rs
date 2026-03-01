@@ -212,6 +212,27 @@ pub async fn update(
     get_by_id(pool, id).await
 }
 
+/// Load agent names by IDs into a HashMap.
+/// Uses sequential get_by_id calls — simpler than dynamic IN clause with Any pool,
+/// and fine at this scale (typically < 20 agents per execution).
+pub async fn get_names_by_ids(
+    pool: &DbPool,
+    ids: &[String],
+) -> Result<std::collections::HashMap<String, String>, SchedulerError> {
+    let unique_ids: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let mut map = std::collections::HashMap::new();
+    for id in unique_ids {
+        match get_by_id(pool, id).await {
+            Ok(agent) => {
+                map.insert(agent.id, agent.name);
+            }
+            Err(SchedulerError::NotFound(_)) => {} // deleted agent — skip
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(map)
+}
+
 pub async fn soft_delete(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
         "UPDATE agents SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",

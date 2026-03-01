@@ -238,3 +238,12 @@ export function isThinkingData(d: DataPartPayload): d is ThinkingData {
 export function isPlanData(d: DataPartPayload): d is PlanData {
   return d.type === 'plan';
 }
+
+// GET /api/executions/{id}/agents — session-level discovery
+export interface AgentDiscoveryEntry {
+  name: string;
+  agent_name: string;
+  session_id: string;
+  status: string;
+  parent_name: string | null;
+}

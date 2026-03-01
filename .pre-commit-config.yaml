@@ -28,6 +28,26 @@ repos:
         args: [clippy, --all-targets, --all-features, --, -D, warnings]
         files: \.rs$
         pass_filenames: false
+      - id: rust-no-broad-allows
+        name: rust no broad allow suppressions
+        entry: bash
+        language: system
+        args:
+          - -lc
+          - |
+            set -euo pipefail
+            if grep -RInE --include='*.rs' '#!\[allow\(' worker/src scheduler/src common/src orchestrator/src; then
+              echo 'crate-level #![allow(...)] is not allowed under src/';
+              exit 1;
+            fi
+            if grep -RInE --include='*.rs' '#\[allow\((warnings|unused|unused_imports|unused_variables|unused_mut|unused_assignments|unused_must_use)\)\]' worker/src scheduler/src common/src orchestrator/src; then
+              echo 'broad #[allow(warnings|unused*)] is not allowed under src/';
+              exit 1;
+            fi
+        files: \.rs$
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
       - id: web-check
         name: web npm run check
         entry: npm

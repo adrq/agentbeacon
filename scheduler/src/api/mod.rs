@@ -13,6 +13,7 @@ pub mod health;
 pub mod jsonrpc;
 pub mod mcp;
 pub mod mcp_tools;
+pub mod messages;
 pub mod projects;
 pub mod sessions;
 pub mod sse;
@@ -34,5 +35,6 @@ pub fn routes() -> Router<AppState> {
         .merge(agent_card::routes())
         .merge(worker::routes())
         .merge(mcp::routes())
+        .merge(messages::routes())
         .merge(sessions::routes())
 }

@@ -1,5 +1,5 @@
 import type {
-  Agent, Driver, Execution, ExecutionDetail, Session, Event, Project,
+  Agent, AgentDiscoveryEntry, Driver, Execution, ExecutionDetail, Session, Event, Project,
   CreateExecutionResponse, PostMessageResponse,
 } from './types';
 
@@ -145,8 +145,8 @@ export class AgentBeaconAPI {
     return this.fetchNoContent(`/agents/${id}`, { method: 'DELETE' });
   }
 
-  async getExecutionAgents(executionId: string): Promise<Agent[]> {
-    return this.fetchJSON<Agent[]>(`/executions/${executionId}/agents`);
+  async getExecutionAgents(executionId: string): Promise<AgentDiscoveryEntry[]> {
+    return this.fetchJSON<AgentDiscoveryEntry[]>(`/executions/${executionId}/agents`);
   }
 
   // Executions

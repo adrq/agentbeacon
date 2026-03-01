@@ -577,19 +577,18 @@ def test_execution_with_agent_ids_populates_junction(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_execution_agents_discovery_returns_pool(test_database):
+def test_execution_agents_discovery_returns_sessions(test_database):
+    """Discovery returns session-level entries with hierarchical names."""
     with scheduler_context(db_url=test_database) as ctx:
         agent1 = seed_test_agent(
             ctx["db_url"], name="disc-agent-1", agent_type="claude_sdk"
         )
-        agent2 = seed_test_agent(
-            ctx["db_url"], name="disc-agent-2", agent_type="claude_sdk"
-        )
+        seed_test_agent(ctx["db_url"], name="disc-agent-2", agent_type="claude_sdk")
 
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_ids": [agent1, agent2],
+                "agent_ids": [agent1],
                 "prompt": "discovery test",
                 "cwd": "/tmp",
             },
@@ -597,13 +596,19 @@ def test_execution_agents_discovery_returns_pool(test_database):
         )
         assert resp.status_code == 201
         exec_id = resp.json()["execution"]["id"]
+        session_id = resp.json()["session_id"]
 
         disc_resp = httpx.get(
             f"{ctx['url']}/api/executions/{exec_id}/agents", timeout=5
         )
         assert disc_resp.status_code == 200
-        returned_ids = {a["id"] for a in disc_resp.json()}
-        assert returned_ids == {agent1, agent2}
+        entries = disc_resp.json()
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry["session_id"] == session_id
+        assert entry["agent_name"] == "disc-agent-1"
+        assert "name" in entry
+        assert entry["parent_name"] is None
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

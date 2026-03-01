@@ -85,6 +85,13 @@ pub async fn deliver_to_parent(
         }
     }
 
+    // Transition parent from input-required → working BEFORE push.
+    // Must happen first: push() calls notify_waiters(), which wakes the parent's worker.
+    // If we push first, the worker wakes, sees input-required, and may go back to sleep
+    // before we transition to working.
+    let parent = db::sessions::get_by_id(db_pool, &parent_id).await?;
+    crate::services::messaging::transition_to_working(db_pool, event_broadcast, &parent).await?;
+
     // Format and push to parent's inbox
     let formatted_text = format!(
         "[turn complete from {} \u{00b7} session {}]\n\n{}",

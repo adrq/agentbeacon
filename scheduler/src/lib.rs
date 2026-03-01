@@ -5,4 +5,5 @@ pub mod db;
 pub mod error;
 pub mod queue;
 pub mod services;
+pub mod slugs;
 pub mod telemetry;

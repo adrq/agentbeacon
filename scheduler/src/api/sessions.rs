@@ -62,107 +62,23 @@ async fn post_message(
 ) -> Result<impl IntoResponse, SchedulerError> {
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
-    if session.status != "input-required" && session.status != "working" {
-        return Err(SchedulerError::Conflict(format!(
-            "session cannot accept messages (current status: {})",
-            session.status
-        )));
-    }
-
-    // Always: record user message event
-    let msg_payload = json!({
-        "role": "user",
-        "parts": [{"kind": "text", "text": req.message}]
-    });
-    let event_id = db::events::insert(
+    // Status guard is inside deliver_message() — identical for user and agent (D17)
+    let result = crate::services::messaging::deliver_message(
         &state.db_pool,
-        &session.execution_id,
-        Some(&id),
-        "message",
-        &serde_json::to_string(&msg_payload).unwrap(),
+        &state.task_queue,
+        &state.event_broadcast,
+        &session,
+        &req.message,
+        None, // None = user message
     )
     .await?;
-    let _ = state.event_broadcast.send(EventNotification {
-        execution_id: session.execution_id.clone(),
-        event_id,
-    });
-
-    // Always: push user message to session's inbox for delivery
-    let message_payload = json!({
-        "message": {
-            "role": "user",
-            "parts": [{"kind": "text", "text": req.message}]
-        },
-    });
-    state
-        .task_queue
-        .push(TaskAssignment {
-            execution_id: session.execution_id.clone(),
-            session_id: id.clone(),
-            task_payload: message_payload,
-        })
-        .await?;
-
-    // Always fetch execution for response
-    let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
-
-    // Conditional: status transitions only for input-required → working
-    let session_status;
-    let execution_status;
-
-    if session.status == "input-required" {
-        db::sessions::update_status(&state.db_pool, &id, "working").await?;
-
-        let session_state_event = json!({"from": "input-required", "to": "working"});
-        let sc_event_id = db::events::insert(
-            &state.db_pool,
-            &session.execution_id,
-            Some(&id),
-            "state_change",
-            &serde_json::to_string(&session_state_event).unwrap(),
-        )
-        .await?;
-        let _ = state.event_broadcast.send(EventNotification {
-            execution_id: session.execution_id.clone(),
-            event_id: sc_event_id,
-        });
-
-        session_status = "working".to_string();
-
-        // Only lead sessions propagate status changes to the execution
-        if session.parent_session_id.is_none() {
-            db::executions::update_status(&state.db_pool, &session.execution_id, "working").await?;
-
-            let exec_state_event = json!({"from": execution.status, "to": "working"});
-            let exec_event_id = db::events::insert(
-                &state.db_pool,
-                &session.execution_id,
-                None,
-                "state_change",
-                &serde_json::to_string(&exec_state_event).unwrap(),
-            )
-            .await?;
-            let _ = state.event_broadcast.send(EventNotification {
-                execution_id: session.execution_id.clone(),
-                event_id: exec_event_id,
-            });
-
-            execution_status = "working".to_string();
-        } else {
-            execution_status = execution.status;
-        }
-    } else {
-        // Already working — no transitions
-        session_status = session.status;
-        execution_status = execution.status;
-    }
 
     Ok((
         StatusCode::OK,
         Json(json!({
-            "event_id": event_id,
-            "session_status": session_status,
-            "execution_status": execution_status,
+            "event_id": result.event_id,
+            "session_status": result.session_status,
+            "execution_status": result.execution_status,
         })),
     ))
 }
