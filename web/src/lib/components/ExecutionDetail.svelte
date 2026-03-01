@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
   import type { Execution, Agent, Event as BeaconEvent } from '../types';
-  import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation } from '../queries/executions';
+  import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { connectExecutionSSE } from '../sse';
@@ -37,6 +37,7 @@
 
   const detailQuery = executionDetailQuery(() => executionId);
   const cancelMut = cancelExecutionMutation();
+  const completeMut = completeExecutionMutation();
 
   let detail = $derived(detailQuery.data ?? null);
   let loading = $derived(detailQuery.isLoading);
@@ -68,6 +69,9 @@
   let displayTitle = $derived(detail?.execution.title ?? executionId.slice(0, 8));
   let isTerminal = $derived(terminalStatuses.has(detail?.execution.status ?? ''));
   let isCancellable = $derived(cancellableStatuses.has(detail?.execution.status ?? ''));
+  let isCompletable = $derived(
+    detail?.execution.status === 'working' || detail?.execution.status === 'input-required'
+  );
 
   // SSE connection state
   let sseActive = $state(false);
@@ -177,6 +181,20 @@
     }
   }
 
+  // Complete execution
+  let showCompleteDialog = $state(false);
+  let completeError: string | null = $state(null);
+
+  async function handleComplete() {
+    completeError = null;
+    try {
+      await completeMut.mutateAsync(executionId);
+      showCompleteDialog = false;
+    } catch (e) {
+      completeError = e instanceof Error ? e.message : 'Failed to complete';
+    }
+  }
+
   // Re-run execution
   function handleRerun() {
     if (!detail || !onrerun) return;
@@ -225,6 +243,11 @@
         {#if isCancellable}
           <Button variant="destructive" size="sm" disabled={cancelMut.isPending} onclick={() => { cancelError = null; showCancelDialog = true; }}>
             {cancelMut.isPending ? 'Canceling...' : 'Cancel'}
+          </Button>
+        {/if}
+        {#if isCompletable}
+          <Button variant="outline" size="sm" disabled={completeMut.isPending} onclick={() => { completeError = null; showCompleteDialog = true; }}>
+            {completeMut.isPending ? 'Completing...' : 'Complete'}
           </Button>
         {/if}
         {#if isTerminal && onrerun}
@@ -326,6 +349,27 @@
           <AlertDialog.Cancel class="alert-btn alert-btn-ghost">Keep Running</AlertDialog.Cancel>
           <button class="alert-btn alert-btn-danger" disabled={cancelMut.isPending} onclick={handleCancel}>
             {cancelMut.isPending ? 'Canceling...' : 'Cancel Execution'}
+          </button>
+        </div>
+      </AlertDialog.Content>
+    </AlertDialog.Portal>
+  </AlertDialog.Root>
+
+  <AlertDialog.Root bind:open={showCompleteDialog}>
+    <AlertDialog.Portal>
+      <AlertDialog.Overlay class="modal-overlay" />
+      <AlertDialog.Content class="modal-content">
+        <AlertDialog.Title class="modal-title">Complete Execution</AlertDialog.Title>
+        <AlertDialog.Description class="modal-description">
+          Mark this execution as complete? All active sessions will be stopped. This cannot be undone.
+        </AlertDialog.Description>
+        {#if completeError}
+          <div class="modal-error">{completeError}</div>
+        {/if}
+        <div class="modal-actions">
+          <AlertDialog.Cancel class="alert-btn alert-btn-ghost">Keep Running</AlertDialog.Cancel>
+          <button class="alert-btn alert-btn-primary" disabled={completeMut.isPending} onclick={handleComplete}>
+            {completeMut.isPending ? 'Completing...' : 'Complete Execution'}
           </button>
         </div>
       </AlertDialog.Content>

@@ -90,3 +90,14 @@ export function cancelExecutionMutation() {
     },
   }));
 }
+
+export function completeExecutionMutation() {
+  const queryClient = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (id: string) => api.completeExecution(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['executions'] });
+      queryClient.invalidateQueries({ queryKey: ['execution'] });
+    },
+  }));
+}

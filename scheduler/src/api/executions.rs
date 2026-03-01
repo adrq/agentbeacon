@@ -60,6 +60,12 @@ pub struct CancelExecutionResponse {
     pub execution: ExecutionResponse,
 }
 
+/// Complete response
+#[derive(Debug, Serialize)]
+pub struct CompleteExecutionResponse {
+    pub execution: ExecutionResponse,
+}
+
 /// List all executions (GET /api/executions)
 async fn list_executions(
     State(state): State<AppState>,
@@ -256,6 +262,91 @@ async fn cancel_execution(
     }))
 }
 
+/// Complete an execution (POST /api/executions/:id/complete)
+async fn complete_execution(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<CompleteExecutionResponse>, SchedulerError> {
+    let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
+
+    // Only accept from working or input-required (not submitted or terminal)
+    if !matches!(exec.status.as_str(), "working" | "input-required") {
+        return Err(SchedulerError::Conflict(format!(
+            "execution must be 'working' or 'input-required' to complete (current: {})",
+            exec.status
+        )));
+    }
+
+    // Terminate all sessions via cascade from root session (Release mode).
+    // Release transitions: input-required → completed, working/submitted → canceled.
+    // A working root session becomes canceled (interrupted), which is correct —
+    // the execution is what the user completed, the session was actively working.
+    use crate::services::cascade::{CascadeMode, terminate_subtree};
+
+    let sessions = db::sessions::list_by_execution(&state.db_pool, &id).await?;
+    if let Some(root) = sessions.iter().find(|s| s.parent_session_id.is_none()) {
+        terminate_subtree(
+            &state.db_pool,
+            &root.id,
+            true,
+            CascadeMode::Release,
+            &state.event_broadcast,
+            &state.task_queue,
+        )
+        .await?;
+    }
+
+    // Safety sweep: complete/cancel any sessions not reachable from the root tree
+    let remaining = db::sessions::list_by_execution(&state.db_pool, &id).await?;
+    for session in &remaining {
+        if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
+            let target = match session.status.as_str() {
+                "input-required" => "completed",
+                _ => "canceled",
+            };
+            db::sessions::update_status(&state.db_pool, &session.id, target).await?;
+            let sweep_event = json!({"from": session.status, "to": target});
+            let event_id = db::events::insert(
+                &state.db_pool,
+                &id,
+                Some(&session.id),
+                "state_change",
+                &serde_json::to_string(&sweep_event).unwrap(),
+            )
+            .await?;
+            let _ = state.event_broadcast.send(EventNotification {
+                execution_id: id.clone(),
+                event_id,
+            });
+        }
+    }
+
+    // Wake workers so they discover terminal states (after cascade + sweep)
+    state.task_queue.wake_waiters();
+
+    // Complete the execution
+    db::executions::update_status(&state.db_pool, &id, "completed").await?;
+
+    let exec_state_event = json!({"from": exec.status, "to": "completed"});
+    let event_id = db::events::insert(
+        &state.db_pool,
+        &id,
+        None,
+        "state_change",
+        &serde_json::to_string(&exec_state_event).unwrap(),
+    )
+    .await?;
+    let _ = state.event_broadcast.send(EventNotification {
+        execution_id: id.clone(),
+        event_id,
+    });
+
+    let updated = db::executions::get_by_id(&state.db_pool, &id).await?;
+    Ok(Json(CompleteExecutionResponse {
+        execution: updated.into(),
+    }))
+}
+
 /// Get events for an execution (GET /api/executions/:id/events)
 async fn execution_events(
     State(state): State<AppState>,
@@ -332,6 +423,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/executions/{id}/cancel",
             axum::routing::post(cancel_execution),
+        )
+        .route(
+            "/api/executions/{id}/complete",
+            axum::routing::post(complete_execution),
         )
         .route("/api/executions/{id}/events", get(execution_events))
         .route("/api/executions/{id}/agents", get(execution_agents_handler))

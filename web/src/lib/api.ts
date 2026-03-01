@@ -188,6 +188,10 @@ export class AgentBeaconAPI {
     return this.fetchJSON(`/executions/${id}/cancel`, { method: 'POST' });
   }
 
+  async completeExecution(id: string): Promise<{ execution: Execution }> {
+    return this.fetchJSON(`/executions/${id}/complete`, { method: 'POST' });
+  }
+
   async getExecutionEvents(id: string): Promise<Event[]> {
     return this.fetchJSON<Event[]>(`/executions/${id}/events`);
   }
