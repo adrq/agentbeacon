@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isHandoffResultData, isTurnCompleteData, isPlanData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData } from '../types';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
   import Markdown from './Markdown.svelte';
@@ -157,11 +157,6 @@
             if (isDelegateData(d as unknown as import('../types').DataPartPayload)) {
               const del = d as unknown as import('../types').DelegateData;
               entries.push({ type: 'tool', icon: '\u2192', text: `Delegated to ${del.agent}`, time, key: `${ev.id}-${seq++}` });
-              continue;
-            }
-            if (isHandoffResultData(d as unknown as import('../types').DataPartPayload)) {
-              const hr = d as unknown as import('../types').HandoffResultData;
-              entries.push({ type: 'tool', icon: '\u2713', text: `Child completed: ${hr.message}`, time, key: `${ev.id}-${seq++}` });
               continue;
             }
             if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
@@ -474,7 +469,7 @@
     padding: 0.125rem 0.5rem;
   }
 
-  /* Platform event cards (delegate, handoff, turn_complete, escalate, plan) */
+  /* Platform event cards (delegate, turn_complete, escalate, plan) */
   .tool-card {
     display: inline-flex;
     align-items: center;

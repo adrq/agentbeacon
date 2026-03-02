@@ -403,7 +403,6 @@ def test_execution_detail_response_shape(test_database):
             "execution_id",
             "agent_id",
             "status",
-            "coordination_mode",
             "metadata",
             "created_at",
             "updated_at",

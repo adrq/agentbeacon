@@ -73,7 +73,6 @@ export interface SessionSummary {
   agent_session_id: string | null;
   cwd: string | null;
   status: SessionStatus;
-  coordination_mode: string;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -110,7 +109,6 @@ export type MessagePart =
 export type DataPartPayload =
   | EscalateData
   | DelegateData
-  | HandoffResultData
   | TurnCompleteData
   | ToolCallActivityData
   | ToolCallUpdateData
@@ -139,12 +137,6 @@ export interface DelegateData {
   agent: string;
   child_session_id: string;
   prompt: string;
-}
-
-export interface HandoffResultData {
-  type: 'handoff_result';
-  child_session_id: string;
-  message: string;
 }
 
 export interface TurnCompleteData {
@@ -213,10 +205,6 @@ export function isEscalateData(d: DataPartPayload): d is EscalateData {
 
 export function isDelegateData(d: DataPartPayload): d is DelegateData {
   return d.type === 'delegate';
-}
-
-export function isHandoffResultData(d: DataPartPayload): d is HandoffResultData {
-  return d.type === 'handoff_result';
 }
 
 export function isTurnCompleteData(d: DataPartPayload): d is TurnCompleteData {

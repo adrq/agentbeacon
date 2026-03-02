@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isHandoffResultData, isTurnCompleteData, isPlanData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData } from '../types';
   import { normalizeDataPart } from '../normalize';
   interface Props {
     events: Event[];
@@ -97,14 +97,9 @@
             entries.push({ key, time, icon: '\u2192', iconClass: 'delegate', text: `Delegated to ${del.agent}` });
             continue;
           }
-          if (isHandoffResultData(d as unknown as import('../types').DataPartPayload)) {
-            const hr = d as unknown as import('../types').HandoffResultData;
-            entries.push({ key, time, icon: '\u2713', iconClass: 'handoff', text: `Child completed: "${truncate(hr.message, 80)}"` });
-            continue;
-          }
           if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
             const tc = d as unknown as import('../types').TurnCompleteData;
-            entries.push({ key, time, icon: '\u21A9', iconClass: 'handoff', text: `Child reported: "${truncate(tc.message, 80)}"` });
+            entries.push({ key, time, icon: '\u21A9', iconClass: 'turn-complete', text: `Child reported: "${truncate(tc.message, 80)}"` });
             continue;
           }
 
@@ -261,7 +256,7 @@
   .ev-icon.question { color: hsl(var(--status-attention)); }
   .ev-icon.fyi { color: hsl(var(--status-working)); }
   .ev-icon.delegate { color: hsl(var(--status-working)); }
-  .ev-icon.handoff { color: hsl(var(--status-success)); }
+  .ev-icon.turn-complete { color: hsl(var(--status-success)); }
   .ev-icon.user { color: hsl(var(--primary)); }
   .ev-icon.agent { color: hsl(var(--muted-foreground)); }
 

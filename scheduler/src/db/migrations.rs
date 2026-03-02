@@ -26,6 +26,8 @@ const MIGRATION_0009: &str = include_str!("../../migrations/0009_wiki.sql");
 const MIGRATION_0009_PG: &str = include_str!("../../migrations/0009_pg_wiki.sql");
 const MIGRATION_0010: &str = include_str!("../../migrations/0010_recovery_attempts.sql");
 const MIGRATION_0010_PG: &str = include_str!("../../migrations/0010_pg_recovery_attempts.sql");
+const MIGRATION_0011: &str = include_str!("../../migrations/0011_drop_coordination_mode.sql");
+const MIGRATION_0011_PG: &str = include_str!("../../migrations/0011_pg_drop_coordination_mode.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -193,6 +195,11 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     } else {
         MIGRATION_0010
     };
+    let migration_0011 = if is_postgres {
+        MIGRATION_0011_PG
+    } else {
+        MIGRATION_0011
+    };
     let migrations = vec![
         (MIGRATION_0001, 1),
         (migration_0002, 2),
@@ -204,6 +211,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         (migration_0008, 8),
         (migration_0009, 9),
         (migration_0010, 10),
+        (migration_0011, 11),
     ];
 
     // Process each migration
