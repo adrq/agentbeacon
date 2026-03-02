@@ -23,7 +23,7 @@ test('markdown rendering: heading, table, code block with syntax highlighting', 
   await page.goto(`/#/execution/${execId}`);
   await page.getByRole('tab', { name: 'Chat' }).click();
 
-  const markdown = page.locator('.agent-bubble .markdown-body');
+  const markdown = page.locator('.agent-prose .markdown-body');
   await expect(markdown.locator('h1')).toBeVisible({ timeout: 10000 });
 
   await expect(markdown.locator('table')).toBeVisible();
@@ -50,9 +50,9 @@ test('tool_call renders with gear icon in log view and enriched card in chat', a
   await expect(entry).toBeVisible({ timeout: 10000 });
   await expect(entry.locator('.ev-icon')).toContainText('\u2699');
 
-  // Chat view: enriched ToolCallCard with collapsible content
+  // Chat view: enriched ToolGroup with collapsible content
   await page.getByRole('tab', { name: 'Chat' }).click();
-  const toolCard = page.locator('.tool-card').first();
+  const toolCard = page.locator('.tool-group').first();
   await expect(toolCard).toBeVisible({ timeout: 10000 });
   await expect(toolCard).toContainText('Read file config.json');
   await expect(toolCard.locator('details')).toBeVisible();
@@ -131,7 +131,7 @@ test('demo scenario: question banner, options, submit, agent resumes', async ({ 
 
   await page.getByRole('tab', { name: 'Chat' }).click();
 
-  await expect(page.locator('.agent-bubble .markdown-body').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('.agent-prose .markdown-body').first()).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.user-bubble').first()).toBeVisible();
 });
 
@@ -253,16 +253,16 @@ test('showcase scenario: all renderer types in log and chat views', async ({ pag
   await expect(thinkingBlock).toBeVisible({ timeout: 10000 });
   await expect(thinkingBlock).toContainText('Thinking...');
 
-  // ToolCallCard — enriched with title, collapsible content section
-  const toolCard = page.locator('.tool-card').first();
+  // ToolGroup — enriched with title, collapsible content section
+  const toolCard = page.locator('.tool-group').first();
   await expect(toolCard).toBeVisible();
   await expect(toolCard).toContainText('read_file');
   // Showcase tool calls have content, rendered in a collapsible details
-  const toolCardWithContent = page.locator('.tool-card').filter({ hasText: 'Write src/config.rs' });
+  const toolCardWithContent = page.locator('.tool-group').filter({ hasText: 'Write src/config.rs' });
   await expect(toolCardWithContent).toBeVisible();
 
   // Markdown rendering: heading, table, code block, list
-  const markdown = page.locator('.agent-bubble .markdown-body').last();
+  const markdown = page.locator('.agent-prose .markdown-body').last();
   await expect(markdown.locator('h1')).toBeVisible();
   await expect(markdown.locator('h1')).toContainText('Refactoring Complete');
   await expect(markdown.locator('table')).toBeVisible();

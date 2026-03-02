@@ -23,6 +23,7 @@
           executionId={item.executionId}
           executionTitle={item.executionTitle}
           agentName={item.agentName}
+          projectName={item.projectName}
           batchId={item.batchId}
           questions={item.questions}
           createdAt={item.createdAt}
@@ -47,7 +48,7 @@
     font-size: 0.875rem;
     color: hsl(var(--muted-foreground));
     border: 1px dashed hsl(var(--border));
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
   }
 
   .queue-empty-icon {

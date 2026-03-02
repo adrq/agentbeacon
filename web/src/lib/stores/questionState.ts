@@ -6,6 +6,7 @@ export interface DecisionItem {
   executionId: string;
   executionTitle: string | null;
   agentName: string;
+  projectName: string | null;
   batchId: string;
   questions: QuestionState[];
   createdAt: string;

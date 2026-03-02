@@ -66,7 +66,7 @@
   .working .dot {
     background: hsl(var(--status-working));
     animation: pulse 2s ease-in-out infinite;
-    box-shadow: 0 0 4px 1px hsl(var(--status-working) / 0.5);
+    box-shadow: 0 0 2px 1px hsl(var(--status-working) / 0.15);
   }
 
   .input-required { background: hsl(var(--status-attention) / 0.15); color: hsl(var(--status-attention)); }
@@ -95,7 +95,7 @@
   .canceled .dot { background: hsl(var(--muted-foreground)); }
 
   @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    0%, 100% { box-shadow: 0 0 2px 1px hsl(var(--status-working) / 0.15); }
+    50% { box-shadow: 0 0 6px 2px hsl(var(--status-working) / 0.4); }
   }
 </style>

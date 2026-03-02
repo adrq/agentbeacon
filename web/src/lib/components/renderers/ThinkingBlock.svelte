@@ -50,7 +50,7 @@
   }
 
   .thinking-block {
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     border: 1px solid hsl(var(--border));
     background: hsl(var(--muted) / 0.1);
     max-width: 85%;

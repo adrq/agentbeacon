@@ -117,3 +117,25 @@ def test_session_update_commands_update_variant(mock_scheduler):
         mark_complete(url)
         time.sleep(1)
         cleanup_processes([worker])
+
+
+def test_session_update_tool_group_variant(mock_scheduler):
+    """Test worker handles SEND_TOOL_GROUP (tool_call + tool_call_update pair)."""
+    url, _, _ = mock_scheduler
+    clear_state(url)
+
+    enqueue_session(url, prompt_text="SEND_TOOL_GROUP")
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+        results = get_results(url)
+        assert len(results) == 1
+        assert results[0]["error"] is None, (
+            f"Task should complete (no deserialization error): {results[0]}"
+        )
+    finally:
+        mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])

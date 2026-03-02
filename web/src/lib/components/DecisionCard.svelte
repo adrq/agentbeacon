@@ -13,13 +13,14 @@
     executionId: string;
     executionTitle: string | null;
     agentName: string;
+    projectName: string | null;
     batchId: string;
     questions: QuestionState[];
     createdAt: string;
     onsubmitted?: (sessionId: string, batchId: string) => void;
   }
 
-  let { sessionId, executionId, executionTitle, agentName: agentLabel, batchId, questions, createdAt, onsubmitted }: Props = $props();
+  let { sessionId, executionId, executionTitle, agentName: agentLabel, projectName, batchId, questions, createdAt, onsubmitted }: Props = $props();
 
   let submitting = $state(false);
   let error: string | null = $state(null);
@@ -81,8 +82,8 @@
 <div class="decision-card">
   <div class="card-header">
     <div class="card-meta">
-      <span class="card-title">{executionTitle ?? executionId.slice(0, 8)}</span>
-      <span class="card-agent">{agentLabel}</span>
+      <span class="card-title">{executionTitle ?? 'Untitled execution'}</span>
+      <span class="card-agent">{agentLabel}{projectName ? ` · ${projectName}` : ''}</span>
       <span class="card-waiting">waiting <ElapsedTime startTime={createdAt} /></span>
     </div>
     <button class="view-link" onclick={viewExecution}>
@@ -104,7 +105,7 @@
   </div>
 
   {#if error}
-    <div class="card-error">{error}</div>
+    <div class="card-error" role="alert">{error}</div>
   {/if}
 
   <div class="card-actions">
@@ -127,7 +128,7 @@
 <style>
   .decision-card {
     border: 1px solid hsl(var(--border));
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     background: hsl(var(--card));
     overflow: hidden;
   }

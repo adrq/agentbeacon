@@ -250,7 +250,7 @@
       {/if}
 
       {#if error}
-        <div class="modal-error">{error}</div>
+        <div class="modal-error" role="alert">{error}</div>
       {/if}
 
       <div class="modal-actions">

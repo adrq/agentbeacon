@@ -104,7 +104,7 @@
     gap: 0.75rem;
     padding: 3rem 2rem;
     border: 1px dashed hsl(var(--border));
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     text-align: center;
   }
 
@@ -132,7 +132,7 @@
     gap: 0.25rem;
     padding: 1rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     background: hsl(var(--card));
     text-align: left;
     cursor: pointer;

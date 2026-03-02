@@ -5,8 +5,7 @@
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
   import Markdown from './Markdown.svelte';
-  import ToolCallCard from './renderers/ToolCallCard.svelte';
-  import ToolResultCard from './renderers/ToolResultCard.svelte';
+  import ToolGroup from './renderers/ToolGroup.svelte';
   import ThinkingBlock from './renderers/ThinkingBlock.svelte';
   import DataFallback from './renderers/DataFallback.svelte';
   import ErrorPanel from './renderers/ErrorPanel.svelte';
@@ -81,13 +80,18 @@
   // Determine the primary agent for context
   let leadSession = $derived(sessions.find(s => !s.parent_session_id));
 
+  interface ToolGroupEntry {
+    call: NormalizedToolCall;
+    result?: NormalizedToolResult;
+    time: string;
+  }
+
   type ChatEntry =
     | { type: 'agent'; text: string; agentLabel: string; time: string; key: string }
     | { type: 'user'; text: string; time: string; key: string }
     | { type: 'state'; text: string; time: string; key: string }
     | { type: 'tool'; icon: string; text: string; time: string; key: string }
-    | { type: 'tool_call'; data: NormalizedToolCall; time: string; key: string }
-    | { type: 'tool_result'; data: NormalizedToolResult; time: string; key: string }
+    | { type: 'tool_group'; group: ToolGroupEntry; key: string }
     | { type: 'thinking'; data: NormalizedThinking; time: string; key: string }
     | { type: 'data_fallback'; data: Record<string, unknown>; time: string; key: string }
     | { type: 'error'; message: string; stderr?: string; time: string; key: string }
@@ -101,6 +105,7 @@
 
   function parseEntries(evs: Event[]): ChatEntry[] {
     const entries: ChatEntry[] = [];
+    const toolGroups = new Map<string, ToolGroupEntry>();
     const agentLabel = leadSession ? agentName(leadSession.agent_id) : 'Agent';
     let seq = 0;
 
@@ -168,12 +173,48 @@
             // Normalize SDK/ACP data parts
             const norm = normalizeDataPart(agentType, d);
             switch (norm.normalized) {
-              case 'tool_call':
-                entries.push({ type: 'tool_call', data: norm, time, key: `${ev.id}-${seq++}` });
+              case 'tool_call': {
+                if (norm.toolCallId) {
+                  const existing = toolGroups.get(norm.toolCallId);
+                  if (existing) {
+                    // tool_call_update — patch-merge, preserve existing values for absent fields
+                    existing.call = {
+                      ...existing.call,
+                      ...(norm.title ? { title: norm.title } : {}),
+                      ...(norm.content ? { content: norm.content } : {}),
+                      ...(norm.input !== undefined ? { input: norm.input } : {}),
+                      ...(norm.kind ? { kind: norm.kind } : {}),
+                      status: norm.status ?? existing.call.status,
+                    };
+                    break;
+                  }
+                  const group: ToolGroupEntry = { call: norm, time };
+                  toolGroups.set(norm.toolCallId, group);
+                  entries.push({ type: 'tool_group', group, key: `${ev.id}-${seq++}` });
+                } else {
+                  // No toolCallId — ungroupable, standalone group
+                  entries.push({ type: 'tool_group', group: { call: norm, time }, key: `${ev.id}-${seq++}` });
+                }
                 break;
-              case 'tool_result':
-                entries.push({ type: 'tool_result', data: norm, time, key: `${ev.id}-${seq++}` });
+              }
+              case 'tool_result': {
+                if (norm.toolCallId) {
+                  const existing = toolGroups.get(norm.toolCallId);
+                  if (existing) {
+                    // Merge result into existing group — no new entry
+                    existing.result = norm;
+                    break;
+                  }
+                }
+                // Orphan result — standalone group with synthetic call
+                const group: ToolGroupEntry = {
+                  call: { normalized: 'tool_call', toolCallId: norm.toolCallId ?? '', title: norm.isError ? 'Error' : 'Result' },
+                  result: norm,
+                  time,
+                };
+                entries.push({ type: 'tool_group', group, key: `${ev.id}-${seq++}` });
                 break;
+              }
               case 'thinking':
                 entries.push({ type: 'thinking', data: norm, time, key: `${ev.id}-${seq++}` });
                 break;
@@ -230,10 +271,10 @@
       {#each parsed as entry (entry.key)}
         {#if entry.type === 'agent'}
           <div class="chat-row agent-row">
-            <div class="bubble agent-bubble">
-              <div class="bubble-header">{entry.agentLabel}</div>
-              <div class="bubble-text"><Markdown text={entry.text} /></div>
-              <div class="bubble-time">{entry.time}</div>
+            <div class="agent-prose">
+              <div class="agent-prose-header">{entry.agentLabel}</div>
+              <div class="agent-prose-body"><Markdown text={entry.text} /></div>
+              <div class="agent-prose-time">{entry.time}</div>
             </div>
           </div>
         {:else if entry.type === 'user'}
@@ -247,13 +288,9 @@
           <div class="chat-row state-row">
             <span class="state-text">{entry.text}</span>
           </div>
-        {:else if entry.type === 'tool_call'}
+        {:else if entry.type === 'tool_group'}
           <div class="chat-row tool-row">
-            <ToolCallCard data={entry.data} />
-          </div>
-        {:else if entry.type === 'tool_result'}
-          <div class="chat-row tool-row">
-            <ToolResultCard data={entry.data} />
+            <ToolGroup call={entry.group.call} result={entry.group.result} />
           </div>
         {:else if entry.type === 'thinking'}
           <div class="chat-row tool-row">
@@ -288,6 +325,19 @@
   {/if}
 </div>
 
+{#if !shouldAutoScroll}
+  <button
+    class="scroll-to-bottom"
+    onclick={() => {
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        shouldAutoScroll = true;
+      }
+    }}
+    aria-label="Scroll to bottom"
+  >{'\u2193'}</button>
+{/if}
+
 <div class="chat-input-area">
   {#if sendError}
     <div class="send-error">{sendError}</div>
@@ -295,6 +345,7 @@
   <div class="chat-input-row">
     <textarea
       class="chat-input"
+      aria-label="Message to agent"
       placeholder={viewedSession?.status === 'input-required' ? 'Type a message...' : viewedSession?.status === 'working' ? 'Message will be delivered after current step...' : 'Agent is working...'}
       disabled={!inputEnabled || sending}
       bind:value={messageText}
@@ -323,6 +374,8 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
+    position: relative;
+    overflow: hidden;
   }
 
   .chat-scroll {
@@ -360,9 +413,34 @@
   }
 
   .tool-row, .fyi-row {
-    justify-content: center;
+    justify-content: flex-start;
   }
 
+  /* Agent messages: document flow (no bubble, no background) */
+  .agent-prose {
+    width: 100%;
+    padding: 0.25rem 0;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: hsl(var(--foreground));
+    word-break: break-word;
+  }
+
+  .agent-prose-header {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: hsl(var(--primary));
+    margin-bottom: 0.125rem;
+  }
+
+  .agent-prose-time {
+    font-size: 0.625rem;
+    color: hsl(var(--muted-foreground));
+    margin-top: 0.25rem;
+    font-family: var(--font-mono);
+  }
+
+  /* User messages: keep bubble layout */
   .bubble {
     max-width: 75%;
     padding: 0.5rem 0.75rem;
@@ -372,24 +450,10 @@
     word-break: break-word;
   }
 
-  .agent-bubble {
-    width: 100%;
-    background: hsl(var(--muted));
-    color: hsl(var(--foreground));
-    border-bottom-left-radius: 0.25rem;
-  }
-
   .user-bubble {
     background: hsl(var(--primary) / 0.15);
     color: hsl(var(--foreground));
     border-bottom-right-radius: 0.25rem;
-  }
-
-  .bubble-header {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    color: hsl(var(--primary));
-    margin-bottom: 0.125rem;
   }
 
   .user-bubble .bubble-text {
@@ -410,6 +474,7 @@
     padding: 0.125rem 0.5rem;
   }
 
+  /* Platform event cards (delegate, handoff, turn_complete, escalate, plan) */
   .tool-card {
     display: inline-flex;
     align-items: center;
@@ -464,6 +529,32 @@
     word-break: break-word;
   }
 
+  /* Scroll-to-bottom FAB */
+  .scroll-to-bottom {
+    position: absolute;
+    bottom: 4rem;
+    right: 1.5rem;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--card) / 0.9);
+    color: hsl(var(--foreground));
+    font-size: 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 4px hsl(var(--shadow-hsl) / 0.15);
+    z-index: 10;
+    transition: opacity 0.15s;
+  }
+
+  .scroll-to-bottom:hover {
+    background: hsl(var(--card));
+    border-color: hsl(var(--primary));
+  }
+
   .chat-input-area {
     flex-shrink: 0;
     padding: 0.5rem 1rem 0.75rem;
@@ -490,7 +581,7 @@
     flex: 1;
     padding: 0.5rem 0.75rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     background: hsl(var(--background));
     color: hsl(var(--foreground));
     font-size: 0.8125rem;
@@ -516,7 +607,7 @@
 
   .send-btn {
     padding: 0.5rem 1rem;
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     border: none;
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));

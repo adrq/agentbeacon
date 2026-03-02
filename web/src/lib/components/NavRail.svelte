@@ -26,6 +26,7 @@
       class="nav-rail-item"
       class:active={item.screens.includes($currentScreen)}
       aria-label={item.label}
+      title={item.label}
       aria-current={item.screens.includes($currentScreen) ? 'page' : undefined}
       onclick={() => navigate(item.hash)}
     >
@@ -60,6 +61,7 @@
     class="nav-rail-item decisions-toggle"
     class:panel-open={panelOpen}
     aria-label="Toggle decisions panel"
+    title="Toggle decisions panel"
     onclick={onToggleDecisions}
   >
     <div class="icon-wrapper">

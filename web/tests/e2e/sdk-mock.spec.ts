@@ -31,21 +31,21 @@ test('claude mock: full showcase renders all SDK content types', async ({ page }
     has: page.locator('.ev-icon:has-text("\u2699")'),
   });
   await expect(gearEntries.first()).toBeVisible();
-  // 3 tool_use (Read, Grep, Edit) + 3 tool_result = 6 gear entries
-  await expect(gearEntries).toHaveCount(6);
+  // 3 tool_use (Read, Grep, Edit) — tool_results suppressed in EventsTimeline
+  await expect(gearEntries).toHaveCount(3);
 
-  // Chat view: ThinkingBlock, ToolCallCard, ToolResultCard, markdown
+  // Chat view: ThinkingBlock, ToolGroup, markdown
   await page.getByRole('tab', { name: 'Chat' }).click();
 
   const thinkingBlock = page.locator('.thinking-block').first();
   await expect(thinkingBlock).toBeVisible({ timeout: 10000 });
   await expect(thinkingBlock).toContainText('Thinking...');
 
-  const toolCard = page.locator('.tool-card').first();
+  const toolCard = page.locator('.tool-group').first();
   await expect(toolCard).toBeVisible();
 
   // Markdown: heading, table, code block with syntax highlighting
-  const markdown = page.locator('.agent-bubble .markdown-body').last();
+  const markdown = page.locator('.agent-prose .markdown-body').last();
   await expect(markdown.locator('h1')).toBeVisible();
   await expect(markdown.locator('h1')).toContainText('Changes Complete');
   await expect(markdown.locator('table')).toBeVisible();
@@ -68,17 +68,17 @@ test('copilot mock: full showcase renders all SDK content types', async ({ page 
   await expect(thinkingBlock).toBeVisible({ timeout: 10000 });
   await expect(thinkingBlock).toContainText('Thinking...');
 
-  // ToolCallCard (Bash and Read)
-  const bashCard = page.locator('.tool-card').filter({ hasText: 'Bash' });
+  // ToolGroup (Bash and Read)
+  const bashCard = page.locator('.tool-group').filter({ hasText: 'Bash' });
   await expect(bashCard).toBeVisible();
 
-  const readCard = page.locator('.tool-card').filter({ hasText: 'Read' });
+  const readCard = page.locator('.tool-group').filter({ hasText: 'Read' });
   await expect(readCard).toBeVisible();
 
   // Text message with code block
-  const agentBubble = page.locator('.agent-bubble').last();
-  await expect(agentBubble).toContainText('Fixed the failing test');
-  await expect(agentBubble.locator('code')).toBeVisible();
+  const agentProse = page.locator('.agent-prose').last();
+  await expect(agentProse).toContainText('Fixed the failing test');
+  await expect(agentProse.locator('code')).toBeVisible();
 });
 
 // --- Test 3: Claude mock execution completes successfully ---

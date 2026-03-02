@@ -122,13 +122,13 @@
 
   .status-indicator.working {
     background: hsl(var(--status-working));
-    box-shadow: 0 0 4px 1px hsl(var(--status-working) / 0.4);
+    box-shadow: 0 0 2px 1px hsl(var(--status-working) / 0.15);
     animation: pulse 2s ease-in-out infinite;
   }
 
   @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
+    0%, 100% { box-shadow: 0 0 2px 1px hsl(var(--status-working) / 0.15); }
+    50% { box-shadow: 0 0 6px 2px hsl(var(--status-working) / 0.4); }
   }
   .status-indicator.completed { background: hsl(var(--status-success)); }
   .status-indicator.failed { background: hsl(var(--status-danger)); }

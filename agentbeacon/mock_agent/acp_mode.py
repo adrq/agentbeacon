@@ -266,6 +266,7 @@ class ACPHandler:
                     "SEND_MARKDOWN",
                     "SEND_THOUGHT",
                     "SEND_TOOL_CALL_UPDATE",
+                    "SEND_TOOL_GROUP",
                 ]
 
             stop_reason = "end_turn"
@@ -564,6 +565,36 @@ class ACPHandler:
                         },
                     }
                     print(json.dumps(notification), flush=True)
+                    return
+                elif prompt_text.strip().upper() == "SEND_TOOL_GROUP":
+                    notification1 = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "tool_call",
+                                "toolCallId": "toolgroup-read",
+                                "title": "Read config.json",
+                                "content": [{"type": "text", "text": '{"port": 8080}'}],
+                            },
+                        },
+                    }
+                    print(json.dumps(notification1), flush=True)
+                    notification2 = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "tool_call_update",
+                                "toolCallId": "toolgroup-read",
+                                "title": "Read config.json",
+                                "status": "completed",
+                            },
+                        },
+                    }
+                    print(json.dumps(notification2), flush=True)
                     return
 
             if prompt_text in self.custom_responses:

@@ -114,7 +114,7 @@
       </div>
 
       {#if error}
-        <div class="modal-error">{error}</div>
+        <div class="modal-error" role="alert">{error}</div>
       {/if}
       {#if warning}
         <div class="modal-warning">{warning}</div>
@@ -135,36 +135,6 @@
 </Dialog.Root>
 
 <style>
-  :global(.modal-overlay) {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    backdrop-filter: blur(2px);
-    z-index: 50;
-  }
-
-  :global(.modal-content) {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    background: hsl(var(--card));
-    border: 1px solid hsl(var(--border));
-    border-radius: 0.5rem;
-    padding: 1.5rem;
-    width: 100%;
-    max-width: 28rem;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
-    z-index: 51;
-  }
-
-  :global(.modal-title) {
-    font-size: 1.0625rem;
-    font-weight: 600;
-    margin-bottom: 1.25rem;
-    color: hsl(var(--foreground));
-  }
-
   .field {
     margin-bottom: 1rem;
   }

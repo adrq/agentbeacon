@@ -51,7 +51,7 @@
     text: string;
   }
 
-  function parseEventParts(ev: Event): ParsedEvent[] {
+  function parseEventParts(ev: Event, seenToolCalls: Set<string>): ParsedEvent[] {
     const time = formatTime(ev.created_at);
 
     if (isStateChangePayload(ev.payload)) {
@@ -112,9 +112,11 @@
           const norm = normalizeDataPart(agentType, d);
           switch (norm.normalized) {
             case 'tool_call':
+              if (norm.toolCallId) seenToolCalls.add(norm.toolCallId);
               entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: norm.title || 'Unknown tool' });
               break;
             case 'tool_result':
+              if (norm.toolCallId && seenToolCalls.has(norm.toolCallId) && !norm.isError) break;
               entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: `Result (${norm.toolCallId})` });
               break;
             case 'thinking':
@@ -164,7 +166,18 @@
     return [];
   }
 
-  let parsed = $derived(events.flatMap(parseEventParts));
+  function parseAllEvents(evs: Event[]): ParsedEvent[] {
+    const entries: ParsedEvent[] = [];
+    const seenToolCalls = new Set<string>();
+
+    for (const ev of evs) {
+      const parts = parseEventParts(ev, seenToolCalls);
+      entries.push(...parts);
+    }
+    return entries;
+  }
+
+  let parsed = $derived(parseAllEvents(events));
 </script>
 
 <div class="timeline-section">

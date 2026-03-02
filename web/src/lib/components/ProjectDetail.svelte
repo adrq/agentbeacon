@@ -121,7 +121,7 @@
           Are you sure you want to delete "{project.name}"? Existing executions will keep their project reference but you won't be able to manage this project anymore.
         </AlertDialog.Description>
         {#if deleteError}
-          <div class="modal-error">{deleteError}</div>
+          <div class="modal-error" role="alert">{deleteError}</div>
         {/if}
         <div class="modal-actions">
           <AlertDialog.Cancel class="alert-btn alert-btn-ghost">Cancel</AlertDialog.Cancel>
@@ -182,7 +182,7 @@
     gap: 0.5rem;
     padding: 1rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     background: hsl(var(--card));
     margin-bottom: 1.5rem;
   }

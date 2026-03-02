@@ -128,7 +128,7 @@
     </div>
 
     {#if error}
-      <div class="banner-error">{error}</div>
+      <div class="banner-error" role="alert">{error}</div>
     {/if}
 
     <div class="banner-actions">
@@ -160,7 +160,7 @@
     padding: 0.625rem 0.75rem;
     border: 1.5px solid hsl(var(--status-attention) / 0.35);
     border-radius: 0.375rem;
-    background: hsl(var(--status-attention) / 0.04);
+    background: hsl(var(--status-attention) / 0.10);
   }
 
   .banner-header {

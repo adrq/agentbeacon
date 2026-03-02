@@ -98,9 +98,9 @@ test('completion summary shows for terminal executions', async ({ page }) => {
   await expect(summary).toContainText('session');
 });
 
-// --- Test 5: ToolCallCard renderer in Chat view ---
+// --- Test 5: ToolGroup renderer in Chat view ---
 
-test('tool_call renders as ToolCallCard in chat view', async ({ page }) => {
+test('tool_call renders as ToolGroup in chat view', async ({ page }) => {
   const agent = await ensureDirectAgent();
   const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Tool card test');
   await waitForTurnEnd(execId);
@@ -112,7 +112,7 @@ test('tool_call renders as ToolCallCard in chat view', async ({ page }) => {
 
   await page.getByRole('tab', { name: 'Chat' }).click();
 
-  const toolCard = page.locator('.tool-card').first();
+  const toolCard = page.locator('.tool-group').first();
   await expect(toolCard).toBeVisible({ timeout: 15000 });
   await expect(toolCard).toContainText('Read file');
 

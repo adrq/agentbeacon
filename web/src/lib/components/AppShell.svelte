@@ -79,9 +79,21 @@
     }
     prevDecisionCount = count;
   });
+
+  // Page title: "(N) AgentBeacon" when decisions are pending, like Slack's unread count
+  $effect(() => {
+    const count = $decisionCount;
+    document.title = count > 0 ? `(${count}) AgentBeacon` : 'AgentBeacon';
+  });
 </script>
 
 <QuestionStateProvider />
+
+<a
+  href="#main-content"
+  class="skip-link"
+  onclick={(e: MouseEvent) => { e.preventDefault(); document.getElementById('main-content')?.focus(); }}
+>Skip to main content</a>
 
 <AppHeader onnewexecution={handleNewExecution} />
 
@@ -94,7 +106,7 @@
       </div>
     {/snippet}
     {#snippet right()}
-      <div class="main-content">
+      <div class="main-content" id="main-content" tabindex="-1">
         {#if $currentScreen === 'ExecutionDetail' && $selectedExecutionId}
           <ExecutionDetail executionId={$selectedExecutionId} onrerun={handleRerun} />
         {:else if $currentScreen === 'Projects'}
@@ -148,6 +160,23 @@
   .home-view {
     flex: 1;
     overflow-y: auto;
+  }
+
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 200;
+    padding: 0.5rem 1rem;
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    font-size: 0.8125rem;
+    border-radius: 0 0 0.375rem 0;
+    text-decoration: none;
+  }
+
+  .skip-link:focus {
+    left: 0;
   }
 
   @media (max-width: 768px) {

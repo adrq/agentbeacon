@@ -344,3 +344,13 @@ def test_is_special_command_recognizes_send_markdown():
     assert sc.is_special_command("SEND_MARKDOWN") is True
     assert sc.is_special_command("send_markdown") is True
     assert sc.is_special_command("  SEND_MARKDOWN  ") is True
+
+
+def test_is_special_command_recognizes_send_tool_group():
+    """SEND_TOOL_GROUP is recognized as a special command."""
+    from agentbeacon.mock_agent.special_commands import SpecialCommands
+
+    sc = SpecialCommands()
+    assert sc.is_special_command("SEND_TOOL_GROUP") is True
+    assert sc.is_special_command("send_tool_group") is True
+    assert sc.is_special_command("  SEND_TOOL_GROUP  ") is True

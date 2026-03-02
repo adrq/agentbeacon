@@ -1,8 +1,10 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query';
-  import type { Event, Execution, Agent } from '../types';
+  import type { Event, Execution, Agent, Project } from '../types';
   import { api } from '../api';
-  import { inputRequiredSessionsQuery } from '../queries/executions';
+  import { inputRequiredSessionsQuery, executionsQuery } from '../queries/executions';
+  import { agentsQuery } from '../queries/agents';
+  import { projectsQuery } from '../queries/projects';
   import { extractQuestions } from '../questions';
   import {
     decisionItems, suppressedSessions, submittedBatches, notifyNewDecision,
@@ -12,6 +14,9 @@
 
   const queryClient = useQueryClient();
   const sessionsQuery = inputRequiredSessionsQuery();
+  const execsQ = executionsQuery();
+  const agentsQ = agentsQuery();
+  const projectsQ = projectsQuery();
 
   let effectVersion = 0;
   let prevItemIds = new Set<string>();
@@ -56,13 +61,11 @@
       if (!activeSessionIds.has(sid)) itemCache.delete(sid);
     }
 
-    // Build execution/agent maps from TanStack Query caches
-    const allExecEntries = queryClient.getQueriesData<Execution[]>({ queryKey: ['executions'] });
+    // Build execution/agent/project maps from reactive queries (always active).
     const execMap = new Map<string, Execution>();
-    for (const [, data] of allExecEntries) {
-      if (data) for (const e of data) execMap.set(e.id, e);
-    }
-    const ags: Agent[] = queryClient.getQueryData(['agents']) ?? [];
+    for (const e of execsQ.data ?? []) execMap.set(e.id, e);
+    const ags: Agent[] = agentsQ.data ?? [];
+    const projs: Project[] = projectsQ.data ?? [];
 
     // Fetch events for ALL sessions (suppression is content-based, handled at display level)
     Promise.allSettled(
@@ -91,12 +94,14 @@
 
         const exec = execMap.get(session.execution_id);
         const agent = ags.find(a => a.id === session.agent_id);
+        const project = projs.find(p => p.id === exec?.project_id);
 
         itemCache.set(session.id, {
           sessionId: session.id,
           executionId: session.execution_id,
           executionTitle: exec?.title ?? null,
           agentName: agent?.name ?? session.agent_id.slice(0, 8),
+          projectName: project?.name ?? null,
           batchId,
           questions,
           createdAt: session.created_at,

@@ -20,7 +20,7 @@
 
 <style>
   .error-panel {
-    border-radius: 0.5rem;
+    border-radius: var(--radius);
     border: 1px solid hsl(var(--status-danger) / 0.3);
     background: hsl(var(--status-danger) / 0.08);
     padding: 0.5rem 0.75rem;
