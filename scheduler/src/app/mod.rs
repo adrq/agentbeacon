@@ -12,6 +12,7 @@ use tracing::warn;
 use crate::assets::Assets;
 use crate::db::DbPool;
 use crate::queue::TaskQueue;
+use crate::search::WikiSearchIndex;
 
 /// Notification sent when a new event is inserted into the events table.
 /// SSE handlers subscribe to these to push updates in real-time.
@@ -29,6 +30,7 @@ pub struct AppState {
     pub base_url: String,
     pub public_url: Option<String>,
     pub event_broadcast: broadcast::Sender<EventNotification>,
+    pub wiki_search: WikiSearchIndex,
     pub vite_dev_port: u16,
 }
 
@@ -40,6 +42,7 @@ impl AppState {
         public_url: Option<String>,
         port: u16,
         event_broadcast: broadcast::Sender<EventNotification>,
+        wiki_search: WikiSearchIndex,
     ) -> Self {
         let vite_dev_port = std::env::var("VITE_DEV_PORT")
             .ok()
@@ -51,6 +54,7 @@ impl AppState {
             base_url,
             public_url,
             event_broadcast,
+            wiki_search,
             vite_dev_port,
         }
     }

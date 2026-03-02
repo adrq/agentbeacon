@@ -26,6 +26,9 @@ pub enum SchedulerError {
 
     #[error("forbidden: {0}")]
     Forbidden(String),
+
+    #[error("search failed: {0}")]
+    SearchFailed(String),
 }
 
 impl IntoResponse for SchedulerError {
@@ -54,6 +57,11 @@ impl IntoResponse for SchedulerError {
             SchedulerError::Forbidden(msg) => {
                 (StatusCode::FORBIDDEN, Json(json!({"error": msg}))).into_response()
             }
+            SchedulerError::SearchFailed(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": msg})),
+            )
+                .into_response(),
         }
     }
 }

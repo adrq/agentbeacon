@@ -80,6 +80,8 @@ struct WikiPageListItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     updated_by: Option<String>,
     updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -186,7 +188,29 @@ async fn list_pages(
     // Verify project exists
     db::projects::get_by_id(&state.db_pool, &project_id).await?;
 
-    let pages = db::wiki::list_pages(&state.db_pool, &project_id, query.q.as_deref()).await?;
+    // If q is present and non-empty, use tantivy BM25 search
+    if let Some(ref q) = query.q {
+        let trimmed = q.trim();
+        if !trimmed.is_empty() {
+            let results = state.wiki_search.search(&project_id, trimmed, 100)?;
+            return Ok(Json(
+                results
+                    .into_iter()
+                    .map(|r| WikiPageListItem {
+                        slug: r.slug,
+                        title: r.title,
+                        revision_number: r.revision_number,
+                        updated_by: r.updated_by,
+                        updated_at: r.updated_at,
+                        score: Some(r.score),
+                    })
+                    .collect(),
+            ));
+        }
+    }
+
+    // Fall through to DB list (no search query)
+    let pages = db::wiki::list_pages(&state.db_pool, &project_id).await?;
 
     Ok(Json(
         pages
@@ -197,6 +221,7 @@ async fn list_pages(
                 revision_number: p.revision_number,
                 updated_by: p.updated_by,
                 updated_at: p.updated_at.to_rfc3339(),
+                score: None,
             })
             .collect(),
     ))
@@ -260,9 +285,15 @@ async fn put_page(
             )
             .await
             {
-                Ok(page) => Ok(
-                    (StatusCode::CREATED, Json(WikiPageResponse::from_page(page))).into_response(),
-                ),
+                Ok(page) => {
+                    if let Err(e) = state.wiki_search.index_page(&path.project_id, &page) {
+                        tracing::warn!(error = %e, slug = %slug, "failed to update wiki search index");
+                    }
+                    Ok(
+                        (StatusCode::CREATED, Json(WikiPageResponse::from_page(page)))
+                            .into_response(),
+                    )
+                }
                 Err(SchedulerError::Conflict(_)) => {
                     // Slug collision — return 409 with existing page
                     let current =
@@ -294,6 +325,9 @@ async fn put_page(
             .await
             {
                 Ok(page) => {
+                    if let Err(e) = state.wiki_search.index_page(&path.project_id, &page) {
+                        tracing::warn!(error = %e, slug = %slug, "failed to update wiki search index");
+                    }
                     Ok((StatusCode::OK, Json(WikiPageResponse::from_page(page))).into_response())
                 }
                 Err(SchedulerError::Conflict(_)) => {
@@ -322,7 +356,19 @@ async fn delete_page(
     db::projects::get_by_id(&state.db_pool, &path.project_id).await?;
 
     let slug = normalize_slug(&path.slug);
+
+    // Get page_id before deleting (needed for index removal)
+    let page_id = db::wiki::page_id_by_slug(&state.db_pool, &path.project_id, &slug).await?;
+
     db::wiki::delete_page(&state.db_pool, &path.project_id, &slug).await?;
+
+    // Best-effort index removal
+    if let Some(ref pid) = page_id
+        && let Err(e) = state.wiki_search.remove_page(&path.project_id, pid)
+    {
+        tracing::warn!(error = %e, slug = %slug, "failed to remove page from wiki search index");
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 

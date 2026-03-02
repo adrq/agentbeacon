@@ -4,6 +4,7 @@ pub mod assets;
 pub mod db;
 pub mod error;
 pub mod queue;
+pub mod search;
 pub mod services;
 pub mod slugs;
 pub mod telemetry;

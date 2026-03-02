@@ -114,43 +114,66 @@ pub async fn get_page_by_slug(
 pub async fn list_pages(
     pool: &DbPool,
     project_id: &str,
-    search: Option<&str>,
 ) -> Result<Vec<WikiPageListItem>, SchedulerError> {
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
-    // List query omits body for efficiency; search still filters on body via LIKE
-    let mut sql = format!(
+    let sql = format!(
         "SELECT slug, title, revision_number, updated_by, \
          {updated_fmt} as updated_at \
-         FROM wiki_pages WHERE project_id = ? AND deleted_at IS NULL"
+         FROM wiki_pages WHERE project_id = ? AND deleted_at IS NULL \
+         ORDER BY updated_at DESC"
     );
 
-    if search.is_some() {
-        sql.push_str(" AND (LOWER(title) LIKE ? ESCAPE '\\' OR LOWER(body) LIKE ? ESCAPE '\\')");
-    }
-
-    sql.push_str(" ORDER BY updated_at DESC");
-
     let prepared = pool.prepare_query(&sql);
-    let mut q = sqlx::query(&prepared);
-    q = q.bind(project_id);
 
-    if let Some(term) = search {
-        let escaped = term
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let pattern = format!("%{}%", escaped.to_lowercase());
-        q = q.bind(pattern.clone());
-        q = q.bind(pattern);
-    }
-
-    let rows = q
+    let rows = sqlx::query(&prepared)
+        .bind(project_id)
         .fetch_all(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("list wiki pages failed: {e}")))?;
 
     rows.into_iter().map(parse_wiki_page_list_row).collect()
+}
+
+/// Return all non-deleted wiki pages for a project with full content (for search indexing).
+pub async fn list_pages_for_indexing(
+    pool: &DbPool,
+    project_id: &str,
+) -> Result<Vec<WikiPage>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
+
+    let sql = format!(
+        "SELECT id, project_id, slug, title, body, revision_number, created_by, updated_by, \
+         {created_fmt} as created_at, {updated_fmt} as updated_at \
+         FROM wiki_pages WHERE project_id = ? AND deleted_at IS NULL"
+    );
+    let query = pool.prepare_query(&sql);
+
+    let rows = sqlx::query(&query)
+        .bind(project_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("list wiki pages for indexing failed: {e}"))
+        })?;
+
+    rows.into_iter().map(parse_wiki_page_row).collect()
+}
+
+/// Return all project_ids that have at least one non-deleted wiki page.
+pub async fn projects_with_pages(pool: &DbPool) -> Result<Vec<String>, SchedulerError> {
+    let query =
+        pool.prepare_query("SELECT DISTINCT project_id FROM wiki_pages WHERE deleted_at IS NULL");
+
+    let rows = sqlx::query(&query)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("query projects with wiki pages failed: {e}"))
+        })?;
+
+    Ok(rows.iter().map(|r| r.get("project_id")).collect())
 }
 
 /// OCC update: archive current state to revisions, then update page.

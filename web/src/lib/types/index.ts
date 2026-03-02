@@ -247,6 +247,7 @@ export interface WikiPageListItem {
   revision_number: number;
   updated_by: string | null;
   updated_at: string;
+  score?: number;
 }
 
 export interface WikiRevision {

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -11,6 +12,7 @@ use scheduler::{
     app::{AppState, EventNotification, create_router},
     db,
     queue::TaskQueue,
+    search::WikiSearchIndex,
     services, telemetry,
 };
 
@@ -31,6 +33,11 @@ struct Cli {
     /// Defaults to sqlite://scheduler-{port}.db when not specified.
     #[arg(long, env = "DATABASE_URL")]
     db_url: Option<String>,
+
+    /// Directory for wiki search index files.
+    /// Defaults to wiki-index-{port}/ when not specified.
+    #[arg(long, env = "AGENTBEACON_WIKI_INDEX_DIR")]
+    wiki_index_dir: Option<String>,
 }
 
 /// Ensure a driver exists for the given platform, creating one if needed.
@@ -182,6 +189,34 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         info!(public_url = %url, "Using PUBLIC_URL for agent card");
     }
 
+    // Build wiki search index and rebuild from DB
+    let wiki_index_dir = cli
+        .wiki_index_dir
+        .unwrap_or_else(|| format!("wiki-index-{}", cli.port));
+    let wiki_search = WikiSearchIndex::new(PathBuf::from(&wiki_index_dir));
+    info!(dir = %wiki_index_dir, "Initializing wiki search index");
+
+    let rebuild_start = std::time::Instant::now();
+    let project_ids = db::wiki::projects_with_pages(&db_pool)
+        .await
+        .context("Failed to query projects with wiki pages")?;
+    let mut total_pages = 0usize;
+    for pid in &project_ids {
+        let pages = db::wiki::list_pages_for_indexing(&db_pool, pid)
+            .await
+            .context("Failed to load wiki pages for indexing")?;
+        total_pages += pages.len();
+        wiki_search
+            .rebuild_project(pid, &pages)
+            .context("Failed to rebuild wiki search index")?;
+    }
+    info!(
+        projects = project_ids.len(),
+        pages = total_pages,
+        elapsed_ms = rebuild_start.elapsed().as_millis(),
+        "Wiki search index rebuild complete"
+    );
+
     // Create event broadcast channel (needed by recovery + AppState)
     let (event_broadcast, _) = broadcast::channel::<EventNotification>(256);
 
@@ -207,6 +242,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         public_url,
         cli.port,
         event_broadcast.clone(),
+        wiki_search,
     );
     let vite_dev_port = app_state.vite_dev_port;
     let app = create_router(app_state.clone(), dev_mode, cli.port);

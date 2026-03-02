@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Set, List, Dict, Any
 
+import shutil
 import sqlite3
 
 import psycopg2
@@ -722,10 +723,17 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
     allocated_port = port_manager.allocate_port() if port_manager else port
     scheduler_process = None
     temp_db_path = None
+    wiki_index_dir = None
 
     try:
+        # Create temp directory for wiki search index
+        wiki_index_dir = tempfile.mkdtemp(prefix="wiki-index-")
+
         # Always disable auto-seeding in tests for predictable state
-        merged_env = {"AGENTBEACON_NO_SEED": "1"}
+        merged_env = {
+            "AGENTBEACON_NO_SEED": "1",
+            "AGENTBEACON_WIKI_INDEX_DIR": wiki_index_dir,
+        }
         if env:
             merged_env.update(env)
 
@@ -745,6 +753,8 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
             cleanup_processes([scheduler_process])
         if temp_db_path:
             cleanup_files([temp_db_path])
+        if wiki_index_dir:
+            shutil.rmtree(wiki_index_dir, ignore_errors=True)
         if port_manager:
             port_manager.release_port(allocated_port)
 

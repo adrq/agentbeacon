@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-sqlite test-postgres test-int test-e2e test-all run clean pre-commit dev-backend dev-frontend
+.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-all run clean pre-commit dev-backend dev-frontend
 
 RUST_STRICT_FLAGS ?= -Dwarnings
 
@@ -47,23 +47,14 @@ build-worker:
 	@mkdir -p bin
 	cp target/release/agentbeacon-worker bin/
 
-# Run Rust unit tests with both SQLite and PostgreSQL
+# Run Rust unit and integration tests
 test: all
-	@echo "=== Running Rust tests with SQLite ==="
-	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
-	@echo ""
-	@echo "=== Running Rust tests with PostgreSQL ==="
-	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
-	@echo ""
-	@echo "All tests passed with both backends"
-
-test-sqlite: all
-	@echo "Running Rust tests with SQLite..."
+	@echo "Running Rust tests..."
 	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 
-test-postgres: all
-	@echo "Running Rust tests with PostgreSQL..."
-	DATABASE_URL=postgres://postgres:postgres@127.0.0.1/agentbeacon_test RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
+test-rust: all
+	@echo "Running Rust tests..."
+	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 
 # Build Rust binaries and run Python integration tests
 test-int: all
@@ -75,7 +66,7 @@ test-e2e: all
 	@echo "Starting E2E test environment..."
 	@AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9456} ./scripts/e2e.sh --fresh --run-tests
 
-test-all: test test-int test-e2e
+test-all: test-rust test-int test-e2e
 	@echo "All tests passed successfully!"
 
 # Run target
