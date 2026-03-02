@@ -33,7 +33,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.625rem 1rem;
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     font-size: 0.8125rem;
     font-weight: 500;
     background: hsl(var(--card));

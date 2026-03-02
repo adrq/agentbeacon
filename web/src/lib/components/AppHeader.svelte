@@ -1,28 +1,23 @@
 <script lang="ts">
   import ThemeToggle from './ThemeToggle.svelte';
   import Button from './ui/button.svelte';
+  import { theme } from '../stores/appState';
+  import logoDarkUrl from '../../assets/logo-mark-dark.svg';
+  import logoLightUrl from '../../assets/logo-mark-light.svg';
 
   interface Props {
     onnewexecution?: () => void;
   }
 
   let { onnewexecution }: Props = $props();
+
+  let logoUrl = $derived($theme === 'light' ? logoLightUrl : logoDarkUrl);
 </script>
 
 <header class="app-header">
   <div class="header-left">
     <a href="#/" class="brand">
-      <svg class="beacon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M12 3v3" />
-        <path d="M12 18v3" />
-        <path d="M3 12h3" />
-        <path d="M18 12h3" />
-        <path d="M5.6 5.6l2.1 2.1" />
-        <path d="M16.3 16.3l2.1 2.1" />
-        <path d="M5.6 18.4l2.1-2.1" />
-        <path d="M16.3 7.7l2.1-2.1" />
-      </svg>
+      <img src={logoUrl} alt="" class="beacon-icon" width="24" height="24" />
       <span class="app-name">AgentBeacon</span>
     </a>
   </div>
@@ -61,14 +56,13 @@
   }
 
   .beacon-icon {
-    width: 1.25rem;
-    height: 1.25rem;
-    color: hsl(var(--primary));
+    width: 1.5rem;
+    height: 1.5rem;
   }
 
   .app-name {
     font-weight: 600;
-    font-size: 1rem;
+    font-size: 0.875rem;
     letter-spacing: -0.01em;
     user-select: none;
   }

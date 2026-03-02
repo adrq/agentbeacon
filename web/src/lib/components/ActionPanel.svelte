@@ -134,7 +134,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     border: none;
     background: transparent;
     color: hsl(var(--muted-foreground));

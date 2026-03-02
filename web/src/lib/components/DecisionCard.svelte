@@ -164,7 +164,7 @@
     color: hsl(var(--muted-foreground));
     padding: 0.0625rem 0.375rem;
     background: hsl(var(--muted));
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     flex-shrink: 0;
   }
 
@@ -175,7 +175,7 @@
   }
 
   .view-link {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--primary));
     background: none;
     border: none;
@@ -198,7 +198,7 @@
   .card-error {
     margin: 0 1rem;
     padding: 0.375rem 0.625rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
     font-size: 0.8125rem;
@@ -212,7 +212,7 @@
 
   .submit-btn {
     padding: 0.5rem 1.25rem;
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     border: none;
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));

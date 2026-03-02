@@ -35,7 +35,7 @@
   }
 
   .error-icon {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--status-danger));
   }
 
@@ -55,10 +55,10 @@
   .error-stderr {
     margin-top: 0.375rem;
     padding: 0.5rem;
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     background: hsl(var(--muted) / 0.3);
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     line-height: 1.4;
     color: hsl(var(--foreground));
     overflow-x: auto;

@@ -36,7 +36,7 @@
   }
 
   .empty-title {
-    font-size: 0.9375rem;
+    font-size: 0.875rem;
     font-weight: 500;
     color: hsl(var(--foreground));
     opacity: 0.7;

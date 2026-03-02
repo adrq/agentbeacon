@@ -163,7 +163,7 @@
 
   .tree-branch {
     color: hsl(var(--muted-foreground));
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     flex-shrink: 0;
   }
 
@@ -171,7 +171,7 @@
     width: 0.875rem;
     text-align: center;
     flex-shrink: 0;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 700;
   }
 
@@ -201,7 +201,7 @@
     width: 1.25rem;
     height: 1.25rem;
     border: none;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: transparent;
     cursor: pointer;
     font-size: 0.6875rem;

@@ -40,7 +40,7 @@
   }
 
   .think-icon {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
     flex-shrink: 0;
   }
@@ -98,7 +98,7 @@
 
   .thinking-text {
     padding: 0 0.75rem 0.5rem;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     line-height: 1.5;
     color: hsl(var(--muted-foreground));
     white-space: pre-wrap;

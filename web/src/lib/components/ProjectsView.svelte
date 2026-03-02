@@ -109,7 +109,7 @@
   }
 
   .empty-title {
-    font-size: 1rem;
+    font-size: 0.875rem;
     font-weight: 600;
     color: hsl(var(--foreground));
   }
@@ -161,7 +161,7 @@
     font-size: 0.625rem;
     font-weight: 600;
     padding: 0.0625rem 0.375rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--primary) / 0.12);
     color: hsl(var(--primary));
     text-transform: uppercase;
@@ -169,7 +169,7 @@
   }
 
   .card-path {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
     font-family: var(--font-mono);
     overflow: hidden;

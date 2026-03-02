@@ -30,7 +30,19 @@
   --status-danger: 0 72% 51%;
   --overlay-hsl: 0 0% 0%;
   --shadow-hsl: 0 0% 0%;
-  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --font-sans: Geist, Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'Geist Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+  /* Type scale (locked — no additional sizes) */
+  --text-2xs: 0.625rem;   /* 10px */
+  --text-xs: 0.6875rem;   /* 11px */
+  --text-sm: 0.8125rem;   /* 13px */
+  --text-base: 0.875rem;  /* 14px */
+  --text-lg: 1.25rem;     /* 20px */
+
+  /* Radius scale */
+  --radius-sm: 0.25rem;   /* 4px - tight elements */
+  --radius-lg: 0.75rem;   /* 12px - pills, large cards */
 }
 
 .light {
@@ -76,7 +88,7 @@
 .scroll-thin { scrollbar-width: thin; }
 .scroll-thin::-webkit-scrollbar { width: 8px; }
 .scroll-thin::-webkit-scrollbar-track { background: transparent; }
-.scroll-thin::-webkit-scrollbar-thumb { background: hsl(var(--muted)); border-radius: 4px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: hsl(var(--muted)); border-radius: var(--radius-sm); }
 .scroll-thin::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
 
 /* Utility groupings */
@@ -96,8 +108,8 @@
 .markdown-body ul, .markdown-body ol { margin: 0.375em 0; padding-left: 1.5em; }
 .markdown-body li { margin: 0.125em 0; }
 
-.markdown-body code { font-family: var(--font-mono); font-size: 0.875em; padding: 0.125em 0.25em; border-radius: 0.25rem; background: hsl(var(--muted)); }
-.markdown-body pre { margin: 0.5em 0; padding: 0.75em; border-radius: 0.375rem; overflow-x: auto; background: hsl(var(--muted) / 0.5); }
+.markdown-body code { font-family: var(--font-mono); font-size: 0.875em; padding: 0.125em 0.25em; border-radius: var(--radius-sm); background: hsl(var(--muted)); }
+.markdown-body pre { margin: 0.5em 0; padding: 0.75em; border-radius: var(--radius); overflow-x: auto; background: hsl(var(--muted) / 0.5); }
 .markdown-body pre code { padding: 0; background: none; font-size: 0.8125rem; }
 
 .markdown-body table { border-collapse: collapse; margin: 0.5em 0; font-size: 0.8125rem; }
@@ -109,7 +121,7 @@
 /* AlertDialog button styles (used by AlertDialog.Cancel / AlertDialog.Action across views) */
 .alert-btn {
   padding: 0.375rem 0.75rem;
-  border-radius: 0.375rem;
+  border-radius: var(--radius);
   font-size: 0.8125rem;
   font-weight: 500;
   border: none;
@@ -175,7 +187,7 @@
 }
 
 .modal-title {
-  font-size: 1.0625rem;
+  font-size: 0.875rem;
   font-weight: 600;
   margin-bottom: 1.25rem;
   color: hsl(var(--foreground));

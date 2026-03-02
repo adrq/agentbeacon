@@ -1,0 +1,24 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="beam1_light" x1="50%" y1="50%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#FF5722"/>
+      <stop offset="100%" stop-color="#FF5722" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="beam2_light" x1="50%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#FF5722"/>
+      <stop offset="100%" stop-color="#FF5722" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="beam3_light" x1="50%" y1="50%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FF5722"/>
+      <stop offset="100%" stop-color="#FF5722" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <polygon points="128,128 0,30 30,0" fill="url(#beam1_light)" opacity="0.95" />
+  <polygon points="128,128 256,70 256,186" fill="url(#beam2_light)" opacity="0.95" />
+  <polygon points="128,128 60,256 0,210" fill="url(#beam3_light)" opacity="0.95" />
+
+  <polygon points="128,48 197.28,88 197.28,168 128,208 58.72,168 58.72,88" fill="none" stroke="#1F2937" stroke-width="6" />
+  <circle cx="128" cy="128" r="30" fill="none" stroke="#FF5722" stroke-width="3" opacity="0.7" stroke-dasharray="6 6" />
+  <circle cx="128" cy="128" r="12" fill="#111827" />
+</svg>

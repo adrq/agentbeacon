@@ -71,18 +71,22 @@ function getProcessor() {
 const renderCache = new Map<string, string>();
 const CACHE_MAX = 500;
 
-export async function renderMarkdown(text: string): Promise<string> {
-  const cached = renderCache.get(text);
-  if (cached !== undefined) return cached;
+export async function renderMarkdown(text: string, skipCache = false): Promise<string> {
+  if (!skipCache) {
+    const cached = renderCache.get(text);
+    if (cached !== undefined) return cached;
+  }
 
   const processor = await getProcessor();
   const result = String(await processor.process(text));
 
-  if (renderCache.size >= CACHE_MAX) {
-    const firstKey = renderCache.keys().next().value!;
-    renderCache.delete(firstKey);
+  if (!skipCache) {
+    if (renderCache.size >= CACHE_MAX) {
+      const firstKey = renderCache.keys().next().value!;
+      renderCache.delete(firstKey);
+    }
+    renderCache.set(text, result);
   }
-  renderCache.set(text, result);
 
   return result;
 }

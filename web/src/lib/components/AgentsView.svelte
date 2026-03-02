@@ -241,7 +241,7 @@
   }
 
   .empty-title {
-    font-size: 1rem;
+    font-size: 0.875rem;
     font-weight: 600;
     color: hsl(var(--foreground));
   }
@@ -268,7 +268,7 @@
   }
 
   .template-label {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
   }
 
@@ -277,7 +277,7 @@
     font-size: 0.6875rem;
     font-weight: 500;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: hsl(var(--muted-foreground));
     cursor: pointer;
@@ -325,7 +325,7 @@
     font-size: 0.625rem;
     font-weight: 600;
     padding: 0.0625rem 0.375rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--muted) / 0.5);
     color: hsl(var(--muted-foreground));
     text-transform: uppercase;
@@ -336,13 +336,13 @@
     font-size: 0.625rem;
     font-weight: 500;
     padding: 0.0625rem 0.375rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
   }
 
   .card-description {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
   }
 
@@ -373,7 +373,7 @@
 
   .modal-error {
     padding: 0.375rem 0.625rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
     font-size: 0.8125rem;

@@ -171,7 +171,7 @@
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));
     font-size: 0.8125rem;
-    border-radius: 0 0 0.375rem 0;
+    border-radius: 0 0 var(--radius) 0;
     text-decoration: none;
   }
 

@@ -364,3 +364,13 @@ def test_is_special_command_recognizes_send_tool_stream():
     assert sc.is_special_command("SEND_TOOL_STREAM") is True
     assert sc.is_special_command("send_tool_stream") is True
     assert sc.is_special_command("  SEND_TOOL_STREAM  ") is True
+
+
+def test_is_special_command_recognizes_send_streaming_markdown():
+    """SEND_STREAMING_MARKDOWN is recognized as a special command."""
+    from agentbeacon.mock_agent.special_commands import SpecialCommands
+
+    sc = SpecialCommands()
+    assert sc.is_special_command("SEND_STREAMING_MARKDOWN") is True
+    assert sc.is_special_command("send_streaming_markdown") is True
+    assert sc.is_special_command("  SEND_STREAMING_MARKDOWN  ") is True

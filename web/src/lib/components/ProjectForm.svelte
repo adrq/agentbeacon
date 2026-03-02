@@ -156,7 +156,7 @@
     width: 100%;
     padding: 0.5rem 0.625rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     background: hsl(var(--background));
     color: hsl(var(--foreground));
     font-size: 0.8125rem;
@@ -171,7 +171,7 @@
 
   .modal-error {
     padding: 0.375rem 0.625rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
     font-size: 0.8125rem;
@@ -180,7 +180,7 @@
 
   .modal-warning {
     padding: 0.375rem 0.625rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--status-attention) / 0.1);
     color: hsl(var(--status-attention));
     font-size: 0.8125rem;

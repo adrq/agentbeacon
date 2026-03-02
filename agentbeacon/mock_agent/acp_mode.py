@@ -268,6 +268,7 @@ class ACPHandler:
                     "SEND_TOOL_CALL_UPDATE",
                     "SEND_TOOL_GROUP",
                     "SEND_TOOL_STREAM",
+                    "SEND_STREAMING_MARKDOWN",
                 ]
 
             stop_reason = "end_turn"
@@ -371,7 +372,14 @@ class ACPHandler:
 
             if special_commands.is_special_command(prompt_text):
                 if prompt_text.strip().upper() == "STREAM_CHUNKS":
-                    for i in range(3):
+                    chunks = [
+                        "# Analysis Results\n\n",
+                        "Based on my review of the codebase, here are the key findings:\n\n",
+                        "1. **Architecture** — The system uses a clean ",
+                        "event-driven architecture with SSE for real-time updates.\n",
+                        "2. **Performance** — Response times are within acceptable bounds.\n\n> Note: These results are preliminary.",
+                    ]
+                    for chunk in chunks:
                         notification = {
                             "jsonrpc": "2.0",
                             "method": "session/update",
@@ -381,7 +389,7 @@ class ACPHandler:
                                     "sessionUpdate": "agent_message_chunk",
                                     "content": {
                                         "type": "text",
-                                        "text": f"Chunk {i + 1}",
+                                        "text": chunk,
                                     },
                                 },
                             },
@@ -596,6 +604,37 @@ class ACPHandler:
                         },
                     }
                     print(json.dumps(notification2), flush=True)
+                    return
+                elif prompt_text.strip().upper() == "SEND_STREAMING_MARKDOWN":
+                    chunks = [
+                        "## Summary\n\n",
+                        "I've analyzed the **three main components**:\n\n",
+                        "```python\ndef calculate(x, y):\n",
+                        "    return x + y\n```\n\n",
+                        "The function above demonstrates the core pattern. ",
+                        "Key takeaways:\n- Clean interface\n- Type-safe\n- Well-tested\n",
+                    ]
+                    for chunk in chunks:
+                        if self.active_prompts.get(session_id, {}).get(
+                            "cancelled", False
+                        ):
+                            break
+                        notification = {
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "sessionId": session_id,
+                                "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": {
+                                        "type": "text",
+                                        "text": chunk,
+                                    },
+                                },
+                            },
+                        }
+                        print(json.dumps(notification), flush=True)
+                        await asyncio.sleep(0.1)
                     return
                 elif prompt_text.strip().upper() == "SEND_TOOL_STREAM":
                     sid = session_id[:8]

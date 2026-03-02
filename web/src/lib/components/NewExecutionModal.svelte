@@ -285,7 +285,7 @@
     width: 100%;
     padding: 0.5rem 0.625rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     background: hsl(var(--background));
     color: hsl(var(--foreground));
     font-size: 0.8125rem;
@@ -318,7 +318,7 @@
   .toggle-link {
     background: none;
     border: none;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--primary));
     cursor: pointer;
     padding: 0;
@@ -330,14 +330,14 @@
   }
 
   .validation-hint {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--status-attention));
     margin-bottom: 0.75rem;
   }
 
   .modal-error {
     padding: 0.375rem 0.625rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
     font-size: 0.8125rem;

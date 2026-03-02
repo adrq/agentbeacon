@@ -151,7 +151,7 @@
     border-radius: var(--radius);
     border: 1px solid hsl(var(--border));
     background: hsl(var(--muted) / 0.15);
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--foreground));
     cursor: pointer;
     text-align: left;
@@ -164,7 +164,7 @@
 
   .ts-icon {
     flex-shrink: 0;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
   }
 
@@ -238,10 +238,10 @@
 
   .ts-log-status {
     flex-shrink: 0;
-    font-size: 0.5625rem;
+    font-size: 0.625rem;
     font-weight: 600;
     padding: 0.0625rem 0.3125rem;
-    border-radius: 0.1875rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--muted) / 0.5);
     color: hsl(var(--muted-foreground));
     text-transform: uppercase;
@@ -267,7 +267,7 @@
     align-items: center;
     padding: 0.125rem 0.5rem;
     margin-bottom: 0.25rem;
-    border-radius: 0.75rem;
+    border-radius: var(--radius-lg);
     border: 1px solid hsl(var(--border));
     background: hsl(var(--muted) / 0.2);
     font-size: 0.625rem;

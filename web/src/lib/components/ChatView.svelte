@@ -60,7 +60,7 @@
   }
 
   $effect(() => {
-    const _len = parsed.length; // dependency: re-run when entries change
+    const _len = events.length; // dependency: triggers on every new event (including streaming chunks)
     if (shouldAutoScroll && scrollContainer) {
       tick().then(() => {
         if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
@@ -88,7 +88,7 @@
   }
 
   type ChatEntry =
-    | { type: 'agent'; text: string; agentLabel: string; time: string; key: string }
+    | { type: 'agent'; text: string; agentLabel: string; time: string; key: string; isStreaming: boolean }
     | { type: 'user'; text: string; time: string; key: string }
     | { type: 'state'; text: string; time: string; key: string }
     | { type: 'tool'; icon: string; text: string; time: string; key: string }
@@ -110,6 +110,7 @@
     const toolGroups = new Map<string, ToolGroupEntry>();
     const agentLabel = leadSession ? agentName(leadSession.agent_id) : 'Agent';
     let seq = 0;
+    let lastAgentSessionId: string | null = null;
 
     for (const ev of evs) {
       const time = formatTime(ev.created_at);
@@ -239,7 +240,13 @@
             if (msg.role === 'user') {
               entries.push({ type: 'user', text, time, key: `${ev.id}-${seq++}` });
             } else {
-              entries.push({ type: 'agent', text, agentLabel, time, key: `${ev.id}-${seq++}` });
+              const prevEntry = entries.length > 0 ? entries[entries.length - 1] : null;
+              if (prevEntry && prevEntry.type === 'agent' && prevEntry.agentLabel === agentLabel && ev.session_id === lastAgentSessionId) {
+                prevEntry.text += text;
+              } else {
+                entries.push({ type: 'agent', text, agentLabel, time, key: `${ev.id}-${seq++}`, isStreaming: false });
+                lastAgentSessionId = ev.session_id ?? null;
+              }
             }
           } else {
             const label = part.kind;
@@ -290,7 +297,20 @@
     return result;
   }
 
-  let parsed = $derived(groupToolStreams(parseEntries(events)));
+  let sessionIsActive = $derived(viewedSession?.status === 'working');
+
+  let parsed = $derived.by(() => {
+    const entries = groupToolStreams(parseEntries(events));
+    if (sessionIsActive) {
+      for (let i = entries.length - 1; i >= 0; i--) {
+        if (entries[i].type === 'agent') {
+          (entries[i] as { isStreaming: boolean }).isStreaming = true;
+          break;
+        }
+      }
+    }
+    return entries;
+  });
 </script>
 
 <div class="chat-container">
@@ -304,7 +324,7 @@
           <div class="chat-row agent-row">
             <div class="agent-prose">
               <div class="agent-prose-header">{entry.agentLabel}</div>
-              <div class="agent-prose-body"><Markdown text={entry.text} /></div>
+              <div class="agent-prose-body"><Markdown text={entry.text} streaming={entry.isStreaming} /></div>
               <div class="agent-prose-time">{entry.time}</div>
             </div>
           </div>
@@ -479,7 +499,7 @@
   .bubble {
     max-width: 75%;
     padding: 0.5rem 0.75rem;
-    border-radius: 0.75rem;
+    border-radius: var(--radius-lg);
     font-size: 0.8125rem;
     line-height: 1.5;
     word-break: break-word;
@@ -488,7 +508,7 @@
   .user-bubble {
     background: hsl(var(--primary) / 0.15);
     color: hsl(var(--foreground));
-    border-bottom-right-radius: 0.25rem;
+    border-bottom-right-radius: var(--radius-sm);
   }
 
   .user-bubble .bubble-text {
@@ -515,17 +535,17 @@
     align-items: center;
     gap: 0.375rem;
     padding: 0.25rem 0.625rem;
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     border: 1px solid hsl(var(--border));
     background: hsl(var(--muted) / 0.3);
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
     max-width: 85%;
   }
 
   .tool-icon {
     flex-shrink: 0;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--status-attention));
   }
 
@@ -546,10 +566,10 @@
     align-items: flex-start;
     gap: 0.375rem;
     padding: 0.375rem 0.625rem;
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     background: hsl(var(--status-working) / 0.08);
     border: 1px solid hsl(var(--status-working) / 0.2);
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--foreground));
     max-width: 85%;
   }
@@ -600,10 +620,10 @@
   .send-error {
     padding: 0.25rem 0.5rem;
     margin-bottom: 0.375rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
   }
 
   .chat-input-row {

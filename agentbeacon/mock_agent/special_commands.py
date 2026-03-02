@@ -34,6 +34,7 @@ class SpecialCommands:
             or text == "SEND_TOOL_CALL_UPDATE"
             or text == "SEND_TOOL_GROUP"
             or text == "SEND_TOOL_STREAM"
+            or text == "SEND_STREAMING_MARKDOWN"
         )
 
     def handle_command(self, text: str, stdio_mode: bool = False) -> Optional[str]:
@@ -118,6 +119,9 @@ class SpecialCommands:
         elif text == "SEND_TOOL_STREAM":
             return "SEND_TOOL_STREAM"
 
+        elif text == "SEND_STREAMING_MARKDOWN":
+            return "SEND_STREAMING_MARKDOWN"
+
         return None
 
     async def handle_command_async(self, text: str) -> Optional[str]:
@@ -191,5 +195,8 @@ class SpecialCommands:
 
         elif text == "SEND_TOOL_STREAM":
             return "SEND_TOOL_STREAM"
+
+        elif text == "SEND_STREAMING_MARKDOWN":
+            return "SEND_STREAMING_MARKDOWN"
 
         return None

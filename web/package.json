@@ -24,6 +24,8 @@
     "vite": "^7.1.2"
   },
   "dependencies": {
+    "@fontsource/geist": "^5.2.8",
+    "@fontsource/geist-mono": "^5.2.7",
     "@shikijs/rehype": "^3.22.0",
     "@tanstack/svelte-query": "^6.0.18",
     "bits-ui": "^2.15.8",

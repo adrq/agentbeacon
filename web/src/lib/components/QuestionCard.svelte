@@ -175,7 +175,7 @@
   .question-card {
     padding: 0.625rem 0.75rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     background: hsl(var(--card));
   }
 
@@ -197,7 +197,7 @@
   }
 
   .question-context {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
     line-height: 1.4;
     margin-bottom: 0.5rem;
@@ -221,7 +221,7 @@
     gap: 0.5rem;
     padding: 0.375rem 0.5rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: transparent;
     cursor: pointer;
     text-align: left;
@@ -268,7 +268,7 @@
 
   .option-label {
     display: block;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 600;
     color: hsl(var(--foreground));
   }
@@ -286,10 +286,10 @@
     margin-top: 0.25rem;
     padding: 0.375rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--background));
     color: hsl(var(--foreground));
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     resize: vertical;
     font-family: inherit;
   }

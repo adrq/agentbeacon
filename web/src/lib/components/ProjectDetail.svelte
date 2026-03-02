@@ -168,7 +168,7 @@
     font-size: 0.625rem;
     font-weight: 600;
     padding: 0.0625rem 0.375rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--primary) / 0.12);
     color: hsl(var(--primary));
     text-transform: uppercase;
@@ -196,7 +196,7 @@
   .info-label {
     flex-shrink: 0;
     width: 7rem;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 500;
     color: hsl(var(--muted-foreground));
   }
@@ -242,7 +242,7 @@
 
   .modal-error {
     padding: 0.375rem 0.625rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
     font-size: 0.8125rem;

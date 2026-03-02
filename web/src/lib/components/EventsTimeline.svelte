@@ -219,7 +219,7 @@
     margin-bottom: 0.125rem;
     font-size: 0.8125rem;
     line-height: 1.4;
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     background: hsl(var(--muted) / 0.25);
   }
 
@@ -248,7 +248,7 @@
     width: 1rem;
     text-align: center;
     flex-shrink: 0;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
   }
 
   .ev-icon.state-change { color: hsl(var(--muted-foreground)); }

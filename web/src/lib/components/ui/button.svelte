@@ -21,9 +21,9 @@
   };
 
   const sizes = {
-    sm: 'h-7 px-2 text-xs',
+    sm: 'h-7 px-2 text-[0.6875rem]',
     md: 'h-9 px-3 text-sm',
-    lg: 'h-11 px-5 text-base'
+    lg: 'h-11 px-5 text-[0.875rem]'
   };
 </script>
 

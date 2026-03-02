@@ -159,7 +159,7 @@
     margin: 0.5rem 0.75rem;
     padding: 0.625rem 0.75rem;
     border: 1.5px solid hsl(var(--status-attention) / 0.35);
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     background: hsl(var(--status-attention) / 0.10);
   }
 
@@ -196,10 +196,10 @@
   .banner-error {
     margin-top: 0.375rem;
     padding: 0.25rem 0.5rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
   }
 
   .banner-actions {
@@ -210,11 +210,11 @@
 
   .submit-btn {
     padding: 0.375rem 1rem;
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     border: none;
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 600;
     cursor: pointer;
     transition: opacity 0.15s;
@@ -232,10 +232,10 @@
   .submitted-banner {
     margin: 0.5rem 0.75rem;
     padding: 0.5rem 0.75rem;
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     background: hsl(var(--status-success) / 0.1);
     color: hsl(var(--status-success));
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 500;
     display: flex;
     align-items: center;

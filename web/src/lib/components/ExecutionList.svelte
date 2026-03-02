@@ -142,10 +142,10 @@
     width: 100%;
     padding: 0.375rem 0.5rem 0.375rem 1.75rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--background));
     color: hsl(var(--foreground));
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-family: inherit;
   }
 
@@ -171,7 +171,7 @@
     background: transparent;
     color: hsl(var(--muted-foreground));
     cursor: pointer;
-    border-radius: 0.125rem;
+    border-radius: var(--radius-sm);
   }
 
   .search-clear:hover {
@@ -192,10 +192,10 @@
     width: 100%;
     padding: 0.375rem 0.5rem;
     border: 1px solid hsl(var(--border));
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--background));
     color: hsl(var(--foreground));
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-family: inherit;
   }
 
@@ -211,7 +211,7 @@
     gap: 0.5rem;
     padding: 0.5rem 0.75rem;
     margin: 0.5rem;
-    border-radius: 0.375rem;
+    border-radius: var(--radius);
     background: hsl(var(--status-attention));
     color: hsl(var(--primary-foreground));
     font-size: 0.8125rem;

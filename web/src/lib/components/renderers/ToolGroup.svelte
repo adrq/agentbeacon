@@ -146,7 +146,7 @@
   }
 
   .tool-group-icon {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
     flex-shrink: 0;
   }
@@ -160,7 +160,7 @@
     font-size: 0.625rem;
     font-weight: 600;
     padding: 0.0625rem 0.375rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--muted) / 0.5);
     color: hsl(var(--muted-foreground));
     text-transform: uppercase;
@@ -193,7 +193,7 @@
 
   .tool-group-details {
     margin-top: 0.375rem;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
   }
 
   .tool-group-summary {
@@ -226,7 +226,7 @@
 
   .tool-pre {
     padding: 0.375rem 0.5rem;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     background: hsl(var(--muted) / 0.3);
     font-family: var(--font-mono);
     font-size: 0.6875rem;

@@ -93,7 +93,7 @@
     border: none;
     background: transparent;
     cursor: pointer;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     transition: background 0.1s;
     text-align: left;
     width: 100%;
@@ -107,7 +107,7 @@
     width: 1rem;
     text-align: center;
     flex-shrink: 0;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 600;
   }
 
