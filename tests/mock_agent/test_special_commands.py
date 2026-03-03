@@ -354,3 +354,13 @@ def test_is_special_command_recognizes_send_tool_group():
     assert sc.is_special_command("SEND_TOOL_GROUP") is True
     assert sc.is_special_command("send_tool_group") is True
     assert sc.is_special_command("  SEND_TOOL_GROUP  ") is True
+
+
+def test_is_special_command_recognizes_send_tool_stream():
+    """SEND_TOOL_STREAM is recognized as a special command."""
+    from agentbeacon.mock_agent.special_commands import SpecialCommands
+
+    sc = SpecialCommands()
+    assert sc.is_special_command("SEND_TOOL_STREAM") is True
+    assert sc.is_special_command("send_tool_stream") is True
+    assert sc.is_special_command("  SEND_TOOL_STREAM  ") is True

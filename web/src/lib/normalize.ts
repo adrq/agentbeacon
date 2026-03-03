@@ -80,7 +80,7 @@ function normalizeAcpPart(raw: Record<string, unknown>): NormalizedData {
         normalized: 'tool_call',
         toolCallId: (raw.toolCallId as string) ?? '',
         title: (raw.title as string) ?? '',
-        status: raw.status as string | undefined,
+        status: raw.status === 'in_progress' ? 'running' : (raw.status as string | undefined),
         kind: raw.kind as string | undefined,
         content: raw.content as unknown[] | undefined,
       };
@@ -89,7 +89,7 @@ function normalizeAcpPart(raw: Record<string, unknown>): NormalizedData {
         normalized: 'tool_call',
         toolCallId: (raw.toolCallId as string) ?? '',
         title: (raw.title as string) ?? '',
-        status: raw.status as string | undefined,
+        status: raw.status === 'in_progress' ? 'running' : (raw.status as string | undefined),
         content: raw.content as unknown[] | undefined,
       };
     case 'agent_thought_chunk':

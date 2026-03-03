@@ -6,6 +6,7 @@
   import { api } from '../api';
   import Markdown from './Markdown.svelte';
   import ToolGroup from './renderers/ToolGroup.svelte';
+  import ToolStream from './renderers/ToolStream.svelte';
   import ThinkingBlock from './renderers/ThinkingBlock.svelte';
   import DataFallback from './renderers/DataFallback.svelte';
   import ErrorPanel from './renderers/ErrorPanel.svelte';
@@ -92,6 +93,7 @@
     | { type: 'state'; text: string; time: string; key: string }
     | { type: 'tool'; icon: string; text: string; time: string; key: string }
     | { type: 'tool_group'; group: ToolGroupEntry; key: string }
+    | { type: 'tool_stream'; groups: ToolGroupEntry[]; live: boolean; key: string }
     | { type: 'thinking'; data: NormalizedThinking; time: string; key: string }
     | { type: 'data_fallback'; data: Record<string, unknown>; time: string; key: string }
     | { type: 'error'; message: string; stderr?: string; time: string; key: string }
@@ -254,7 +256,41 @@
     return entries;
   }
 
-  let parsed = $derived(parseEntries(events));
+  function groupToolStreams(entries: ChatEntry[]): ChatEntry[] {
+    const result: ChatEntry[] = [];
+    let i = 0;
+    while (i < entries.length) {
+      if (entries[i].type === 'tool_group') {
+        const runStart = i;
+        while (i < entries.length && entries[i].type === 'tool_group') i++;
+        const runLen = i - runStart;
+        if (runLen >= 3) {
+          const groups: ToolGroupEntry[] = [];
+          for (let j = runStart; j < i; j++) {
+            groups.push((entries[j] as { type: 'tool_group'; group: ToolGroupEntry; key: string }).group);
+          }
+          const isTrailing = i === entries.length;
+          const hasPending = groups.some(g =>
+            g.call.status !== 'completed' && g.call.status !== 'failed' && g.result == null
+          );
+          result.push({
+            type: 'tool_stream',
+            groups,
+            live: isTrailing && hasPending,
+            key: `stream-${(entries[runStart] as { key: string }).key}`,
+          });
+        } else {
+          for (let j = runStart; j < i; j++) result.push(entries[j]);
+        }
+      } else {
+        result.push(entries[i]);
+        i++;
+      }
+    }
+    return result;
+  }
+
+  let parsed = $derived(groupToolStreams(parseEntries(events)));
 </script>
 
 <div class="chat-container">
@@ -286,6 +322,10 @@
         {:else if entry.type === 'tool_group'}
           <div class="chat-row tool-row">
             <ToolGroup call={entry.group.call} result={entry.group.result} />
+          </div>
+        {:else if entry.type === 'tool_stream'}
+          <div class="chat-row tool-row">
+            <ToolStream groups={entry.groups} live={entry.live} />
           </div>
         {:else if entry.type === 'thinking'}
           <div class="chat-row tool-row">

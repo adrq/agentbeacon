@@ -267,6 +267,7 @@ class ACPHandler:
                     "SEND_THOUGHT",
                     "SEND_TOOL_CALL_UPDATE",
                     "SEND_TOOL_GROUP",
+                    "SEND_TOOL_STREAM",
                 ]
 
             stop_reason = "end_turn"
@@ -595,6 +596,72 @@ class ACPHandler:
                         },
                     }
                     print(json.dumps(notification2), flush=True)
+                    return
+                elif prompt_text.strip().upper() == "SEND_TOOL_STREAM":
+                    sid = session_id[:8]
+                    tools = [
+                        (
+                            f"ts-ws-1-{sid}",
+                            "WebSearch",
+                            'query: "Rust async patterns 2026"',
+                        ),
+                        (
+                            f"ts-ws-2-{sid}",
+                            "WebSearch",
+                            'query: "tokio vs async-std comparison"',
+                        ),
+                        (
+                            f"ts-ws-3-{sid}",
+                            "WebSearch",
+                            'query: "Rust error handling best practices"',
+                        ),
+                        (
+                            f"ts-ws-4-{sid}",
+                            "WebSearch",
+                            'query: "serde json performance tips"',
+                        ),
+                        (f"ts-wf-1-{sid}", "WebFetch", "https://docs.rs/tokio/latest"),
+                        (f"ts-rd-1-{sid}", "Read", "src/lib.rs"),
+                    ]
+                    for tool_id, title, content_text in tools:
+                        print(
+                            json.dumps(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "method": "session/update",
+                                    "params": {
+                                        "sessionId": session_id,
+                                        "update": {
+                                            "sessionUpdate": "tool_call",
+                                            "toolCallId": tool_id,
+                                            "title": title,
+                                            "content": [
+                                                {"type": "text", "text": content_text}
+                                            ],
+                                        },
+                                    },
+                                }
+                            ),
+                            flush=True,
+                        )
+                        print(
+                            json.dumps(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "method": "session/update",
+                                    "params": {
+                                        "sessionId": session_id,
+                                        "update": {
+                                            "sessionUpdate": "tool_call_update",
+                                            "toolCallId": tool_id,
+                                            "title": title,
+                                            "status": "completed",
+                                        },
+                                    },
+                                }
+                            ),
+                            flush=True,
+                        )
                     return
 
             if prompt_text in self.custom_responses:
