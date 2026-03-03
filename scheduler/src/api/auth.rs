@@ -25,6 +25,7 @@ pub struct McpSession {
     pub max_depth: i64,
     pub max_width: i64,
     pub status: String,
+    pub project_id: Option<String>,
 }
 
 /// Auth/session rejection per MCP spec:
@@ -128,6 +129,7 @@ impl FromRequestParts<AppState> for McpSession {
                 max_depth: execution.max_depth,
                 max_width: execution.max_width,
                 status: session.status,
+                project_id: execution.project_id.clone(),
             })
         }
     }

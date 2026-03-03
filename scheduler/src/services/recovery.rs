@@ -237,16 +237,68 @@ async fn recover_session(
 
     let recovery_message = "[recovery] Session resumed.";
 
+    // Fetch execution for project_id and max_depth
+    let execution = db::executions::get_by_id(pool, &session.execution_id).await?;
+
     // Build resume task_payload (superset of initial task_payload)
-    let agent_config: serde_json::Value =
-        serde_json::from_str(&agent.config).unwrap_or_else(|_| json!({}));
+    let mut agent_config: serde_json::Value =
+        serde_json::from_str::<serde_json::Value>(&agent.config)
+            .ok()
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| json!({}));
     let sandbox_config: serde_json::Value = agent
         .sandbox_config
         .as_ref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_else(|| json!({}));
 
-    let task_payload = json!({
+    // Rebuild environment briefing (mirrors execution.rs / mcp_tools.rs)
+    let depth = db::sessions::compute_depth(pool, &session.id, &session.execution_id).await?;
+    let role = if session.parent_session_id.is_none() {
+        crate::services::briefing::BriefingRole::RootLead
+    } else if depth >= execution.max_depth {
+        crate::services::briefing::BriefingRole::Leaf
+    } else {
+        crate::services::briefing::BriefingRole::SubLead
+    };
+    let hier_name =
+        crate::services::messaging::hierarchical_name_for_session(pool, &session.id).await?;
+    let parent_info = match &session.parent_session_id {
+        Some(pid) => crate::services::messaging::hierarchical_name_for_session(pool, pid).await?,
+        None => "user".to_string(),
+    };
+    let available_agents = if matches!(
+        role,
+        crate::services::briefing::BriefingRole::SubLead
+            | crate::services::briefing::BriefingRole::RootLead
+    ) {
+        db::execution_agents::list_agent_configs_for_execution(pool, &session.execution_id).await?
+    } else {
+        vec![]
+    };
+    let slug = if session.slug.is_empty() {
+        session.id[..session.id.len().min(8)].to_string()
+    } else {
+        session.slug.clone()
+    };
+    let briefing_ctx = crate::services::briefing::BriefingContext {
+        role,
+        slug,
+        hierarchical_name: hier_name,
+        agent_config_name: agent.name.clone(),
+        parent_info,
+        available_agents,
+    };
+    let briefing = crate::services::briefing::build_environment_briefing(&briefing_ctx);
+    let existing_prompt = agent_config
+        .get("system_prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    agent_config["system_prompt"] = serde_json::Value::String(
+        crate::services::briefing::prepend_briefing(&briefing, existing_prompt),
+    );
+
+    let mut task_payload = json!({
         "agent_id": agent.id,
         "driver": {
             "platform": agent.agent_type,
@@ -260,6 +312,9 @@ async fn recover_session(
         "cwd": cwd,
         "resumeSessionId": session.agent_session_id,
     });
+    if let Some(ref pid) = execution.project_id {
+        task_payload["project_id"] = serde_json::Value::String(pid.clone());
+    }
 
     task_queue
         .push(TaskAssignment {

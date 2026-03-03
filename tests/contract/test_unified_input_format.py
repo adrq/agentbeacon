@@ -103,6 +103,12 @@ def test_delegate_has_driver_object(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "test")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, agent_id),
+            )
+            conn.commit()
 
         # Claim lead session
         data = _worker_sync(ctx["url"])
@@ -139,6 +145,12 @@ def test_turn_complete_is_a2a(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "lead task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, agent_id),
+            )
+            conn.commit()
 
         # Claim lead
         data = _worker_sync(ctx["url"])

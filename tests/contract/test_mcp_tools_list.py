@@ -170,8 +170,16 @@ def test_tools_call_success_includes_is_error_false(test_database):
     """MCP spec: tool call results should include isError: false on success."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
-        seed_test_agent(ctx["db_url"], name="child-agent")
-        _, session_id = create_execution_via_api(ctx["url"], lead_agent_id, "test task")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
+        exec_id, session_id = create_execution_via_api(
+            ctx["url"], lead_agent_id, "test task"
+        )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         result = mcp_tools_call(
             ctx["url"],

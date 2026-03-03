@@ -122,6 +122,19 @@ async fn handle_delegate(
         )));
     }
 
+    // Validate agent is in this execution's pool
+    let pool_agent_ids =
+        db::execution_agents::list_by_execution(&state.db_pool, &auth.execution_id)
+            .await
+            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    if !pool_agent_ids.contains(&agent.id) {
+        return Err(JsonRpcError::invalid_params(&format!(
+            "agent '{}' is not available in this execution. \
+             Available agents can be listed via the execution's agent pool.",
+            agent_name
+        )));
+    }
+
     // Resolve child cwd: explicit > parent session's cwd
     let parent_session = db::sessions::get_by_id(&state.db_pool, &auth.session_id)
         .await
@@ -169,7 +182,7 @@ async fn handle_delegate(
         }
     }
 
-    let child_session_id = if let Some(existing_id) = resume_session_id {
+    let (child_session_id, child_slug) = if let Some(existing_id) = resume_session_id {
         // Resume existing session — verify it belongs to this execution and this lead
         let existing = db::sessions::get_by_id(&state.db_pool, existing_id)
             .await
@@ -196,7 +209,13 @@ async fn handle_delegate(
             .await
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
-        existing_id.to_string()
+        // Fallback for pre-migration sessions with empty slugs
+        let slug = if existing.slug.is_empty() {
+            existing_id[..existing_id.len().min(8)].to_string()
+        } else {
+            existing.slug.clone()
+        };
+        (existing_id.to_string(), slug)
     } else {
         // Atomic width-guarded creation with slug collision retry.
         let new_id = Uuid::new_v4().to_string();
@@ -248,16 +267,64 @@ async fn handle_delegate(
                 "create child session failed: slug collision after 3 retries",
             ));
         }
-        new_id
+        (new_id, slug)
     };
 
+    // Determine child's role based on depth
+    let child_depth = auth.depth + 1;
+    let child_role = if child_depth >= auth.max_depth {
+        crate::services::briefing::BriefingRole::Leaf
+    } else {
+        crate::services::briefing::BriefingRole::SubLead
+    };
+
+    // Compute parent's hierarchical name — O(depth), not O(N sessions)
+    let parent_hier_name =
+        crate::services::messaging::hierarchical_name_for_session(&state.db_pool, &auth.session_id)
+            .await
+            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+
+    let child_hier_name = format!("{parent_hier_name}/{child_slug}");
+
+    // Only fetch agent pool for roles that display the delegation section
+    // (a delegated child is never RootLead — only SubLead or Leaf)
+    let available_agents = if matches!(child_role, crate::services::briefing::BriefingRole::SubLead)
+    {
+        db::execution_agents::list_agent_configs_for_execution(&state.db_pool, &auth.execution_id)
+            .await
+            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?
+    } else {
+        vec![]
+    };
+
+    let briefing_ctx = crate::services::briefing::BriefingContext {
+        role: child_role,
+        slug: child_slug.clone(),
+        hierarchical_name: child_hier_name,
+        agent_config_name: agent.name.clone(),
+        parent_info: parent_hier_name,
+        available_agents,
+    };
+    let briefing = crate::services::briefing::build_environment_briefing(&briefing_ctx);
+
     // Parse agent config for task payload
-    let agent_config: JsonValue = serde_json::from_str(&agent.config).unwrap_or_else(|_| json!({}));
+    let mut agent_config: JsonValue = serde_json::from_str::<JsonValue>(&agent.config)
+        .ok()
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| json!({}));
     let sandbox_config: JsonValue = agent
         .sandbox_config
         .as_ref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(JsonValue::Null);
+
+    // Prepend briefing to existing system_prompt
+    let existing_prompt = agent_config
+        .get("system_prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let combined = crate::services::briefing::prepend_briefing(&briefing, existing_prompt);
+    agent_config["system_prompt"] = JsonValue::String(combined);
 
     // Build task payload and enqueue
     let mut task_payload = json!({
@@ -274,6 +341,9 @@ async fn handle_delegate(
     });
     if let Some(ref dir) = child_cwd {
         task_payload["cwd"] = JsonValue::String(dir.clone());
+    }
+    if let Some(ref pid) = auth.project_id {
+        task_payload["project_id"] = JsonValue::String(pid.clone());
     }
 
     state

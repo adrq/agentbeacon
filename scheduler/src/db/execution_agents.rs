@@ -39,6 +39,46 @@ pub async fn insert_batch(
     Ok(())
 }
 
+pub struct ExecutionAgentInfo {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+pub async fn list_agent_configs_for_execution(
+    pool: &DbPool,
+    execution_id: &str,
+) -> Result<Vec<ExecutionAgentInfo>, SchedulerError> {
+    let enabled_filter = if pool.is_postgres() {
+        "a.enabled = true"
+    } else {
+        "a.enabled = 1"
+    };
+    let sql = format!(
+        "SELECT a.name, a.description \
+         FROM execution_agents ea \
+         JOIN agents a ON ea.agent_id = a.id \
+         WHERE ea.execution_id = ? AND a.deleted_at IS NULL AND {enabled_filter} \
+         ORDER BY a.name"
+    );
+    let query = pool.prepare_query(&sql);
+
+    let rows = sqlx::query(&query)
+        .bind(execution_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("list agent configs for execution failed: {e}"))
+        })?;
+
+    Ok(rows
+        .iter()
+        .map(|r| ExecutionAgentInfo {
+            name: r.get::<String, _>("name"),
+            description: r.get("description"),
+        })
+        .collect())
+}
+
 pub async fn list_by_execution(
     pool: &DbPool,
     execution_id: &str,

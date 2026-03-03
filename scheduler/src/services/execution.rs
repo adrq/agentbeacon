@@ -341,7 +341,10 @@ async fn persist_and_enqueue(
     };
 
     // Build A2A task payload for worker dispatch
-    let agent_config: JsonValue = serde_json::from_str(&agent.config).unwrap_or_else(|_| json!({}));
+    let agent_config: JsonValue = serde_json::from_str::<JsonValue>(&agent.config)
+        .ok()
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| json!({}));
     let sandbox_config: JsonValue = agent
         .sandbox_config
         .as_ref()
@@ -354,7 +357,7 @@ async fn persist_and_enqueue(
         "parts": [{"kind": "text", "text": prompt}]
     });
 
-    let task_payload = json!({
+    let mut task_payload = json!({
         "agent_id": agent.id,
         "driver": {
             "platform": agent.agent_type,
@@ -364,10 +367,36 @@ async fn persist_and_enqueue(
         "message": a2a_message,
         "cwd": session_cwd,
     });
+    if let Some(pid) = project_id {
+        task_payload["project_id"] = JsonValue::String(pid.to_string());
+    }
 
     // Populate execution_agents junction before enqueue so the relationship
     // is committed before the worker can pick up the task.
     db::execution_agents::insert_batch(db_pool, execution_id, agent_ids).await?;
+
+    // Build environment briefing for the root lead session.
+    // Must happen after insert_batch so available agents can be queried.
+    let available_agents =
+        db::execution_agents::list_agent_configs_for_execution(db_pool, execution_id).await?;
+
+    let briefing_ctx = crate::services::briefing::BriefingContext {
+        role: crate::services::briefing::BriefingRole::RootLead,
+        slug: slug.clone(),
+        hierarchical_name: slug.clone(),
+        agent_config_name: agent.name.clone(),
+        parent_info: "user".to_string(),
+        available_agents,
+    };
+    let briefing = crate::services::briefing::build_environment_briefing(&briefing_ctx);
+
+    let existing_prompt = task_payload
+        .get("agent_config")
+        .and_then(|c| c.get("system_prompt"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let combined = crate::services::briefing::prepend_briefing(&briefing, existing_prompt);
+    task_payload["agent_config"]["system_prompt"] = JsonValue::String(combined);
 
     // Fetch the created execution before enqueue — if this read fails,
     // cleanup is safe because nothing has been queued yet.

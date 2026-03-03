@@ -117,7 +117,7 @@ async function main(): Promise<void> {
         cwd: cmd.cwd,
         permissionMode: "bypassPermissions" as const,
         allowDangerouslySkipPermissions: true,
-        settingSources: [],
+        settingSources: ["project"],
         stderr: (data: string) => process.stderr.write(data),
       };
 
@@ -125,7 +125,13 @@ async function main(): Promise<void> {
       if (cmd.model) options.model = cmd.model;
       if (cmd.maxTurns != null) options.maxTurns = cmd.maxTurns;
       if (cmd.maxBudgetUsd != null) options.maxBudgetUsd = cmd.maxBudgetUsd;
-      if (cmd.systemPrompt) options.systemPrompt = cmd.systemPrompt;
+      if (cmd.systemPrompt) {
+        options.systemPrompt = {
+          type: "preset",
+          preset: "claude_code",
+          append: cmd.systemPrompt,
+        };
+      }
       if (cmd.resumeSessionId) options.resume = cmd.resumeSessionId;
       options.includePartialMessages = true;
 

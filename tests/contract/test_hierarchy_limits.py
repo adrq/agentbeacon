@@ -198,11 +198,17 @@ def test_delegate_creates_child_at_correct_depth(test_database):
     """Delegated child has depth = parent depth + 1."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
-        seed_test_agent(ctx["db_url"], name="child-agent")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
 
-        _, lead_session_id = create_execution_via_api(
+        exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "test task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         result = mcp_tools_call(
             ctx["url"],
@@ -222,11 +228,17 @@ def test_delegate_child_at_max_depth_is_leaf(test_database):
     """Child at max_depth gets empty tool list (leaf)."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
-        seed_test_agent(ctx["db_url"], name="child-agent")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
 
         exec_id, lead_id = _create_execution_with_limits(
             ctx, agent_id, "test task", max_depth=1
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         result = mcp_tools_call(
             ctx["url"],
@@ -249,11 +261,17 @@ def test_delegate_rejected_at_max_width(test_database):
     """Agent with max_width active children cannot delegate."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
-        seed_test_agent(ctx["db_url"], name="child-agent")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
 
         exec_id, lead_id = _create_execution_with_limits(
             ctx, agent_id, "test task", max_width=1
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         # First delegation succeeds
         result = mcp_tools_call(
@@ -283,11 +301,17 @@ def test_delegate_succeeds_after_releasing_child(test_database):
     """After releasing a child, agent can delegate again (width freed)."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
-        seed_test_agent(ctx["db_url"], name="child-agent")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
 
         exec_id, lead_id = _create_execution_with_limits(
             ctx, agent_id, "test task", max_width=1
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         # Delegate first child
         result = mcp_tools_call(
@@ -324,11 +348,17 @@ def test_max_width_counts_only_active_children(test_database):
     """Completed/failed/canceled children don't count toward width."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
-        seed_test_agent(ctx["db_url"], name="child-agent")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
 
         exec_id, lead_id = _create_execution_with_limits(
             ctx, agent_id, "test task", max_width=1
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         # Insert a completed child (should not count toward width)
         _create_child_session(ctx, lead_id, exec_id, agent_id, status="completed")

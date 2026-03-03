@@ -269,6 +269,11 @@ async fn run_session(
                 .to_string()
         });
 
+    let project_id = task_payload
+        .get("project_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     let config = SessionConfig {
         session_id: session_id.to_string(),
         execution_id: initial_task.execution_id.clone(),
@@ -280,6 +285,7 @@ async fn run_session(
         node_path: args.node_path.clone(),
         executors_dir: args.executors_dir.clone(),
         inactivity_timeout: args.inactivity_timeout,
+        project_id,
     };
 
     // Start executor

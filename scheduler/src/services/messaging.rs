@@ -221,6 +221,33 @@ pub async fn compute_hierarchical_names(
     Ok(result)
 }
 
+/// Compute hierarchical name for a single session by walking its ancestor chain.
+/// O(depth) — only fetches ancestors, not all sessions.
+pub async fn hierarchical_name_for_session(
+    db_pool: &DbPool,
+    session_id: &str,
+) -> Result<String, SchedulerError> {
+    let mut path_parts = Vec::new();
+    let mut current_id = session_id.to_string();
+
+    // Depth guard: max 20 hops (well beyond any practical hierarchy)
+    for _ in 0..20 {
+        let session = db::sessions::get_by_id(db_pool, &current_id).await?;
+        let slug = if session.slug.is_empty() {
+            session.id[..session.id.len().min(8)].to_string()
+        } else {
+            session.slug.clone()
+        };
+        path_parts.push(slug);
+        match session.parent_session_id {
+            Some(pid) => current_id = pid,
+            None => break,
+        }
+    }
+    path_parts.reverse();
+    Ok(path_parts.join("/"))
+}
+
 /// Resolve recipient + get sender name in one compute_hierarchical_names call.
 pub async fn resolve_recipient_and_sender(
     db_pool: &DbPool,

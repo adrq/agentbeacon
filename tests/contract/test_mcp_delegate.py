@@ -19,11 +19,17 @@ from tests.testhelpers import (
 def test_delegate_creates_child_session(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
-        seed_test_agent(ctx["db_url"], name="child-agent")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
 
-        _, lead_session_id = create_execution_via_api(
+        exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "coordinate task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         result = mcp_tools_call(
             ctx["url"],
@@ -49,6 +55,12 @@ def test_delegate_child_session_has_correct_parent(test_database):
         exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "coordinate task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         result = mcp_tools_call(
             ctx["url"],
@@ -77,11 +89,17 @@ def test_delegate_child_session_has_correct_parent(test_database):
 def test_delegate_queues_task(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
-        seed_test_agent(ctx["db_url"], name="child-agent")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
 
-        _, lead_session_id = create_execution_via_api(
+        exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "coordinate task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         result = mcp_tools_call(
             ctx["url"],
@@ -103,11 +121,17 @@ def test_delegate_queues_task(test_database):
 def test_delegate_with_resume_session_id(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
-        seed_test_agent(ctx["db_url"], name="child-agent")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
 
-        _, lead_session_id = create_execution_via_api(
+        exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "coordinate task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         # First delegation
         result1 = mcp_tools_call(

@@ -77,6 +77,7 @@ pub struct SessionConfig {
     pub executors_dir: Option<String>,
     /// Max time with no agent output during an active turn before killing it
     pub inactivity_timeout: Duration,
+    pub project_id: Option<String>,
 }
 
 pub struct TurnResult {

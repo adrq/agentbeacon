@@ -94,13 +94,19 @@ def test_e2e_delegate_end_turn(test_database):
         lead_id = seed_acp_scenario_agent(
             ctx["db_url"], "lead", "delegate", delegate_to="child-agent"
         )
-        seed_acp_scenario_agent(ctx["db_url"], "child-agent", "end-turn")
+        child_id = seed_acp_scenario_agent(ctx["db_url"], "child-agent", "end-turn")
 
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"],
             lead_id,
             "Coordinate a task",
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_id),
+            )
+            conn.commit()
 
         worker1 = start_worker(ctx["url"], interval="500ms")
         worker2 = start_worker(ctx["url"], interval="500ms")
@@ -161,13 +167,19 @@ def test_e2e_delegate_multiple(test_database):
             delegate_to="child-agent",
             delegate_count=2,
         )
-        seed_acp_scenario_agent(ctx["db_url"], "child-agent", "end-turn")
+        child_id = seed_acp_scenario_agent(ctx["db_url"], "child-agent", "end-turn")
 
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"],
             lead_id,
             "Coordinate multiple tasks",
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_id),
+            )
+            conn.commit()
 
         worker1 = start_worker(ctx["url"], interval="500ms")
         worker2 = start_worker(ctx["url"], interval="500ms")
@@ -220,13 +232,19 @@ def test_e2e_escalate_round_trip(test_database):
         lead_id = seed_acp_scenario_agent(
             ctx["db_url"], "lead", "delegate-ask", delegate_to="child-agent"
         )
-        seed_acp_scenario_agent(ctx["db_url"], "child-agent", "end-turn")
+        child_id = seed_acp_scenario_agent(ctx["db_url"], "child-agent", "end-turn")
 
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"],
             lead_id,
             "Coordinate then ask",
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_id),
+            )
+            conn.commit()
 
         worker1 = start_worker(ctx["url"], interval="500ms")
         worker2 = start_worker(ctx["url"], interval="500ms")

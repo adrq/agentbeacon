@@ -161,10 +161,16 @@ def test_send_lateral_message_wakes_session(test_database):
     """Agent message to input-required session transitions to working."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
         exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         child_session_id = _delegate(ctx, lead_session_id, "child")
         child_name = _get_child_hier_name(ctx, exec_id, child_session_id)
@@ -189,10 +195,16 @@ def test_send_lateral_message_to_working_session(test_database):
     """Agent message to working session queued (no transition)."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
         exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         child_session_id = _delegate(ctx, lead_session_id, "child")
         child_name = _get_child_hier_name(ctx, exec_id, child_session_id)
@@ -209,10 +221,16 @@ def test_send_lateral_message_to_terminal_session_rejected(test_database):
     """Agent message to completed session returns 409."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
         exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         child_session_id = _delegate(ctx, lead_session_id, "child")
         child_name = _get_child_hier_name(ctx, exec_id, child_session_id)
@@ -269,10 +287,16 @@ def test_send_lateral_message_records_event(test_database):
     """Lateral message creates event with sender data part on recipient session."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
         exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         child_session_id = _delegate(ctx, lead_session_id, "child")
         child_name = _get_child_hier_name(ctx, exec_id, child_session_id)
@@ -306,10 +330,16 @@ def test_send_lateral_message_delivery_payload_format(test_database):
     """Verify task_queue entry has correct A2A envelope with sender header."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
         exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         child_session_id = _delegate(ctx, lead_session_id, "child")
         child_name = _get_child_hier_name(ctx, exec_id, child_session_id)
@@ -343,10 +373,16 @@ def test_send_lateral_message_to_submitted_session_rejected(test_database):
     """Message to submitted session (not yet started) returns 409."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
         exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         child_session_id = _delegate(ctx, lead_session_id, "child")
         child_name = _get_child_hier_name(ctx, exec_id, child_session_id)
@@ -378,10 +414,16 @@ def test_send_lateral_message_sender_uses_hierarchical_name(test_database):
     """Sender info in event uses hierarchical name, not just agent config name."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
         exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         child_session_id = _delegate(ctx, lead_session_id, "child")
         child_name = _get_child_hier_name(ctx, exec_id, child_session_id)
@@ -506,10 +548,16 @@ def test_get_messages_includes_sender_info(test_database):
     """Agent messages include sender name and session_id."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
         exec_id, lead_session_id = create_execution_via_api(
             ctx["url"], lead_agent_id, "task"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
 
         child_session_id = _delegate(ctx, lead_session_id, "child")
         child_name = _get_child_hier_name(ctx, exec_id, child_session_id)
@@ -591,10 +639,20 @@ def test_discovery_hierarchical_names(test_database):
     """Hierarchical names are slug-based paths: root-slug/child-slug/grandchild-slug."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="mid")
-        seed_test_agent(ctx["db_url"], name="leaf")
+        mid_agent_id = seed_test_agent(ctx["db_url"], name="mid")
+        leaf_agent_id = seed_test_agent(ctx["db_url"], name="leaf")
 
         exec_id, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, mid_agent_id),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, leaf_agent_id),
+            )
+            conn.commit()
         mid_session = _delegate(ctx, lead_session, "mid")
         leaf_session = _delegate(ctx, mid_session, "leaf")
 
@@ -623,9 +681,15 @@ def test_discovery_slugs_unique_among_siblings(test_database):
     """Two siblings of the same parent get distinct auto-generated slugs."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="worker")
+        worker_agent_id = seed_test_agent(ctx["db_url"], name="worker")
 
         exec_id, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, worker_agent_id),
+            )
+            conn.commit()
         child1 = _delegate(ctx, lead_session, "worker", prompt="task 1")
         child2 = _delegate(ctx, lead_session, "worker", prompt="task 2")
 
@@ -645,6 +709,12 @@ def test_discovery_same_agent_different_slugs(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="worker")
 
         exec_id, root_session = create_execution_via_api(ctx["url"], agent_id, "task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, agent_id),
+            )
+            conn.commit()
         child_session = _delegate(ctx, root_session, "worker")
 
         resp = _get_discovery(ctx, exec_id)
@@ -666,9 +736,15 @@ def test_discovery_includes_terminal_sessions(test_database):
     """Terminal sessions appear in discovery (with terminal status)."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
 
         exec_id, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
         child_session = _delegate(ctx, lead_session, "child")
         _set_session_status(ctx["db_url"], child_session, "completed")
 
@@ -684,9 +760,15 @@ def test_discovery_parent_name_populated(test_database):
     """Each entry's parent_name matches parent's hierarchical name."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="child")
+        child_agent_id = seed_test_agent(ctx["db_url"], name="child")
 
         exec_id, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_agent_id),
+            )
+            conn.commit()
         child_session = _delegate(ctx, lead_session, "child")
 
         resp = _get_discovery(ctx, exec_id)
@@ -709,6 +791,12 @@ def test_turn_complete_wakes_parent(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="agent")
         exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "lead task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, agent_id),
+            )
+            conn.commit()
 
         # Claim lead session
         data = _worker_sync(ctx["url"])
@@ -767,9 +855,15 @@ def test_slugs_unique_among_siblings(test_database):
     """Two children of same parent get distinct slugs (DB-level check)."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="worker")
+        worker_agent_id = seed_test_agent(ctx["db_url"], name="worker")
 
-        _, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        exec_id, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, worker_agent_id),
+            )
+            conn.commit()
         child1 = _delegate(ctx, lead_session, "worker", prompt="t1")
         child2 = _delegate(ctx, lead_session, "worker", prompt="t2")
 
@@ -846,9 +940,15 @@ def test_sibling_slug_includes_terminal(test_database):
     """Completed sibling's slug is still reserved — new sibling cannot reuse it."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="worker")
+        worker_agent_id = seed_test_agent(ctx["db_url"], name="worker")
 
-        _, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        exec_id, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, worker_agent_id),
+            )
+            conn.commit()
         child1 = _delegate(ctx, lead_session, "worker", prompt="t1")
 
         # Get child1's slug
@@ -878,9 +978,15 @@ def test_slug_collision_retry_on_delegate(test_database):
     """Slug collision from DB constraint triggers retry, not 500."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_id = seed_test_agent(ctx["db_url"], name="lead")
-        seed_test_agent(ctx["db_url"], name="worker")
+        worker_agent_id = seed_test_agent(ctx["db_url"], name="worker")
 
-        _, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        exec_id, lead_session = create_execution_via_api(ctx["url"], lead_id, "task")
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, worker_agent_id),
+            )
+            conn.commit()
 
         # Create many children to increase slug collision probability
         # (not a probabilistic test — we just verify the endpoint doesn't 500)

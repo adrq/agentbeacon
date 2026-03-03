@@ -39,6 +39,12 @@ def _setup_parent_child(ctx, agent_name="test-agent"):
     """
     agent_id = seed_test_agent(ctx["db_url"], name=agent_name)
     exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "lead task")
+    with db_conn(ctx["db_url"]) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+            (exec_id, agent_id),
+        )
+        conn.commit()
 
     # Claim lead session
     data = _worker_sync(ctx["url"])

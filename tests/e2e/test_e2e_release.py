@@ -90,11 +90,17 @@ def test_e2e_delegate_release(test_database):
         lead_id = seed_acp_scenario_agent(
             ctx["db_url"], "lead", "delegate-release", delegate_to="idle-child"
         )
-        seed_acp_scenario_agent(ctx["db_url"], "idle-child", "end-turn")
+        child_id = seed_acp_scenario_agent(ctx["db_url"], "idle-child", "end-turn")
 
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"], lead_id, "Delegate then release"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_id),
+            )
+            conn.commit()
 
         worker1 = start_worker(ctx["url"], interval="500ms")
         worker2 = start_worker(ctx["url"], interval="500ms")
@@ -162,11 +168,17 @@ def test_e2e_execution_cancel_cascades_delegation_tree(test_database):
         lead_id = seed_acp_scenario_agent(
             ctx["db_url"], "lead", "delegate", delegate_to="idle-child"
         )
-        seed_acp_scenario_agent(ctx["db_url"], "idle-child", "end-turn")
+        child_id = seed_acp_scenario_agent(ctx["db_url"], "idle-child", "end-turn")
 
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"], lead_id, "Cancel tree test"
         )
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_agents (execution_id, agent_id) VALUES (?, ?)",
+                (exec_id, child_id),
+            )
+            conn.commit()
 
         worker1 = start_worker(ctx["url"], interval="500ms")
         worker2 = start_worker(ctx["url"], interval="500ms")

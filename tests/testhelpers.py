@@ -1319,6 +1319,10 @@ class _PgConnWrapper:
 
     def execute(self, sql, params=None):
         sql = sql.replace("?", "%s")
+        # SQLite's INSERT OR IGNORE → PostgreSQL's INSERT ... ON CONFLICT DO NOTHING
+        if "INSERT OR IGNORE INTO" in sql:
+            sql = sql.replace("INSERT OR IGNORE INTO", "INSERT INTO", 1)
+            sql = sql.rstrip(";") + " ON CONFLICT DO NOTHING"
         cur = self._conn.cursor()
         cur.execute(sql, params)
         return cur

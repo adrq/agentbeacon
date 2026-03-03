@@ -1,3 +1,4 @@
+pub mod briefing;
 pub mod cascade;
 pub mod crash;
 pub mod execution;

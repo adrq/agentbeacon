@@ -187,6 +187,16 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
         }
     }
 
+    // Inject AgentBeacon environment variables for REST API access
+    cmd.env("AGENTBEACON_SESSION_ID", &config.session_id);
+    cmd.env("AGENTBEACON_API_BASE", &config.scheduler_url);
+    cmd.env("AGENTBEACON_EXECUTION_ID", &config.execution_id);
+    if let Some(ref pid) = config.project_id {
+        cmd.env("AGENTBEACON_PROJECT_ID", pid);
+    } else {
+        cmd.env_remove("AGENTBEACON_PROJECT_ID");
+    }
+
     let mut child = cmd.spawn().with_context(|| {
         format!(
             "failed to spawn {} executor: {node_path} {script_path}",
@@ -263,7 +273,7 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
     // Build MCP servers config
     let mcp_url = format!("{}/mcp", config.scheduler_url.trim_end_matches('/'));
     let mcp_servers = serde_json::json!({
-        "beacon": {
+        "agentbeacon": {
             "type": "http",
             "url": mcp_url,
             "headers": {
@@ -680,7 +690,7 @@ mod tests {
 
     #[test]
     fn test_parse_init_event() {
-        let json_str = r#"{"type":"init","sessionId":"abc-123","mcpServers":[{"name":"beacon","status":"connected"}]}"#;
+        let json_str = r#"{"type":"init","sessionId":"abc-123","mcpServers":[{"name":"agentbeacon","status":"connected"}]}"#;
         let value: serde_json::Value = serde_json::from_str(json_str).unwrap();
         let init: InitEvent = serde_json::from_value(value).unwrap();
         assert_eq!(init.session_id, "abc-123");
@@ -828,7 +838,7 @@ mod tests {
             prompt: "Hello".into(),
             cwd: "/workspace".into(),
             mcp_servers: Some(
-                json!({"beacon": {"type": "http", "url": "http://localhost:9456/mcp"}}),
+                json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}}),
             ),
             model: Some("claude-sonnet-4-5-20250929".into()),
             max_turns: Some(50),
@@ -857,7 +867,7 @@ mod tests {
             prompt: "Fix the tests".into(),
             cwd: "/workspace".into(),
             mcp_servers: Some(
-                json!({"beacon": {"type": "http", "url": "http://localhost:9456/mcp"}}),
+                json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}}),
             ),
             model: Some("gpt-5".into()),
             system_prompt: None,
@@ -889,7 +899,7 @@ mod tests {
             max_budget_usd: None,
             system_prompt: None,
         });
-        let mcp = json!({"beacon": {"type": "http", "url": "http://localhost:9456/mcp"}});
+        let mcp = json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}});
         let cmd = build_start_command("hello".into(), "/workspace", &mcp, &config, None);
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
