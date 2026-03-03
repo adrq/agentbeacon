@@ -21,6 +21,14 @@ type MockSessionEvent =
   | {
       type: "session.error";
       data: { errorType: string; message: string };
+    }
+  | {
+      type: "assistant.message_delta";
+      data: {
+        messageId?: string;
+        deltaContent: string;
+        totalResponseSizeBytes?: number;
+      };
     };
 
 type MockEventType = MockSessionEvent["type"];
@@ -136,6 +144,16 @@ class MockCopilotSession {
       data: { toolCallId: "call_001" },
     });
 
+    // Streaming deltas before flush
+    this.dispatch({
+      type: "assistant.message_delta",
+      data: { deltaContent: "Found test files" },
+    });
+    this.dispatch({
+      type: "assistant.message_delta",
+      data: { deltaContent: " in /workspace/tests/." },
+    });
+
     // Flush group 1: executor accumulates thinking + tool_use, then flushes on assistant.message
     this.dispatch({
       type: "assistant.message",
@@ -170,6 +188,16 @@ class MockCopilotSession {
       "4 passed in 0.12s",
       "```",
     ].join("\n");
+
+    // Streaming deltas before flush
+    this.dispatch({
+      type: "assistant.message_delta",
+      data: { deltaContent: "Fixed the failing" },
+    });
+    this.dispatch({
+      type: "assistant.message_delta",
+      data: { deltaContent: " test by implementing port validation." },
+    });
 
     // Flush group 2
     this.dispatch({
@@ -208,6 +236,13 @@ export class CopilotClient {
   async start(): Promise<void> {}
 
   async createSession(
+    _config?: Record<string, unknown>,
+  ): Promise<MockCopilotSession> {
+    return new MockCopilotSession();
+  }
+
+  async resumeSession(
+    _sessionId: string,
     _config?: Record<string, unknown>,
   ): Promise<MockCopilotSession> {
     return new MockCopilotSession();

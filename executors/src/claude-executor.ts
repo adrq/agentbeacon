@@ -127,6 +127,7 @@ async function main(): Promise<void> {
       if (cmd.maxBudgetUsd != null) options.maxBudgetUsd = cmd.maxBudgetUsd;
       if (cmd.systemPrompt) options.systemPrompt = cmd.systemPrompt;
       if (cmd.resumeSessionId) options.resume = cmd.resumeSessionId;
+      options.includePartialMessages = true;
 
       const q = query({
         prompt: promptStream(cmd, sessionGeneration),
@@ -197,8 +198,30 @@ async function main(): Promise<void> {
             resultEvent.errors = m.errors;
           }
           emit(resultEvent as unknown as Event);
+        } else if (msg.type === "stream_event") {
+          const m = msg as unknown as Record<string, unknown>;
+          const event = m.event as Record<string, unknown> | undefined;
+          if (
+            event &&
+            event.type === "content_block_delta" &&
+            typeof event.delta === "object" &&
+            event.delta !== null
+          ) {
+            const delta = event.delta as Record<string, unknown>;
+            if (delta.type === "text_delta" && typeof delta.text === "string") {
+              emit({
+                type: "message",
+                role: "assistant",
+                content: [{ type: "text_delta", text: delta.text }],
+              });
+            }
+          } else if (event) {
+            process.stderr.write(
+              `[claude] ignoring non-text stream_event: ${JSON.stringify(event.type ?? "unknown")}\n`,
+            );
+          }
         }
-        // Silently skip: user replay, stream_event, compact_boundary
+        // Silently skip: user replay, compact_boundary
       }
     } catch (e: unknown) {
       sessionGeneration++;

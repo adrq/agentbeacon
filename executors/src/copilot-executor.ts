@@ -177,6 +177,20 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       },
     );
 
+    session.on(
+      "assistant.message_delta",
+      (event: SessionEventPayload<"assistant.message_delta">) => {
+        const text = event.data.deltaContent;
+        if (typeof text === "string") {
+          emit({
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text_delta", text }],
+          });
+        }
+      },
+    );
+
     // Handle session errors — unknown/untyped errors are fatal,
     // only coded errors matching known recoverable patterns are logged.
     session.on(

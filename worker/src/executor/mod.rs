@@ -1,6 +1,5 @@
 pub mod acp;
-pub mod claude;
-pub mod copilot;
+pub(crate) mod sdk;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -134,7 +133,7 @@ pub struct ExecutorHandle {
 pub fn content_block_to_part(item: &serde_json::Value) -> Option<serde_json::Value> {
     let block_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("text");
     match block_type {
-        "text" => {
+        "text" | "text_delta" => {
             let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("");
             if text.is_empty() {
                 return None;
@@ -186,8 +185,8 @@ pub(crate) fn extract_prompt_text(task_payload: &serde_json::Value) -> Result<St
 pub async fn start_executor(config: SessionConfig) -> Result<ExecutorHandle> {
     match config.agent_type.as_str() {
         "acp" => acp::start(config).await,
-        "claude_sdk" => claude::start(config).await,
-        "copilot_sdk" => copilot::start(config).await,
+        "claude_sdk" => sdk::start(sdk::SdkKind::Claude, config).await,
+        "copilot_sdk" => sdk::start(sdk::SdkKind::Copilot, config).await,
         other => Err(anyhow::anyhow!("unsupported agent_type: {other}")),
     }
 }
@@ -333,6 +332,28 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["kind"], "text");
         assert_eq!(parts[1]["kind"], "data");
+    }
+
+    #[test]
+    fn test_error_kind_as_str() {
+        assert_eq!(ErrorKind::ExecutorFailed.as_str(), "executor_failed");
+        assert_eq!(ErrorKind::Cancelled.as_str(), "cancelled");
+        assert_eq!(ErrorKind::BudgetExceeded.as_str(), "budget_exceeded");
+        assert_eq!(ErrorKind::MaxTurns.as_str(), "max_turns");
+    }
+
+    #[test]
+    fn test_text_delta_block_becomes_kind_text() {
+        let block = serde_json::json!({"type": "text_delta", "text": "partial chunk"});
+        let part = content_block_to_part(&block).unwrap();
+        assert_eq!(part["kind"], "text");
+        assert_eq!(part["text"], "partial chunk");
+    }
+
+    #[test]
+    fn test_empty_text_delta_returns_none() {
+        let block = serde_json::json!({"type": "text_delta", "text": ""});
+        assert!(content_block_to_part(&block).is_none());
     }
 
     // --- extract_prompt_text tests ---

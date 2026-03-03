@@ -33,6 +33,14 @@ type MockSDKMessage =
       total_cost_usd?: number;
       num_turns?: number;
       duration_ms?: number;
+    }
+  | {
+      type: "stream_event";
+      event: {
+        type: string;
+        index?: number;
+        delta?: { type: string; text?: string };
+      };
     };
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -232,6 +240,29 @@ async function* showcaseTurn(
           is_error: false,
         },
       ],
+    },
+  };
+
+  // 8b. Streaming text deltas (simulating real-time text generation)
+  checkAbort(signal);
+  await delay(30);
+  yield {
+    type: "stream_event",
+    event: {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "# Changes" },
+    },
+  };
+
+  checkAbort(signal);
+  await delay(30);
+  yield {
+    type: "stream_event",
+    event: {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: " Complete\n\nFixed" },
     },
   };
 
