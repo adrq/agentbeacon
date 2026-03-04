@@ -183,7 +183,7 @@ pub async fn create_execution(
     } else if let Some(b) = branch {
         // B) Explicit branch — create worktree with named branch
         let proj = project.as_ref().unwrap();
-        let wt_path = common::execution_dir(&proj.id, &execution_id);
+        let wt_path = common::session_dir(&proj.id, &execution_id, &session_id);
         let wt_path_str = wt_path.to_string_lossy().to_string();
         create_worktree(&proj.path, &wt_path, Some(b))?;
         (wt_path_str.clone(), Some(wt_path_str))
@@ -201,7 +201,7 @@ pub async fn create_execution(
         };
 
         if has_commits {
-            let wt_path = common::execution_dir(&proj.id, &execution_id);
+            let wt_path = common::session_dir(&proj.id, &execution_id, &session_id);
             let wt_path_str = wt_path.to_string_lossy().to_string();
             create_worktree(&proj.path, &wt_path, None)?;
             (wt_path_str.clone(), Some(wt_path_str))
@@ -272,7 +272,6 @@ async fn persist_and_enqueue(
         project_id,
         None, // parent_execution_id
         title,
-        worktree_path,
         max_depth,
         max_width,
     )
@@ -291,6 +290,7 @@ async fn persist_and_enqueue(
             &agent.id,
             None,
             Some(session_cwd),
+            worktree_path,
             &slug,
         )
         .await

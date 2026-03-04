@@ -20,6 +20,11 @@ function createNonGitProject(): string {
   return dir;
 }
 
+async function getRootSession(execId: string): Promise<any> {
+  const detail = await apiGet(`/api/executions/${execId}`);
+  return detail.sessions.find((s: any) => s.parent_session_id === null);
+}
+
 async function cleanup() {
   for (const id of createdProjectIds) {
     try { await apiDelete(`/api/projects/${id}`); } catch { /* best effort */ }
@@ -49,7 +54,9 @@ test('auto worktree execution shows working directory', async ({ page }) => {
     title: 'Auto WT Test',
     project_id: project.id,
   });
-  expect(exec.execution.worktree_path).toBeTruthy();
+
+  const rootSession = await getRootSession(exec.execution.id);
+  expect(rootSession.worktree_path).toBeTruthy();
 
   // Navigate to execution detail and verify path is shown
   await page.goto(`/#/execution/${exec.execution.id}`);
@@ -68,7 +75,9 @@ test('non git project shows no working directory', async ({ page }) => {
     title: 'No WT Test',
     project_id: project.id,
   });
-  expect(exec.execution.worktree_path).toBeNull();
+
+  const rootSession = await getRootSession(exec.execution.id);
+  expect(rootSession.worktree_path).toBeNull();
 
   await page.goto(`/#/execution/${exec.execution.id}`);
   await expect(page.getByRole('heading', { name: 'No WT Test' })).toBeVisible({ timeout: 5000 });
@@ -128,7 +137,9 @@ test('explicit branch override', async () => {
     project_id: project.id,
     branch: 'test-feature',
   });
-  expect(exec.execution.worktree_path).toBeTruthy();
+
+  const rootSession = await getRootSession(exec.execution.id);
+  expect(rootSession.worktree_path).toBeTruthy();
 
   // Verify named branch was created
   const branches = execSync('git branch --list "beacon/test-feature"', { cwd: gitPath })
@@ -149,8 +160,10 @@ test('explicit cwd overrides auto worktree', async ({ page }) => {
     project_id: project.id,
     cwd: '/tmp',
   });
+
   // Explicit cwd means no worktree
-  expect(exec.execution.worktree_path).toBeNull();
+  const rootSession = await getRootSession(exec.execution.id);
+  expect(rootSession.worktree_path).toBeNull();
 
   await page.goto(`/#/execution/${exec.execution.id}`);
   await expect(page.getByRole('heading', { name: 'CWD Override' })).toBeVisible({ timeout: 5000 });

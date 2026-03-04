@@ -23,3 +23,9 @@ pub fn execution_dir(project_id: &str, exec_id: &str) -> PathBuf {
         .join("executions")
         .join(exec_id)
 }
+
+pub fn session_dir(project_id: &str, exec_id: &str, session_id: &str) -> PathBuf {
+    execution_dir(project_id, exec_id)
+        .join("sessions")
+        .join(session_id)
+}

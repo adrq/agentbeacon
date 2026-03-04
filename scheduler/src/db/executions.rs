@@ -17,7 +17,6 @@ pub struct Execution {
     pub title: Option<String>,
     pub input: String,    // plain prompt string
     pub metadata: String, // JSON
-    pub worktree_path: Option<String>,
     pub max_depth: i64,
     pub max_width: i64,
     pub created_at: DateTime<Utc>,
@@ -34,14 +33,13 @@ pub async fn create(
     project_id: Option<&str>,
     parent_execution_id: Option<&str>,
     title: Option<&str>,
-    worktree_path: Option<&str>,
     max_depth: i64,
     max_width: i64,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
         r#"
-        INSERT INTO executions (id, project_id, parent_execution_id, context_id, status, title, input, metadata, worktree_path, max_depth, max_width, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'submitted', ?, ?, '{}', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO executions (id, project_id, parent_execution_id, context_id, status, title, input, metadata, max_depth, max_width, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'submitted', ?, ?, '{}', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#,
     );
 
@@ -52,7 +50,6 @@ pub async fn create(
         .bind(context_id)
         .bind(title)
         .bind(input)
-        .bind(worktree_path)
         .bind(max_depth)
         .bind(max_width)
         .execute(pool.as_ref())
@@ -70,7 +67,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Execution, SchedulerEr
 
     let sql = format!(
         r#"
-        SELECT id, project_id, parent_execution_id, context_id, status, title, input, metadata, worktree_path,
+        SELECT id, project_id, parent_execution_id, context_id, status, title, input, metadata,
                max_depth, max_width,
                {} as created_at, {} as updated_at, {} as completed_at
         FROM executions
@@ -106,7 +103,7 @@ pub async fn list(
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let mut sql = format!(
-        "SELECT id, project_id, parent_execution_id, context_id, status, title, input, metadata, worktree_path, max_depth, max_width, {} as created_at, {} as updated_at, {} as completed_at FROM executions WHERE 1=1",
+        "SELECT id, project_id, parent_execution_id, context_id, status, title, input, metadata, max_depth, max_width, {} as created_at, {} as updated_at, {} as completed_at FROM executions WHERE 1=1",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -198,7 +195,6 @@ fn parse_execution_row(row: sqlx::any::AnyRow) -> Result<Execution, SchedulerErr
         title: row.get("title"),
         input: row.get("input"),
         metadata: row.get("metadata"),
-        worktree_path: row.get("worktree_path"),
         max_depth: row.get("max_depth"),
         max_width: row.get("max_width"),
         created_at: parse_timestamp(&row, "created_at")?,

@@ -14,6 +14,7 @@ pub struct Session {
     pub agent_id: String,
     pub agent_session_id: Option<String>,
     pub cwd: Option<String>,
+    pub worktree_path: Option<String>,
     pub status: String,
     pub metadata: String, // JSON
     pub slug: String,
@@ -23,6 +24,7 @@ pub struct Session {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create(
     pool: &DbPool,
     id: &str,
@@ -30,10 +32,11 @@ pub async fn create(
     agent_id: &str,
     parent_session_id: Option<&str>,
     cwd: Option<&str>,
+    worktree_path: Option<&str>,
     slug: &str,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, status, slug) VALUES (?, ?, ?, ?, ?, 'submitted', ?)",
+        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, worktree_path, status, slug) VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?)",
     );
 
     sqlx::query(&query)
@@ -42,6 +45,7 @@ pub async fn create(
         .bind(parent_session_id)
         .bind(agent_id)
         .bind(cwd)
+        .bind(worktree_path)
         .bind(slug)
         .execute(pool.as_ref())
         .await
@@ -56,7 +60,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Session, SchedulerErro
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE id = ?",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, worktree_path, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE id = ?",
         created_fmt, updated_fmt, completed_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -79,7 +83,7 @@ pub async fn list_by_execution(
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE execution_id = ? ORDER BY created_at ASC",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, worktree_path, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE execution_id = ? ORDER BY created_at ASC",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -130,12 +134,13 @@ pub async fn create_with_width_guard(
     agent_id: &str,
     parent_session_id: &str,
     cwd: Option<&str>,
+    worktree_path: Option<&str>,
     max_width: i64,
     slug: &str,
 ) -> Result<bool, SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, status, slug) \
-         SELECT ?, ?, ?, ?, ?, 'submitted', ? \
+        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, worktree_path, status, slug) \
+         SELECT ?, ?, ?, ?, ?, ?, 'submitted', ? \
          WHERE (SELECT COUNT(*) FROM sessions \
                 WHERE parent_session_id = ? \
                 AND status NOT IN ('completed', 'failed', 'canceled')) < ?",
@@ -147,6 +152,7 @@ pub async fn create_with_width_guard(
         .bind(parent_session_id)
         .bind(agent_id)
         .bind(cwd)
+        .bind(worktree_path)
         .bind(slug)
         .bind(parent_session_id)
         .bind(max_width)
@@ -215,7 +221,7 @@ pub async fn list_filtered(
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let mut sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE 1=1",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, worktree_path, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE 1=1",
         created_fmt, updated_fmt, completed_fmt
     );
 
@@ -274,7 +280,7 @@ pub async fn find_assignable(pool: &DbPool) -> Result<Option<Session>, Scheduler
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
+        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, worktree_path, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at FROM sessions WHERE status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
         created_fmt, updated_fmt, completed_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -339,7 +345,7 @@ pub async fn get_subtree(pool: &DbPool, root_id: &str) -> Result<Vec<Session>, S
             INNER JOIN subtree st ON s.parent_session_id = st.id \
         ) \
         SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
-               s.agent_session_id, s.cwd, s.status, \
+               s.agent_session_id, s.cwd, s.worktree_path, s.status, \
                s.metadata, s.slug, s.recovery_attempts, \
                {cr} as created_at, {up} as updated_at, \
                {co} as completed_at \
@@ -425,7 +431,7 @@ pub async fn find_recoverable(
 
     let sql = format!(
         "SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
-               s.agent_session_id, s.cwd, s.status, \
+               s.agent_session_id, s.cwd, s.worktree_path, s.status, \
                s.metadata, s.slug, s.recovery_attempts, \
                {cr} as created_at, {up} as updated_at, \
                {co} as completed_at \
@@ -475,7 +481,7 @@ pub async fn find_over_budget(
 
     let sql = format!(
         "SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
-               s.agent_session_id, s.cwd, s.status, \
+               s.agent_session_id, s.cwd, s.worktree_path, s.status, \
                s.metadata, s.slug, s.recovery_attempts, \
                {cr} as created_at, {up} as updated_at, \
                {co} as completed_at \
@@ -528,6 +534,7 @@ fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> 
         agent_id: row.get("agent_id"),
         agent_session_id: row.get("agent_session_id"),
         cwd: row.get("cwd"),
+        worktree_path: row.get("worktree_path"),
         status: row.get("status"),
         metadata: row.get("metadata"),
         slug: row.get("slug"),

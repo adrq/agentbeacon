@@ -46,7 +46,6 @@ export interface Execution {
   project_id: string | null;
   parent_execution_id: string | null;
   context_id: string;
-  worktree_path: string | null;
   status: ExecutionStatus;
   title: string | null;
   input: string;
@@ -72,6 +71,7 @@ export interface SessionSummary {
   agent_id: string;
   agent_session_id: string | null;
   cwd: string | null;
+  worktree_path: string | null;
   status: SessionStatus;
   metadata: Record<string, unknown>;
   created_at: string;

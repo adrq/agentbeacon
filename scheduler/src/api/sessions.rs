@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -5,7 +7,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::api::types::{EventResponse, SessionResponse};
@@ -25,6 +27,38 @@ pub struct ListSessionsQuery {
 #[derive(Debug, Deserialize)]
 pub struct PostMessageRequest {
     pub message: String,
+}
+
+/// Query parameters for diff endpoint
+#[derive(Debug, Deserialize)]
+pub struct DiffQuery {
+    pub base: Option<String>,
+    pub stat: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiffFileEntry {
+    path: String,
+    status: String,
+    insertions: i64,
+    deletions: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct DiffSummary {
+    files_changed: i64,
+    insertions: i64,
+    deletions: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct DiffResponse {
+    files: Vec<DiffFileEntry>,
+    summary: DiffSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    truncated: Option<bool>,
 }
 
 /// List sessions with optional filters (GET /api/sessions)
@@ -203,6 +237,188 @@ async fn complete_session(
     })))
 }
 
+/// Get diff for a session's worktree (GET /api/sessions/{id}/worktree/diff)
+async fn session_diff(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<DiffQuery>,
+) -> Result<axum::response::Response, SchedulerError> {
+    let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
+
+    // Resolve diff directory: worktree_path first, then cwd fallback
+    let diff_dir = session
+        .worktree_path
+        .as_deref()
+        .or(session.cwd.as_deref())
+        .ok_or_else(|| {
+            SchedulerError::NotFound("session has no worktree or working directory".to_string())
+        })?;
+
+    if !std::path::Path::new(diff_dir).is_dir() {
+        return Err(SchedulerError::NotFound(
+            "worktree directory no longer exists".to_string(),
+        ));
+    }
+
+    // Verify it's a git repo — let operational errors (timeout, spawn) pass through as 500
+    let rev_parse = run_git_command(diff_dir, &["rev-parse", "--is-inside-work-tree"])
+        .await
+        .map_err(|e| match e {
+            SchedulerError::Database(_) => e,
+            _ => SchedulerError::ValidationFailed("not a git repository".to_string()),
+        })?;
+    if rev_parse.trim() != "true" {
+        return Err(SchedulerError::ValidationFailed(
+            "not a git repository".to_string(),
+        ));
+    }
+
+    // Validate base ref
+    let base = query.base.as_deref().unwrap_or("HEAD");
+    if base.starts_with('-') {
+        return Err(SchedulerError::ValidationFailed(
+            "invalid base ref".to_string(),
+        ));
+    }
+
+    // Get numstat (--no-renames avoids R/C parse ambiguity: renames show as delete + add)
+    let numstat_output =
+        run_git_command(diff_dir, &["diff", "--no-renames", "--numstat", base, "--"])
+            .await
+            .map_err(|e| remap_git_error(e, base))?;
+
+    // Get name-status
+    let name_status_output = run_git_command(
+        diff_dir,
+        &["diff", "--no-renames", "--name-status", base, "--"],
+    )
+    .await
+    .map_err(|e| remap_git_error(e, base))?;
+
+    let numstat_entries = parse_numstat(&numstat_output);
+    let status_map = parse_name_status(&name_status_output);
+
+    let mut files: Vec<DiffFileEntry> = Vec::new();
+    let mut total_insertions: i64 = 0;
+    let mut total_deletions: i64 = 0;
+
+    for (path, ins, del) in &numstat_entries {
+        let status = status_map
+            .get(path.as_str())
+            .cloned()
+            .unwrap_or_else(|| "M".to_string());
+        total_insertions += ins;
+        total_deletions += del;
+        files.push(DiffFileEntry {
+            path: path.clone(),
+            status,
+            insertions: *ins,
+            deletions: *del,
+        });
+    }
+
+    let summary = DiffSummary {
+        files_changed: files.len() as i64,
+        insertions: total_insertions,
+        deletions: total_deletions,
+    };
+
+    let (patch, truncated) = if query.stat.unwrap_or(false) {
+        (None, None)
+    } else {
+        let patch_output = run_git_command(diff_dir, &["diff", "--no-renames", base, "--"])
+            .await
+            .map_err(|e| remap_git_error(e, base))?;
+
+        const MAX_PATCH_SIZE: usize = 1_048_576; // 1MB
+        if patch_output.len() > MAX_PATCH_SIZE {
+            // Patch too large: return 413 with stat-only fallback
+            let response = DiffResponse {
+                files,
+                summary,
+                patch: None,
+                truncated: Some(true),
+            };
+            return Ok((StatusCode::PAYLOAD_TOO_LARGE, Json(response)).into_response());
+        }
+        (Some(patch_output), None)
+    };
+
+    Ok(Json(DiffResponse {
+        files,
+        summary,
+        patch,
+        truncated,
+    })
+    .into_response())
+}
+
+/// Remap git diff errors: timeouts stay as 500, git failures become 400 (bad base ref)
+fn remap_git_error(e: SchedulerError, base: &str) -> SchedulerError {
+    match &e {
+        // Timeouts and spawn failures should remain 500
+        SchedulerError::Database(_) => e,
+        _ => SchedulerError::ValidationFailed(format!("git diff failed for base ref '{base}'")),
+    }
+}
+
+/// Run a git command in the given directory with a 10s timeout
+async fn run_git_command(dir: &str, args: &[&str]) -> Result<String, SchedulerError> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output(),
+    )
+    .await
+    .map_err(|_| SchedulerError::Database("git command timed out after 10s".to_string()))?
+    .map_err(|e| SchedulerError::Database(format!("failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SchedulerError::ValidationFailed(stderr.trim().to_string()));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Parse `git diff --numstat` output into (path, insertions, deletions)
+fn parse_numstat(output: &str) -> Vec<(String, i64, i64)> {
+    output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            // Binary files return `-` for counts
+            let ins = parts[0].parse::<i64>().unwrap_or(0);
+            let del = parts[1].parse::<i64>().unwrap_or(0);
+            Some((parts[2].to_string(), ins, del))
+        })
+        .collect()
+}
+
+/// Parse `git diff --name-status` output into a path→status map
+fn parse_name_status(output: &str) -> std::collections::HashMap<String, String> {
+    output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(2, '\t').collect();
+            if parts.len() < 2 {
+                return None;
+            }
+            // Status is the first char (M, A, D, R, etc.)
+            let status = parts[0].chars().next().unwrap_or('M').to_string();
+            Some((parts[1].to_string(), status))
+        })
+        .collect()
+}
+
 /// Push a notification to the parent session's inbox when a child is
 /// externally terminated (by user cancel/complete, not agent release).
 async fn notify_parent_of_termination(
@@ -246,6 +462,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/events", get(session_events))
+        .route("/api/sessions/{id}/worktree/diff", get(session_diff))
         .route(
             "/api/sessions/{id}/message",
             axum::routing::post(post_message),

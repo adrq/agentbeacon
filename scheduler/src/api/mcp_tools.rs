@@ -232,6 +232,7 @@ async fn handle_delegate(
                 &agent.id,
                 &auth.session_id,
                 child_cwd.as_deref(),
+                None, // worktree_path (None for child MVP)
                 auth.max_width,
                 &slug,
             )

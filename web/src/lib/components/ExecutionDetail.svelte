@@ -220,7 +220,7 @@
   let cwdCopyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   function copyWorkingDir() {
-    const path = detail?.execution.worktree_path;
+    const path = leadSession?.worktree_path;
     if (!path || !navigator.clipboard?.writeText) return;
     navigator.clipboard.writeText(path).then(() => {
       cwdCopied = true;
@@ -266,7 +266,7 @@
         <span>Depth: {detail.execution.max_depth}</span>
         <span class="meta-sep">&middot;</span>
         <span>Width: {detail.execution.max_width}</span>
-        {#if detail.execution.worktree_path}
+        {#if leadSession?.worktree_path}
           <span class="meta-sep">&middot;</span>
           <span>Working Directory:</span>
           <button
@@ -274,7 +274,7 @@
             title="Copy working directory path"
             onclick={copyWorkingDir}
           >
-            {cwdCopied ? 'Copied!' : detail.execution.worktree_path}
+            {cwdCopied ? 'Copied!' : leadSession.worktree_path}
           </button>
         {/if}
       </div>

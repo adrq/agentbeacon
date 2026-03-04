@@ -41,6 +41,15 @@ def make_git_repo(with_commit: bool = True) -> str:
     return tmpdir
 
 
+def get_root_session(url: str, exec_id: str) -> dict:
+    """Fetch execution detail and return the root session."""
+    resp = httpx.get(f"{url}/api/executions/{exec_id}", timeout=5)
+    assert resp.status_code == 200
+    data = resp.json()
+    root = next(s for s in data["sessions"] if s["parent_session_id"] is None)
+    return root
+
+
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_auto_worktree_git_project(test_database):
     """Execution against git project auto-creates detached HEAD worktree."""
@@ -55,11 +64,14 @@ def test_auto_worktree_git_project(test_database):
                 ctx["url"], agent_id, "test", project_id=project["id"]
             )
 
-            resp = httpx.get(f"{ctx['url']}/api/executions/{exec_id}", timeout=5)
-            data = resp.json()
-            wt_path = data["execution"]["worktree_path"]
+            root = get_root_session(ctx["url"], exec_id)
+            wt_path = root["worktree_path"]
             assert wt_path is not None
             assert os.path.isdir(wt_path)
+
+            # Verify D16 directory structure: /executions/{exec-id}/sessions/{session-id}/
+            assert f"/executions/{exec_id}/sessions/" in wt_path
+            assert root["id"] in wt_path
 
             # Verify detached HEAD
             result = subprocess.run(
@@ -86,9 +98,8 @@ def test_no_worktree_non_git_project(test_database):
                 ctx["url"], agent_id, "test", project_id=project["id"]
             )
 
-            resp = httpx.get(f"{ctx['url']}/api/executions/{exec_id}", timeout=5)
-            data = resp.json()
-            assert data["execution"]["worktree_path"] is None
+            root = get_root_session(ctx["url"], exec_id)
+            assert root["worktree_path"] is None
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -108,10 +119,9 @@ def test_no_worktree_empty_git_repo(test_database):
                 ctx["url"], agent_id, "test", project_id=project["id"]
             )
 
-            resp = httpx.get(f"{ctx['url']}/api/executions/{exec_id}", timeout=5)
-            data = resp.json()
+            root = get_root_session(ctx["url"], exec_id)
             # No worktree because no commits to detach from
-            assert data["execution"]["worktree_path"] is None
+            assert root["worktree_path"] is None
     finally:
         shutil.rmtree(git_dir, ignore_errors=True)
 
@@ -136,8 +146,10 @@ def test_explicit_branch_still_works(test_database):
                 timeout=5,
             )
             assert resp.status_code == 201
-            data = resp.json()
-            assert data["execution"]["worktree_path"] is not None
+            exec_id = resp.json()["execution"]["id"]
+
+            root = get_root_session(ctx["url"], exec_id)
+            assert root["worktree_path"] is not None
 
             # Verify named branch exists
             result = subprocess.run(
@@ -171,9 +183,8 @@ def test_detached_head_no_branch_created(test_database):
                 ctx["url"], agent_id, "test", project_id=project["id"]
             )
 
-            resp = httpx.get(f"{ctx['url']}/api/executions/{exec_id}", timeout=5)
-            data = resp.json()
-            wt_path = data["execution"]["worktree_path"]
+            root = get_root_session(ctx["url"], exec_id)
+            wt_path = root["worktree_path"]
             assert wt_path is not None
 
         # List branches after
@@ -254,8 +265,8 @@ def test_stale_worktree_dir_handled(test_database):
             exec_id_1, _ = create_execution_via_api(
                 ctx["url"], agent_id, "first", project_id=project["id"]
             )
-            resp1 = httpx.get(f"{ctx['url']}/api/executions/{exec_id_1}", timeout=5)
-            wt_path_1 = resp1.json()["execution"]["worktree_path"]
+            root1 = get_root_session(ctx["url"], exec_id_1)
+            wt_path_1 = root1["worktree_path"]
             assert wt_path_1 is not None
             assert os.path.isdir(wt_path_1)
 
@@ -263,8 +274,8 @@ def test_stale_worktree_dir_handled(test_database):
             exec_id_2, _ = create_execution_via_api(
                 ctx["url"], agent_id, "second", project_id=project["id"]
             )
-            resp2 = httpx.get(f"{ctx['url']}/api/executions/{exec_id_2}", timeout=5)
-            wt_path_2 = resp2.json()["execution"]["worktree_path"]
+            root2 = get_root_session(ctx["url"], exec_id_2)
+            wt_path_2 = root2["worktree_path"]
             assert wt_path_2 is not None
             assert wt_path_1 != wt_path_2
             assert os.path.isdir(wt_path_2)
