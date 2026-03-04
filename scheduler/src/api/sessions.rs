@@ -61,6 +61,15 @@ struct DiffResponse {
     truncated: Option<bool>,
 }
 
+/// Get a single session by ID (GET /api/sessions/{id})
+async fn get_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionResponse>, SchedulerError> {
+    let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
+    Ok(Json(session.into()))
+}
+
 /// List sessions with optional filters (GET /api/sessions)
 async fn list_sessions(
     State(state): State<AppState>,
@@ -235,6 +244,132 @@ async fn complete_session(
         "completed": true,
         "sessions_terminated": result.sessions_terminated
     })))
+}
+
+#[derive(Debug, Serialize)]
+struct WorktreeInfoResponse {
+    path: String,
+    branch: Option<String>,
+    head_sha: Option<String>,
+    exists: bool,
+}
+
+/// Delete a session's worktree (DELETE /api/sessions/{id}/worktree)
+async fn delete_session_worktree(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, SchedulerError> {
+    let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
+
+    if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
+        return Err(SchedulerError::Conflict(
+            "worktree cleanup only allowed on terminal sessions (completed/failed/canceled)"
+                .to_string(),
+        ));
+    }
+
+    let wt_path = session
+        .worktree_path
+        .as_deref()
+        .ok_or_else(|| SchedulerError::NotFound("session has no worktree".to_string()))?;
+
+    // Resolve project path: session → execution → project
+    // Propagate DB errors; only treat NotFound as soft fallback (project deleted)
+    let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
+    let project_path = if let Some(ref pid) = execution.project_id {
+        match db::projects::get_by_id(&state.db_pool, pid).await {
+            Ok(p) => Some(p.path),
+            Err(SchedulerError::NotFound(_)) => None,
+            Err(e) => return Err(e),
+        }
+    } else {
+        None
+    };
+
+    // Async git cleanup (best-effort, each step independent)
+    if let Some(ref proj) = project_path {
+        let _ = run_git_command(proj, &["worktree", "remove", "--force", wt_path]).await;
+        let _ = run_git_command(proj, &["worktree", "prune"]).await;
+    }
+
+    // Fallback: remove directory if git worktree remove didn't
+    let _ = tokio::fs::remove_dir_all(wt_path).await;
+
+    // Verify directory is actually gone before clearing DB pointer.
+    // Without this, a failed rm leaves an orphaned dir with no way to find it.
+    // Use explicit metadata check: is_dir() returns false on permission errors,
+    // which would incorrectly let us clear the DB while the dir still exists.
+    match std::fs::metadata(wt_path) {
+        Ok(_) => {
+            return Err(SchedulerError::Database(format!(
+                "failed to remove worktree directory: {wt_path}"
+            )));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(SchedulerError::Database(format!(
+                "cannot verify worktree removal ({e}): {wt_path}"
+            )));
+        }
+    }
+
+    // Clear DB column (atomic terminal-state guard)
+    db::sessions::clear_worktree_path(&state.db_pool, &id).await?;
+
+    Ok(Json(json!({
+        "deleted": true,
+        "path": wt_path,
+    })))
+}
+
+/// Get worktree info for a session (GET /api/sessions/{id}/worktree)
+async fn session_worktree_info(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<WorktreeInfoResponse>, SchedulerError> {
+    let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
+
+    let wt_path = session
+        .worktree_path
+        .as_deref()
+        .ok_or_else(|| SchedulerError::NotFound("session has no worktree".to_string()))?;
+
+    let exists = match std::fs::metadata(wt_path) {
+        Ok(m) => m.is_dir(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            return Err(SchedulerError::Database(format!(
+                "cannot stat worktree directory ({e}): {wt_path}"
+            )));
+        }
+    };
+
+    if !exists {
+        return Ok(Json(WorktreeInfoResponse {
+            path: wt_path.to_string(),
+            branch: None,
+            head_sha: None,
+            exists: false,
+        }));
+    }
+
+    let branch = run_git_command(wt_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .ok()
+        .map(|o| o.trim().to_string())
+        .and_then(|b| if b == "HEAD" { None } else { Some(b) });
+
+    let head_sha = run_git_command(wt_path, &["rev-parse", "HEAD"])
+        .await
+        .ok()
+        .map(|o| o.trim().to_string());
+
+    Ok(Json(WorktreeInfoResponse {
+        path: wt_path.to_string(),
+        branch,
+        head_sha,
+        exists: true,
+    }))
 }
 
 /// Get diff for a session's worktree (GET /api/sessions/{id}/worktree/diff)
@@ -461,7 +596,12 @@ async fn notify_parent_of_termination(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions/{id}", get(get_session))
         .route("/api/sessions/{id}/events", get(session_events))
+        .route(
+            "/api/sessions/{id}/worktree",
+            get(session_worktree_info).delete(delete_session_worktree),
+        )
         .route("/api/sessions/{id}/worktree/diff", get(session_diff))
         .route(
             "/api/sessions/{id}/message",

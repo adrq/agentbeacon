@@ -184,6 +184,7 @@ fn build_cors_layer(dev_mode: bool, port: u16, vite_dev_port: u16) -> CorsLayer 
             Method::POST,
             Method::PUT,
             Method::DELETE,
+            Method::PATCH,
             Method::OPTIONS,
         ]))
         .allow_headers(AllowHeaders::list([

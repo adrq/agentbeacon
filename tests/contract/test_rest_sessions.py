@@ -14,6 +14,40 @@ from tests.testhelpers import (
 )
 
 
+# --- GET /api/sessions/{id} tests ---
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_get_session_by_id(test_database):
+    """GET /api/sessions/{id} returns session detail."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
+        exec_id, session_id = create_execution_via_api(
+            ctx["url"], agent_id, "test task"
+        )
+
+        resp = httpx.get(f"{ctx['url']}/api/sessions/{session_id}", timeout=5)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == session_id
+        assert data["execution_id"] == exec_id
+        assert data["agent_id"] == agent_id
+        assert data["status"] == "submitted"
+        assert "created_at" in data
+        assert "updated_at" in data
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_get_session_nonexistent_returns_404(test_database):
+    """GET /api/sessions/{id} returns 404 for unknown ID."""
+    with scheduler_context(db_url=test_database) as ctx:
+        resp = httpx.get(f"{ctx['url']}/api/sessions/nonexistent-id", timeout=5)
+        assert resp.status_code == 404
+
+
+# --- list sessions tests ---
+
+
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_list_sessions_returns_all(test_database):
     with scheduler_context(db_url=test_database) as ctx:

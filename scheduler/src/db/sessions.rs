@@ -410,6 +410,27 @@ pub async fn touch_updated_at(pool: &DbPool, id: &str) -> Result<(), SchedulerEr
     Ok(())
 }
 
+/// Clear worktree_path for a session, only if it's in a terminal state.
+/// Uses a WHERE guard for atomicity (prevents TOCTOU race).
+pub async fn clear_worktree_path(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
+    let query = pool.prepare_query(
+        "UPDATE sessions SET worktree_path = NULL, updated_at = CURRENT_TIMESTAMP \
+         WHERE id = ? AND status IN ('completed', 'failed', 'canceled')",
+    );
+    let result = sqlx::query(&query)
+        .bind(id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("clear worktree_path failed: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        return Err(SchedulerError::Conflict(
+            "session not found or not in terminal state".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Find sessions eligible for crash recovery (Tier 2).
 /// Returns sessions that are working/input-required with an agent_session_id,
 /// belonging to resumable agent types, not updated since `updated_before`.
