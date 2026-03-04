@@ -1,6 +1,6 @@
 <script lang="ts">
   import { get } from 'svelte/store';
-  import { currentScreen, selectedExecutionId, selectedProjectId, actionPanelCollapsed, userExplicitlyCollapsed } from '../stores/appState';
+  import { currentScreen, selectedExecutionId, selectedProjectId, actionPanelCollapsed, userExplicitlyCollapsed, homeFeedFilter } from '../stores/appState';
   import { decisionCount } from '../stores/questionState';
   import { executionsQuery } from '../queries/executions';
   import AppHeader from './AppHeader.svelte';
@@ -11,6 +11,7 @@
   import type { ExecutionPrefill } from './ExecutionDetail.svelte';
   import EmptyState from './EmptyState.svelte';
   import ActivityFeed from './ActivityFeed.svelte';
+  import OpsSummary from './OpsSummary.svelte';
   import ActionPanel from './ActionPanel.svelte';
   import NewExecutionModal from './NewExecutionModal.svelte';
   import ProjectsView from './ProjectsView.svelte';
@@ -85,6 +86,13 @@
     const count = $decisionCount;
     document.title = count > 0 ? `(${count}) AgentBeacon` : 'AgentBeacon';
   });
+
+  // Reset home feed filter when navigating away from Home
+  $effect(() => {
+    if ($currentScreen !== 'Home') {
+      homeFeedFilter.set(null);
+    }
+  });
 </script>
 
 <QuestionStateProvider />
@@ -117,7 +125,8 @@
           <AgentsView />
         {:else if hasExecutions}
           <div class="home-view scroll-thin">
-            <ActivityFeed />
+            <OpsSummary executions={execsQuery.data ?? []} />
+            <ActivityFeed executions={execsQuery.data ?? []} />
           </div>
         {:else}
           <EmptyState />

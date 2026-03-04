@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { executionsQuery } from '../queries/executions';
+  import type { Execution } from '../types';
+  import { executionsWithQuestions } from '../stores/questionState';
+  import { homeFeedFilter, type HomeFeedFilter } from '../stores/appState';
   import { router } from '../router';
 
   interface FeedItem {
@@ -7,9 +9,16 @@
     icon: string;
     iconClass: string;
     title: string;
+    verb: string;
     timeAgo: string;
     status: string;
   }
+
+  interface Props {
+    executions: Execution[];
+  }
+
+  let { executions }: Props = $props();
 
   function relativeTime(iso: string): string {
     const diff = Date.now() - new Date(iso).getTime();
@@ -32,10 +41,36 @@
     'canceled': { icon: '\u2014', iconClass: 'muted' },
   };
 
-  const execsQuery = executionsQuery();
+  const verbMap: Record<string, string> = {
+    'working': 'is working',
+    'completed': 'completed',
+    'failed': 'failed',
+    'input-required': 'is awaiting input',
+    'submitted': 'was submitted',
+    'canceled': 'was canceled',
+  };
+
+  const DAY_MS = 86_400_000;
+
+  function matchesFilter(exec: Execution, filter: HomeFeedFilter): boolean {
+    if (!filter) return true;
+    switch (filter) {
+      case 'running': return exec.status === 'working';
+      case 'waiting':
+        return exec.status === 'input-required' && $executionsWithQuestions.has(exec.id);
+      case 'completed':
+        return exec.status === 'completed' && !!exec.completed_at &&
+          Date.now() - new Date(exec.completed_at).getTime() < DAY_MS;
+      case 'failed':
+        return exec.status === 'failed' && !!exec.completed_at &&
+          Date.now() - new Date(exec.completed_at).getTime() < DAY_MS;
+      default: return true;
+    }
+  }
 
   let feedItems = $derived(
-    [...(execsQuery.data ?? [])]
+    [...executions]
+      .filter(exec => matchesFilter(exec, $homeFeedFilter))
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       .slice(0, 20)
       .map((exec): FeedItem => {
@@ -45,6 +80,7 @@
           icon: cfg.icon,
           iconClass: cfg.iconClass,
           title: exec.title ?? exec.id.slice(0, 8),
+          verb: verbMap[exec.status] ?? exec.status,
           timeAgo: relativeTime(exec.updated_at),
           status: exec.status,
         };
@@ -56,20 +92,32 @@
   }
 </script>
 
-{#if feedItems.length > 0}
-  <div class="activity-feed">
-    <div class="feed-header section-heading">Activity</div>
+<div class="activity-feed">
+  <div class="feed-header section-heading">
+    Activity
+    {#if $homeFeedFilter}
+      <button class="filter-clear" onclick={() => homeFeedFilter.set(null)}>
+        Clear filter
+      </button>
+    {/if}
+  </div>
+  {#if feedItems.length > 0}
     <div class="feed-list">
       {#each feedItems as item (item.id)}
         <button class="feed-item" onclick={() => handleClick(item.id)}>
           <span class="feed-icon {item.iconClass}">{item.icon}</span>
-          <span class="feed-title">{item.title}</span>
+          <span class="feed-title">
+            <span class="feed-exec-name">{item.title}</span>
+            <span class="feed-verb">{item.verb}</span>
+          </span>
           <span class="feed-time">{item.timeAgo}</span>
         </button>
       {/each}
     </div>
-  </div>
-{/if}
+  {:else if $homeFeedFilter}
+    <div class="feed-empty">No matching executions</div>
+  {/if}
+</div>
 
 <style>
   .activity-feed {
@@ -78,6 +126,24 @@
 
   .feed-header {
     margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .filter-clear {
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: none;
+  }
+
+  .filter-clear:hover {
+    text-decoration: underline;
   }
 
   .feed-list {
@@ -107,8 +173,8 @@
     width: 1rem;
     text-align: center;
     flex-shrink: 0;
-    font-size: 0.6875rem;
-    font-weight: 600;
+    font-size: var(--text-xs);
+    font-weight: 500;
   }
 
   .feed-icon.working { color: hsl(var(--status-working)); }
@@ -119,17 +185,42 @@
 
   .feed-title {
     flex: 1;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: hsl(var(--foreground));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: flex;
+    align-items: baseline;
+    gap: 0.375rem;
+  }
+
+  .feed-exec-name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  .feed-verb {
+    color: hsl(var(--muted-foreground));
+    font-size: var(--text-xs);
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+
   .feed-time {
-    font-size: 0.6875rem;
+    font-size: var(--text-xs);
+    font-weight: 500;
     color: hsl(var(--muted-foreground));
     flex-shrink: 0;
     font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .feed-empty {
+    padding: 1.5rem 0.5rem;
+    text-align: center;
+    color: hsl(var(--muted-foreground));
+    font-size: var(--text-sm);
   }
 </style>

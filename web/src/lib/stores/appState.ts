@@ -54,3 +54,6 @@ function createPersistedBoolStore(key: string, defaultValue: boolean) {
 export const actionPanelCollapsed = createPersistedBoolStore('agentbeacon-action-panel-collapsed', true);
 export const userExplicitlyCollapsed = writable<boolean>(false);
 export const notificationsEnabled = createPersistedBoolStore('agentbeacon-notifications-enabled', false);
+
+export type HomeFeedFilter = 'running' | 'waiting' | 'completed' | 'failed' | null;
+export const homeFeedFilter = writable<HomeFeedFilter>(null);
