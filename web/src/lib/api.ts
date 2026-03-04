@@ -2,6 +2,7 @@ import type {
   Agent, AgentDiscoveryEntry, Driver, Execution, ExecutionDetail, Session, Event, Project,
   CreateExecutionResponse, PostMessageResponse,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
+  WikiTag, WikiSubscription, WikiChange, WikiPageExport,
 } from './types';
 
 export class AgentBeaconAPI {
@@ -265,6 +266,50 @@ export class AgentBeaconAPI {
 
   async getWikiRevision(projectId: string, slug: string, rev: number): Promise<WikiRevision> {
     return this.fetchJSON<WikiRevision>(`/projects/${projectId}/wiki/pages/${slug}/revisions/${rev}`);
+  }
+
+  async listWikiTags(projectId: string): Promise<WikiTag[]> {
+    return this.fetchJSON<WikiTag[]>(`/projects/${projectId}/wiki/tags`);
+  }
+
+  async createWikiSubscription(projectId: string, req: {
+    subscriber: string;
+    page_slug?: string;
+    tag_name?: string;
+  }): Promise<WikiSubscription> {
+    return this.fetchJSON<WikiSubscription>(`/projects/${projectId}/wiki/subscriptions`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async listWikiSubscriptions(projectId: string, subscriber: string): Promise<WikiSubscription[]> {
+    return this.fetchJSON<WikiSubscription[]>(
+      `/projects/${projectId}/wiki/subscriptions?subscriber=${encodeURIComponent(subscriber)}`
+    );
+  }
+
+  async deleteWikiSubscription(projectId: string, subId: string): Promise<void> {
+    return this.fetchNoContent(`/projects/${projectId}/wiki/subscriptions/${subId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getWikiChanges(projectId: string, params?: {
+    since?: string;
+    execution_id?: string;
+    limit?: number;
+  }): Promise<WikiChange[]> {
+    const search = new URLSearchParams();
+    if (params?.since) search.set('since', params.since);
+    if (params?.execution_id) search.set('execution_id', params.execution_id);
+    if (params?.limit) search.set('limit', String(params.limit));
+    const qs = search.toString();
+    return this.fetchJSON<WikiChange[]>(`/projects/${projectId}/wiki/changes${qs ? `?${qs}` : ''}`);
+  }
+
+  async exportWiki(projectId: string): Promise<WikiPageExport[]> {
+    return this.fetchJSON<WikiPageExport[]>(`/projects/${projectId}/wiki/export`);
   }
 }
 

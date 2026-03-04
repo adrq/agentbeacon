@@ -239,6 +239,7 @@ export interface WikiPage {
   updated_by: string | null;
   created_at: string;
   updated_at: string;
+  tags: string[];
 }
 
 export interface WikiPageListItem {
@@ -248,6 +249,7 @@ export interface WikiPageListItem {
   updated_by: string | null;
   updated_at: string;
   score?: number;
+  tags: string[];
 }
 
 export interface WikiRevision {
@@ -272,6 +274,36 @@ export interface PutWikiPageRequest {
   body: string;
   revision_number?: number | null;
   summary?: string;
+  tags?: string[];
+}
+
+export interface WikiTag {
+  name: string;
+  page_count: number;
+}
+
+export interface WikiSubscription {
+  id: string;
+  project_id: string;
+  subscriber: string;
+  page_slug?: string | null;
+  tag_name?: string | null;
+  created_at: string;
+}
+
+export interface WikiChange {
+  slug: string;
+  title: string;
+  revision_number: number;
+  summary?: string | null;
+  created_by?: string | null;
+  created_at: string;
+}
+
+export interface WikiPageExport {
+  slug: string;
+  title: string;
+  body: string;
 }
 
 // GET /api/executions/{id}/agents — session-level discovery

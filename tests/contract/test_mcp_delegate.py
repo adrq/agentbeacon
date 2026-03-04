@@ -118,7 +118,8 @@ def test_delegate_queues_task(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_delegate_with_resume_session_id(test_database):
+def test_delegate_ignores_unknown_session_id_param(test_database):
+    """session_id parameter was removed — extra params are ignored by MCP."""
     with scheduler_context(db_url=test_database) as ctx:
         lead_agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         child_agent_id = seed_test_agent(ctx["db_url"], name="child-agent")
@@ -133,43 +134,22 @@ def test_delegate_with_resume_session_id(test_database):
             )
             conn.commit()
 
-        # First delegation
-        result1 = mcp_tools_call(
-            ctx["url"],
-            lead_session_id,
-            "delegate",
-            {"agent": "child-agent", "prompt": "implement auth"},
-        )
-        child_session_id = json.loads(result1["content"][0]["text"])["session_id"]
-
-        # Mark child completed
-        with db_conn(ctx["db_url"]) as conn:
-            conn.execute(
-                "UPDATE sessions SET status = 'completed' WHERE id = ?",
-                (child_session_id,),
-            )
-            conn.commit()
-
-        # Resume with existing session_id
-        result2 = mcp_tools_call(
+        # Pass session_id param — should be ignored, new session created
+        bogus_id = "some-bogus-session-id"
+        result = mcp_tools_call(
             ctx["url"],
             lead_session_id,
             "delegate",
             {
                 "agent": "child-agent",
-                "prompt": "continue work",
-                "session_id": child_session_id,
+                "prompt": "implement auth",
+                "session_id": bogus_id,
             },
         )
 
-        resumed_id = json.loads(result2["content"][0]["text"])["session_id"]
-        assert resumed_id == child_session_id
-
-        with db_conn(ctx["db_url"]) as conn:
-            row = conn.execute(
-                "SELECT status FROM sessions WHERE id = ?", (child_session_id,)
-            ).fetchone()
-        assert row[0] == "submitted"
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["session_id"] != bogus_id
+        assert len(payload["session_id"]) == 36
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

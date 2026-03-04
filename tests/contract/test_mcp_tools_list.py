@@ -115,6 +115,7 @@ def test_delegate_schema_has_agent_and_prompt(test_database):
         props = delegate["inputSchema"]["properties"]
         assert "agent" in props
         assert "prompt" in props
+        assert "session_id" not in props, "session_id should not be in delegate schema"
         assert sorted(delegate["inputSchema"]["required"]) == ["agent", "prompt"]
 
 

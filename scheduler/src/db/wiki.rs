@@ -414,3 +414,385 @@ fn parse_wiki_revision_row(row: sqlx::any::AnyRow) -> Result<WikiPageRevision, S
         created_at: parse_timestamp(&row, "created_at")?,
     })
 }
+
+// --- Tags ---
+
+pub struct TagWithCount {
+    pub name: String,
+    pub page_count: i64,
+}
+
+/// Get or create a tag by name (race-safe via INSERT ON CONFLICT).
+pub async fn get_or_create_tag(pool: &DbPool, name: &str) -> Result<String, SchedulerError> {
+    let id = Uuid::new_v4().to_string();
+
+    let insert_sql = if pool.is_postgres() {
+        "INSERT INTO wiki_tags (id, name) VALUES (?, ?) ON CONFLICT (name) DO NOTHING"
+    } else {
+        "INSERT OR IGNORE INTO wiki_tags (id, name) VALUES (?, ?)"
+    };
+    let insert_query = pool.prepare_query(insert_sql);
+    sqlx::query(&insert_query)
+        .bind(&id)
+        .bind(name)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("insert wiki tag failed: {e}")))?;
+
+    let select_query = pool.prepare_query("SELECT id FROM wiki_tags WHERE name = ?");
+    let row = sqlx::query(&select_query)
+        .bind(name)
+        .fetch_one(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("select wiki tag failed: {e}")))?;
+
+    Ok(row.get("id"))
+}
+
+/// Add a tag association to a page (idempotent).
+pub async fn add_page_tag(
+    pool: &DbPool,
+    page_id: &str,
+    tag_id: &str,
+) -> Result<(), SchedulerError> {
+    let sql = if pool.is_postgres() {
+        "INSERT INTO wiki_page_tags (page_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
+    } else {
+        "INSERT OR IGNORE INTO wiki_page_tags (page_id, tag_id) VALUES (?, ?)"
+    };
+    let query = pool.prepare_query(sql);
+    sqlx::query(&query)
+        .bind(page_id)
+        .bind(tag_id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("add wiki page tag failed: {e}")))?;
+    Ok(())
+}
+
+/// Remove all tag associations for a page.
+pub async fn delete_page_tags(pool: &DbPool, page_id: &str) -> Result<(), SchedulerError> {
+    let query = pool.prepare_query("DELETE FROM wiki_page_tags WHERE page_id = ?");
+    sqlx::query(&query)
+        .bind(page_id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("delete wiki page tags failed: {e}")))?;
+    Ok(())
+}
+
+/// List tag names for a page, sorted alphabetically.
+pub async fn list_page_tags(pool: &DbPool, page_id: &str) -> Result<Vec<String>, SchedulerError> {
+    let query = pool.prepare_query(
+        "SELECT t.name FROM wiki_tags t \
+         JOIN wiki_page_tags pt ON pt.tag_id = t.id \
+         WHERE pt.page_id = ? ORDER BY t.name",
+    );
+    let rows = sqlx::query(&query)
+        .bind(page_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list wiki page tags failed: {e}")))?;
+    Ok(rows.iter().map(|r| r.get("name")).collect())
+}
+
+/// List tags with page counts for a project (excludes deleted pages).
+pub async fn list_tags_with_counts(
+    pool: &DbPool,
+    project_id: &str,
+) -> Result<Vec<TagWithCount>, SchedulerError> {
+    let query = pool.prepare_query(
+        "SELECT t.name, COUNT(pt.page_id) as page_count \
+         FROM wiki_tags t \
+         JOIN wiki_page_tags pt ON pt.tag_id = t.id \
+         JOIN wiki_pages p ON p.id = pt.page_id \
+         WHERE p.project_id = ? AND p.deleted_at IS NULL \
+         GROUP BY t.id, t.name \
+         ORDER BY t.name",
+    );
+    let rows = sqlx::query(&query)
+        .bind(project_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list wiki tags failed: {e}")))?;
+    Ok(rows
+        .iter()
+        .map(|r| TagWithCount {
+            name: r.get("name"),
+            page_count: r.get("page_count"),
+        })
+        .collect())
+}
+
+/// Batch-fetch all (slug, tag_name) pairs for non-deleted pages in a project.
+pub async fn list_page_tags_for_project(
+    pool: &DbPool,
+    project_id: &str,
+) -> Result<Vec<(String, String)>, SchedulerError> {
+    let query = pool.prepare_query(
+        "SELECT p.slug, t.name as tag_name \
+         FROM wiki_page_tags pt \
+         JOIN wiki_pages p ON p.id = pt.page_id \
+         JOIN wiki_tags t ON t.id = pt.tag_id \
+         WHERE p.project_id = ? AND p.deleted_at IS NULL \
+         ORDER BY p.slug, t.name",
+    );
+    let rows = sqlx::query(&query)
+        .bind(project_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list page tags for project failed: {e}")))?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get("slug"), r.get("tag_name")))
+        .collect())
+}
+
+// --- Subscriptions ---
+
+pub struct WikiSubscription {
+    pub id: String,
+    pub project_id: String,
+    pub subscriber: String,
+    pub page_slug: Option<String>,
+    pub tag_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Create a subscription (idempotent via partial unique indexes).
+/// Returns (subscription, was_created).
+pub async fn create_subscription(
+    pool: &DbPool,
+    id: &str,
+    project_id: &str,
+    subscriber: &str,
+    page_slug: Option<&str>,
+    tag_name: Option<&str>,
+) -> Result<(WikiSubscription, bool), SchedulerError> {
+    let insert_sql = if pool.is_postgres() {
+        "INSERT INTO wiki_subscriptions (id, project_id, subscriber, page_slug, tag_name) \
+         VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING"
+    } else {
+        "INSERT OR IGNORE INTO wiki_subscriptions (id, project_id, subscriber, page_slug, tag_name) \
+         VALUES (?, ?, ?, ?, ?)"
+    };
+    let insert_query = pool.prepare_query(insert_sql);
+    let result = sqlx::query(&insert_query)
+        .bind(id)
+        .bind(project_id)
+        .bind(subscriber)
+        .bind(page_slug)
+        .bind(tag_name)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("create wiki subscription failed: {e}")))?;
+
+    let was_created = result.rows_affected() > 0;
+
+    // Fetch the subscription — branch based on known target type to avoid NULL comparison
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let (fetch_sql, target_value): (String, &str) = if let Some(slug) = page_slug {
+        (
+            format!(
+                "SELECT id, project_id, subscriber, page_slug, tag_name, \
+                 {created_fmt} as created_at \
+                 FROM wiki_subscriptions \
+                 WHERE project_id = ? AND subscriber = ? AND page_slug = ?"
+            ),
+            slug,
+        )
+    } else if let Some(tag) = tag_name {
+        (
+            format!(
+                "SELECT id, project_id, subscriber, page_slug, tag_name, \
+                 {created_fmt} as created_at \
+                 FROM wiki_subscriptions \
+                 WHERE project_id = ? AND subscriber = ? AND tag_name = ?"
+            ),
+            tag,
+        )
+    } else {
+        return Err(SchedulerError::ValidationFailed(
+            "exactly one of page_slug or tag_name must be provided".into(),
+        ));
+    };
+    let fetch_query = pool.prepare_query(&fetch_sql);
+    let row = sqlx::query(&fetch_query)
+        .bind(project_id)
+        .bind(subscriber)
+        .bind(target_value)
+        .fetch_one(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("fetch wiki subscription failed: {e}")))?;
+
+    Ok((parse_subscription_row(row)?, was_created))
+}
+
+/// Delete a subscription by id, scoped to project.
+pub async fn delete_subscription(
+    pool: &DbPool,
+    project_id: &str,
+    id: &str,
+) -> Result<(), SchedulerError> {
+    let query =
+        pool.prepare_query("DELETE FROM wiki_subscriptions WHERE id = ? AND project_id = ?");
+    let result = sqlx::query(&query)
+        .bind(id)
+        .bind(project_id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("delete wiki subscription failed: {e}")))?;
+    if result.rows_affected() == 0 {
+        return Err(SchedulerError::NotFound(format!(
+            "subscription not found: {id}"
+        )));
+    }
+    Ok(())
+}
+
+/// List subscriptions for a subscriber in a project.
+pub async fn list_subscriptions(
+    pool: &DbPool,
+    project_id: &str,
+    subscriber: &str,
+) -> Result<Vec<WikiSubscription>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let sql = format!(
+        "SELECT id, project_id, subscriber, page_slug, tag_name, \
+         {created_fmt} as created_at \
+         FROM wiki_subscriptions \
+         WHERE project_id = ? AND subscriber = ? \
+         ORDER BY created_at"
+    );
+    let query = pool.prepare_query(&sql);
+    let rows = sqlx::query(&query)
+        .bind(project_id)
+        .bind(subscriber)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list wiki subscriptions failed: {e}")))?;
+    rows.into_iter().map(parse_subscription_row).collect()
+}
+
+fn parse_subscription_row(row: sqlx::any::AnyRow) -> Result<WikiSubscription, SchedulerError> {
+    Ok(WikiSubscription {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        subscriber: row.get("subscriber"),
+        page_slug: row.get("page_slug"),
+        tag_name: row.get("tag_name"),
+        created_at: parse_timestamp(&row, "created_at")?,
+    })
+}
+
+// --- Changes feed ---
+
+pub struct WikiChange {
+    pub slug: String,
+    pub title: String,
+    pub revision_number: i64,
+    pub summary: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// List recent wiki changes (revisions) for a project.
+pub async fn list_changes(
+    pool: &DbPool,
+    project_id: &str,
+    since: Option<&str>,
+    execution_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<WikiChange>, SchedulerError> {
+    let created_fmt = pool
+        .format_timestamp(TimestampColumn::CreatedAt)
+        .replace("created_at", "r.created_at");
+
+    let mut sql = format!(
+        "SELECT p.slug, r.title, r.revision_number, r.summary, r.created_by, \
+         {created_fmt} as created_at \
+         FROM wiki_page_revisions r \
+         JOIN wiki_pages p ON p.id = r.page_id \
+         WHERE p.project_id = ? AND p.deleted_at IS NULL"
+    );
+
+    let mut binds: Vec<String> = vec![project_id.to_string()];
+
+    if let Some(since_ts) = since {
+        if pool.is_postgres() {
+            sql.push_str(" AND r.created_at >= ?::timestamptz");
+        } else {
+            // SQLite stores CURRENT_TIMESTAMP as 'YYYY-MM-DD HH:MM:SS'.
+            // Clients send RFC3339 (with 'T' and timezone) — normalize both via datetime().
+            sql.push_str(" AND datetime(r.created_at) >= datetime(?)");
+        }
+        binds.push(since_ts.to_string());
+    }
+
+    if let Some(exec_id) = execution_id {
+        sql.push_str(" AND r.created_by IN (SELECT id FROM sessions WHERE execution_id = ?)");
+        binds.push(exec_id.to_string());
+    }
+
+    sql.push_str(&format!(
+        " ORDER BY r.created_at DESC, r.revision_number DESC LIMIT {limit}"
+    ));
+
+    let query = pool.prepare_query(&sql);
+    let mut q = sqlx::query(&query);
+    for b in &binds {
+        q = q.bind(b);
+    }
+
+    let rows = q
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list wiki changes failed: {e}")))?;
+
+    rows.into_iter().map(parse_change_row).collect()
+}
+
+fn parse_change_row(row: sqlx::any::AnyRow) -> Result<WikiChange, SchedulerError> {
+    Ok(WikiChange {
+        slug: row.get("slug"),
+        title: row.get("title"),
+        revision_number: row.get("revision_number"),
+        summary: row.get("summary"),
+        created_by: row.get("created_by"),
+        created_at: parse_timestamp(&row, "created_at")?,
+    })
+}
+
+// --- Export ---
+
+pub struct WikiPageExport {
+    pub slug: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// Export all non-deleted wiki pages for a project.
+pub async fn export_pages(
+    pool: &DbPool,
+    project_id: &str,
+) -> Result<Vec<WikiPageExport>, SchedulerError> {
+    let query = pool.prepare_query(
+        "SELECT slug, title, body FROM wiki_pages \
+         WHERE project_id = ? AND deleted_at IS NULL \
+         ORDER BY slug",
+    );
+    let rows = sqlx::query(&query)
+        .bind(project_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("export wiki pages failed: {e}")))?;
+
+    Ok(rows
+        .iter()
+        .map(|r| WikiPageExport {
+            slug: r.get("slug"),
+            title: r.get("title"),
+            body: r.get("body"),
+        })
+        .collect())
+}

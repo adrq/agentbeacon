@@ -22,6 +22,11 @@ EXPECTED_TABLES = [
     "events",
     "artifacts",
     "task_queue",
+    "wiki_pages",
+    "wiki_page_revisions",
+    "wiki_tags",
+    "wiki_page_tags",
+    "wiki_subscriptions",
 ]
 
 EXPECTED_COLUMNS = {
@@ -113,6 +118,39 @@ EXPECTED_COLUMNS = {
     "task_queue": ["id", "execution_id", "session_id", "task_payload", "queued_at"],
     "config": ["name", "value", "created_at", "updated_at"],
     "schema_migrations": ["version", "applied_at"],
+    "wiki_pages": [
+        "id",
+        "project_id",
+        "slug",
+        "title",
+        "body",
+        "revision_number",
+        "created_by",
+        "updated_by",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+    ],
+    "wiki_page_revisions": [
+        "id",
+        "page_id",
+        "title",
+        "body",
+        "revision_number",
+        "summary",
+        "created_by",
+        "created_at",
+    ],
+    "wiki_tags": ["id", "name"],
+    "wiki_page_tags": ["page_id", "tag_id"],
+    "wiki_subscriptions": [
+        "id",
+        "project_id",
+        "subscriber",
+        "page_slug",
+        "tag_name",
+        "created_at",
+    ],
 }
 
 

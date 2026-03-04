@@ -103,7 +103,6 @@ async fn handle_delegate(
     validate_tool_args(&DELEGATE_VALIDATOR, &args)?;
     let agent_name = args["agent"].as_str().unwrap();
     let prompt = args["prompt"].as_str().unwrap();
-    let resume_session_id = args.get("session_id").and_then(|v| v.as_str());
     let explicit_cwd = args.get("cwd").and_then(|v| v.as_str());
 
     // Look up agent by name
@@ -182,94 +181,58 @@ async fn handle_delegate(
         }
     }
 
-    let (child_session_id, child_slug) = if let Some(existing_id) = resume_session_id {
-        // Resume existing session — verify it belongs to this execution and this lead
-        let existing = db::sessions::get_by_id(&state.db_pool, existing_id)
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-        if existing.execution_id != auth.execution_id {
-            return Err(JsonRpcError::invalid_params(
-                "session does not belong to this execution",
-            ));
-        }
-        if existing.parent_session_id.as_deref() != Some(&auth.session_id) {
-            return Err(JsonRpcError::invalid_params(
-                "session is not a child of this session",
-            ));
-        }
-        if existing.agent_id != agent.id {
-            return Err(JsonRpcError::invalid_params(
-                "session belongs to a different agent",
-            ));
-        }
-
-        // Reset status to submitted (cwd not updated on resume)
-        db::sessions::update_status(&state.db_pool, existing_id, "submitted")
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-        // Fallback for pre-migration sessions with empty slugs
-        let slug = if existing.slug.is_empty() {
-            existing_id[..existing_id.len().min(8)].to_string()
-        } else {
-            existing.slug.clone()
-        };
-        (existing_id.to_string(), slug)
-    } else {
-        // Atomic width-guarded creation with slug collision retry.
-        let new_id = Uuid::new_v4().to_string();
-        let mut existing_slugs = db::sessions::sibling_slugs(&state.db_pool, &auth.session_id)
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-        let mut slug = crate::slugs::generate_slug(&existing_slugs);
-        let mut created = false;
-        for _ in 0..3 {
-            match db::sessions::create_with_width_guard(
-                &state.db_pool,
-                &new_id,
-                &auth.execution_id,
-                &agent.id,
-                &auth.session_id,
-                child_cwd.as_deref(),
-                None, // worktree_path (None for child MVP)
-                auth.max_width,
-                &slug,
-            )
-            .await
-            {
-                Ok(true) => {
-                    created = true;
-                    break;
-                }
-                Ok(false) => {
-                    // Width limit reached — no retry will help
-                    return Err(JsonRpcError::invalid_params(&format!(
-                        "Cannot delegate: maximum active children ({}) reached. \
-                         Release idle children or wait for completions.",
-                        auth.max_width
-                    )));
-                }
-                Err(SchedulerError::Database(msg))
-                    if msg.to_lowercase().contains("unique")
-                        || msg.to_lowercase().contains("duplicate key") =>
-                {
-                    // Slug collision — regenerate and retry
-                    existing_slugs = db::sessions::sibling_slugs(&state.db_pool, &auth.session_id)
-                        .await
-                        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-                    slug = crate::slugs::generate_slug(&existing_slugs);
-                }
-                Err(e) => return Err(JsonRpcError::internal_error(&e.to_string())),
+    // Atomic width-guarded creation with slug collision retry.
+    let new_id = Uuid::new_v4().to_string();
+    let mut existing_slugs = db::sessions::sibling_slugs(&state.db_pool, &auth.session_id)
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    let mut slug = crate::slugs::generate_slug(&existing_slugs);
+    let mut created = false;
+    for _ in 0..3 {
+        match db::sessions::create_with_width_guard(
+            &state.db_pool,
+            &new_id,
+            &auth.execution_id,
+            &agent.id,
+            &auth.session_id,
+            child_cwd.as_deref(),
+            None, // worktree_path (None for child MVP)
+            auth.max_width,
+            &slug,
+        )
+        .await
+        {
+            Ok(true) => {
+                created = true;
+                break;
             }
+            Ok(false) => {
+                // Width limit reached — no retry will help
+                return Err(JsonRpcError::invalid_params(&format!(
+                    "Cannot delegate: maximum active children ({}) reached. \
+                     Release idle children or wait for completions.",
+                    auth.max_width
+                )));
+            }
+            Err(SchedulerError::Database(msg))
+                if msg.to_lowercase().contains("unique")
+                    || msg.to_lowercase().contains("duplicate key") =>
+            {
+                // Slug collision — regenerate and retry
+                existing_slugs = db::sessions::sibling_slugs(&state.db_pool, &auth.session_id)
+                    .await
+                    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+                slug = crate::slugs::generate_slug(&existing_slugs);
+            }
+            Err(e) => return Err(JsonRpcError::internal_error(&e.to_string())),
         }
-        if !created {
-            return Err(JsonRpcError::internal_error(
-                "create child session failed: slug collision after 3 retries",
-            ));
-        }
-        (new_id, slug)
-    };
+    }
+    if !created {
+        return Err(JsonRpcError::internal_error(
+            "create child session failed: slug collision after 3 retries",
+        ));
+    }
+    let (child_session_id, child_slug) = (new_id, slug);
 
     // Determine child's role based on depth
     let child_depth = auth.depth + 1;
@@ -406,7 +369,7 @@ async fn handle_release(
             _ => JsonRpcError::internal_error(&e.to_string()),
         })?;
 
-    // Defense-in-depth: verify same execution (consistent with delegate resume path)
+    // Defense-in-depth: verify same execution
     if target.execution_id != auth.execution_id {
         return Err(JsonRpcError::invalid_params(
             "session does not belong to this execution",
@@ -642,10 +605,6 @@ fn delegate_schema() -> JsonValue {
                 "prompt": {
                     "type": "string",
                     "description": "Task description for the child agent"
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": "Resume existing session (optional)"
                 },
                 "cwd": {
                     "type": "string",
