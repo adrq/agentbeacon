@@ -23,13 +23,14 @@ test.afterEach(async () => {
   await cleanupTestAgents();
 });
 
-test('add agent via template', async ({ page }) => {
+test('add agent via sidebar', async ({ page }) => {
   await cleanupTestAgents();
 
   await page.goto('/#/agents');
   await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Add Agent' }).click();
+  // Click Add Agent in the welcome area (scope to avoid matching sidebar button)
+  await page.locator('.agents-welcome').getByRole('button', { name: 'Add Agent' }).click();
 
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
@@ -39,10 +40,11 @@ test('add agent via template', async ({ page }) => {
   await dialog.getByRole('button', { name: 'Add' }).click();
 
   await expect(dialog).not.toBeVisible({ timeout: 5000 });
+  // Agent should appear in the sidebar list
   await expect(page.getByText('E2E Test Agent')).toBeVisible();
 });
 
-test('edit agent', async ({ page }) => {
+test('edit agent via detail view', async ({ page }) => {
   const driverId = await ensureDriver('acp');
   const agent = await apiPost('/api/agents', {
     name: 'Edit Agent',
@@ -51,11 +53,11 @@ test('edit agent', async ({ page }) => {
   });
   createdAgentIds.push(agent.id);
 
-  await page.goto('/#/agents');
-  await expect(page.getByText('Edit Agent')).toBeVisible();
+  // Navigate directly to agent detail
+  await page.goto(`/#/agents/${agent.id}`);
+  await expect(page.getByRole('heading', { name: 'Edit Agent' })).toBeVisible();
 
-  const card = page.locator('.agent-card', { hasText: 'Edit Agent' });
-  await card.getByRole('button', { name: 'Edit' }).click();
+  await page.locator('.main-content').getByRole('button', { name: 'Edit' }).click();
 
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
@@ -65,10 +67,10 @@ test('edit agent', async ({ page }) => {
   await dialog.getByRole('button', { name: 'Save' }).click();
 
   await expect(dialog).not.toBeVisible({ timeout: 5000 });
-  await expect(page.getByText('Renamed Agent')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Renamed Agent' })).toBeVisible();
 });
 
-test('delete agent', async ({ page }) => {
+test('delete agent via detail view', async ({ page }) => {
   const driverId = await ensureDriver('acp');
   const agent = await apiPost('/api/agents', {
     name: 'Delete Agent',
@@ -77,16 +79,16 @@ test('delete agent', async ({ page }) => {
   });
   createdAgentIds.push(agent.id);
 
-  await page.goto('/#/agents');
-  await expect(page.getByText('Delete Agent')).toBeVisible();
+  // Navigate directly to agent detail
+  await page.goto(`/#/agents/${agent.id}`);
+  await expect(page.getByRole('heading', { name: 'Delete Agent' })).toBeVisible();
 
-  const card = page.locator('.agent-card', { hasText: 'Delete Agent' });
-  await card.getByRole('button', { name: 'Delete' }).click();
+  await page.locator('.main-content').getByRole('button', { name: 'Delete' }).click();
 
   const alertDialog = page.getByRole('alertdialog');
   await expect(alertDialog).toBeVisible();
   await alertDialog.getByRole('button', { name: 'Delete' }).click();
 
-  await expect(alertDialog).not.toBeVisible({ timeout: 5000 });
-  await expect(page.getByText('Delete Agent')).not.toBeVisible();
+  // Should navigate back to agents welcome
+  await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible({ timeout: 5000 });
 });

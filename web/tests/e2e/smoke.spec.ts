@@ -113,11 +113,17 @@ test('turn-complete delivers child output to parent', async ({ page }) => {
 test('navigation between views', async ({ page }) => {
   await page.goto('/');
 
+  // Click Projects — sidebar swaps to ProjectList, main shows ProjectsWelcome
   await page.getByRole('button', { name: 'Projects' }).click();
-  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+  await expect(page.locator('.project-list')).toBeVisible();
+  await expect(page.getByText('Register Project')).toBeVisible();
 
+  // Click Agents — sidebar swaps to AgentList, main shows AgentsWelcome
   await page.getByRole('button', { name: 'Agents' }).click();
-  await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
+  await expect(page.locator('.agent-list')).toBeVisible();
+  await expect(page.getByText('Add Agent')).toBeVisible();
 
+  // Click Executions — sidebar swaps to ExecutionList
   await page.getByRole('button', { name: 'Executions' }).click();
+  await expect(page.locator('.exec-list')).toBeVisible();
 });

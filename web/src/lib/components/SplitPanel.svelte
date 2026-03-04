@@ -7,18 +7,20 @@
     initialLeftWidth?: number;
     minWidth?: number;
     maxWidth?: number;
+    collapsed?: boolean;
     onresize?: (data: { leftWidth: number }) => void;
     left?: Snippet;
     right?: Snippet;
   }
 
-  let { storageKey, initialLeftWidth = 50, minWidth = 20, maxWidth = 80, onresize, left, right }: Props = $props();
+  let { storageKey, initialLeftWidth = 50, minWidth = 20, maxWidth = 80, collapsed = false, onresize, left, right }: Props = $props();
 
   let leftPanelWidth = $state(initialLeftWidth);
   let isDragging = $state(false);
   let containerElement: HTMLDivElement;
 
   function handleDividerMouseDown(e: MouseEvent) {
+    if (collapsed) return;
     isDragging = true;
     e.preventDefault();
   }
@@ -44,6 +46,7 @@
   }
 
   function handleDividerKeydown(e: KeyboardEvent) {
+    if (collapsed) return;
     const step = 2;
     if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
       e.preventDefault();
@@ -80,13 +83,19 @@
 </script>
 
 <div bind:this={containerElement} class="split-panel-container" class:dragging={isDragging}>
-  <div style="width: {leftPanelWidth}%; min-width: {minWidth}%; max-width: {maxWidth}%;" class="left-panel">
+  <div
+    class="left-panel"
+    class:collapsed
+    inert={collapsed || undefined}
+    style="width: {collapsed ? 0 : leftPanelWidth}%; min-width: {collapsed ? 0 : minWidth}%; max-width: {collapsed ? 0 : maxWidth}%;"
+  >
     {#if left}{@render left()}{/if}
   </div>
 
   <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
   <div
     class="divider"
+    class:hidden-divider={collapsed}
     role="separator"
     aria-orientation="vertical"
     aria-valuenow={Math.round(leftPanelWidth)}
@@ -98,7 +107,7 @@
     onkeydown={handleDividerKeydown}
   ></div>
 
-  <div style="width: {100 - leftPanelWidth}%; min-width: {minWidth}%;" class="right-panel">
+  <div style="width: {collapsed ? 100 : 100 - leftPanelWidth}%; min-width: {collapsed ? 0 : minWidth}%;" class="right-panel">
     {#if right}{@render right()}{/if}
   </div>
 </div>
@@ -118,6 +127,16 @@
     min-height: 0;
   }
 
+  .split-panel-container:not(.dragging) .left-panel {
+    transition: width 0.2s ease, min-width 0.2s ease, max-width 0.2s ease, opacity 0.15s ease;
+  }
+
+  .left-panel.collapsed {
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+
   .divider {
     width: 8px;
     cursor: col-resize;
@@ -128,6 +147,10 @@
     border: none;
     padding: 0;
     outline: none;
+  }
+
+  .hidden-divider {
+    display: none;
   }
 
   .divider:focus-visible::after {

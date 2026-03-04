@@ -29,7 +29,7 @@ test('filter execution list by project', async ({ page }) => {
     title: 'Exec B',
     project_id: projectB.id,
   });
-  await page.goto('/');
+  await page.goto('/#/executions');
 
   const execList = page.locator('.exec-list, .execution-list, main');
 

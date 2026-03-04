@@ -1,10 +1,14 @@
-import type { Screen } from '../types';
-import { currentScreen, selectedExecutionId, selectedProjectId } from '../stores/appState';
+import type { NavSection } from '../types';
+import {
+  activeSection, sidebarOpen, selectedExecutionId,
+  selectedProjectId, selectedAgentId,
+} from '../stores/appState';
 
 interface RouteState {
-  screen: Screen;
+  section: NavSection;
   executionId: string | null;
   projectId: string | null;
+  agentId: string | null;
 }
 
 type RouteChangeCallback = (route: RouteState) => void;
@@ -22,30 +26,41 @@ class HashRouter {
 
     const execMatch = cleanHash.match(/^execution\/([^/]+)$/);
     if (execMatch) {
-      return { screen: 'ExecutionDetail', executionId: execMatch[1], projectId: null };
+      return { section: 'executions', executionId: execMatch[1], projectId: null, agentId: null };
+    }
+
+    if (cleanHash === 'executions') {
+      return { section: 'executions', executionId: null, projectId: null, agentId: null };
     }
 
     const projectDetailMatch = cleanHash.match(/^projects\/([^/]+)$/);
     if (projectDetailMatch) {
-      return { screen: 'ProjectDetail', executionId: null, projectId: projectDetailMatch[1] };
+      return { section: 'projects', executionId: null, projectId: projectDetailMatch[1], agentId: null };
     }
 
     if (cleanHash === 'projects') {
-      return { screen: 'Projects', executionId: null, projectId: null };
+      return { section: 'projects', executionId: null, projectId: null, agentId: null };
+    }
+
+    const agentDetailMatch = cleanHash.match(/^agents\/([^/]+)$/);
+    if (agentDetailMatch) {
+      return { section: 'agents', executionId: null, projectId: null, agentId: agentDetailMatch[1] };
     }
 
     if (cleanHash === 'agents') {
-      return { screen: 'Agents', executionId: null, projectId: null };
+      return { section: 'agents', executionId: null, projectId: null, agentId: null };
     }
 
-    return { screen: 'Home', executionId: null, projectId: null };
+    return { section: 'home', executionId: null, projectId: null, agentId: null };
   }
 
   private handleRouteChange() {
     const route = this.parseHash(window.location.hash);
-    currentScreen.set(route.screen);
+    activeSection.set(route.section);
+    sidebarOpen.set(route.section !== 'home');
     selectedExecutionId.set(route.executionId);
     selectedProjectId.set(route.projectId);
+    selectedAgentId.set(route.agentId);
     this.callbacks.forEach(cb => cb(route));
   }
 

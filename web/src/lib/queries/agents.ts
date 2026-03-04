@@ -8,6 +8,14 @@ export function agentsQuery() {
   }));
 }
 
+export function agentDetailQuery(id: () => string | null) {
+  return createQuery(() => ({
+    queryKey: ['agent', id()],
+    queryFn: () => api.getAgent(id()!),
+    enabled: !!id(),
+  }));
+}
+
 export function driversQuery() {
   return createQuery(() => ({
     queryKey: ['drivers'],
@@ -68,8 +76,9 @@ export function updateAgentMutation() {
         enabled?: boolean;
       };
     }) => api.updateAgent(args.id, args.req),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['agents'] });
+      queryClient.invalidateQueries({ queryKey: ['agent', variables.id] });
     },
   }));
 }
@@ -78,8 +87,9 @@ export function deleteAgentMutation() {
   const queryClient = useQueryClient();
   return createMutation(() => ({
     mutationFn: (id: string) => api.deleteAgent(id),
-    onSuccess: () => {
+    onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: ['agents'] });
+      queryClient.invalidateQueries({ queryKey: ['agent', id] });
     },
   }));
 }

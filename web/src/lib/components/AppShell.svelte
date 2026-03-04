@@ -1,6 +1,6 @@
 <script lang="ts">
   import { get } from 'svelte/store';
-  import { currentScreen, selectedExecutionId, selectedProjectId, actionPanelCollapsed, userExplicitlyCollapsed, homeFeedFilter } from '../stores/appState';
+  import { activeSection, sidebarOpen, selectedExecutionId, selectedProjectId, selectedAgentId, actionPanelCollapsed, userExplicitlyCollapsed, homeFeedFilter } from '../stores/appState';
   import { decisionCount } from '../stores/questionState';
   import { executionsQuery } from '../queries/executions';
   import AppHeader from './AppHeader.svelte';
@@ -14,9 +14,12 @@
   import OpsSummary from './OpsSummary.svelte';
   import ActionPanel from './ActionPanel.svelte';
   import NewExecutionModal from './NewExecutionModal.svelte';
-  import ProjectsView from './ProjectsView.svelte';
+  import ProjectList from './ProjectList.svelte';
   import ProjectDetail from './ProjectDetail.svelte';
-  import AgentsView from './AgentsView.svelte';
+  import AgentList from './AgentList.svelte';
+  import AgentDetail from './AgentDetail.svelte';
+  import AgentsWelcome from './AgentsWelcome.svelte';
+  import ProjectsWelcome from './ProjectsWelcome.svelte';
   import QuestionStateProvider from './QuestionStateProvider.svelte';
 
   let showNewModal = $state(false);
@@ -32,7 +35,8 @@
     return () => mql.removeEventListener('change', handler);
   });
 
-  let effectiveCollapsed = $derived(isTablet || $actionPanelCollapsed);
+  let isHome = $derived($activeSection === 'home');
+  let effectiveCollapsed = $derived(isHome ? false : (isTablet || $actionPanelCollapsed));
 
   const execsQuery = executionsQuery();
   let hasExecutions = $derived((execsQuery.data ?? []).length > 0);
@@ -53,7 +57,7 @@
   }
 
   function toggleActionPanel() {
-    if (isTablet) return; // No-op: panel is force-collapsed at tablet width
+    if (isTablet || isHome) return;
     actionPanelCollapsed.update(v => {
       const next = !v;
       if (next) {
@@ -87,9 +91,10 @@
     document.title = count > 0 ? `(${count}) AgentBeacon` : 'AgentBeacon';
   });
 
-  // Reset home feed filter when navigating away from Home
+  // Reset home feed filter when navigating away from Home and Executions
   $effect(() => {
-    if ($currentScreen !== 'Home') {
+    const s = $activeSection;
+    if (s !== 'home' && s !== 'executions') {
       homeFeedFilter.set(null);
     }
   });
@@ -107,29 +112,54 @@
 
 <div class="shell-body">
   <NavRail onToggleDecisions={toggleActionPanel} panelOpen={!effectiveCollapsed} />
-  <SplitPanel storageKey="agentbeacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35}>
+  <SplitPanel storageKey="agentbeacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35} collapsed={!$sidebarOpen}>
     {#snippet left()}
       <div class="sidebar">
-        <ExecutionList />
+        <div class="sidebar-panel" class:hidden={$activeSection !== 'executions'}>
+          <ExecutionList />
+        </div>
+        <div class="sidebar-panel" class:hidden={$activeSection !== 'projects'}>
+          <ProjectList />
+        </div>
+        <div class="sidebar-panel" class:hidden={$activeSection !== 'agents'}>
+          <AgentList />
+        </div>
       </div>
     {/snippet}
     {#snippet right()}
       <div class="main-content" id="main-content" tabindex="-1">
-        {#if $currentScreen === 'ExecutionDetail' && $selectedExecutionId}
-          <ExecutionDetail executionId={$selectedExecutionId} onrerun={handleRerun} />
-        {:else if $currentScreen === 'Projects'}
-          <ProjectsView />
-        {:else if $currentScreen === 'ProjectDetail' && $selectedProjectId}
-          <ProjectDetail projectId={$selectedProjectId} />
-        {:else if $currentScreen === 'Agents'}
-          <AgentsView />
-        {:else if hasExecutions}
-          <div class="home-view scroll-thin">
-            <OpsSummary executions={execsQuery.data ?? []} />
-            <ActivityFeed executions={execsQuery.data ?? []} />
-          </div>
-        {:else}
-          <EmptyState />
+        {#if $activeSection === 'home'}
+          {#if hasExecutions}
+            <div class="home-view scroll-thin">
+              <OpsSummary executions={execsQuery.data ?? []} />
+              <ActivityFeed executions={execsQuery.data ?? []} />
+            </div>
+          {:else}
+            <EmptyState />
+          {/if}
+        {:else if $activeSection === 'executions'}
+          {#if $selectedExecutionId}
+            <ExecutionDetail executionId={$selectedExecutionId} onrerun={handleRerun} />
+          {:else if hasExecutions}
+            <div class="home-view scroll-thin">
+              <OpsSummary executions={execsQuery.data ?? []} />
+              <ActivityFeed executions={execsQuery.data ?? []} />
+            </div>
+          {:else}
+            <EmptyState />
+          {/if}
+        {:else if $activeSection === 'projects'}
+          {#if $selectedProjectId}
+            <ProjectDetail projectId={$selectedProjectId} />
+          {:else}
+            <ProjectsWelcome />
+          {/if}
+        {:else if $activeSection === 'agents'}
+          {#if $selectedAgentId}
+            <AgentDetail agentId={$selectedAgentId} />
+          {:else}
+            <AgentsWelcome />
+          {/if}
         {/if}
       </div>
     {/snippet}
@@ -157,6 +187,15 @@
     height: 100%;
     overflow-y: auto;
     border-right: 1px solid hsl(var(--border));
+  }
+
+  .sidebar-panel {
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  .sidebar-panel.hidden {
+    display: none;
   }
 
   .main-content {

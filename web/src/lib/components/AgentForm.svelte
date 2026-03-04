@@ -2,14 +2,8 @@
   import { Dialog } from 'bits-ui';
   import type { Agent } from '../types';
   import { createAgentMutation, updateAgentMutation, driversQuery, createDriverMutation } from '../queries/agents';
+  import type { AgentTemplate } from '../utils/agentUtils';
   import Button from './ui/button.svelte';
-
-  interface AgentTemplate {
-    name: string;
-    platform: string;
-    description: string;
-    config: Record<string, unknown>;
-  }
 
   interface Props {
     agent?: Agent | null;

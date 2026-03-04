@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { currentScreen } from '../stores/appState';
+  import { activeSection, sidebarOpen } from '../stores/appState';
   import { decisionCount } from '../stores/questionState';
+  import { router } from '../router';
+  import type { NavSection } from '../types';
 
   interface Props {
     onToggleDecisions?: () => void;
@@ -9,28 +11,44 @@
 
   let { onToggleDecisions, panelOpen = false }: Props = $props();
 
-  const navItems: { label: string; icon: string; screens: string[]; hash: string }[] = [
-    { label: 'Executions', icon: 'list', screens: ['Home', 'ExecutionDetail'], hash: '#/' },
-    { label: 'Projects', icon: 'folder', screens: ['Projects', 'ProjectDetail'], hash: '#/projects' },
-    { label: 'Agents', icon: 'bot', screens: ['Agents'], hash: '#/agents' },
+  const sectionItems: { label: string; section: NavSection }[] = [
+    { label: 'Home', section: 'home' },
+    { label: 'Executions', section: 'executions' },
+    { label: 'Projects', section: 'projects' },
+    { label: 'Agents', section: 'agents' },
   ];
 
-  function navigate(hash: string) {
-    window.location.hash = hash;
+  function handleNavClick(section: NavSection) {
+    if (section === 'home') {
+      router.navigate('#/');
+      return;
+    }
+    if ($activeSection === section && $sidebarOpen) {
+      sidebarOpen.set(false);
+    } else if ($activeSection === section && !$sidebarOpen) {
+      sidebarOpen.set(true);
+    } else {
+      router.navigate(`#/${section}`);
+    }
   }
 </script>
 
 <nav class="nav-rail" aria-label="Main navigation">
-  {#each navItems as item}
+  {#each sectionItems as item}
     <button
       class="nav-rail-item"
-      class:active={item.screens.includes($currentScreen)}
+      class:active={$activeSection === item.section}
+      class:home-item={item.section === 'home'}
       aria-label={item.label}
       title={item.label}
-      aria-current={item.screens.includes($currentScreen) ? 'page' : undefined}
-      onclick={() => navigate(item.hash)}
+      aria-current={$activeSection === item.section ? 'page' : undefined}
+      onclick={() => handleNavClick(item.section)}
     >
-      {#if item.icon === 'list'}
+      {#if item.section === 'home'}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+        </svg>
+      {:else if item.section === 'executions'}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="8" y1="6" x2="21" y2="6" />
           <line x1="8" y1="12" x2="21" y2="12" />
@@ -39,11 +57,11 @@
           <line x1="3" y1="12" x2="3.01" y2="12" />
           <line x1="3" y1="18" x2="3.01" y2="18" />
         </svg>
-      {:else if item.icon === 'folder'}
+      {:else if item.section === 'projects'}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
-      {:else if item.icon === 'bot'}
+      {:else if item.section === 'agents'}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="11" width="18" height="10" rx="2" />
           <circle cx="12" cy="5" r="2" />
@@ -124,6 +142,10 @@
     height: 20px;
     border-radius: 0 2px 2px 0;
     background: hsl(var(--primary));
+  }
+
+  .nav-rail-item.home-item.active::before {
+    display: none;
   }
 
   .nav-rail-item svg {

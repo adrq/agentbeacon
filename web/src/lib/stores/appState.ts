@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { Screen, Theme } from '../types';
+import type { Theme, NavSection } from '../types';
 
 function createThemeStore() {
   const getInitialTheme = (): Theme => {
@@ -33,9 +33,11 @@ function createThemeStore() {
 }
 
 export const theme = createThemeStore();
-export const currentScreen = writable<Screen>('Home');
+export const activeSection = writable<NavSection>('home');
+export const sidebarOpen = writable<boolean>(false);
 export const selectedExecutionId = writable<string | null>(null);
 export const selectedProjectId = writable<string | null>(null);
+export const selectedAgentId = writable<string | null>(null);
 export const selectedFilterProjectId = writable<string | null>(null);
 
 function createPersistedBoolStore(key: string, defaultValue: boolean) {

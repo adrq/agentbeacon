@@ -116,6 +116,10 @@ export class AgentBeaconAPI {
     return this.fetchJSON<Agent[]>('/agents');
   }
 
+  async getAgent(id: string): Promise<Agent> {
+    return this.fetchJSON<Agent>(`/agents/${id}`);
+  }
+
   async createAgent(req: {
     name: string;
     description?: string | null;

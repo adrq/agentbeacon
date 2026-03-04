@@ -14,6 +14,7 @@ test('nav rail renders with navigation and decisions toggle', async ({ page }) =
   const nav = page.getByRole('navigation', { name: 'Main navigation' });
   await expect(nav).toBeVisible();
 
+  await expect(nav.getByRole('button', { name: 'Home' })).toBeVisible();
   await expect(nav.getByRole('button', { name: 'Executions' })).toBeVisible();
   await expect(nav.getByRole('button', { name: 'Projects' })).toBeVisible();
   await expect(nav.getByRole('button', { name: 'Agents' })).toBeVisible();
@@ -21,7 +22,8 @@ test('nav rail renders with navigation and decisions toggle', async ({ page }) =
 });
 
 test('action panel collapses when no decisions pending', async ({ page }) => {
-  await page.goto('/');
+  // Navigate to executions (not home — home forces ActionPanel open)
+  await page.goto('/#/executions');
 
   const panel = page.getByRole('complementary', { name: 'Decisions panel' });
   await expect(panel).toBeVisible();
@@ -59,7 +61,8 @@ test('execution search filters the list', async ({ page }) => {
   await createExecution(agent.id, 'first task', 'Alpha Search');
   await createExecution(agent.id, 'second task', 'Beta Search');
 
-  await page.goto('/');
+  // Navigate to executions (not home — home has sidebar collapsed)
+  await page.goto('/#/executions');
 
   // Scope to the sidebar (contains search + execution list)
   const sidebar = page.locator('.sidebar');

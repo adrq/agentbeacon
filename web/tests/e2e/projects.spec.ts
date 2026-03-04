@@ -33,16 +33,14 @@ test.afterEach(async () => {
 test('register a project via UI', async ({ page }) => {
   await cleanupTestProjects();
 
-  // Unique path that actually exists on disk — avoids both:
-  // (a) "another project uses this path" warning (keeps dialog open)
-  // (b) "path does not exist" validation error (backend canonicalize fails)
   const uniquePath = `/tmp/e2e-project-${Date.now()}`;
   fs.mkdirSync(uniquePath, { recursive: true });
   createdTempDirs.push(uniquePath);
 
   await page.goto('/#/projects');
 
-  await page.getByRole('button', { name: 'Register Project' }).click();
+  // Click Register Project in the welcome area (scope to avoid matching sidebar button)
+  await page.locator('.projects-welcome').getByRole('button', { name: 'Register Project' }).click();
 
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
@@ -52,18 +50,20 @@ test('register a project via UI', async ({ page }) => {
   await dialog.getByRole('button', { name: 'Register' }).click();
 
   await expect(dialog).not.toBeVisible({ timeout: 5000 });
-  await expect(page.locator('.project-card', { hasText: 'E2E Test Project' })).toBeVisible();
+  // Project should appear in the sidebar list
+  await expect(page.locator('.project-list').getByText('E2E Test Project')).toBeVisible();
 });
 
-test('navigate to project detail', async ({ page }) => {
+test('navigate to project detail via sidebar', async ({ page }) => {
   const project = await apiPost('/api/projects', { name: 'Detail Test', path: '/tmp' });
   createdProjectIds.push(project.id);
 
   await page.goto('/#/projects');
-  await page.locator('.project-card', { hasText: 'Detail Test' }).first().click();
+  // Click project in the sidebar list
+  await page.getByRole('button', { name: /Detail Test/ }).first().click();
 
   await expect(page.getByRole('heading', { name: 'Detail Test' })).toBeVisible();
-  await expect(page.getByText('/tmp')).toBeVisible();
+  await expect(page.locator('.main-content').getByText('/tmp')).toBeVisible();
 });
 
 test('edit project', async ({ page }) => {
@@ -73,7 +73,7 @@ test('edit project', async ({ page }) => {
   await page.goto(`/#/projects/${project.id}`);
   await expect(page.getByRole('heading', { name: 'Edit Me' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Edit' }).click();
+  await page.locator('.main-content').getByRole('button', { name: 'Edit' }).click();
 
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
@@ -93,11 +93,12 @@ test('delete project', async ({ page }) => {
   await page.goto(`/#/projects/${project.id}`);
   await expect(page.getByRole('heading', { name: 'Delete Me' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Delete' }).click();
+  await page.locator('.main-content').getByRole('button', { name: 'Delete' }).click();
 
   const alertDialog = page.getByRole('alertdialog');
   await expect(alertDialog).toBeVisible();
   await alertDialog.getByRole('button', { name: 'Delete' }).click();
 
+  // Should navigate back to projects welcome
   await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible({ timeout: 5000 });
 });
