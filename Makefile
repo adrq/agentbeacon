@@ -17,7 +17,7 @@ build-frontend: npm-install
 	cd web && npm run build
 
 # Build Rust binaries and install to bin/
-build: build install-bins
+build: install-bins
 
 # Build all Rust workspace binaries in release mode
 build-rust-workspace:
@@ -59,7 +59,7 @@ test-rust: all
 # Build Rust binaries and run Python integration tests
 test-int: all
 	@echo "Running Python integration tests with Rust binaries..."
-	uv run pytest -v tests
+	uv run pytest -n4 -v tests
 
 # Boot system, seed agents, run Playwright E2E tests, tear down
 test-e2e: all
@@ -70,7 +70,7 @@ test-all: test-rust test-int test-e2e
 	@echo "All tests passed successfully!"
 
 # Run target
-run: build
+run: all
 	@echo "Starting AgentBeacon on port $${AGENTBEACON_PORT:-9456}..."
 	./bin/agentbeacon --scheduler-port $${AGENTBEACON_PORT:-9456}
 

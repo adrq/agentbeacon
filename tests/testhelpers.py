@@ -34,111 +34,46 @@ import yaml
 class PortManager:
     """Thread-safe port allocation manager for test isolation.
 
-    Allocates ports from different ranges for different process types:
-    - Scheduler: 19456-19700
-    - Agents: 18700-18799
-
-    Provides socket-based availability checking to avoid conflicts.
+    Uses OS-assigned ephemeral ports (bind to port 0) to eliminate
+    cross-process TOCTOU races that occur when scanning a fixed range.
+    The OS picks from ~28K ephemeral ports, making collisions near-impossible.
     """
-
-    SCHEDULER_MIN_PORT = 19456
-    SCHEDULER_MAX_PORT = 19700
-    AGENT_MIN_PORT = 18700
-    AGENT_MAX_PORT = 18799
-
-    # Legacy aliases for backward compatibility
-    MIN_PORT = SCHEDULER_MIN_PORT
-    MAX_PORT = SCHEDULER_MAX_PORT
 
     def __init__(self):
         self._lock = threading.Lock()
         self._allocated: Set[int] = set()
 
-    def allocate_port(self, min_port: int = None, max_port: int = None) -> int:
-        """Allocate an unused port from specified or default range.
-
-        Args:
-            min_port: Minimum port in range (defaults to SCHEDULER_MIN_PORT)
-            max_port: Maximum port in range (defaults to SCHEDULER_MAX_PORT)
-
-        Returns:
-            int: Allocated port number
-
-        Raises:
-            RuntimeError: If no ports are available
-        """
-        if min_port is None:
-            min_port = self.SCHEDULER_MIN_PORT
-        if max_port is None:
-            max_port = self.SCHEDULER_MAX_PORT
-
+    def allocate_port(self) -> int:
+        """Allocate a free port using OS ephemeral assignment."""
         with self._lock:
-            for port in range(min_port, max_port + 1):
-                if port not in self._allocated and self._is_port_available(port):
+            for _ in range(10):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+                sock.close()
+                if port not in self._allocated:
                     self._allocated.add(port)
                     return port
-            raise RuntimeError(f"No available ports in range {min_port}-{max_port}")
+            raise RuntimeError("Failed to allocate unique port after 10 attempts")
 
     def allocate_scheduler_port(self) -> int:
-        """Allocate a port from the scheduler range (19456-19500).
-
-        Returns:
-            int: Allocated scheduler port
-        """
-        return self.allocate_port(self.SCHEDULER_MIN_PORT, self.SCHEDULER_MAX_PORT)
+        return self.allocate_port()
 
     def allocate_agent_port(self) -> int:
-        """Allocate a port from the agent range (18700-18799).
-
-        Returns:
-            int: Allocated agent port
-        """
-        return self.allocate_port(self.AGENT_MIN_PORT, self.AGENT_MAX_PORT)
+        return self.allocate_port()
 
     def release_port(self, port: int) -> None:
-        """Release a previously allocated port.
-
-        Args:
-            port: Port number to release
-        """
         with self._lock:
             self._allocated.discard(port)
 
     @contextmanager
     def port_context(self, port_type: str = "scheduler"):
-        """Context manager for automatic port cleanup.
-
-        Args:
-            port_type: Type of port to allocate ("scheduler" or "agent")
-
-        Yields:
-            int: Allocated port number
-        """
-        if port_type == "agent":
-            port = self.allocate_agent_port()
-        else:
-            port = self.allocate_scheduler_port()
-
+        """Context manager for automatic port allocation and cleanup."""
+        port = self.allocate_port()
         try:
             yield port
         finally:
             self.release_port(port)
-
-    def _is_port_available(self, port: int) -> bool:
-        """Check if a port is available by attempting to bind to it.
-
-        Args:
-            port: Port number to check
-
-        Returns:
-            bool: True if port is available
-        """
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.bind(("127.0.0.1", port))
-                return True
-        except OSError:
-            return False
 
 
 class TempDatabase:
@@ -509,16 +444,20 @@ def cleanup_files(paths: Iterable[str]) -> None:
             pass
 
 
-def start_mock_agent_a2a(port: int = 18765, base_dir: Path = None) -> subprocess.Popen:
-    """Start the mock agent A2A HTTP server on the specified port.
+def start_mock_agent_a2a(
+    port: int = None, base_dir: Path = None
+) -> tuple[subprocess.Popen, int]:
+    """Start the mock agent A2A HTTP server.
 
     Args:
-        port: Port number for the A2A server to listen on (default: 18765)
+        port: Port number (auto-allocated if None)
         base_dir: Base directory for the project (defaults to current working directory)
 
     Returns:
-        subprocess.Popen: The mock agent process
+        tuple: (process, port)
     """
+    if port is None:
+        port = PortManager().allocate_port()
     if base_dir is None:
         base_dir = Path.cwd()
 
@@ -537,29 +476,31 @@ def start_mock_agent_a2a(port: int = 18765, base_dir: Path = None) -> subprocess
         text=True,
         cwd=base_dir,
     )
-    return agent_proc
+    return agent_proc, port
 
 
 def start_and_wait_for_a2a_agent(
-    port: int = 18765,
+    port: int = None,
     base_dir: Path = None,
     timeout: float = 10,
     config_file: str = None,
-) -> subprocess.Popen:
+) -> tuple[subprocess.Popen, int]:
     """Start A2A mock agent and wait for it to be ready.
 
     Args:
-        port: Port number for the A2A server (default: 18765)
+        port: Port number (auto-allocated if None)
         base_dir: Base directory for the project (defaults to current working directory)
         timeout: Maximum time to wait for agent to be ready (default: 10s)
         config_file: Optional config file for custom responses (e.g., "test-config-responses.json")
 
     Returns:
-        subprocess.Popen: The mock agent process
+        tuple: (process, port)
 
     Raises:
         AssertionError: If agent fails to start within timeout
     """
+    if port is None:
+        port = PortManager().allocate_port()
     if base_dir is None:
         base_dir = Path.cwd()
 
@@ -582,7 +523,7 @@ def start_and_wait_for_a2a_agent(
         agent_proc.kill()
         raise AssertionError(f"Mock agent A2A server did not start on port {port}")
 
-    return agent_proc
+    return agent_proc, port
 
 
 def start_mock_scheduler(port: int, base_dir: Path = None) -> subprocess.Popen:

@@ -13,7 +13,26 @@ from tests.testhelpers import (
     seed_test_agent,
 )
 
-SHORT_GRACE = {"AGENTBEACON_RECOVERY_GRACE_SECS": "3"}
+SHORT_GRACE = {"AGENTBEACON_RECOVERY_GRACE_SECS": "1"}
+
+# Scheduler clamps grace to max(3) internally. Wait past that + margin
+# so negative tests actually prove recovery was skipped by predicate.
+NEGATIVE_WAIT = 5
+
+
+def _wait_for_recovery(db_url, session_id, timeout=5, interval=0.15):
+    """Poll until recovery scan mutates session state or attempts counter."""
+    baseline = _get_session(db_url, session_id)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current = _get_session(db_url, session_id)
+        if (
+            current["status"] != baseline["status"]
+            or current["recovery_attempts"] != baseline["recovery_attempts"]
+        ):
+            return current
+        time.sleep(interval)
+    return _get_session(db_url, session_id)
 
 
 def _worker_sync(url, payload=None, timeout=10):
@@ -62,6 +81,17 @@ def _get_task_queue_payload(db_url, session_id):
     if row is None:
         return None
     return json.loads(row[0])
+
+
+def _wait_for_task_payload(db_url, session_id, timeout=5, interval=0.15):
+    """Poll until task_queue has a payload for the session."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        payload = _get_task_queue_payload(db_url, session_id)
+        if payload is not None:
+            return payload
+        time.sleep(interval)
+    return None
 
 
 def _backdate_session(db_url, session_id):
@@ -117,8 +147,7 @@ def test_recovery_resubmits_working_session(test_database):
 
     # Restart scheduler against same DB
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
-        session = _get_session(ctx2["db_url"], lead_sid)
+        session = _wait_for_recovery(ctx2["db_url"], lead_sid)
         assert session["status"] == "submitted"
         assert session["recovery_attempts"] == 1
 
@@ -131,8 +160,7 @@ def test_recovery_resubmits_input_required_session(test_database):
         _set_session_fields(ctx1["db_url"], lead_sid, status="input-required")
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
-        session = _get_session(ctx2["db_url"], lead_sid)
+        session = _wait_for_recovery(ctx2["db_url"], lead_sid)
         assert session["status"] == "submitted"
         assert session["recovery_attempts"] == 1
 
@@ -152,7 +180,7 @@ def test_recovery_skips_session_without_agent_session_id(test_database):
         _set_session_fields(ctx1["db_url"], lead_sid, cwd="/tmp/workspace")
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
+        time.sleep(NEGATIVE_WAIT)
         session = _get_session(ctx2["db_url"], lead_sid)
         assert session["status"] == "working"
         assert session["recovery_attempts"] == 0
@@ -165,7 +193,7 @@ def test_recovery_skips_acp_sessions(test_database):
         _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1, agent_type="acp")
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
+        time.sleep(NEGATIVE_WAIT)
         session = _get_session(ctx2["db_url"], lead_sid)
         assert session["status"] == "working"
         assert session["recovery_attempts"] == 0
@@ -179,8 +207,7 @@ def test_recovery_budget_exhausted(test_database):
         _set_session_fields(ctx1["db_url"], lead_sid, recovery_attempts=2)
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
-        session = _get_session(ctx2["db_url"], lead_sid)
+        session = _wait_for_recovery(ctx2["db_url"], lead_sid)
         assert session["status"] == "failed"
 
 
@@ -198,7 +225,7 @@ def test_recovery_skips_terminal_execution(test_database):
             conn.commit()
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
+        time.sleep(NEGATIVE_WAIT)
         session = _get_session(ctx2["db_url"], lead_sid)
         assert session["status"] == "working"
         assert session["recovery_attempts"] == 0
@@ -211,8 +238,8 @@ def test_recovery_task_payload_has_resume_session_id(test_database):
         _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1)
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
-        payload = _get_task_queue_payload(ctx2["db_url"], lead_sid)
+        _wait_for_recovery(ctx2["db_url"], lead_sid)
+        payload = _wait_for_task_payload(ctx2["db_url"], lead_sid)
         assert payload is not None, "no task_payload found in queue"
         assert payload["resumeSessionId"] == "sdk-session-abc"
 
@@ -224,8 +251,8 @@ def test_recovery_preserves_driver_and_config(test_database):
         _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1)
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
-        payload = _get_task_queue_payload(ctx2["db_url"], lead_sid)
+        _wait_for_recovery(ctx2["db_url"], lead_sid)
+        payload = _wait_for_task_payload(ctx2["db_url"], lead_sid)
         assert payload is not None
         assert payload["driver"]["platform"] == "claude_sdk"
         assert "agent_config" in payload
@@ -238,8 +265,7 @@ def test_recovery_increments_counter(test_database):
         _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1)
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
-        session = _get_session(ctx2["db_url"], lead_sid)
+        session = _wait_for_recovery(ctx2["db_url"], lead_sid)
         assert session["recovery_attempts"] == 1
 
 
@@ -250,7 +276,7 @@ def test_recovery_state_change_event_logged(test_database):
         _agent_id, exec_id, lead_sid = _setup_working_session(ctx1)
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
+        _wait_for_recovery(ctx2["db_url"], lead_sid)
         with db_conn(ctx2["db_url"]) as conn:
             row = conn.execute(
                 "SELECT payload FROM events WHERE execution_id = ? AND event_type = 'state_change' AND session_id = ? ORDER BY id DESC LIMIT 1",
@@ -271,8 +297,7 @@ def test_double_restart_recovers_again(test_database):
 
     # First restart
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
-        session = _get_session(ctx2["db_url"], lead_sid)
+        session = _wait_for_recovery(ctx2["db_url"], lead_sid)
         assert session["status"] == "submitted"
         assert session["recovery_attempts"] == 1
         # Simulate worker claiming and working again
@@ -286,7 +311,7 @@ def test_double_restart_recovers_again(test_database):
 
     # Second restart
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx3:
-        time.sleep(5)
+        _wait_for_recovery(ctx3["db_url"], lead_sid)
         session = _get_session(ctx3["db_url"], lead_sid)
         assert session["status"] == "submitted"
         assert session["recovery_attempts"] == 2
@@ -299,8 +324,8 @@ def test_recovery_uses_session_cwd(test_database):
         _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1)
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
-        payload = _get_task_queue_payload(ctx2["db_url"], lead_sid)
+        _wait_for_recovery(ctx2["db_url"], lead_sid)
+        payload = _wait_for_task_payload(ctx2["db_url"], lead_sid)
         assert payload is not None
         assert payload["cwd"] == "/tmp/test-workspace"
 
@@ -324,7 +349,7 @@ def test_recovery_skips_session_without_cwd(test_database):
         )
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(5)
+        time.sleep(NEGATIVE_WAIT)
         session = _get_session(ctx2["db_url"], lead_sid)
         # cwd IS NULL is filtered by find_recoverable, so session stays working
         # (the SQL WHERE clause has cwd IS NOT NULL)
@@ -346,7 +371,7 @@ def test_heartbeat_prevents_recovery(test_database):
             ctx2["url"],
             payload={"sessionState": {"sessionId": lead_sid, "status": "running"}},
         )
-        time.sleep(5)
+        time.sleep(NEGATIVE_WAIT)
         session = _get_session(ctx2["db_url"], lead_sid)
         assert session["status"] == "working"
         assert session["recovery_attempts"] == 0

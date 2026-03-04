@@ -51,7 +51,7 @@ def test_full_orchestrator_workflow_execution():
 
     try:
         # Start mock-agent A2A server on port matching agents.yaml
-        agent_proc = start_and_wait_for_a2a_agent(
+        agent_proc, _ = start_and_wait_for_a2a_agent(
             agent_port, Path(__file__).parent.parent.parent
         )
 

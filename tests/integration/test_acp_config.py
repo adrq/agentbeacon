@@ -143,8 +143,8 @@ def test_mixed_a2a_and_acp_agents():
             scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
             assert scheduler_ready, "Mock scheduler should start"
 
-            agent_proc = start_and_wait_for_a2a_agent(
-                18765, Path(__file__).parent.parent.parent
+            agent_proc, _agent_port = start_and_wait_for_a2a_agent(
+                base_dir=Path(__file__).parent.parent.parent
             )
             processes.append(agent_proc)
 

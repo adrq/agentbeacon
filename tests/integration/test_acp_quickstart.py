@@ -88,8 +88,8 @@ def test_quickstart_scenario_2_cross_protocol_workflow():
             assert scheduler_ready, "Mock scheduler should start"
 
             # Start A2A mock agent for cross-protocol workflow
-            agent_proc = start_and_wait_for_a2a_agent(
-                18765, Path(__file__).parent.parent.parent
+            agent_proc, _agent_port = start_and_wait_for_a2a_agent(
+                base_dir=Path(__file__).parent.parent.parent
             )
             processes.append(agent_proc)
 

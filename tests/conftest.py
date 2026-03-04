@@ -7,7 +7,9 @@ SQLite and PostgreSQL automatically via pytest parametrization.
 
 import os
 import tempfile
+import uuid
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 import pytest
 import psycopg2
 
@@ -42,84 +44,33 @@ def test_database(request):
             pass
 
     elif backend == "postgres":
-        # Hardcoded default, optional env override
         base_url = os.environ.get(
             "POSTGRES_TEST_URL",
             "postgres://postgres:postgres@127.0.0.1/agentbeacon_test",
         )
-        yield base_url
-        # Cleanup is now handled by cleanup_postgres_database fixture
+        parsed = urlparse(base_url)
+        db_name = f"agentbeacon_test_{uuid.uuid4().hex[:8]}"
+
+        # Connect to admin DB by swapping path to /postgres
+        admin_url = urlunparse(parsed._replace(path="/postgres"))
+        admin_conn = psycopg2.connect(admin_url)
+        admin_conn.autocommit = True
+        cur = admin_conn.cursor()
+        cur.execute(f"CREATE DATABASE {db_name}")
+        cur.close()
+
+        # Yield test DB URL by swapping path to the new database
+        db_url = urlunparse(parsed._replace(path=f"/{db_name}"))
+        yield db_url
+
+        # Teardown: terminate connections then drop
+        cur = admin_conn.cursor()
+        cur.execute(
+            f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{db_name}'"
+        )
+        cur.execute(f"DROP DATABASE IF EXISTS {db_name}")
+        cur.close()
+        admin_conn.close()
 
     else:
         raise ValueError(f"Unknown backend: {backend}")
-
-
-@pytest.fixture(autouse=True, scope="function")
-def cleanup_postgres_database(request):
-    """Clean PostgreSQL database after each test for idempotency.
-
-    SQLite tests use temporary files and are already isolated.
-    PostgreSQL tests share agentbeacon_test database and need cleanup.
-
-    Truncates all application tables while preserving schema_migrations
-    to maintain migration history.
-    """
-    # Only run if test uses test_database fixture
-    if "test_database" not in request.fixturenames:
-        yield
-        return
-
-    # Get the database URL from the test_database fixture
-    test_database = request.getfixturevalue("test_database")
-
-    yield  # Let test run first
-
-    # Only cleanup PostgreSQL (SQLite already isolated via temp files)
-    if not test_database.startswith("postgres"):
-        return
-
-    try:
-        # Connect directly to PostgreSQL for cleanup
-        conn = psycopg2.connect(test_database)
-        try:
-            cur = conn.cursor()
-
-            # Truncate all tables in reverse dependency order
-            # CASCADE handles any remaining foreign key constraints
-            tables = [
-                "wiki_subscriptions",  # Child of projects
-                "wiki_page_tags",  # Child of wiki_pages and wiki_tags
-                "wiki_tags",  # After wiki_page_tags
-                "wiki_page_revisions",  # Child of wiki_pages
-                "wiki_pages",  # Child of projects
-                "events",  # Child of sessions
-                "artifacts",  # Child of projects/sessions
-                "task_queue",  # Child of executions/sessions
-                "execution_agents",  # Child of executions/agents
-                "sessions",  # Child of executions
-                "executions",  # Child of projects
-                "agents",  # References drivers
-                "drivers",  # Standalone
-                "projects",  # Standalone
-                "config",  # Standalone
-            ]
-
-            # Note: schema_migrations is NOT truncated to preserve migration history
-
-            for table in tables:
-                cur.execute(f"TRUNCATE TABLE {table} CASCADE")
-
-            # Re-seed migration defaults for config (truncated above)
-            cur.execute(
-                "INSERT INTO config (name, value, created_at, updated_at) "
-                "VALUES ('max_depth', '2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
-                "       ('max_width', '5', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
-                "ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value"
-            )
-
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as e:
-        # Best-effort cleanup - log but don't fail test teardown
-        print(f"Warning: PostgreSQL cleanup failed: {e}")

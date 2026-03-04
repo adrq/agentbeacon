@@ -22,7 +22,8 @@ dev = [
     "psutil>=5.8.0",
     "httpx>=0.25.0",
     "pyyaml>=6.0.2",
-    "psycopg2-binary>=2.9.0", # PostgreSQL driver for test database cleanup
+    "psycopg2-binary>=2.9.0",
+    "pytest-xdist>=3.5.0",
     "ruff>=0.14.2",
 ]
 

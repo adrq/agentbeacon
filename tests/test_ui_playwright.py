@@ -5,7 +5,7 @@ Playwright tests via npm. The Playwright tests run in Firefox headless mode
 and test real browser interactions with the AgentBeacon UI.
 
 Testing approach:
-- Start mock-agent A2A server on port 18765
+- Start mock-agent A2A server on a dynamic port
 - Start orchestrator with scheduler + 1 worker (1s polling for fast tests)
 - Pass dynamic port to Playwright via SCHEDULER_PORT environment variable
 - Invoke npm run test:e2e in web/ directory
@@ -34,9 +34,8 @@ def test_playwright_e2e_suite(test_database):
     Expected: Playwright tests FAIL (UI components don't exist yet)
     """
     base_dir = Path(__file__).parent.parent
-    agent_port = 18765
 
-    agent_proc = start_and_wait_for_a2a_agent(agent_port, base_dir)
+    agent_proc, agent_port = start_and_wait_for_a2a_agent(base_dir=base_dir)
 
     try:
         with orchestrator_context(
