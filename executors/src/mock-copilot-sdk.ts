@@ -238,6 +238,16 @@ export class CopilotClient {
   async createSession(
     _config?: Record<string, unknown>,
   ): Promise<MockCopilotSession> {
+    const excludedTools = _config?.excludedTools;
+    if (Array.isArray(excludedTools) && excludedTools.length > 0) {
+      process.stderr.write(
+        `[mock-copilot-sdk] excludedTools=${JSON.stringify(excludedTools)}\n`,
+      );
+    } else {
+      process.stderr.write(
+        `[mock-copilot-sdk] WARNING: no excludedTools configured\n`,
+      );
+    }
     return new MockCopilotSession();
   }
 
@@ -245,6 +255,16 @@ export class CopilotClient {
     _sessionId: string,
     _config?: Record<string, unknown>,
   ): Promise<MockCopilotSession> {
+    const excludedTools = _config?.excludedTools;
+    if (Array.isArray(excludedTools) && excludedTools.length > 0) {
+      process.stderr.write(
+        `[mock-copilot-sdk] excludedTools=${JSON.stringify(excludedTools)}\n`,
+      );
+    } else {
+      process.stderr.write(
+        `[mock-copilot-sdk] WARNING: no excludedTools configured\n`,
+      );
+    }
     return new MockCopilotSession();
   }
 

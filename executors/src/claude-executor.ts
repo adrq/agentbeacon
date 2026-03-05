@@ -14,6 +14,24 @@ const { query } =
     : await import("@anthropic-ai/claude-agent-sdk");
 import { emit } from "./common/stdio-bridge.js";
 
+// Orchestration tools that bypass AgentBeacon's coordination layer.
+// Blocked via disallowedTools — reliable in ALL permission modes.
+// See: kb/research/118-claude-sdk-orchestration-tools-deep-dive.md
+const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
+  "Agent", // Subagent spawning (renamed from Task in v2.1.63)
+  "Task", // Legacy alias for Agent
+  "TaskOutput", // Retrieve output from background tasks
+  "TaskStop", // Stop background tasks
+  "TeamCreate", // Multi-agent swarm infrastructure
+  "TeamDelete", // Delete team infrastructure
+  "TaskCreate", // Team task board operations
+  "TaskUpdate",
+  "TaskList",
+  "TaskGet",
+  "SendMessage", // Inter-agent messaging outside AgentBeacon
+  "SendMessageTool", // Alternate name for SendMessage (block both defensively)
+];
+
 // --- Command queue (single stdin listener, cancel as side-effect) ---
 
 let currentAc: AbortController | null = null;
@@ -119,6 +137,7 @@ async function main(): Promise<void> {
         allowDangerouslySkipPermissions: true,
         settingSources: ["project"],
         stderr: (data: string) => process.stderr.write(data),
+        disallowedTools: DISALLOWED_ORCHESTRATION_TOOLS,
       };
 
       if (cmd.mcpServers) options.mcpServers = cmd.mcpServers;

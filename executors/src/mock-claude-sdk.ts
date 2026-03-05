@@ -353,6 +353,17 @@ export async function* query(params: {
     `[mock-claude-sdk] query() called, sessionId=${sessionId}\n`,
   );
 
+  const disallowedTools = params.options?.disallowedTools;
+  if (Array.isArray(disallowedTools) && disallowedTools.length > 0) {
+    process.stderr.write(
+      `[mock-claude-sdk] disallowedTools=${JSON.stringify(disallowedTools)}\n`,
+    );
+  } else {
+    process.stderr.write(
+      `[mock-claude-sdk] WARNING: no disallowedTools configured\n`,
+    );
+  }
+
   // Init message
   yield {
     type: "system",

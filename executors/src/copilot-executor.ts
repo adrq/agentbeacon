@@ -24,6 +24,16 @@ const { CopilotClient } = (
 ) as { CopilotClient: typeof CopilotClientType };
 import { emit } from "./common/stdio-bridge.js";
 
+// Orchestration tools that bypass AgentBeacon's coordination layer.
+// Blocked via excludedTools in createSession/resumeSession config.
+// See: kb/research/119-copilot-sdk-orchestration-tools-deep-dive.md
+const EXCLUDED_ORCHESTRATION_TOOLS: string[] = [
+  "task", // Subagent spawning
+  "read_agent", // Delegate to named agents
+  "list_agents", // Enumerate delegation targets
+  "skill", // Opaque multi-step workflows
+];
+
 // --- Command queue (single stdin listener, cancel as side-effect) ---
 
 let currentSession: CopilotSession | null = null;
@@ -99,6 +109,7 @@ async function runSession(startCmd: StartCommand): Promise<void> {
         );
         return { kind: "approved" as const };
       },
+      excludedTools: EXCLUDED_ORCHESTRATION_TOOLS,
     };
 
     if (startCmd.model) sessionConfig.model = startCmd.model;
