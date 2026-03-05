@@ -176,9 +176,6 @@ pub(crate) fn extract_prompt_text(task_payload: &serde_json::Value) -> Result<St
             }
         })
         .collect();
-    if texts.is_empty() {
-        anyhow::bail!("message.parts contains no text parts");
-    }
     Ok(texts.join("\n"))
 }
 
@@ -392,11 +389,11 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_prompt_text_no_text_parts_errors() {
+    fn test_extract_prompt_text_no_text_parts_returns_empty() {
         let payload = serde_json::json!({
             "message": {"role": "user", "parts": [{"kind": "image", "data": "base64..."}]},
         });
-        let err = extract_prompt_text(&payload).unwrap_err();
-        assert!(err.to_string().contains("no text parts"));
+        let result = extract_prompt_text(&payload).unwrap();
+        assert_eq!(result, "");
     }
 }

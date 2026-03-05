@@ -532,19 +532,35 @@ pub async fn find_over_budget(
     rows.into_iter().map(parse_session_row).collect()
 }
 
-/// Atomically increment recovery_attempts for a session
-pub async fn increment_recovery_attempts(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
-    let query = pool.prepare_query(
-        "UPDATE sessions SET recovery_attempts = recovery_attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+/// Atomically fail a stale over-budget session.
+/// Sets status to 'failed' so the session is terminal even if downstream
+/// cascade/notify (handle_session_failure) encounters errors.
+/// Returns true if the session was still stale and transitioned, false if it
+/// was updated between the SELECT scan and now (worker reconnected).
+pub async fn try_claim_for_failure(
+    pool: &DbPool,
+    id: &str,
+    updated_before: &str,
+) -> Result<bool, SchedulerError> {
+    let ts_cast = if pool.is_postgres() {
+        "::timestamptz"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "UPDATE sessions SET status = 'failed', \
+         updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
+         WHERE id = ? AND status IN ('working', 'input-required') \
+         AND updated_at < ?{ts_cast}"
     );
-    sqlx::query(&query)
+    let query = pool.prepare_query(&sql);
+    let result = sqlx::query(&query)
         .bind(id)
+        .bind(updated_before)
         .execute(pool.as_ref())
         .await
-        .map_err(|e| {
-            SchedulerError::Database(format!("increment recovery_attempts failed: {e}"))
-        })?;
-    Ok(())
+        .map_err(|e| SchedulerError::Database(format!("try_claim_for_failure failed: {e}")))?;
+    Ok(result.rows_affected() > 0)
 }
 
 fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> {

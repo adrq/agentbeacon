@@ -23,9 +23,7 @@ NEGATIVE_WAIT = 5
 def _wait_for_recovery(db_url, session_id, timeout=5, interval=0.15):
     """Poll until recovery scan mutates session status.
 
-    Waits for status change specifically (not just counter increment)
-    because recovery.rs increments recovery_attempts before updating
-    status — waiting on counter alone can return an intermediate state.
+    Waits for status change (the observable signal of a completed recovery).
     """
     baseline = _get_session(db_url, session_id)
     deadline = time.monotonic() + timeout
@@ -377,3 +375,36 @@ def test_heartbeat_prevents_recovery(test_database):
         session = _get_session(ctx2["db_url"], lead_sid)
         assert session["status"] == "working"
         assert session["recovery_attempts"] == 0
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_recovery_atomicity_status_and_task(test_database):
+    """After recovery, both status == 'submitted' AND task_queue has entry."""
+    with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx1:
+        _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1)
+
+    with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
+        session = _wait_for_recovery(ctx2["db_url"], lead_sid)
+        assert session["status"] == "submitted"
+        payload = _get_task_queue_payload(ctx2["db_url"], lead_sid)
+        assert payload is not None, "task_queue entry missing after recovery"
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_over_budget_skips_recently_heartbeated(test_database):
+    """Over-budget session with fresh heartbeat is NOT permanently failed."""
+    with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx1:
+        _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1)
+        _set_session_fields(ctx1["db_url"], lead_sid, recovery_attempts=2)
+
+    with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
+        # Heartbeat during grace to push updated_at past startup_time
+        _worker_sync(
+            ctx2["url"],
+            payload={"sessionState": {"sessionId": lead_sid, "status": "running"}},
+        )
+        time.sleep(NEGATIVE_WAIT)
+        session = _get_session(ctx2["db_url"], lead_sid)
+        assert session["status"] == "working", (
+            "over-budget session should NOT be failed if recently heartbeated"
+        )

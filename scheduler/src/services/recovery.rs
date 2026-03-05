@@ -5,7 +5,8 @@ use tokio::sync::broadcast;
 use crate::app::EventNotification;
 use crate::db;
 use crate::db::DbPool;
-use crate::queue::{TaskAssignment, TaskQueue};
+use crate::error::SchedulerError;
+use crate::queue::TaskQueue;
 
 pub struct RecoveryStats {
     pub recovered: usize,
@@ -74,15 +75,31 @@ pub async fn recover_orphaned_sessions(
     };
 
     for session in &sessions {
-        if let Err(e) = recover_session(pool, task_queue, event_broadcast, session).await {
-            tracing::error!(
-                session_id = %session.id,
-                error = %e,
-                "recovery scan: failed to recover session"
-            );
-            stats.failed += 1;
-        } else {
-            stats.recovered += 1;
+        match recover_session(
+            pool,
+            task_queue,
+            event_broadcast,
+            session,
+            &updated_before_str,
+        )
+        .await
+        {
+            Ok(true) => stats.recovered += 1,
+            Ok(false) => {
+                tracing::info!(
+                    session_id = %session.id,
+                    "recovery: session updated since scan, skipped"
+                );
+                stats.skipped += 1;
+            }
+            Err(e) => {
+                tracing::error!(
+                    session_id = %session.id,
+                    error = %e,
+                    "recovery scan: failed to recover session"
+                );
+                stats.failed += 1;
+            }
         }
     }
 
@@ -102,12 +119,70 @@ pub async fn recover_orphaned_sessions(
     };
 
     for session in &over_budget {
+        match db::sessions::try_claim_for_failure(pool, &session.id, &updated_before_str).await {
+            Ok(false) => {
+                tracing::info!(
+                    session_id = %session.id,
+                    "recovery: over-budget session updated since scan, skipping"
+                );
+                stats.skipped += 1;
+                continue;
+            }
+            Err(e) => {
+                tracing::error!(
+                    session_id = %session.id,
+                    error = %e,
+                    "recovery: CAS claim failed for over-budget session"
+                );
+                stats.failed += 1;
+                continue;
+            }
+            Ok(true) => {} // claimed, proceed
+        }
         tracing::warn!(
             session_id = %session.id,
             recovery_attempts = session.recovery_attempts,
             max = max_recovery_attempts,
             "recovery budget exhausted, permanently failing session"
         );
+
+        // Emit state_change event here because try_claim_for_failure() already
+        // set status='failed', so handle_session_failure() will skip its own
+        // transition + event insert. We have the correct prior status and error.
+        let error_msg = format!(
+            "recovery budget exhausted after {} attempts",
+            session.recovery_attempts
+        );
+        let event_payload = json!({
+            "from": session.status,
+            "to": "failed",
+            "error_kind": "recovery_exhausted",
+            "error": &error_msg,
+        });
+        match db::events::insert(
+            pool,
+            &session.execution_id,
+            Some(&session.id),
+            "state_change",
+            &serde_json::to_string(&event_payload).unwrap(),
+        )
+        .await
+        {
+            Ok(event_id) => {
+                let _ = event_broadcast.send(EventNotification {
+                    execution_id: session.execution_id.clone(),
+                    event_id,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %session.id,
+                    error = %e,
+                    "recovery: failed to insert state_change event for over-budget failure"
+                );
+            }
+        }
+
         crate::services::crash::handle_session_failure(
             pool,
             task_queue,
@@ -127,19 +202,25 @@ pub async fn recover_orphaned_sessions(
     stats
 }
 
-/// Recover a single orphaned session: increment counter, reset to submitted,
-/// and enqueue a resume task.
+/// Recover a single orphaned session: atomically claim via CAS, reset to
+/// submitted, and enqueue a resume task — all within a single transaction.
+///
+/// Returns `Ok(true)` if recovered, `Ok(false)` if the session was updated
+/// between the SELECT scan and the CAS (worker reconnected — skip).
 async fn recover_session(
     pool: &DbPool,
     task_queue: &TaskQueue,
     event_broadcast: &broadcast::Sender<EventNotification>,
     session: &db::sessions::Session,
-) -> Result<(), crate::error::SchedulerError> {
+    updated_before: &str,
+) -> Result<bool, SchedulerError> {
+    // --- Pre-transaction reads ---
+
     // Look up agent — NotFound means deleted, permanently fail.
     // Transient DB errors are propagated so the session can be retried next restart.
     let agent = match db::agents::get_by_id(pool, &session.agent_id).await {
         Ok(a) => a,
-        Err(crate::error::SchedulerError::NotFound(_)) => {
+        Err(SchedulerError::NotFound(_)) => {
             tracing::warn!(
                 session_id = %session.id,
                 agent_id = %session.agent_id,
@@ -155,7 +236,7 @@ async fn recover_session(
                 None,
             )
             .await;
-            return Ok(());
+            return Ok(true);
         }
         Err(e) => return Err(e),
     };
@@ -178,69 +259,18 @@ async fn recover_session(
                 None,
             )
             .await;
-            return Ok(());
+            return Ok(true);
         }
     };
 
     let prior_status = session.status.clone();
 
-    // Increment recovery counter
-    db::sessions::increment_recovery_attempts(pool, &session.id).await?;
-
-    // Reset session to submitted
-    db::sessions::update_status(pool, &session.id, "submitted").await?;
-
-    // If root lead was input-required, also reset execution status to submitted
-    // to match the session recovery. Don't regress working→submitted when
-    // children may still be active on surviving workers.
-    if session.parent_session_id.is_none()
-        && prior_status == "input-required"
-        && let Err(e) =
-            db::executions::update_status(pool, &session.execution_id, "submitted").await
-    {
-        tracing::warn!(
-            execution_id = %session.execution_id,
-            error = %e,
-            "recovery: failed to reset execution status"
-        );
-    }
-
-    // Log state_change event
-    let event_payload = json!({
-        "from": prior_status,
-        "to": "submitted",
-        "recovery_attempt": session.recovery_attempts + 1,
-    });
-    match db::events::insert(
-        pool,
-        &session.execution_id,
-        Some(&session.id),
-        "state_change",
-        &serde_json::to_string(&event_payload).unwrap(),
-    )
-    .await
-    {
-        Ok(event_id) => {
-            let _ = event_broadcast.send(EventNotification {
-                execution_id: session.execution_id.clone(),
-                event_id,
-            });
-        }
-        Err(e) => {
-            tracing::warn!(
-                session_id = %session.id,
-                error = %e,
-                "recovery: failed to insert state_change event"
-            );
-        }
-    }
+    // --- Briefing build + task payload construction (outside transaction) ---
 
     let recovery_message = "[recovery] Session resumed.";
 
-    // Fetch execution for project_id and max_depth
     let execution = db::executions::get_by_id(pool, &session.execution_id).await?;
 
-    // Build resume task_payload (superset of initial task_payload)
     let mut agent_config: serde_json::Value =
         serde_json::from_str::<serde_json::Value>(&agent.config)
             .ok()
@@ -252,7 +282,6 @@ async fn recover_session(
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_else(|| json!({}));
 
-    // Rebuild environment briefing (mirrors execution.rs / mcp_tools.rs)
     let depth = db::sessions::compute_depth(pool, &session.id, &session.execution_id).await?;
     let role = if session.parent_session_id.is_none() {
         crate::services::briefing::BriefingRole::RootLead
@@ -316,13 +345,107 @@ async fn recover_session(
         task_payload["project_id"] = serde_json::Value::String(pid.clone());
     }
 
-    task_queue
-        .push(TaskAssignment {
-            execution_id: session.execution_id.clone(),
-            session_id: session.id.clone(),
-            task_payload,
-        })
-        .await?;
+    // --- Atomic CAS UPDATE + task_queue INSERT in a single transaction ---
+
+    let ts_cast = if pool.is_postgres() {
+        "::timestamptz"
+    } else {
+        ""
+    };
+    let cas_sql = format!(
+        "UPDATE sessions SET recovery_attempts = recovery_attempts + 1, \
+         status = 'submitted', updated_at = CURRENT_TIMESTAMP, completed_at = NULL \
+         WHERE id = ? AND status IN ('working', 'input-required') \
+         AND updated_at < ?{ts_cast} \
+         AND agent_session_id IS NOT NULL AND cwd IS NOT NULL"
+    );
+    let cas_query = pool.prepare_query(&cas_sql);
+
+    let insert_sql = pool.prepare_query(
+        "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
+    );
+    let payload_json = serde_json::to_string(&task_payload)
+        .map_err(|e| SchedulerError::Database(format!("serialize task_payload failed: {e}")))?;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin transaction failed: {e}")))?;
+
+    let cas_result = sqlx::query(&cas_query)
+        .bind(&session.id)
+        .bind(updated_before)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("CAS recovery claim failed: {e}")))?;
+
+    if cas_result.rows_affected() == 0 {
+        tx.rollback()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("rollback failed: {e}")))?;
+        return Ok(false);
+    }
+
+    sqlx::query(&insert_sql)
+        .bind(&session.execution_id)
+        .bind(&session.id)
+        .bind(&payload_json)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("recovery task_queue insert failed: {e}")))?;
+
+    tx.commit().await.map_err(|e| {
+        SchedulerError::Database(format!("commit recovery transaction failed: {e}"))
+    })?;
+
+    task_queue.wake_waiters();
+
+    // --- Post-transaction best-effort observability ---
+
+    // If root lead was input-required, also reset execution status to submitted
+    // to match the session recovery. Don't regress working→submitted when
+    // children may still be active on surviving workers.
+    if session.parent_session_id.is_none()
+        && prior_status == "input-required"
+        && let Err(e) =
+            db::executions::update_status(pool, &session.execution_id, "submitted").await
+    {
+        tracing::warn!(
+            execution_id = %session.execution_id,
+            error = %e,
+            "recovery: failed to reset execution status"
+        );
+    }
+
+    // Log state_change event
+    let event_payload = json!({
+        "from": prior_status,
+        "to": "submitted",
+        "recovery_attempt": session.recovery_attempts + 1,
+    });
+    match db::events::insert(
+        pool,
+        &session.execution_id,
+        Some(&session.id),
+        "state_change",
+        &serde_json::to_string(&event_payload).unwrap(),
+    )
+    .await
+    {
+        Ok(event_id) => {
+            let _ = event_broadcast.send(EventNotification {
+                execution_id: session.execution_id.clone(),
+                event_id,
+            });
+        }
+        Err(e) => {
+            tracing::warn!(
+                session_id = %session.id,
+                error = %e,
+                "recovery: failed to insert state_change event"
+            );
+        }
+    }
 
     tracing::info!(
         session_id = %session.id,
@@ -332,5 +455,5 @@ async fn recover_session(
         "session recovered and resubmitted"
     );
 
-    Ok(())
+    Ok(true)
 }
