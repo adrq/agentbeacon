@@ -440,14 +440,17 @@ async fn run_session(
                             ));
                         }
                     }
-                    Some(AgentEvent::Message { output }) => {
+                    Some(AgentEvent::Message { output, ephemeral }) => {
                         msg_seq += 1;
-                        turn_messages.push(TurnMessage { msg_seq, payload: output.clone() });
+                        if !ephemeral {
+                            turn_messages.push(TurnMessage { msg_seq, payload: output.clone() });
+                        }
                         let _ = msg_fwd_tx.send(WorkerMessageEvent {
                             session_id: session_id.to_string(),
                             execution_id: initial_task.execution_id.clone(),
                             msg_seq,
                             payload: output,
+                            ephemeral,
                         });
                     }
                     Some(AgentEvent::ProcessDied { error, stderr }) => {

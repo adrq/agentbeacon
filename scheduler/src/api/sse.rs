@@ -74,6 +74,22 @@ async fn execution_event_stream(
             match rx.recv().await {
                 Ok(notification) => {
                     if notification.execution_id != exec_id { continue; }
+
+                    // Ephemeral events: yield directly as named SSE event, no DB query
+                    if let Some(ref eph) = notification.ephemeral {
+                        if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                            "session_id": eph.session_id,
+                            "msg_seq": eph.msg_seq,
+                            "payload": eph.payload,
+                        })) {
+                            yield Ok::<Event, Infallible>(
+                                Event::default().event("ephemeral").data(json)
+                            );
+                        }
+                        continue;
+                    }
+
+                    // Persisted events: query DB as before
                     match db::events::list_by_execution_since(&pool, &exec_id, last_sent_id).await {
                         Ok(events) => {
                             for event in &events {

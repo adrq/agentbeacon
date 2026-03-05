@@ -92,7 +92,15 @@ export interface Event {
   session_id: string | null;
   event_type: EventType;
   payload: MessagePayload | StateChangePayload | PlatformPayload;
+  msg_seq?: number;
   created_at: string;
+}
+
+// Ephemeral streaming event (SSE-only, not persisted)
+export interface EphemeralEvent {
+  session_id: string;
+  msg_seq: number;
+  payload: MessagePayload;
 }
 
 export interface MessagePayload {

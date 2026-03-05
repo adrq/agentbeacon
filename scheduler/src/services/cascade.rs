@@ -79,10 +79,7 @@ pub async fn terminate_subtree(
             &serde_json::to_string(&state_event).unwrap(),
         )
         .await?;
-        let _ = event_broadcast.send(EventNotification {
-            execution_id: execution_id.clone(),
-            event_id,
-        });
+        let _ = event_broadcast.send(EventNotification::persisted(execution_id.clone(), event_id));
 
         terminated += 1;
     }

@@ -169,10 +169,10 @@ pub async fn recover_orphaned_sessions(
         .await
         {
             Ok(event_id) => {
-                let _ = event_broadcast.send(EventNotification {
-                    execution_id: session.execution_id.clone(),
+                let _ = event_broadcast.send(EventNotification::persisted(
+                    session.execution_id.clone(),
                     event_id,
-                });
+                ));
             }
             Err(e) => {
                 tracing::warn!(
@@ -433,10 +433,10 @@ async fn recover_session(
     .await
     {
         Ok(event_id) => {
-            let _ = event_broadcast.send(EventNotification {
-                execution_id: session.execution_id.clone(),
+            let _ = event_broadcast.send(EventNotification::persisted(
+                session.execution_id.clone(),
                 event_id,
-            });
+            ));
         }
         Err(e) => {
             tracing::warn!(

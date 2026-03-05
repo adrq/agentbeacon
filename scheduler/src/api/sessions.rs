@@ -173,10 +173,10 @@ async fn cancel_session(
                 &serde_json::to_string(&exec_event).unwrap(),
             )
             .await?;
-            let _ = state.event_broadcast.send(EventNotification {
-                execution_id: session.execution_id.clone(),
+            let _ = state.event_broadcast.send(EventNotification::persisted(
+                session.execution_id.clone(),
                 event_id,
-            });
+            ));
         }
     }
 
@@ -233,10 +233,10 @@ async fn complete_session(
                 &serde_json::to_string(&exec_event).unwrap(),
             )
             .await?;
-            let _ = state.event_broadcast.send(EventNotification {
-                execution_id: session.execution_id.clone(),
+            let _ = state.event_broadcast.send(EventNotification::persisted(
+                session.execution_id.clone(),
                 event_id,
-            });
+            ));
         }
     }
 

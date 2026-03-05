@@ -16,9 +16,10 @@
     agents: Agent[];
     sessions: SessionSummary[];
     sessionId: string | null;
+    ephemeralText?: string;
   }
 
-  let { events, agents, sessions, sessionId }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '' }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
   let messageText = $state('');
@@ -60,7 +61,8 @@
   }
 
   $effect(() => {
-    const _len = events.length; // dependency: triggers on every new event (including streaming chunks)
+    const _len = events.length; // dependency: triggers on every new event
+    const _eph = ephemeralText; // dependency: triggers on ephemeral streaming updates
     if (shouldAutoScroll && scrollContainer) {
       tick().then(() => {
         if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
@@ -299,12 +301,33 @@
 
   let sessionIsActive = $derived(viewedSession?.status === 'working');
 
+  // Capture the time once when ephemeral streaming starts (avoids recomputing on every tick)
+  let ephemeralStartTime = $state('');
+  $effect.pre(() => {
+    if (ephemeralText && !ephemeralStartTime) {
+      ephemeralStartTime = formatTime(new Date().toISOString());
+    } else if (!ephemeralText) {
+      ephemeralStartTime = '';
+    }
+  });
+
   let parsed = $derived.by(() => {
     const entries = groupToolStreams(parseEntries(events));
-    if (sessionIsActive) {
+    if (ephemeralText) {
+      const agentLabel = leadSession ? agentName(leadSession.agent_id) : 'Agent';
+      entries.push({
+        type: 'agent',
+        text: ephemeralText,
+        agentLabel,
+        time: ephemeralStartTime || formatTime(new Date().toISOString()),
+        key: 'ephemeral-stream',
+        isStreaming: true,
+      });
+    } else if (sessionIsActive) {
       for (let i = entries.length - 1; i >= 0; i--) {
-        if (entries[i].type === 'agent') {
-          (entries[i] as { isStreaming: boolean }).isStreaming = true;
+        const entry = entries[i];
+        if (entry.type === 'agent') {
+          entries[i] = { ...entry, isStreaming: true };
           break;
         }
       }

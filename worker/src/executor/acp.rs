@@ -330,6 +330,7 @@ async fn background_task(
                                             .collect();
                                         let _ = event_tx.send(AgentEvent::Message {
                                             output: serde_json::json!({"role": &last_msg.role, "parts": parts}),
+                                            ephemeral: false,
                                         });
                                     }
                                 }

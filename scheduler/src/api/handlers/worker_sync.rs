@@ -6,7 +6,7 @@ use tokio::time::Instant;
 
 use serde_json::json;
 
-use crate::app::{AppState, EventNotification};
+use crate::app::{AppState, EphemeralPayload, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
 use crate::queue::TaskAssignment;
@@ -134,10 +134,10 @@ pub async fn handle_worker_sync(
                         .await
                         {
                             Ok(Some(event_id)) => {
-                                let _ = state.event_broadcast.send(EventNotification {
-                                    execution_id: session.execution_id.clone(),
+                                let _ = state.event_broadcast.send(EventNotification::persisted(
+                                    session.execution_id.clone(),
                                     event_id,
-                                });
+                                ));
                             }
                             Ok(None) => {
                                 // Already delivered via mid-turn POST — skip broadcast
@@ -200,10 +200,10 @@ pub async fn handle_worker_sync(
                             )
                             .await
                             {
-                                let _ = state.event_broadcast.send(EventNotification {
-                                    execution_id: session.execution_id.clone(),
+                                let _ = state.event_broadcast.send(EventNotification::persisted(
+                                    session.execution_id.clone(),
                                     event_id,
-                                });
+                                ));
                             }
                         }
                     }
@@ -309,10 +309,10 @@ pub async fn handle_worker_sync(
                     .await
                     {
                         Ok(event_id) => {
-                            let _ = state.event_broadcast.send(EventNotification {
-                                execution_id: session.execution_id.clone(),
+                            let _ = state.event_broadcast.send(EventNotification::persisted(
+                                session.execution_id.clone(),
                                 event_id,
-                            });
+                            ));
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -382,10 +382,10 @@ pub async fn handle_worker_sync(
                         .await
                         {
                             Ok(event_id) => {
-                                let _ = state.event_broadcast.send(EventNotification {
-                                    execution_id: session.execution_id.clone(),
+                                let _ = state.event_broadcast.send(EventNotification::persisted(
+                                    session.execution_id.clone(),
                                     event_id,
-                                });
+                                ));
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -572,10 +572,10 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
             tracing::error!("session state_change event failed: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        let _ = state.event_broadcast.send(EventNotification {
-            execution_id: session.execution_id.clone(),
+        let _ = state.event_broadcast.send(EventNotification::persisted(
+            session.execution_id.clone(),
             event_id,
-        });
+        ));
 
         // Transition execution submitted → working (only on first session claim)
         let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id)
@@ -606,10 +606,10 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
                 tracing::error!("execution state_change event failed: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-            let _ = state.event_broadcast.send(EventNotification {
-                execution_id: session.execution_id.clone(),
+            let _ = state.event_broadcast.send(EventNotification::persisted(
+                session.execution_id.clone(),
                 event_id,
-            });
+            ));
         }
 
         // Claimed successfully — try to pop initial task
@@ -697,6 +697,8 @@ pub struct WorkerMessageRequest {
     pub execution_id: String,
     pub msg_seq: i64,
     pub payload: serde_json::Value,
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// Handle mid-turn message events POSTed by the worker during an active turn.
@@ -718,23 +720,34 @@ pub async fn handle_worker_event(
         );
     }
 
-    let payload_str = serde_json::to_string(&request.payload)
-        .map_err(|e| SchedulerError::ValidationFailed(format!("invalid payload: {e}")))?;
+    if request.ephemeral {
+        // Ephemeral: broadcast to SSE directly, skip DB persistence
+        let _ = state.event_broadcast.send(EventNotification::ephemeral(
+            session.execution_id,
+            EphemeralPayload {
+                session_id: request.session_id,
+                msg_seq: request.msg_seq,
+                payload: request.payload,
+            },
+        ));
+    } else {
+        let payload_str = serde_json::to_string(&request.payload)
+            .map_err(|e| SchedulerError::ValidationFailed(format!("invalid payload: {e}")))?;
 
-    if let Some(event_id) = db::events::insert_with_dedup(
-        &state.db_pool,
-        &session.execution_id,
-        &request.session_id,
-        "message",
-        &payload_str,
-        request.msg_seq,
-    )
-    .await?
-    {
-        let _ = state.event_broadcast.send(EventNotification {
-            execution_id: session.execution_id,
-            event_id,
-        });
+        if let Some(event_id) = db::events::insert_with_dedup(
+            &state.db_pool,
+            &session.execution_id,
+            &request.session_id,
+            "message",
+            &payload_str,
+            request.msg_seq,
+        )
+        .await?
+        {
+            let _ = state
+                .event_broadcast
+                .send(EventNotification::persisted(session.execution_id, event_id));
+        }
     }
 
     Ok(StatusCode::CREATED)

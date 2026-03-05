@@ -59,10 +59,10 @@ pub async fn handle_session_failure(
         .await
         {
             Ok(event_id) => {
-                let _ = event_broadcast.send(EventNotification {
-                    execution_id: session.execution_id.clone(),
+                let _ = event_broadcast.send(EventNotification::persisted(
+                    session.execution_id.clone(),
                     event_id,
-                });
+                ));
             }
             Err(e) => {
                 tracing::error!(session_id, error = %e, "crash handler: failed to insert state_change event");
@@ -180,10 +180,10 @@ async fn notify_parent_of_crash(
     .await
     {
         Ok(event_id) => {
-            let _ = event_broadcast.send(EventNotification {
-                execution_id: child_session.execution_id.clone(),
+            let _ = event_broadcast.send(EventNotification::persisted(
+                child_session.execution_id.clone(),
                 event_id,
-            });
+            ));
         }
         Err(e) => {
             tracing::error!(
@@ -285,10 +285,10 @@ async fn propagate_failure_to_execution(
     .await
     {
         Ok(event_id) => {
-            let _ = event_broadcast.send(EventNotification {
-                execution_id: session.execution_id.clone(),
+            let _ = event_broadcast.send(EventNotification::persisted(
+                session.execution_id.clone(),
                 event_id,
-            });
+            ));
         }
         Err(e) => {
             tracing::error!(

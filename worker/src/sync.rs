@@ -179,6 +179,8 @@ pub struct WorkerMessageEvent {
     pub execution_id: String,
     pub msg_seq: i64,
     pub payload: serde_json::Value,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ephemeral: bool,
 }
 
 pub async fn post_worker_message(

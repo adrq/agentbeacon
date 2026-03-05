@@ -339,10 +339,10 @@ async fn handle_delegate(
     )
     .await
     .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-    let _ = state.event_broadcast.send(EventNotification {
-        execution_id: auth.execution_id.clone(),
+    let _ = state.event_broadcast.send(EventNotification::persisted(
+        auth.execution_id.clone(),
         event_id,
-    });
+    ));
 
     let result_text = serde_json::to_string(&json!({"session_id": child_session_id})).unwrap();
     Ok(json!({
@@ -423,10 +423,10 @@ async fn handle_release(
     )
     .await
     .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-    let _ = state.event_broadcast.send(EventNotification {
-        execution_id: auth.execution_id.clone(),
+    let _ = state.event_broadcast.send(EventNotification::persisted(
+        auth.execution_id.clone(),
         event_id,
-    });
+    ));
 
     let result_text = serde_json::to_string(&json!({
         "released": true,
@@ -526,10 +526,10 @@ async fn handle_escalate(
         )
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-        let _ = state.event_broadcast.send(EventNotification {
-            execution_id: auth.execution_id.clone(),
+        let _ = state.event_broadcast.send(EventNotification::persisted(
+            auth.execution_id.clone(),
             event_id,
-        });
+        ));
 
         question_ids.push(event_id);
     }
@@ -550,10 +550,10 @@ async fn handle_escalate(
         )
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-        let _ = state.event_broadcast.send(EventNotification {
-            execution_id: auth.execution_id.clone(),
+        let _ = state.event_broadcast.send(EventNotification::persisted(
+            auth.execution_id.clone(),
             event_id,
-        });
+        ));
 
         if auth.role == McpRole::RootLead {
             let execution = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
@@ -574,10 +574,10 @@ async fn handle_escalate(
             )
             .await
             .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-            let _ = state.event_broadcast.send(EventNotification {
-                execution_id: auth.execution_id.clone(),
+            let _ = state.event_broadcast.send(EventNotification::persisted(
+                auth.execution_id.clone(),
                 event_id,
-            });
+            ));
         }
     }
 

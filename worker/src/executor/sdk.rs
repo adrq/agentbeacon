@@ -402,15 +402,15 @@ async fn background_task(
                                     && let Some(ref content) = msg.content
                                     && let Some(structured) = build_output_message(content)
                                 {
-                                    let _ = event_tx.send(AgentEvent::Message { output: structured.clone() });
-                                    // Only update last_content for complete messages, not streaming deltas.
                                     // Text deltas have content blocks with type "text_delta" — these are
-                                    // partial fragments that should not overwrite the final complete message.
+                                    // partial fragments that should not overwrite the final complete message
+                                    // and should not be persisted to the DB (ephemeral streaming only).
                                     let is_delta_only = content.as_array()
-                                        .map(|blocks| blocks.iter().all(|b|
+                                        .map(|blocks| !blocks.is_empty() && blocks.iter().all(|b|
                                             b.get("type").and_then(|t| t.as_str()) == Some("text_delta")
                                         ))
                                         .unwrap_or(false);
+                                    let _ = event_tx.send(AgentEvent::Message { output: structured.clone(), ephemeral: is_delta_only });
                                     if !is_delta_only {
                                         last_content = Some(structured);
                                     }

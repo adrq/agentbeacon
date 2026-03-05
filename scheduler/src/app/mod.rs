@@ -14,12 +14,42 @@ use crate::db::DbPool;
 use crate::queue::TaskQueue;
 use crate::search::WikiSearchIndex;
 
-/// Notification sent when a new event is inserted into the events table.
+/// Payload for ephemeral (SSE-only, non-persisted) events.
+#[derive(Clone, Debug)]
+pub struct EphemeralPayload {
+    pub session_id: String,
+    pub msg_seq: i64,
+    pub payload: serde_json::Value,
+}
+
+/// Notification sent when a new event is inserted into the events table,
+/// or when an ephemeral event should be broadcast via SSE without DB storage.
 /// SSE handlers subscribe to these to push updates in real-time.
 #[derive(Clone, Debug)]
 pub struct EventNotification {
     pub execution_id: String,
     pub event_id: i64,
+    pub ephemeral: Option<EphemeralPayload>,
+}
+
+impl EventNotification {
+    /// Construct a notification for a persisted (DB-backed) event.
+    pub fn persisted(execution_id: String, event_id: i64) -> Self {
+        Self {
+            execution_id,
+            event_id,
+            ephemeral: None,
+        }
+    }
+
+    /// Construct a notification for an ephemeral (SSE-only) event.
+    pub fn ephemeral(execution_id: String, payload: EphemeralPayload) -> Self {
+        Self {
+            execution_id,
+            event_id: 0,
+            ephemeral: Some(payload),
+        }
+    }
 }
 
 /// Application state shared across handlers

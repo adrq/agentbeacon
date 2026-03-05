@@ -70,10 +70,10 @@ pub async fn deliver_to_parent(
     .await
     {
         Ok(event_id) => {
-            let _ = event_broadcast.send(EventNotification {
-                execution_id: child_session.execution_id.clone(),
+            let _ = event_broadcast.send(EventNotification::persisted(
+                child_session.execution_id.clone(),
                 event_id,
-            });
+            ));
         }
         Err(e) => {
             tracing::error!(

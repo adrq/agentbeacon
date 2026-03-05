@@ -50,10 +50,10 @@ pub async fn transition_to_working(
         &serde_json::to_string(&session_state_event).unwrap(),
     )
     .await?;
-    let _ = event_broadcast.send(EventNotification {
-        execution_id: session.execution_id.clone(),
-        event_id: sc_event_id,
-    });
+    let _ = event_broadcast.send(EventNotification::persisted(
+        session.execution_id.clone(),
+        sc_event_id,
+    ));
 
     // Propagate to execution if root session (skip if execution already working)
     let execution_status = if session.parent_session_id.is_none() {
@@ -69,10 +69,10 @@ pub async fn transition_to_working(
                 &serde_json::to_string(&exec_state_event).unwrap(),
             )
             .await?;
-            let _ = event_broadcast.send(EventNotification {
-                execution_id: session.execution_id.clone(),
-                event_id: exec_event_id,
-            });
+            let _ = event_broadcast.send(EventNotification::persisted(
+                session.execution_id.clone(),
+                exec_event_id,
+            ));
         }
         "working".to_string()
     } else {
@@ -131,10 +131,10 @@ pub async fn deliver_message(
         &serde_json::to_string(&msg_payload).unwrap(),
     )
     .await?;
-    let _ = event_broadcast.send(EventNotification {
-        execution_id: session.execution_id.clone(),
+    let _ = event_broadcast.send(EventNotification::persisted(
+        session.execution_id.clone(),
         event_id,
-    });
+    ));
 
     // Build delivery payload: pure A2A with text header (per IF decision).
     let formatted_text = if let Some(s) = sender {

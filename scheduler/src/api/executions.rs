@@ -167,10 +167,9 @@ async fn create_execution_handler(
     .await?;
 
     // Broadcast for the initial "submitted" event created by the service.
-    let _ = state.event_broadcast.send(EventNotification {
-        execution_id: result.execution.id.clone(),
-        event_id: 0,
-    });
+    let _ = state
+        .event_broadcast
+        .send(EventNotification::persisted(result.execution.id.clone(), 0));
 
     Ok((
         StatusCode::CREATED,
@@ -229,10 +228,9 @@ async fn cancel_execution(
                 &serde_json::to_string(&sweep_event).unwrap(),
             )
             .await?;
-            let _ = state.event_broadcast.send(EventNotification {
-                execution_id: id.clone(),
-                event_id,
-            });
+            let _ = state
+                .event_broadcast
+                .send(EventNotification::persisted(id.clone(), event_id));
         }
     }
 
@@ -251,10 +249,9 @@ async fn cancel_execution(
         &serde_json::to_string(&exec_state_event).unwrap(),
     )
     .await?;
-    let _ = state.event_broadcast.send(EventNotification {
-        execution_id: id.clone(),
-        event_id,
-    });
+    let _ = state
+        .event_broadcast
+        .send(EventNotification::persisted(id.clone(), event_id));
 
     let updated = db::executions::get_by_id(&state.db_pool, &id).await?;
     Ok(Json(CancelExecutionResponse {
@@ -314,10 +311,9 @@ async fn complete_execution(
                 &serde_json::to_string(&sweep_event).unwrap(),
             )
             .await?;
-            let _ = state.event_broadcast.send(EventNotification {
-                execution_id: id.clone(),
-                event_id,
-            });
+            let _ = state
+                .event_broadcast
+                .send(EventNotification::persisted(id.clone(), event_id));
         }
     }
 
@@ -336,10 +332,9 @@ async fn complete_execution(
         &serde_json::to_string(&exec_state_event).unwrap(),
     )
     .await?;
-    let _ = state.event_broadcast.send(EventNotification {
-        execution_id: id.clone(),
-        event_id,
-    });
+    let _ = state
+        .event_broadcast
+        .send(EventNotification::persisted(id.clone(), event_id));
 
     let updated = db::executions::get_by_id(&state.db_pool, &id).await?;
     Ok(Json(CompleteExecutionResponse {

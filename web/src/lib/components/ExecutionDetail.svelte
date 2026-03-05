@@ -1,6 +1,6 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
-  import type { Execution, Agent, Event as BeaconEvent } from '../types';
+  import type { Execution, Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
   import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
@@ -45,12 +45,14 @@
 
   let selectedSessionId = $state<string | null>(null);
 
-  // Reset selected session when execution changes
+  // Reset selected session and ephemeral state when execution changes
   let prevExecId = '';
   $effect.pre(() => {
     if (executionId !== prevExecId) {
       prevExecId = executionId;
       selectedSessionId = null;
+      lastPersistedSeq.clear();
+      ephemeralBuffers = new Map();
     }
   });
 
@@ -76,6 +78,10 @@
   // SSE connection state
   let sseActive = $state(false);
 
+  // Ephemeral streaming state (not in TanStack cache — transient)
+  let ephemeralBuffers = $state<Map<string, { text: string; lastSeq: number }>>(new Map());
+  let lastPersistedSeq = new Map<string, number>();
+
   // SSE connection lifecycle
   $effect(() => {
     const execId = executionId;
@@ -98,16 +104,71 @@
             return [...old, event];
           },
         );
+
+        // Update stale-delta tracking for all persisted messages
+        if (event.event_type === 'message' && event.session_id) {
+          lastPersistedSeq.set(event.session_id, Math.max(
+            lastPersistedSeq.get(event.session_id) ?? 0,
+            event.msg_seq ?? 0,
+          ));
+          // Clear ephemeral buffer only on persisted text (non-text mid-turn would cause flickering)
+          const payload = event.payload as MessagePayload;
+          const hasText = payload.parts?.some((p: { kind: string }) => p.kind === 'text');
+          if (hasText) {
+            const buf = ephemeralBuffers.get(event.session_id);
+            if (buf && (event.msg_seq ?? 0) >= buf.lastSeq) {
+              ephemeralBuffers.delete(event.session_id);
+              ephemeralBuffers = new Map(ephemeralBuffers);
+            }
+          }
+        }
+
         // Status-driving UI (StatusBadge, cancel button, completion summary)
         // reads from the execution detail query. Invalidate it on state changes
         // so those elements update immediately instead of waiting for the 10s poll.
         if (event.event_type === 'state_change') {
           queryClient.invalidateQueries({ queryKey: ['execution', execId] });
           queryClient.invalidateQueries({ queryKey: ['executions'] });
+          if (event.session_id) {
+            const p = event.payload as { to?: string };
+            if (p.to === 'working') {
+              // New turn starting — reset stale-delta guard
+              lastPersistedSeq.delete(event.session_id);
+            } else {
+              // Turn ended — clear buffer and poison guard against late retried POSTs
+              if (ephemeralBuffers.has(event.session_id)) {
+                ephemeralBuffers.delete(event.session_id);
+                ephemeralBuffers = new Map(ephemeralBuffers);
+              }
+              lastPersistedSeq.set(event.session_id, Number.MAX_SAFE_INTEGER);
+            }
+          }
         }
       },
+      (eph: EphemeralEvent) => {
+        // Discard stale deltas (race: sync arrived before queued mid-turn POST)
+        const persisted = lastPersistedSeq.get(eph.session_id) ?? 0;
+        if (eph.msg_seq <= persisted) return;
+
+        // Accumulate text from ephemeral delta
+        const text = eph.payload.parts
+          ?.filter((p: { kind: string }) => p.kind === 'text')
+          .map((p: { kind: string; text?: string }) => p.text ?? '')
+          .join('') ?? '';
+        if (!text) return;
+
+        const existing = ephemeralBuffers.get(eph.session_id);
+        if (existing && eph.msg_seq <= existing.lastSeq) return;
+        ephemeralBuffers.set(eph.session_id, {
+          text: (existing?.text ?? '') + text,
+          lastSeq: eph.msg_seq,
+        });
+        ephemeralBuffers = new Map(ephemeralBuffers);
+      },
       () => { sseActive = true; },
-      () => { sseActive = false; },
+      () => {
+        sseActive = false;
+      },
     );
 
     return () => {
@@ -330,7 +391,7 @@
     {#if viewMode === 'log'}
       <EventsTimeline {events} {agents} sessions={detail.sessions} />
     {:else}
-      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} />
+      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} />
     {/if}
   </div>
 

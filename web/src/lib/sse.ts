@@ -1,4 +1,4 @@
-import type { Event as BeaconEvent } from './types';
+import type { Event as BeaconEvent, EphemeralEvent } from './types';
 
 export interface SSEConnection {
   close: () => void;
@@ -15,6 +15,7 @@ const MAX_CONSECUTIVE_ERRORS = 3;
 export function connectExecutionSSE(
   executionId: string,
   onEvent: (event: BeaconEvent) => void,
+  onEphemeral?: (event: EphemeralEvent) => void,
   onConnected?: () => void,
   onDisconnected?: () => void,
 ): SSEConnection {
@@ -43,6 +44,15 @@ export function connectExecutionSSE(
       // Malformed JSON — skip
     }
   };
+
+  // Listen for named "ephemeral" SSE events (streaming text deltas)
+  source.addEventListener('ephemeral', ((msg: MessageEvent) => {
+    consecutiveErrors = 0;
+    try {
+      const event: EphemeralEvent = JSON.parse(msg.data);
+      onEphemeral?.(event);
+    } catch { /* skip */ }
+  }) as EventListener);
 
   source.onerror = () => {
     if (closed) return;

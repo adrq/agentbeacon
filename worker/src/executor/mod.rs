@@ -94,7 +94,12 @@ pub enum AgentEvent {
     Init { session_id: String },
     /// Agent produced output (message content) during a turn.
     /// Forwarded to the scheduler in real-time by the worker main loop.
-    Message { output: serde_json::Value },
+    /// When `ephemeral` is true, the message contains only streaming text deltas
+    /// and should be delivered via SSE but NOT persisted to the DB.
+    Message {
+        output: serde_json::Value,
+        ephemeral: bool,
+    },
     /// Agent turn completed (success or error).
     /// TurnResult.output contains the accumulated last_content from
     /// all Message events during the turn.
