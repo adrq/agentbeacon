@@ -82,7 +82,7 @@ def test_worker_sync_assigns_sdk_session(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_worker_sync_delivers_prompt(test_database):
-    """Waiting worker gets prompt_delivery when task arrives in session inbox."""
+    """Waiting worker gets task_available then fetches prompt_delivery."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
@@ -112,13 +112,27 @@ def test_worker_sync_delivers_prompt(test_database):
             )
             conn.commit()
 
-        # Worker polls with waiting_for_event
+        # Worker polls with waiting_for_event — gets task_available (non-destructive)
         data = _worker_sync(
             ctx["url"],
             {
                 "sessionState": {
                     "sessionId": session_id,
                     "status": "waiting_for_event",
+                }
+            },
+        )
+
+        assert data["type"] == "task_available"
+        assert data["sessionId"] == session_id
+
+        # Worker fetches the task via fetch_task (destructive pop)
+        data = _worker_sync(
+            ctx["url"],
+            {
+                "sessionState": {
+                    "sessionId": session_id,
+                    "status": "fetch_task",
                 }
             },
         )
@@ -133,7 +147,7 @@ def test_worker_sync_delivers_prompt(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_worker_sync_long_poll_wakes(test_database):
-    """Long-poll returns prompt_delivery when task is pushed via scheduler API."""
+    """Long-poll returns task_available when task is pushed via scheduler API."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
@@ -187,6 +201,20 @@ def test_worker_sync_long_poll_wakes(test_database):
         assert not t.is_alive(), "Worker thread should have returned"
 
         data = result_holder[0]
+        assert data["type"] == "task_available"
+        assert data["sessionId"] == session_id
+
+        # Worker fetches the task via fetch_task (destructive pop)
+        data = _worker_sync(
+            ctx["url"],
+            {
+                "sessionState": {
+                    "sessionId": session_id,
+                    "status": "fetch_task",
+                }
+            },
+        )
+
         assert data["type"] == "prompt_delivery"
         assert isinstance(data["task"]["taskPayload"], dict)
         assert data["task"]["taskPayload"]["message"]["parts"][0]["text"] == "wake up"

@@ -190,6 +190,19 @@ pub async fn pop_by_session(
     }
 }
 
+/// Check if a task exists for a specific session (non-destructive peek)
+pub async fn has_task_for_session(pool: &DbPool, session_id: &str) -> Result<bool, SchedulerError> {
+    let query = pool.prepare_query("SELECT 1 FROM task_queue WHERE session_id = ? LIMIT 1");
+
+    let row = sqlx::query(&query)
+        .bind(session_id)
+        .fetch_optional(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("has_task_for_session failed: {e}")))?;
+
+    Ok(row.is_some())
+}
+
 /// Count tasks in queue
 pub async fn count(pool: &DbPool) -> Result<usize, SchedulerError> {
     let row = sqlx::query("SELECT COUNT(*) as count FROM task_queue")

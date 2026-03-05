@@ -290,6 +290,20 @@ def test_turn_complete_parent_long_poll_wakes(test_database):
         assert not t.is_alive(), "Parent long-poll should have returned"
 
         data = result_holder[0]
+        assert data["type"] == "task_available"
+        assert data["sessionId"] == lead_id
+
+        # Fetch the task via fetch_task (destructive pop)
+        data = _worker_sync(
+            ctx["url"],
+            {
+                "sessionState": {
+                    "sessionId": lead_id,
+                    "status": "fetch_task",
+                }
+            },
+        )
+
         assert data["type"] == "prompt_delivery"
         assert data["sessionId"] == lead_id
         assert isinstance(data["task"]["taskPayload"], dict)

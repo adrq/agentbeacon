@@ -75,6 +75,11 @@ pub enum SyncResponse {
         session_id: String,
         task: TaskAssignment,
     },
+    TaskAvailable {
+        #[serde(rename = "sessionId")]
+        #[allow(dead_code)]
+        session_id: String,
+    },
     SessionComplete {
         #[serde(rename = "sessionId")]
         #[allow(dead_code)]
@@ -118,6 +123,17 @@ impl SyncRequest {
             session_state: Some(SessionState {
                 session_id: session_id.to_string(),
                 status: "waiting_for_event".to_string(),
+                agent_session_id: None,
+            }),
+            session_result: None,
+        }
+    }
+
+    pub fn fetch_task(session_id: &str) -> Self {
+        Self {
+            session_state: Some(SessionState {
+                session_id: session_id.to_string(),
+                status: "fetch_task".to_string(),
                 agent_session_id: None,
             }),
             session_result: None,
@@ -584,5 +600,20 @@ mod tests {
             SyncResponse::Command { command } => assert_eq!(command, "cancel"),
             _ => panic!("expected Command"),
         }
+    }
+
+    #[test]
+    fn test_task_available_deserializes() {
+        let json = json!({"type": "task_available", "sessionId": "sess-1"});
+        let response: SyncResponse = serde_json::from_value(json).unwrap();
+        assert!(matches!(response, SyncResponse::TaskAvailable { .. }));
+    }
+
+    #[test]
+    fn test_fetch_task_serializes() {
+        let request = SyncRequest::fetch_task("sess-1");
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["sessionState"]["sessionId"], "sess-1");
+        assert_eq!(value["sessionState"]["status"], "fetch_task");
     }
 }

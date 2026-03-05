@@ -41,7 +41,7 @@ class SessionState(BaseModel):
     """Worker-reported session state."""
 
     sessionId: str
-    status: Literal["running", "waiting_for_event"]
+    status: Literal["running", "waiting_for_event", "fetch_task"]
     agentSessionId: Optional[str] = None
 
     class Config:
@@ -100,6 +100,16 @@ class PromptDeliveryResponse(BaseModel):
         extra = "forbid"
 
 
+class TaskAvailableResponse(BaseModel):
+    """Task available response (non-destructive wake signal)."""
+
+    type: Literal["task_available"] = "task_available"
+    sessionId: str
+
+    class Config:
+        extra = "forbid"
+
+
 class SessionCompleteResponse(BaseModel):
     """Session complete response."""
 
@@ -124,6 +134,7 @@ WorkerSyncResponse = (
     NoActionResponse
     | SessionAssignedResponse
     | PromptDeliveryResponse
+    | TaskAvailableResponse
     | SessionCompleteResponse
     | CommandResponse
 )
@@ -210,6 +221,22 @@ def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
         session_id = session_state.sessionId
 
         if session_state.status == "waiting_for_event":
+            # Non-destructive: signal task_available, don't pop
+            if session_id in prompt_queues and prompt_queues[session_id]:
+                return TaskAvailableResponse(sessionId=session_id)
+
+            if session_id in complete_sessions:
+                complete_sessions.remove(session_id)
+                return SessionCompleteResponse(sessionId=session_id)
+
+            if command_queue:
+                command = command_queue.pop(0)
+                return CommandResponse(command=command)
+
+            return NoActionResponse()
+
+        elif session_state.status == "fetch_task":
+            # Destructive pop — worker explicitly requests task
             if session_id in prompt_queues and prompt_queues[session_id]:
                 prompt_data = prompt_queues[session_id].pop(0)
                 return PromptDeliveryResponse(
@@ -225,25 +252,13 @@ def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
                 complete_sessions.remove(session_id)
                 return SessionCompleteResponse(sessionId=session_id)
 
-            if command_queue:
-                command = command_queue.pop(0)
-                return CommandResponse(command=command)
-
             return NoActionResponse()
 
         elif session_state.status == "running":
-            # Section 5a: return queued prompt immediately when result is reported
+            # Non-destructive: signal task_available when result is reported
             if sync_request.sessionResult:
                 if session_id in prompt_queues and prompt_queues[session_id]:
-                    prompt_data = prompt_queues[session_id].pop(0)
-                    return PromptDeliveryResponse(
-                        sessionId=session_id,
-                        task=TaskPayload(
-                            executionId=prompt_data["executionId"],
-                            sessionId=session_id,
-                            taskPayload=prompt_data["taskPayload"],
-                        ),
-                    )
+                    return TaskAvailableResponse(sessionId=session_id)
 
             if command_queue:
                 command = command_queue.pop(0)
@@ -254,16 +269,9 @@ def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
     if sync_request.sessionResult and not sync_request.sessionState:
         session_id = sync_request.sessionResult.sessionId
 
+        # Non-destructive: signal task_available, don't pop
         if session_id in prompt_queues and prompt_queues[session_id]:
-            prompt_data = prompt_queues[session_id].pop(0)
-            return PromptDeliveryResponse(
-                sessionId=session_id,
-                task=TaskPayload(
-                    executionId=prompt_data["executionId"],
-                    sessionId=session_id,
-                    taskPayload=prompt_data["taskPayload"],
-                ),
-            )
+            return TaskAvailableResponse(sessionId=session_id)
 
         if session_id in complete_sessions:
             complete_sessions.remove(session_id)

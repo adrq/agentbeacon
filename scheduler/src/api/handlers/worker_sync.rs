@@ -28,7 +28,7 @@ pub struct WorkerSyncRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SessionState {
     pub session_id: String,
-    pub status: String, // "running" | "waiting_for_event"
+    pub status: String, // "running" | "waiting_for_event" | "fetch_task"
     #[serde(default)]
     pub agent_session_id: Option<String>,
 }
@@ -74,6 +74,10 @@ pub enum WorkerSyncResponse {
         #[serde(rename = "sessionId")]
         session_id: String,
         task: TaskAssignment,
+    },
+    TaskAvailable {
+        #[serde(rename = "sessionId")]
+        session_id: String,
     },
     SessionComplete {
         #[serde(rename = "sessionId")]
@@ -253,19 +257,19 @@ pub async fn handle_worker_sync(
         if !has_error {
             // Check if a user message was queued during the turn (always check,
             // even when worker has pending turns — a concurrent user message may
-            // have arrived)
-            if let Some(task) = state
+            // have arrived). Non-destructive peek: task stays in queue until the
+            // worker explicitly fetches it via fetch_task.
+            if state
                 .task_queue
-                .pop_by_session(&result.session_id)
+                .has_task_for_session(&result.session_id)
                 .await
                 .map_err(|e| {
-                    tracing::error!("post-result pop_by_session failed: {e}");
+                    tracing::error!("post-result has_task_for_session failed: {e}");
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?
             {
-                return Ok(Json(WorkerSyncResponse::PromptDelivery {
+                return Ok(Json(WorkerSyncResponse::TaskAvailable {
                     session_id: result.session_id.clone(),
-                    task,
                 }));
             }
 
@@ -408,6 +412,7 @@ pub async fn handle_worker_sync(
 
         return match session_state.status.as_str() {
             "waiting_for_event" => long_poll_session(&state, &session_state.session_id).await,
+            "fetch_task" => fetch_task(&state, &session_state.session_id).await,
             // "running" or any other status — heartbeat ack
             _ => Ok(Json(WorkerSyncResponse::NoAction)),
         };
@@ -451,18 +456,17 @@ async fn long_poll_session(
             }));
         }
 
-        if let Some(task) = state
+        if state
             .task_queue
-            .pop_by_session(session_id)
+            .has_task_for_session(session_id)
             .await
             .map_err(|e| {
-                tracing::error!("long-poll pop_by_session failed: {e}");
+                tracing::error!("long-poll has_task_for_session failed: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
         {
-            return Ok(Json(WorkerSyncResponse::PromptDelivery {
+            return Ok(Json(WorkerSyncResponse::TaskAvailable {
                 session_id: session_id.to_string(),
-                task,
             }));
         }
 
@@ -475,6 +479,54 @@ async fn long_poll_session(
             _ = notified => continue,
             _ = tokio::time::sleep(remaining) => {}
         }
+    }
+}
+
+/// Pop next task for a session — worker-initiated after TaskAvailable wake.
+/// This is the only long-poll-adjacent path that performs a destructive pop.
+/// Safe because the worker actively awaits this response (no biased select race).
+async fn fetch_task(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Json<WorkerSyncResponse>, StatusCode> {
+    match db::sessions::get_by_id(&state.db_pool, session_id).await {
+        Ok(s) if matches!(s.status.as_str(), "completed" | "failed" | "canceled") => {
+            return Ok(Json(WorkerSyncResponse::SessionComplete {
+                session_id: session_id.to_string(),
+            }));
+        }
+        Err(crate::error::SchedulerError::NotFound(_)) => {
+            return Ok(Json(WorkerSyncResponse::SessionComplete {
+                session_id: session_id.to_string(),
+            }));
+        }
+        Err(e) => {
+            tracing::error!("fetch_task get_by_id failed: {e}");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Ok(_) => {}
+    }
+
+    // Destructive pop — no biased-select race (worker actively awaits within
+    // a single select arm). Residual risk: HTTP response loss after server
+    // commits DELETE would still lose the task (microsecond window).
+    if let Some(task) = state
+        .task_queue
+        .pop_by_session(session_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("fetch_task pop_by_session failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    {
+        Ok(Json(WorkerSyncResponse::PromptDelivery {
+            session_id: session_id.to_string(),
+            task,
+        }))
+    } else {
+        // Task was consumed between wake and fetch (shouldn't happen
+        // for single-worker-per-session, but defensive)
+        Ok(Json(WorkerSyncResponse::NoAction))
     }
 }
 
@@ -576,8 +628,61 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
             }));
         }
 
-        // Task was consumed between enqueue and claim — long-poll for the next one
-        return long_poll_session(state, &session.id).await;
+        // Task not immediately available — wait briefly for it
+        // (can happen if push notification races with find_assignable)
+        let wait_deadline = Instant::now() + Duration::from_secs(LONG_POLL_TIMEOUT_SECS);
+        loop {
+            let notified = state.task_queue.notified();
+
+            // Check terminal status (session may have been cancelled since claim).
+            // Return NoAction (not SessionComplete) — the idle worker loop doesn't
+            // handle SessionComplete and would log a noisy "unexpected response" warning.
+            // NoAction means "nothing to assign, try again" which is correct here.
+            if let Ok(s) = db::sessions::get_by_id(&state.db_pool, &session.id).await
+                && matches!(s.status.as_str(), "completed" | "failed" | "canceled")
+            {
+                return Ok(Json(WorkerSyncResponse::NoAction));
+            }
+
+            if let Some(task) = state
+                .task_queue
+                .pop_by_session(&session.id)
+                .await
+                .map_err(|e| {
+                    tracing::error!("idle worker retry pop_by_session failed: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+            {
+                return Ok(Json(WorkerSyncResponse::SessionAssigned {
+                    session_id: session.id,
+                    task,
+                }));
+            }
+
+            let remaining = wait_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                tracing::warn!(
+                    session_id = %session.id,
+                    "claimed session but initial task never arrived — unclaiming"
+                );
+                // Reset session to "submitted" so it can be re-assigned on next idle poll.
+                // Without this, session stays "working" with no worker — effectively orphaned
+                // until crash recovery detects staleness (minutes).
+                // Note: does not reconcile execution status (see KI-74).
+                if let Err(e) =
+                    db::sessions::update_status(&state.db_pool, &session.id, "submitted").await
+                {
+                    tracing::error!(session_id = %session.id, error = %e,
+                        "failed to unclaim session after idle timeout");
+                }
+                return Ok(Json(WorkerSyncResponse::NoAction));
+            }
+
+            tokio::select! {
+                _ = notified => continue,
+                _ = tokio::time::sleep(remaining) => {}
+            }
+        }
     }
 
     Ok(Json(WorkerSyncResponse::NoAction))

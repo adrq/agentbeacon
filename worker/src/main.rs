@@ -15,7 +15,7 @@ use crate::executor::{
     AgentCommand, AgentEvent, ExecutorHandle, SessionConfig, extract_prompt_text, start_executor,
 };
 use crate::sync::{
-    RetryConfig, SyncRequest, SyncResponse, TurnMessage, WorkerMessageEvent,
+    RetryConfig, SyncRequest, SyncResponse, TurnMessage, WorkerMessageEvent, perform_sync,
     perform_sync_long_poll, perform_sync_with_retry, post_worker_message,
 };
 
@@ -399,25 +399,9 @@ async fn run_session(
                         }
 
                         match response {
-                            SyncResponse::PromptDelivery { task, .. } => {
-                                match extract_prompt_text(&task.task_payload) {
-                                    Ok(text) => {
-                                        turns_in_flight += 1;
-                                        let _ = cmd_tx.send(AgentCommand::Prompt(text));
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(error = %e, "bad task payload");
-                                        let _ = perform_sync_with_retry(client,
-                                            &args.scheduler_url,
-                                            &SyncRequest::with_result(session_id,
-                                                agent_session_id.clone(),
-                                                Vec::new(), Some(format!("Bad task payload: {e}")),
-                                                Some("internal_error".into()),
-                                                None, false),
-                                            true, retry_config).await;
-                                    }
-                                }
-                                // Start long-poll for mid-turn messages
+                            SyncResponse::TaskAvailable { .. } => {
+                                // Task available — start long-poll, which will immediately
+                                // return TaskAvailable, then Branch B handles the fetch_task
                                 poll_fut = Some(start_long_poll(
                                     client, &args.scheduler_url,
                                     session_id, args.long_poll_timeout,
@@ -493,24 +477,69 @@ async fn run_session(
                 poll_fut = None;
 
                 match response {
-                    Ok(SyncResponse::PromptDelivery { task, .. }) => {
-                        if !cancelling {
-                            match extract_prompt_text(&task.task_payload) {
-                                Ok(text) => {
-                                    turns_in_flight += 1;
-                                    let _ = cmd_tx.send(AgentCommand::Prompt(text));
+                    Ok(SyncResponse::TaskAvailable { .. }) => {
+                        if cancelling || completing {
+                            // During cancel/complete, don't fetch new tasks or restart long-poll.
+                            // Agent will fire TurnComplete soon; Branch A handles it.
+                            continue;
+                        }
+                        // Task is available in queue — fetch it via single-attempt sync
+                        // (destructive pop happens here, in a request we actively await).
+                        match perform_sync(
+                            client,
+                            &args.scheduler_url,
+                            &SyncRequest::fetch_task(session_id),
+                        )
+                        .await
+                        {
+                            Ok(SyncResponse::PromptDelivery { task, .. }) => {
+                                match extract_prompt_text(&task.task_payload) {
+                                    Ok(text) => {
+                                        turns_in_flight += 1;
+                                        let _ = cmd_tx.send(AgentCommand::Prompt(text));
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "bad task payload from fetch_task");
+                                        let _ = perform_sync_with_retry(client,
+                                            &args.scheduler_url,
+                                            &SyncRequest::with_result(session_id,
+                                                agent_session_id.clone(),
+                                                Vec::new(), Some(format!("Bad task payload: {e}")),
+                                                Some("internal_error".into()),
+                                                None, false),
+                                            true, retry_config).await;
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::error!(error = %e, "bad task payload");
-                                    let _ = perform_sync_with_retry(client,
-                                        &args.scheduler_url,
-                                        &SyncRequest::with_result(session_id,
-                                            agent_session_id.clone(),
-                                            Vec::new(), Some(format!("Bad task payload: {e}")),
-                                            Some("internal_error".into()),
-                                            None, false),
-                                        true, retry_config).await;
+                            }
+                            Ok(SyncResponse::SessionComplete { .. }) => {
+                                if turns_in_flight > 0 {
+                                    let _ = cmd_tx.send(AgentCommand::Cancel);
+                                    completing = true;
+                                    continue;
+                                } else {
+                                    let _ = cmd_tx.send(AgentCommand::Stop);
+                                    break SessionExit::Done;
                                 }
+                            }
+                            Ok(SyncResponse::Command { command }) if command == "cancel" => {
+                                let _ = cmd_tx.send(AgentCommand::Cancel);
+                                cancelling = true;
+                                continue;
+                            }
+                            Ok(SyncResponse::Command { command }) if command == "shutdown" => {
+                                let _ = cmd_tx.send(AgentCommand::Stop);
+                                break SessionExit::ShutdownRequested;
+                            }
+                            Ok(_) => {
+                                // NoAction — task was consumed (shouldn't happen for
+                                // single-worker-per-session, but defensive).
+                                // Falls through to restart long-poll.
+                            }
+                            Err(e) => {
+                                // Single attempt failed — task stays in queue.
+                                // Fall through to restart long-poll, which will
+                                // rediscover the task via has_task_for_session.
+                                tracing::warn!(error = %e, "fetch_task failed, will retry via long-poll");
                             }
                         }
                     }

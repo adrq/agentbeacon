@@ -154,7 +154,6 @@ def test_e2e_delegate_end_turn(test_database):
             cleanup_processes([worker1, worker2])
 
 
-@pytest.mark.skip(reason="KI-73")
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_e2e_delegate_multiple(test_database):
     """Multiple child delegations; turn-complete results delivered independently."""

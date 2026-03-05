@@ -54,6 +54,11 @@ impl TaskQueue {
         crate::db::task_queue::pop_by_session(&self.db_pool, session_id).await
     }
 
+    /// Check if a task exists for a specific session (non-destructive)
+    pub async fn has_task_for_session(&self, session_id: &str) -> Result<bool, SchedulerError> {
+        crate::db::task_queue::has_task_for_session(&self.db_pool, session_id).await
+    }
+
     /// Returns a future that completes when the next push occurs.
     /// Callers should call this before checking the queue to avoid race conditions.
     pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
@@ -244,5 +249,46 @@ mod tests {
         assert_eq!(ids.len(), 5);
 
         assert!(queue.is_empty().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_has_task_for_session() {
+        let queue = setup_test_queue().await;
+        let pool = &queue.db_pool;
+        create_test_fixtures(pool, "exec-1", "sess-1").await;
+
+        assert!(!queue.has_task_for_session("sess-1").await.unwrap());
+
+        queue
+            .push(create_test_task("exec-1", "sess-1"))
+            .await
+            .unwrap();
+        assert!(queue.has_task_for_session("sess-1").await.unwrap());
+        assert!(!queue.has_task_for_session("sess-other").await.unwrap());
+
+        // Pop the task — should be gone
+        queue.pop_by_session("sess-1").await.unwrap();
+        assert!(!queue.has_task_for_session("sess-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_has_task_does_not_consume() {
+        let queue = setup_test_queue().await;
+        let pool = &queue.db_pool;
+        create_test_fixtures(pool, "exec-1", "sess-1").await;
+
+        queue
+            .push(create_test_task("exec-1", "sess-1"))
+            .await
+            .unwrap();
+
+        // Multiple peeks should all return true (non-destructive)
+        assert!(queue.has_task_for_session("sess-1").await.unwrap());
+        assert!(queue.has_task_for_session("sess-1").await.unwrap());
+        assert!(queue.has_task_for_session("sess-1").await.unwrap());
+
+        // Task should still be poppable
+        let task = queue.pop_by_session("sess-1").await.unwrap();
+        assert!(task.is_some());
     }
 }
