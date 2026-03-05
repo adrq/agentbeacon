@@ -11,9 +11,10 @@
 
 <div class="decision-queue">
   {#if items.length === 0}
-    <div class="queue-empty">
-      <span class="queue-empty-icon">&#x2713;</span>
-      <span>No questions pending</span>
+    <div class="queue-empty" role="status">
+      <span class="pulse-dot"></span>
+      <span class="queue-empty-title">No pending decisions</span>
+      <span class="queue-empty-subtitle">Agents operating autonomously</span>
     </div>
   {:else}
     <div class="queue-list">
@@ -36,29 +37,52 @@
 
 <style>
   .decision-queue {
-    padding: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    padding: 0.5rem;
   }
 
   .queue-empty {
+    flex: 1;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
-    padding: 1.5rem;
-    font-size: 0.875rem;
-    color: hsl(var(--muted-foreground));
-    border: 1px dashed hsl(var(--border));
-    border-radius: var(--radius);
   }
 
-  .queue-empty-icon {
-    color: hsl(var(--status-success));
-    font-weight: 700;
+  .pulse-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: hsl(var(--status-success));
+    animation: standing-by 4s ease-in-out infinite;
+  }
+
+  @keyframes standing-by {
+    0%, 100% { box-shadow: 0 0 4px 1px hsl(var(--status-success) / 0.2); }
+    50% { box-shadow: 0 0 12px 4px hsl(var(--status-success) / 0.4); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-dot { animation: none; }
+  }
+
+  .queue-empty-title {
+    font-size: var(--text-sm);
+    font-weight: 400;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .queue-empty-subtitle {
+    font-size: var(--text-xs);
+    color: hsl(var(--muted-foreground) / 0.7);
   }
 
   .queue-list {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.5rem;
   }
 </style>

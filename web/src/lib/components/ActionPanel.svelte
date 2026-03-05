@@ -5,12 +5,13 @@
     collapsed: boolean;
     onToggle: () => void;
     decisionCount: number;
+    wide?: boolean;
   }
 
-  let { collapsed, onToggle, decisionCount }: Props = $props();
+  let { collapsed, onToggle, decisionCount, wide = false }: Props = $props();
 </script>
 
-<aside class="action-panel" class:collapsed aria-label="Decisions panel">
+<aside class="action-panel" class:collapsed class:wide aria-label="Decisions panel">
   {#if collapsed}
     <button class="collapsed-strip" onclick={onToggle} aria-label="Expand decisions panel">
       <div class="collapsed-icon">
@@ -155,6 +156,14 @@
   .panel-body {
     flex: 1;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .action-panel.wide {
+    flex: 1 1 0;
+    min-width: 0;
+    transition: none;
   }
 
   @media (max-width: 768px) {

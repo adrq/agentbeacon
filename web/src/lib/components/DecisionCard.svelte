@@ -137,7 +137,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.75rem 1rem;
+    padding: 0.5rem 0.75rem;
     border-bottom: 1px solid hsl(var(--border));
     background: hsl(var(--muted) / 0.3);
   }
@@ -145,7 +145,7 @@
   .card-meta {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.375rem;
     min-width: 0;
     flex: 1;
   }
@@ -189,10 +189,10 @@
   }
 
   .card-questions {
-    padding: 0.75rem 1rem;
+    padding: 0.5rem 0.75rem;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.5rem;
   }
 
   .card-error {
@@ -207,11 +207,11 @@
   .card-actions {
     display: flex;
     justify-content: flex-end;
-    padding: 0 1rem 0.75rem;
+    padding: 0 0.75rem 0.5rem;
   }
 
   .submit-btn {
-    padding: 0.5rem 1.25rem;
+    padding: 0.375rem 1rem;
     border-radius: var(--radius);
     border: none;
     background: hsl(var(--primary));

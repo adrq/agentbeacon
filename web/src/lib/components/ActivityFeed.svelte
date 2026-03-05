@@ -2,6 +2,7 @@
   import type { Execution } from '../types';
   import { executionsWithQuestions } from '../stores/questionState';
   import { homeFeedFilter, type HomeFeedFilter } from '../stores/appState';
+  import { projectsQuery } from '../queries/projects';
   import { router } from '../router';
 
   interface FeedItem {
@@ -9,6 +10,7 @@
     icon: string;
     iconClass: string;
     title: string;
+    projectName: string | null;
     verb: string;
     timeAgo: string;
     status: string;
@@ -19,6 +21,11 @@
   }
 
   let { executions }: Props = $props();
+
+  const projects = projectsQuery();
+  let projectNameMap = $derived(
+    new Map((projects.data ?? []).map(p => [p.id, p.name]))
+  );
 
   function relativeTime(iso: string): string {
     const diff = Date.now() - new Date(iso).getTime();
@@ -80,6 +87,7 @@
           icon: cfg.icon,
           iconClass: cfg.iconClass,
           title: exec.title ?? exec.id.slice(0, 8),
+          projectName: exec.project_id ? (projectNameMap.get(exec.project_id) ?? null) : null,
           verb: verbMap[exec.status] ?? exec.status,
           timeAgo: relativeTime(exec.updated_at),
           status: exec.status,
@@ -108,6 +116,9 @@
           <span class="feed-icon {item.iconClass}">{item.icon}</span>
           <span class="feed-title">
             <span class="feed-exec-name">{item.title}</span>
+            {#if item.projectName}
+              <span class="feed-project">{item.projectName}</span>
+            {/if}
             <span class="feed-verb">{item.verb}</span>
           </span>
           <span class="feed-time">{item.timeAgo}</span>
@@ -199,6 +210,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .feed-project {
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+    padding: 0 0.25rem;
+    background: hsl(var(--muted));
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 8rem;
   }
 
   .feed-verb {

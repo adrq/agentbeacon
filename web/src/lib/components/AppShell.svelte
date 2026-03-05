@@ -168,6 +168,7 @@
     collapsed={effectiveCollapsed}
     onToggle={toggleActionPanel}
     decisionCount={$decisionCount}
+    wide={isHome}
   />
 </div>
 

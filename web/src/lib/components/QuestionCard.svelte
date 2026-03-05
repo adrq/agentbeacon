@@ -173,7 +173,7 @@
 
 <style>
   .question-card {
-    padding: 0.625rem 0.75rem;
+    padding: 0.5rem 0.625rem;
     border: 1px solid hsl(var(--border));
     border-radius: var(--radius);
     background: hsl(var(--card));
@@ -192,7 +192,7 @@
     font-size: 0.8125rem;
     font-weight: 600;
     color: hsl(var(--foreground));
-    margin-bottom: 0.375rem;
+    margin-bottom: 0.25rem;
     line-height: 1.35;
   }
 
@@ -200,7 +200,7 @@
     font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
     line-height: 1.4;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.375rem;
   }
 
   .options-list {

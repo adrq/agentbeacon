@@ -69,7 +69,7 @@
 <style>
   .ops-summary {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 0.5rem;
     padding: 0.75rem 1rem 0.25rem;
   }
@@ -130,11 +130,5 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: hsl(var(--muted-foreground));
-  }
-
-  @media (max-width: 500px) {
-    .ops-summary {
-      grid-template-columns: repeat(2, 1fr);
-    }
   }
 </style>
