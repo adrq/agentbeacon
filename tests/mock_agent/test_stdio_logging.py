@@ -12,6 +12,8 @@ def test_bracketed_format_logging_stdio():
     with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": f"tests/stdio::{test_name}"}):
         from agentbeacon.mock_agent.stdio_mode import process_input
 
+        Path("logs/tests_stdio__test_stdio_bracketed.log").unlink(missing_ok=True)
+
         # Mock input with bracketed format
         input_text = "[exec_stdio][node_stdio] NOW Handle stdio task"
 
@@ -42,6 +44,8 @@ def test_plain_text_logging_stdio():
 
     with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": f"tests/stdio::{test_name}"}):
         from agentbeacon.mock_agent.stdio_mode import process_input
+
+        Path("logs/tests_stdio__test_stdio_plain.log").unlink(missing_ok=True)
 
         # Mock input with plain text
         input_text = "plain task without brackets"
@@ -98,6 +102,8 @@ def test_multiple_stdio_requests_same_test():
 
     with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": f"tests/stdio::{test_name}"}):
         from agentbeacon.mock_agent.stdio_mode import process_input
+
+        Path("logs/tests_stdio__test_stdio_multiple.log").unlink(missing_ok=True)
 
         # Process multiple inputs
         process_input("[exec_multi][node_1] NOW First task")

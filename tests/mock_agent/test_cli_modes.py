@@ -13,6 +13,8 @@ import json
 import httpx
 from typing import List, Optional
 
+from tests.testhelpers import PortManager, wait_for_port
+
 
 def run_mock_agent(
     args: List[str], timeout: float = 5.0, input_text: Optional[str] = None
@@ -46,10 +48,12 @@ def test_mode_switching_protocol_compliance():
     assert stdio_result.returncode == 0 or stdio_result.stderr == "Timeout"
 
     # Test A2A mode - should start HTTP server
-    a2a_proc = start_mock_agent_background(["--mode", "a2a"])
+    port = PortManager().allocate_port()
+    a2a_proc = start_mock_agent_background(["--mode", "a2a", "--port", str(port)])
     try:
-        time.sleep(2)
-        assert a2a_proc.poll() is None  # Should be running
+        assert wait_for_port(
+            port, timeout=10, health_path="/.well-known/agent-card.json"
+        )
     finally:
         a2a_proc.terminate()
         a2a_proc.wait(timeout=5)
@@ -66,25 +70,20 @@ def test_mode_switching_protocol_compliance():
 
 def test_a2a_port_configuration_affects_agent_card():
     """Test A2A mode port configuration affects agent card URL."""
-    proc = start_mock_agent_background(["--mode", "a2a", "--port", "8083"])
+    port = PortManager().allocate_port()
+    proc = start_mock_agent_background(["--mode", "a2a", "--port", str(port)])
 
     try:
-        time.sleep(2)
+        assert wait_for_port(
+            port, timeout=10, health_path="/.well-known/agent-card.json"
+        )
 
-        # Verify agent card reflects correct port
-        try:
-            response = httpx.get(
-                "http://localhost:8083/.well-known/agent-card.json", timeout=2
-            )
-            if response.status_code == 200:
-                card = response.json()
-                assert card["url"] == "http://localhost:8083/rpc"
-            else:
-                # Server should at least be attempting to use port 8083
-                assert proc.poll() is None
-        except httpx.RequestError:
-            # Server should be running even if request fails
-            assert proc.poll() is None
+        response = httpx.get(
+            f"http://localhost:{port}/.well-known/agent-card.json", timeout=2
+        )
+        assert response.status_code == 200
+        card = response.json()
+        assert card["url"] == f"http://localhost:{port}/rpc"
 
     finally:
         proc.terminate()

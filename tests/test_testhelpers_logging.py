@@ -163,6 +163,10 @@ def test_parse_agent_log_integration_with_actual_logging():
         from agentbeacon.mock_agent.file_logger import log_task_completion
         from tests.testhelpers import parse_agent_log
 
+        Path("logs/tests_integration__test_integration_with_logging.log").unlink(
+            missing_ok=True
+        )
+
         # Use actual logging function to create entries
         log_task_completion("[exec_integration][node_1] NOW First integration test")
         log_task_completion("[exec_integration][node_2] NOW Second integration test")

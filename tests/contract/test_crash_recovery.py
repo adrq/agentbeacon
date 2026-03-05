@@ -21,15 +21,17 @@ NEGATIVE_WAIT = 5
 
 
 def _wait_for_recovery(db_url, session_id, timeout=5, interval=0.15):
-    """Poll until recovery scan mutates session state or attempts counter."""
+    """Poll until recovery scan mutates session status.
+
+    Waits for status change specifically (not just counter increment)
+    because recovery.rs increments recovery_attempts before updating
+    status — waiting on counter alone can return an intermediate state.
+    """
     baseline = _get_session(db_url, session_id)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         current = _get_session(db_url, session_id)
-        if (
-            current["status"] != baseline["status"]
-            or current["recovery_attempts"] != baseline["recovery_attempts"]
-        ):
+        if current["status"] != baseline["status"]:
             return current
         time.sleep(interval)
     return _get_session(db_url, session_id)
@@ -308,11 +310,11 @@ def test_double_restart_recovers_again(test_database):
             agent_session_id="sdk-session-def",
             cwd="/tmp/test-workspace",
         )
+        _backdate_session(ctx2["db_url"], lead_sid)
 
     # Second restart
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx3:
-        _wait_for_recovery(ctx3["db_url"], lead_sid)
-        session = _get_session(ctx3["db_url"], lead_sid)
+        session = _wait_for_recovery(ctx3["db_url"], lead_sid)
         assert session["status"] == "submitted"
         assert session["recovery_attempts"] == 2
 
