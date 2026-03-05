@@ -3,11 +3,13 @@
 
 Usage:
     uv run python scripts/seed_agents.py [--db-path scheduler-9456.db]
+    uv run python scripts/seed_agents.py --db-url postgres://user:pass@localhost/dbname
 """
 
 import argparse
 import json
 import sqlite3
+import sys
 import uuid
 
 
@@ -110,37 +112,68 @@ AGENTS = [
 ]
 
 
-def ensure_driver(conn, platform):
-    """Return driver_id for platform, creating driver if needed."""
+class _PgConnWrapper:
+    """Wraps psycopg2 connection to match sqlite3's conn.execute() API."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=None):
+        sql = sql.replace("?", "%s")
+        cur = self._conn.cursor()
+        cur.execute(sql, params)
+        return cur
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+
+def get_driver_id(conn, platform):
+    """Return driver_id for platform. Raises if driver not found."""
     row = conn.execute(
         "SELECT id FROM drivers WHERE platform = ?", (platform,)
     ).fetchone()
     if row:
         return row[0]
-    driver_id = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO drivers (id, name, platform, config) VALUES (?, ?, ?, '{}')",
-        (driver_id, platform, platform),
+    raise RuntimeError(
+        f"Driver not found for platform '{platform}'. "
+        "Drivers are created by migration 0005 — run migrations first."
     )
-    print(f"  Created driver: {platform} ({driver_id})")
-    return driver_id
+
+
+def open_connection(db_path=None, db_url=None):
+    """Open a database connection with unified sqlite3-style API."""
+    if db_url and db_url.startswith("postgres"):
+        import psycopg2
+
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = False
+        return _PgConnWrapper(conn)
+    path = db_path or "scheduler-9456.db"
+    return sqlite3.connect(path)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Seed agents table")
-    parser.add_argument(
-        "--db-path", default="scheduler-9456.db", help="Path to SQLite database"
-    )
+    parser.add_argument("--db-path", default=None, help="Path to SQLite database")
+    parser.add_argument("--db-url", default=None, help="Database URL (postgres://...)")
     args = parser.parse_args()
 
-    conn = sqlite3.connect(args.db_path)
+    if args.db_url and args.db_path:
+        print("Error: specify --db-url or --db-path, not both", file=sys.stderr)
+        sys.exit(1)
 
-    # Pre-create drivers for all platforms used by agents
+    conn = open_connection(db_path=args.db_path, db_url=args.db_url)
+
+    # Look up drivers for all platforms used by agents
     driver_cache = {}
     for agent in AGENTS:
         platform = agent["agent_type"]
         if platform not in driver_cache:
-            driver_cache[platform] = ensure_driver(conn, platform)
+            driver_cache[platform] = get_driver_id(conn, platform)
 
     for agent in AGENTS:
         existing = conn.execute(

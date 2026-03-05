@@ -14,31 +14,31 @@ def test_list_drivers_returns_list(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.get(f"{ctx['url']}/api/drivers", timeout=5)
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        drivers = resp.json()
+        assert isinstance(drivers, list)
+        # Migration seeds 6 drivers
+        assert len(drivers) == 6
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_create_driver(test_database):
+def test_create_driver_duplicate_platform_returns_409(test_database):
+    """Creating a driver with an existing platform returns 409."""
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
             f"{ctx['url']}/api/drivers",
             json={"name": "my-claude", "platform": "claude_sdk"},
             timeout=5,
         )
-        assert resp.status_code == 201
-        data = resp.json()
-        assert data["name"] == "my-claude"
-        assert data["platform"] == "claude_sdk"
-        assert data["config"] == {}
+        assert resp.status_code == 409
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_create_driver_name_collision_returns_409(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        seed_test_driver(ctx["db_url"], name="unique-driver", platform="claude_sdk")
+        # "claude_sdk" name already exists from migration
         resp = httpx.post(
             f"{ctx['url']}/api/drivers",
-            json={"name": "unique-driver", "platform": "acp"},
+            json={"name": "claude_sdk", "platform": "acp"},
             timeout=5,
         )
         assert resp.status_code == 409
@@ -58,7 +58,7 @@ def test_create_driver_invalid_platform_returns_400(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_get_driver_by_id(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        driver_id = seed_test_driver(ctx["db_url"], name="get-test", platform="acp")
+        driver_id = seed_test_driver(ctx["db_url"], platform="acp")
         resp = httpx.get(f"{ctx['url']}/api/drivers/{driver_id}", timeout=5)
         assert resp.status_code == 200
         assert resp.json()["id"] == driver_id
@@ -75,9 +75,7 @@ def test_get_driver_nonexistent_returns_404(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_update_driver_name(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        driver_id = seed_test_driver(
-            ctx["db_url"], name="old-name", platform="claude_sdk"
-        )
+        driver_id = seed_test_driver(ctx["db_url"], platform="claude_sdk")
         resp = httpx.patch(
             f"{ctx['url']}/api/drivers/{driver_id}",
             json={"name": "new-name"},
@@ -90,9 +88,7 @@ def test_update_driver_name(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_update_driver_platform_rejected_400(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        driver_id = seed_test_driver(
-            ctx["db_url"], name="immut-test", platform="claude_sdk"
-        )
+        driver_id = seed_test_driver(ctx["db_url"], platform="claude_sdk")
         resp = httpx.patch(
             f"{ctx['url']}/api/drivers/{driver_id}",
             json={"platform": "acp"},
@@ -104,7 +100,7 @@ def test_update_driver_platform_rejected_400(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_update_driver_config(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        driver_id = seed_test_driver(ctx["db_url"], name="config-test", platform="acp")
+        driver_id = seed_test_driver(ctx["db_url"], platform="acp")
         resp = httpx.patch(
             f"{ctx['url']}/api/drivers/{driver_id}",
             json={"config": {"key": "value"}},
@@ -117,7 +113,7 @@ def test_update_driver_config(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_delete_driver_no_agents(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        driver_id = seed_test_driver(ctx["db_url"], name="to-delete", platform="a2a")
+        driver_id = seed_test_driver(ctx["db_url"], platform="a2a")
         resp = httpx.delete(f"{ctx['url']}/api/drivers/{driver_id}", timeout=5)
         assert resp.status_code == 204
 
@@ -157,7 +153,6 @@ def test_delete_driver_nonexistent_returns_404(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_driver_response_shape(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        seed_test_driver(ctx["db_url"], name="shape-test", platform="claude_sdk")
         resp = httpx.get(f"{ctx['url']}/api/drivers", timeout=5)
         driver = resp.json()[0]
 

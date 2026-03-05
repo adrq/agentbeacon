@@ -670,9 +670,7 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
         # Create temp directory for wiki search index
         wiki_index_dir = tempfile.mkdtemp(prefix="wiki-index-")
 
-        # Always disable auto-seeding in tests for predictable state
         merged_env = {
-            "AGENTBEACON_NO_SEED": "1",
             "AGENTBEACON_WIKI_INDEX_DIR": wiki_index_dir,
         }
         if env:
@@ -1300,18 +1298,16 @@ def db_conn(db_url):
 
 
 def _ensure_driver(conn, agent_type):
-    """Return driver_id for agent_type, creating driver if needed."""
+    """Return driver_id for agent_type. Raises if not found (drivers come from migration)."""
     row = conn.execute(
         "SELECT id FROM drivers WHERE platform = ?", (agent_type,)
     ).fetchone()
     if row:
         return row[0]
-    driver_id = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO drivers (id, name, platform, config) VALUES (?, ?, ?, '{}')",
-        (driver_id, agent_type, agent_type),
+    raise RuntimeError(
+        f"Driver not found for platform '{agent_type}'. "
+        "Drivers are created by migration 0005."
     )
-    return driver_id
 
 
 def seed_test_driver(
@@ -1320,7 +1316,10 @@ def seed_test_driver(
     platform: str = "claude_sdk",
     driver_id: str = None,
 ) -> str:
-    """Insert a test driver directly into the database.
+    """Return driver_id for platform, creating only if it doesn't exist.
+
+    Drivers for standard platforms (acp, claude_sdk, etc.) are created by
+    migration 0005 and will already exist. This function handles both cases.
 
     Args:
         db_url: Database URL (sqlite:... or postgres://...)
@@ -1331,10 +1330,15 @@ def seed_test_driver(
     Returns:
         str: Driver ID
     """
-    if driver_id is None:
-        driver_id = str(uuid.uuid4())
-
     with db_conn(db_url) as conn:
+        row = conn.execute(
+            "SELECT id FROM drivers WHERE platform = ?", (platform,)
+        ).fetchone()
+        if row:
+            return row[0]
+
+        if driver_id is None:
+            driver_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO drivers (id, name, platform, config) VALUES (?, ?, ?, '{}')",
             (driver_id, name, platform),
@@ -1703,22 +1707,17 @@ def create_project_via_api(scheduler_url: str, name: str, path: str = None) -> d
 
 
 def ensure_driver_via_api(scheduler_url: str, platform: str = "acp") -> str:
-    """Find or create a driver for the given platform, return driver_id."""
+    """Find a driver for the given platform, return driver_id. Raises if not found."""
     resp = httpx.get(f"{scheduler_url}/api/drivers", timeout=5)
     assert resp.status_code == 200
     for driver in resp.json():
         if driver["platform"] == platform:
             return driver["id"]
 
-    resp = httpx.post(
-        f"{scheduler_url}/api/drivers",
-        json={"name": platform, "platform": platform},
-        timeout=5,
+    raise RuntimeError(
+        f"Driver not found for platform '{platform}'. "
+        "Drivers are created by migration 0005."
     )
-    assert resp.status_code == 201, (
-        f"create driver failed: {resp.status_code} {resp.text}"
-    )
-    return resp.json()["id"]
 
 
 def create_agent_via_api(

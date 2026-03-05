@@ -115,18 +115,6 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Agent>, SchedulerError> {
     rows.into_iter().map(parse_agent_row).collect()
 }
 
-/// Count active agents (for seed check)
-pub async fn count(pool: &DbPool) -> Result<i64, SchedulerError> {
-    let query = pool.prepare_query("SELECT COUNT(*) as cnt FROM agents WHERE deleted_at IS NULL");
-
-    let row = sqlx::query(&query)
-        .fetch_one(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("count agents failed: {e}")))?;
-
-    Ok(row.get::<i64, _>("cnt"))
-}
-
 pub async fn update(
     pool: &DbPool,
     id: &str,

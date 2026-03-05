@@ -10,10 +10,14 @@ CREATE TABLE drivers (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- 2. Populate drivers from existing agent_type values
-INSERT INTO drivers (id, name, platform, config)
-SELECT gen_random_uuid()::text, agent_type, agent_type, '{}'
-FROM (SELECT DISTINCT agent_type FROM agents) sub;
+-- 2. Seed drivers with stable UUIDs (product constants)
+INSERT INTO drivers (id, name, platform, config) VALUES
+    ('ff5b1509-ac29-4957-80b7-6e8aaca69e08', 'acp', 'acp', '{}'),
+    ('808fcfca-8ba7-42ce-a02e-b6b159a100c6', 'a2a', 'a2a', '{}'),
+    ('a7315f6e-6559-4569-a603-6dbc320c0d0f', 'claude_sdk', 'claude_sdk', '{}'),
+    ('dbd14a23-310a-4de5-a3d9-cb2083eed4cc', 'codex_sdk', 'codex_sdk', '{}'),
+    ('4fde05d2-e929-438c-9cf0-d8ffc3e2240c', 'copilot_sdk', 'copilot_sdk', '{}'),
+    ('224d5c95-1e15-4cf1-9230-dce0519ef240', 'opencode_sdk', 'opencode_sdk', '{}');
 
 -- 3. Drop agent_type CHECK constraint (platform validation moves to drivers)
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_agent_type_check;

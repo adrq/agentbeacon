@@ -2,8 +2,9 @@
 # E2E test environment launcher.
 # Usage:
 #   ./scripts/e2e.sh [--fresh]           # Start system for manual testing
+#   ./scripts/e2e.sh --seed              # Start system + seed agents
 #   ./scripts/e2e.sh --run-tests         # Start system, run Playwright, exit
-#   ./scripts/e2e.sh --fresh --run-tests # Fresh DB + run Playwright
+#   ./scripts/e2e.sh --fresh --run-tests # Fresh DB + seed agents + run Playwright
 #
 # Supports AGENTBEACON_PORT env var for multi-instance usage:
 #   AGENTBEACON_PORT=9457 ./scripts/e2e.sh
@@ -11,10 +12,12 @@ set -e
 
 RUN_TESTS=false
 FRESH=false
+SEED=false
 for arg in "$@"; do
     case "$arg" in
         --run-tests) RUN_TESTS=true ;;
         --fresh) FRESH=true ;;
+        --seed) SEED=true ;;
     esac
 done
 
@@ -73,8 +76,10 @@ until curl -sf "${SCHEDULER_URL}/api/health" > /dev/null 2>&1; do
 done
 echo "==> Scheduler ready."
 
-echo "==> Seeding agents..."
-uv run python scripts/seed_agents.py --db-path "$DB_PATH"
+if $FRESH || $SEED; then
+    echo "==> Seeding agents..."
+    uv run python scripts/seed_agents.py --db-path "$DB_PATH"
+fi
 
 if $RUN_TESTS; then
     echo "==> Running Playwright E2E tests..."
