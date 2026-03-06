@@ -15,10 +15,10 @@ Add additional origins via the `CORS_ALLOWED_ORIGINS` environment variable:
 
 ```bash
 # Single origin
-CORS_ALLOWED_ORIGINS="http://localhost:3000" ./bin/agentbeacon-scheduler
+CORS_ALLOWED_ORIGINS="http://localhost:3000" ./bin/agentbeacon
 
 # Multiple origins (comma-separated)
-CORS_ALLOWED_ORIGINS="http://localhost:3000,http://localhost:8080" ./bin/agentbeacon-scheduler
+CORS_ALLOWED_ORIGINS="http://localhost:3000,http://localhost:8080" ./bin/agentbeacon
 ```
 
 ### Allowed Methods
@@ -43,7 +43,7 @@ Credentials (cookies, HTTP authentication) are enabled for approved origins.
 ### Production
 
 ```bash
-./bin/agentbeacon-scheduler --port 9456
+./bin/agentbeacon --port 9456
 
 # Allowed: http://localhost:9456
 ```
@@ -51,7 +51,7 @@ Credentials (cookies, HTTP authentication) are enabled for approved origins.
 ### Development
 
 ```bash
-DEV_MODE=1 ./bin/agentbeacon-scheduler --port 9456
+DEV_MODE=1 ./bin/agentbeacon --port 9456
 
 # Allowed:
 # - http://localhost:10456 (Vite dev server, port+1000)
@@ -62,7 +62,7 @@ DEV_MODE=1 ./bin/agentbeacon-scheduler --port 9456
 
 ```bash
 CORS_ALLOWED_ORIGINS="http://localhost:3000,https://app.example.com" \
-  ./bin/agentbeacon-scheduler --port 9456
+  ./bin/agentbeacon --port 9456
 
 # Allowed:
 # - http://localhost:3000

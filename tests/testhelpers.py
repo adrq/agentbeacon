@@ -129,7 +129,7 @@ class ProcessTracker:
         tracker.register_process(orchestrator_proc, "orchestrator", {"port": 19456})
 
         # Later: count only our processes
-        count = tracker.count_alive("scheduler")
+        count = tracker.count_alive("worker")
 
         # Cleanup only our processes
         tracker.cleanup_all()
@@ -271,21 +271,21 @@ class ProcessTracker:
                 _terminate_single_process(proc, term_timeout, kill_timeout)
 
     def discover_orchestrator_children(
-        self, orchestrator_pid: int, timeout: float = 5.0
+        self, orchestrator_pid: int, timeout: float = 5.0, expected_workers: int = 0
     ) -> Dict[str, List[int]]:
-        """Discover and register child processes spawned by orchestrator.
+        """Discover and register worker child processes spawned by agentbeacon.
 
-        Polls for scheduler and worker processes that are children of the orchestrator.
+        Polls for worker processes that are children of the agentbeacon process.
 
         Args:
-            orchestrator_pid: PID of orchestrator parent process
+            orchestrator_pid: PID of agentbeacon parent process
             timeout: Maximum time to wait for children to appear
+            expected_workers: Number of workers expected (exit early once found)
 
         Returns:
-            Dict with keys "scheduler" and "workers" containing discovered PIDs
+            Dict with key "workers" containing discovered PIDs
         """
         start_time = time.time()
-        found_scheduler = None
         found_workers = []
 
         while time.time() - start_time < timeout:
@@ -299,18 +299,6 @@ class ProcessTracker:
                         child_pid = child.pid
 
                         if (
-                            "agentbeacon-scheduler" in cmdline
-                            and found_scheduler is None
-                        ):
-                            self.register_child_pid(
-                                child_pid,
-                                "scheduler",
-                                orchestrator_pid,
-                                {"discovered": True},
-                            )
-                            found_scheduler = child_pid
-
-                        elif (
                             "agentbeacon-worker" in cmdline
                             and child_pid not in found_workers
                         ):
@@ -325,8 +313,7 @@ class ProcessTracker:
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
 
-                # If we found at least scheduler, give a bit more time for workers
-                if found_scheduler and len(found_workers) > 0:
+                if expected_workers > 0 and len(found_workers) >= expected_workers:
                     time.sleep(0.2)
                     break
 
@@ -336,7 +323,6 @@ class ProcessTracker:
             time.sleep(0.1)
 
         return {
-            "scheduler": [found_scheduler] if found_scheduler else [],
             "workers": found_workers,
         }
 
@@ -347,9 +333,8 @@ class ProcessTracker:
             process_type: Optional type to check ("scheduler", "worker", etc.)
         """
         patterns = {
-            "scheduler": "agentbeacon-scheduler",
+            "agentbeacon": "agentbeacon",
             "worker": "agentbeacon-worker",
-            "orchestrator": "agentbeacon",
         }
 
         search_patterns = (
@@ -539,7 +524,7 @@ def start_mock_scheduler(port: int, base_dir: Path = None) -> subprocess.Popen:
     if base_dir is None:
         base_dir = Path.cwd()
 
-    orchestrator_proc = subprocess.Popen(
+    mock_proc = subprocess.Popen(
         [
             "uv",
             "run",
@@ -557,7 +542,7 @@ def start_mock_scheduler(port: int, base_dir: Path = None) -> subprocess.Popen:
         text=True,
         cwd=base_dir,
     )
-    return orchestrator_proc
+    return mock_proc
 
 
 def wait_for_port(
@@ -621,7 +606,7 @@ def start_scheduler(
 
     scheduler_process = subprocess.Popen(
         [
-            "./bin/agentbeacon-scheduler",
+            "./bin/agentbeacon",
             "--port",
             str(port),
             "--db-url",
@@ -1064,22 +1049,22 @@ def poll_a2a_task_status(
 
 def start_orchestrator(
     port: int,
-    workers: int = 2,
+    workers: int | None = 2,
     db_url: str = None,
     base_dir: Path = None,
     worker_poll_interval: str = None,
 ) -> subprocess.Popen:
-    """Start the orchestrator binary with specified configuration.
+    """Start the agentbeacon binary with specified configuration.
 
     Args:
         port: Port number for scheduler to listen on
-        workers: Number of worker processes to spawn
+        workers: Number of worker processes to spawn. None omits --workers flag entirely (uses binary default).
         db_url: Complete database URL (creates temp SQLite URL if None)
         base_dir: Base directory for the project (defaults to test file parent directory)
         worker_poll_interval: Worker sync polling interval (e.g., '1s', '500ms'). If None, workers use default (5s)
 
     Returns:
-        subprocess.Popen: The orchestrator process
+        subprocess.Popen: The agentbeacon process
     """
     if base_dir is None:
         base_dir = Path(__file__).parent.parent
@@ -1095,11 +1080,12 @@ def start_orchestrator(
 
     cmd = [
         "./bin/agentbeacon",
-        "--workers",
-        str(workers),
-        "--scheduler-port",
+        "--port",
         str(port),
     ]
+
+    if workers is not None:
+        cmd.extend(["--workers", str(workers)])
 
     if worker_poll_interval is not None:
         cmd.extend(["--worker-poll-interval", worker_poll_interval])
@@ -1117,38 +1103,37 @@ def start_orchestrator(
 
 @contextmanager
 def orchestrator_context(
-    workers: int = 2,
+    workers: int | None = 2,
     db_url: str = None,
     port: int = None,
     test_name: str = None,
     worker_poll_interval: str = None,
 ):
-    """Context manager for orchestrator with PID-tracked process management.
+    """Context manager for agentbeacon with PID-tracked process management.
 
-    Provides complete lifecycle management for orchestrator tests:
+    Provides complete lifecycle management for supervisor tests:
     - Allocates unique port if not provided
-    - Starts orchestrator process
-    - Discovers and tracks scheduler + worker child PIDs
+    - Starts agentbeacon process
+    - Discovers and tracks worker child PIDs
     - Waits for system readiness
     - Cleans up all tracked processes on exit
     - Logs external processes for debugging
 
     Args:
-        workers: Number of worker processes (default: 2)
+        workers: Number of worker processes (default: 2). None omits --workers flag entirely (uses binary default).
         db_url: Database URL (creates temp SQLite if None)
         port: Port number (allocates one if None)
         test_name: Test name for debugging (auto-detected if None)
         worker_poll_interval: Worker sync polling interval (e.g., '1s', '500ms'). If None, workers use default (5s)
 
     Yields:
-        dict: Contains orchestrator info and PID tracker:
+        dict: Contains agentbeacon process info and PID tracker:
             {
                 'orchestrator': subprocess.Popen,
                 'orchestrator_pid': int,
                 'port': int,
                 'url': str,
                 'tracker': ProcessTracker,
-                'scheduler_pids': List[int],
                 'worker_pids': List[int],
                 'db_url': str,
                 'temp_db_path': str or None
@@ -1156,8 +1141,7 @@ def orchestrator_context(
 
     Example:
         with orchestrator_context(workers=2) as orch:
-            # Assert using tracker instead of global scanning
-            orch['tracker'].assert_exact_count("scheduler", 1)
+            # Assert using tracker
             orch['tracker'].assert_exact_count("worker", 2)
 
             # Make API calls
@@ -1197,24 +1181,26 @@ def orchestrator_context(
         )
 
         # Register orchestrator PID
+        effective_workers = workers if workers is not None else 0
         orchestrator_pid = tracker.register_process(
             orchestrator_proc,
             "orchestrator",
-            {"port": allocated_port, "workers": workers},
+            {"port": allocated_port, "workers": effective_workers},
         )
 
-        # Wait for scheduler to be ready (orchestrator spawns it)
+        # Wait for scheduler to be ready
         if not wait_for_port(allocated_port, timeout=15):
             raise RuntimeError(
-                f"Orchestrator system did not start on port {allocated_port} within 15 seconds"
+                f"AgentBeacon did not start on port {allocated_port} within 15 seconds"
             )
 
-        # Give orchestrator time to spawn all workers
+        # Give agentbeacon time to spawn all workers
         time.sleep(2)
 
-        # Discover and register child PIDs (scheduler + workers)
-        children = tracker.discover_orchestrator_children(orchestrator_pid, timeout=5)
-        scheduler_pids = children.get("scheduler", [])
+        # Discover and register worker child PIDs
+        children = tracker.discover_orchestrator_children(
+            orchestrator_pid, timeout=5, expected_workers=effective_workers
+        )
         worker_pids = children.get("workers", [])
 
         # Log any external processes (for debugging)
@@ -1227,7 +1213,6 @@ def orchestrator_context(
             "port": allocated_port,
             "url": f"http://localhost:{allocated_port}",
             "tracker": tracker,
-            "scheduler_pids": scheduler_pids,
             "worker_pids": worker_pids,
             "db_url": db_url,
             "temp_db_path": temp_db_path,

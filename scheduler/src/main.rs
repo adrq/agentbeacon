@@ -13,17 +13,19 @@ use scheduler::{
     db,
     queue::TaskQueue,
     search::WikiSearchIndex,
-    services, telemetry,
+    services,
+    supervisor::Supervisor,
+    telemetry,
 };
 
-/// AgentBeacon Scheduler - Agent orchestration and execution tracking
+/// AgentBeacon — Agent orchestration and execution tracking
 #[derive(Parser, Debug)]
-#[command(name = "agentbeacon-scheduler")]
+#[command(name = "agentbeacon")]
 #[command(version = "1.0.0")]
-#[command(about = "Rust scheduler with database layer and REST API", long_about = None)]
+#[command(about = "AgentBeacon scheduler with optional worker supervision", long_about = None)]
 struct Cli {
     /// Port to listen on
-    #[arg(short, long, default_value = "9456")]
+    #[arg(short, long, default_value = "9456", env = "AGENTBEACON_PORT")]
     port: u16,
 
     /// Database URL (SQLite or PostgreSQL)
@@ -38,6 +40,14 @@ struct Cli {
     /// Defaults to wiki-index-{port}/ when not specified.
     #[arg(long, env = "AGENTBEACON_WIKI_INDEX_DIR")]
     wiki_index_dir: Option<String>,
+
+    /// Number of worker processes to supervise (0 = standalone scheduler)
+    #[arg(long, default_value_t = 0)]
+    workers: usize,
+
+    /// Worker sync polling interval (e.g., '1s', '500ms')
+    #[arg(long)]
+    worker_poll_interval: Option<String>,
 }
 
 #[tokio::main]
@@ -51,8 +61,8 @@ async fn main() -> Result<()> {
     // Register SQLx Any drivers (required for SQLx 0.8+ with Pool<Any>)
     sqlx::any::install_default_drivers();
 
-    info!("AgentBeacon Scheduler starting...");
-    info!("Configuration: port={}", cli.port);
+    info!("AgentBeacon starting...");
+    info!("Configuration: port={}, workers={}", cli.port, cli.workers);
 
     // Run bootstrap and startup flow
     bootstrap(cli).await
@@ -223,18 +233,75 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         }
     });
 
-    // Start server with graceful shutdown
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("Server error")?;
+    // Create supervisor (if workers requested) but don't start yet
+    let supervisor = if cli.workers > 0 {
+        Some(Supervisor::new(
+            cli.workers,
+            cli.port,
+            cli.worker_poll_interval,
+        ))
+    } else {
+        None
+    };
 
-    info!("AgentBeacon Scheduler shut down gracefully");
+    // Create shutdown channel for Axum graceful shutdown
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // Spawn server task — begins accepting once the executor polls it.
+    // Workers take seconds to start (process spawn, binary load, CLI parse),
+    // so the server will be accepting before any worker's first HTTP poll.
+    let mut shutdown_watch = shutdown_rx;
+    let mut server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_watch.changed().await;
+            })
+            .await
+    });
+
+    // Start workers AFTER server is scheduled
+    if let Some(ref sup) = supervisor {
+        sup.start_workers().await?;
+        info!(
+            "AgentBeacon ready — scheduler and {} workers running on port {}",
+            cli.workers, cli.port
+        );
+    }
+
+    // Wait for EITHER a shutdown signal OR the server exiting unexpectedly.
+    let server_error = tokio::select! {
+        _ = wait_for_signal() => {
+            // Normal shutdown path
+            None
+        }
+        result = &mut server_handle => {
+            warn!("Server exited unexpectedly, shutting down workers...");
+            Some(result)
+        }
+    };
+
+    // Shutdown ordering: workers first (they are HTTP clients of the scheduler),
+    // then drain Axum.
+    if let Some(sup) = supervisor
+        && let Err(e) = sup.shutdown().await
+    {
+        warn!("Error during worker shutdown: {e}");
+    }
+
+    if let Some(result) = server_error {
+        // Server already exited — propagate its error
+        result??;
+    } else {
+        // Normal path — trigger Axum graceful shutdown, wait for drain
+        let _ = shutdown_tx.send(true);
+        server_handle.await??;
+    }
+
+    info!("AgentBeacon shut down gracefully");
     Ok(())
 }
 
-/// Handle SIGTERM and SIGINT for graceful shutdown
-async fn shutdown_signal() {
+async fn wait_for_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -254,7 +321,7 @@ async fn shutdown_signal() {
 
     tokio::select! {
         _ = ctrl_c => {
-            info!("Received SIGINT (Ctrl+C), shutting down...");
+            info!("Received SIGINT, shutting down...");
         },
         _ = terminate => {
             info!("Received SIGTERM, shutting down...");

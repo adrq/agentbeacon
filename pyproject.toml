@@ -1,7 +1,7 @@
 [project]
 name = "agentbeacon"
 version = "0.1.0"
-description = "AI agent orchestrator"
+description = "AI agent orchestration platform"
 requires-python = ">=3.10"
 dependencies = [
     "a2a-sdk>=0.3.6",

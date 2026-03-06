@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "agentbeacon-scheduler"
+name = "agentbeacon"
 path = "src/main.rs"
 
 [dependencies]
@@ -33,3 +33,4 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt", "json"] }
 rand = "0.8.5"
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
+nix = { version = "0.30.1", features = ["signal"] }

@@ -1908,17 +1908,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orchestrator"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "nix",
- "reqwest",
- "tokio",
-]
-
-[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2547,6 +2536,7 @@ dependencies = [
  "futures-util",
  "hex",
  "jsonschema",
+ "nix",
  "rand 0.8.5",
  "regex",
  "rust-embed",

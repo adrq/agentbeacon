@@ -28,17 +28,16 @@ build-rust-workspace:
 install-bins: build-rust-workspace
 	@echo "Installing Rust binaries to bin/..."
 	@mkdir -p bin
-	cp target/release/orchestrator bin/agentbeacon
-	cp target/release/agentbeacon-scheduler bin/
+	cp target/release/agentbeacon bin/
 	cp target/release/agentbeacon-worker bin/
 	@echo "Rust binaries installed to bin/"
 
 # Build only the Rust scheduler binary
 build-scheduler:
 	@echo "Building Rust scheduler..."
-	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo build --release --bin agentbeacon-scheduler
+	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo build --release --bin agentbeacon
 	@mkdir -p bin
-	cp target/release/agentbeacon-scheduler bin/
+	cp target/release/agentbeacon bin/
 
 # Build only the Rust worker binary
 build-worker:
@@ -74,7 +73,7 @@ run: all
 	@echo "Starting AgentBeacon on port $${AGENTBEACON_PORT:-9456}..."
 	@touch scheduler-$${AGENTBEACON_PORT:-9456}.db
 	AGENTBEACON_EXECUTORS_DIR=$${AGENTBEACON_EXECUTORS_DIR:-$(CURDIR)/executors/dist} \
-		./bin/agentbeacon --scheduler-port $${AGENTBEACON_PORT:-9456}
+		./bin/agentbeacon --port $${AGENTBEACON_PORT:-9456} --workers 2
 
 # Clean build artifacts
 clean:
@@ -93,7 +92,7 @@ pre-commit:
 # Development mode - run scheduler in dev mode
 dev-backend:
 	@echo "Starting scheduler in dev mode on port $${AGENTBEACON_PORT:-9456}..."
-	DEV_MODE=1 cargo run --bin agentbeacon-scheduler -- --port $${AGENTBEACON_PORT:-9456}
+	DEV_MODE=1 cargo run --bin agentbeacon -- --port $${AGENTBEACON_PORT:-9456}
 
 # Development mode - run frontend dev server
 dev-frontend:

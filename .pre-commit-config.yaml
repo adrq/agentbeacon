@@ -36,11 +36,11 @@ repos:
           - -lc
           - |
             set -euo pipefail
-            if grep -RInE --include='*.rs' '#!\[allow\(' worker/src scheduler/src common/src orchestrator/src; then
+            if grep -RInE --include='*.rs' '#!\[allow\(' worker/src scheduler/src common/src; then
               echo 'crate-level #![allow(...)] is not allowed under src/';
               exit 1;
             fi
-            if grep -RInE --include='*.rs' '#\[allow\((warnings|unused|unused_imports|unused_variables|unused_mut|unused_assignments|unused_must_use)\)\]' worker/src scheduler/src common/src orchestrator/src; then
+            if grep -RInE --include='*.rs' '#\[allow\((warnings|unused|unused_imports|unused_variables|unused_mut|unused_assignments|unused_must_use)\)\]' worker/src scheduler/src common/src; then
               echo 'broad #[allow(warnings|unused*)] is not allowed under src/';
               exit 1;
             fi

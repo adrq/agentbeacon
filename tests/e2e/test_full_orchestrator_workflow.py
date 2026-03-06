@@ -68,7 +68,6 @@ def test_full_orchestrator_workflow_execution():
             assert response.json()["status"] == "healthy"
 
             # Verify processes using PID tracking (not global scanning)
-            tracker.assert_exact_count("scheduler", 1)
             tracker.assert_exact_count("worker", 2)
 
             # Register a 2-node sequential workflow with bracketed format prompts
@@ -193,7 +192,6 @@ tasks:
 
             # Test graceful shutdown using PID tracking
             # Verify processes are still alive before shutdown
-            tracker.assert_exact_count("scheduler", 1)
             tracker.assert_exact_count("worker", 2)
 
             # Send SIGTERM for graceful shutdown
@@ -209,12 +207,8 @@ tasks:
             time.sleep(3)
 
             # Verify no tracked processes remain alive (PID-based check)
-            final_scheduler_count = tracker.count_alive("scheduler")
             final_worker_count = tracker.count_alive("worker")
 
-            assert final_scheduler_count == 0, (
-                f"Found {final_scheduler_count} tracked scheduler PIDs still alive after shutdown"
-            )
             assert final_worker_count == 0, (
                 f"Found {final_worker_count} tracked worker PIDs still alive after shutdown"
             )

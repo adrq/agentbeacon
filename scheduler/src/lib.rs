@@ -7,4 +7,5 @@ pub mod queue;
 pub mod search;
 pub mod services;
 pub mod slugs;
+pub mod supervisor;
 pub mod telemetry;

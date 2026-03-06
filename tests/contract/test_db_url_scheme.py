@@ -39,7 +39,7 @@ def test_scheduler_starts_with_postgresql_url(test_database):
 def test_scheduler_rejects_invalid_url_scheme():
     """Scheduler exits with error for unsupported database URL schemes."""
     base_dir = Path(__file__).parent.parent.parent
-    binary = base_dir / "bin" / "agentbeacon-scheduler"
+    binary = base_dir / "bin" / "agentbeacon"
 
     proc = subprocess.Popen(
         [str(binary), "--port", "0", "--db-url", "mysql://localhost/test"],

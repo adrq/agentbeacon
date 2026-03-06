@@ -8,14 +8,14 @@ Quick orientation for AI coding agents working in this repository. (This file is
 # Build everything (Rust + frontend)
 make all
 
-# Run the system
+# Run the system (scheduler + 2 workers)
 make run
 
 # Run all tests (Rust + Python integration)
 make test-all
 
 # Frontend dev mode with HMR
-make dev-backend    # Terminal 1
+make dev-backend    # Terminal 1: cargo run --bin agentbeacon -- --port ...
 make dev-frontend   # Terminal 2 → http://localhost:10456
 
 # Run specific test suites
@@ -47,11 +47,11 @@ AGENTBEACON_PORT=9457 make dev-frontend   # Terminal 2 → http://localhost:1045
 AGENTBEACON_PORT=9457 ./scripts/manual_e2e.sh
 ```
 
-The orchestrator binary also reads `AGENTBEACON_PORT`, so `AGENTBEACON_PORT=9457 ./bin/agentbeacon` works without `--scheduler-port`. The Vite dev port can be overridden independently via `VITE_DEV_PORT` env var if needed.
+The `agentbeacon` binary reads `AGENTBEACON_PORT`, so `AGENTBEACON_PORT=9457 ./bin/agentbeacon` works without `--port`. The Vite dev port can be overridden independently via `VITE_DEV_PORT` env var if needed.
 
 ## Process Management — Be Careful
 
-Multiple AgentBeacon instances may be running simultaneously on different ports. **Never blindly kill processes by name** (e.g., `pkill agentbeacon` or `killall agentbeacon-scheduler`). This will disrupt other running instances.
+Multiple AgentBeacon instances may be running simultaneously on different ports. **Never blindly kill processes by name** (e.g., `pkill agentbeacon`). This will disrupt other running instances.
 
 Safe patterns:
 - Kill by port: `fuser -k 9456/tcp` (only kills the process on that specific port)
@@ -60,13 +60,11 @@ Safe patterns:
 
 Unsafe patterns (NEVER do these):
 - `pkill -f agentbeacon` — kills ALL instances across all ports
-- `killall agentbeacon-scheduler` — same problem
 - `kill -9` without confirming the PID belongs to your instance
 
 ## Project Structure
 
-- **Rust crates**: `scheduler/`, `worker/`, `common/`
-- **Orchestrator**: `orchestrator/` (spawns and monitors scheduler + workers)
+- **Rust crates**: `scheduler/` (includes worker supervisor), `worker/`, `common/`
 - **Executors**: `executors/` (Node.js SDK wrappers for Claude, Copilot)
 - **Frontend**: `web/` (Svelte 5 + TypeScript)
 - **Docs & schemas**: `docs/`
