@@ -31,7 +31,6 @@ const EXCLUDED_ORCHESTRATION_TOOLS: string[] = [
   "task", // Subagent spawning
   "read_agent", // Delegate to named agents
   "list_agents", // Enumerate delegation targets
-  "skill", // Opaque multi-step workflows
 ];
 
 // --- Command queue (single stdin listener, cancel as side-effect) ---

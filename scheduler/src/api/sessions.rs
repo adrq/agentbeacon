@@ -158,25 +158,39 @@ async fn cancel_session(
     // Root session: propagate to execution status
     if session.parent_session_id.is_none() {
         let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
-        if !matches!(
-            execution.status.as_str(),
-            "completed" | "failed" | "canceled"
-        ) {
-            db::executions::update_status(&state.db_pool, &session.execution_id, "canceled")
+        use db::executions::CasResult;
+        match db::executions::update_status_cas(
+            &state.db_pool,
+            &session.execution_id,
+            "canceled",
+            &["submitted", "working", "input-required"],
+        )
+        .await?
+        {
+            CasResult::Applied => {
+                let exec_event = json!({"from": execution.status, "to": "canceled"});
+                let event_id = db::events::insert(
+                    &state.db_pool,
+                    &session.execution_id,
+                    None,
+                    "state_change",
+                    &serde_json::to_string(&exec_event).unwrap(),
+                )
                 .await?;
-            let exec_event = json!({"from": execution.status, "to": "canceled"});
-            let event_id = db::events::insert(
-                &state.db_pool,
-                &session.execution_id,
-                None,
-                "state_change",
-                &serde_json::to_string(&exec_event).unwrap(),
-            )
-            .await?;
-            let _ = state.event_broadcast.send(EventNotification::persisted(
-                session.execution_id.clone(),
-                event_id,
-            ));
+                let _ = state.event_broadcast.send(EventNotification::persisted(
+                    session.execution_id.clone(),
+                    event_id,
+                ));
+            }
+            CasResult::Conflict => {
+                // Another handler already terminalized — desired outcome, no error
+            }
+            CasResult::NotFound => {
+                return Err(SchedulerError::NotFound(format!(
+                    "execution not found: {}",
+                    session.execution_id
+                )));
+            }
         }
     }
 
@@ -218,25 +232,39 @@ async fn complete_session(
     // Root session: propagate to execution status
     if session.parent_session_id.is_none() {
         let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
-        if !matches!(
-            execution.status.as_str(),
-            "completed" | "failed" | "canceled"
-        ) {
-            db::executions::update_status(&state.db_pool, &session.execution_id, "completed")
+        use db::executions::CasResult;
+        match db::executions::update_status_cas(
+            &state.db_pool,
+            &session.execution_id,
+            "completed",
+            &["submitted", "working", "input-required"],
+        )
+        .await?
+        {
+            CasResult::Applied => {
+                let exec_event = json!({"from": execution.status, "to": "completed"});
+                let event_id = db::events::insert(
+                    &state.db_pool,
+                    &session.execution_id,
+                    None,
+                    "state_change",
+                    &serde_json::to_string(&exec_event).unwrap(),
+                )
                 .await?;
-            let exec_event = json!({"from": execution.status, "to": "completed"});
-            let event_id = db::events::insert(
-                &state.db_pool,
-                &session.execution_id,
-                None,
-                "state_change",
-                &serde_json::to_string(&exec_event).unwrap(),
-            )
-            .await?;
-            let _ = state.event_broadcast.send(EventNotification::persisted(
-                session.execution_id.clone(),
-                event_id,
-            ));
+                let _ = state.event_broadcast.send(EventNotification::persisted(
+                    session.execution_id.clone(),
+                    event_id,
+                ));
+            }
+            CasResult::Conflict => {
+                // Another handler already terminalized — desired outcome, no error
+            }
+            CasResult::NotFound => {
+                return Err(SchedulerError::NotFound(format!(
+                    "execution not found: {}",
+                    session.execution_id
+                )));
+            }
         }
     }
 

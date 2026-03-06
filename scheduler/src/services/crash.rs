@@ -243,58 +243,71 @@ async fn propagate_failure_to_execution(
     event_broadcast: &broadcast::Sender<EventNotification>,
     session: &db::sessions::Session,
 ) {
-    let exec_from = match db::executions::get_by_id(pool, &session.execution_id).await {
-        Ok(e) => e.status,
+    // CAS: only transition if still non-terminal
+    let prior_status = match db::executions::get_by_id(pool, &session.execution_id).await {
+        Ok(exec) => exec.status,
         Err(e) => {
             tracing::error!(
                 execution_id = %session.execution_id,
                 error = %e,
-                "crash handler: execution not found"
+                "crash handler: failed to read execution"
             );
             return;
         }
     };
-
-    // Skip if execution is already terminal
-    if matches!(exec_from.as_str(), "completed" | "failed" | "canceled") {
-        tracing::debug!(
-            execution_id = %session.execution_id,
-            status = %exec_from,
-            "crash handler: execution already terminal, skipping"
-        );
-        return;
-    }
-
-    if let Err(e) = db::executions::update_status(pool, &session.execution_id, "failed").await {
-        tracing::error!(
-            execution_id = %session.execution_id,
-            error = %e,
-            "crash handler: failed to transition execution to failed"
-        );
-        return;
-    }
-
-    let exec_event = json!({"from": exec_from, "to": "failed"});
-    match db::events::insert(
+    use db::executions::CasResult;
+    match db::executions::update_status_cas(
         pool,
         &session.execution_id,
-        None,
-        "state_change",
-        &serde_json::to_string(&exec_event).unwrap(),
+        "failed",
+        &["submitted", "working", "input-required"],
     )
     .await
     {
-        Ok(event_id) => {
-            let _ = event_broadcast.send(EventNotification::persisted(
-                session.execution_id.clone(),
-                event_id,
-            ));
+        Ok(CasResult::Applied) => {
+            // Record event (best-effort)
+            let exec_event = json!({"from": prior_status, "to": "failed"});
+            match db::events::insert(
+                pool,
+                &session.execution_id,
+                None,
+                "state_change",
+                &serde_json::to_string(&exec_event).unwrap(),
+            )
+            .await
+            {
+                Ok(event_id) => {
+                    let _ = event_broadcast.send(EventNotification::persisted(
+                        session.execution_id.clone(),
+                        event_id,
+                    ));
+                }
+                Err(e) => {
+                    tracing::error!(
+                        execution_id = %session.execution_id,
+                        error = %e,
+                        "crash handler: failed to insert execution state_change event"
+                    );
+                }
+            }
+        }
+        Ok(CasResult::Conflict) => {
+            tracing::debug!(
+                execution_id = %session.execution_id,
+                "crash handler: execution already terminal (concurrent handler won)"
+            );
+        }
+        Ok(CasResult::NotFound) => {
+            tracing::error!(
+                execution_id = %session.execution_id,
+                "crash handler: execution row missing — data integrity issue"
+            );
         }
         Err(e) => {
             tracing::error!(
                 execution_id = %session.execution_id,
                 error = %e,
-                "crash handler: failed to insert execution state_change event"
+                "crash handler: CAS update failed"
             );
         }
     }

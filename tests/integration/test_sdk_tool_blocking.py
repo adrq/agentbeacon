@@ -31,7 +31,6 @@ COPILOT_EXCLUDED_TOOLS = [
     "task",
     "read_agent",
     "list_agents",
-    "skill",
 ]
 
 

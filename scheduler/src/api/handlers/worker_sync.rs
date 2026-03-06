@@ -354,45 +354,66 @@ pub async fn handle_worker_sync(
 
                     // Propagate to execution for lead sessions
                     if session.parent_session_id.is_none() {
-                        if let Err(e) = db::executions::update_status(
+                        use db::executions::CasResult;
+                        match db::executions::update_status_cas(
                             &state.db_pool,
                             &session.execution_id,
                             "input-required",
+                            &["working"],
                         )
                         .await
                         {
-                            tracing::warn!(
-                                execution_id = %session.execution_id,
-                                error = %e,
-                                "failed to transition execution to input-required"
-                            );
-                        }
-
-                        let exec_event = json!({
-                            "from": "working",
-                            "to": "input-required",
-                        });
-                        match db::events::insert(
-                            &state.db_pool,
-                            &session.execution_id,
-                            None,
-                            "state_change",
-                            &serde_json::to_string(&exec_event).unwrap(),
-                        )
-                        .await
-                        {
-                            Ok(event_id) => {
-                                let _ = state.event_broadcast.send(EventNotification::persisted(
-                                    session.execution_id.clone(),
-                                    event_id,
-                                ));
+                            Ok(CasResult::Applied) => {
+                                let exec_event = json!({
+                                    "from": "working",
+                                    "to": "input-required",
+                                });
+                                match db::events::insert(
+                                    &state.db_pool,
+                                    &session.execution_id,
+                                    None,
+                                    "state_change",
+                                    &serde_json::to_string(&exec_event).unwrap(),
+                                )
+                                .await
+                                {
+                                    Ok(event_id) => {
+                                        let _ = state.event_broadcast.send(
+                                            EventNotification::persisted(
+                                                session.execution_id.clone(),
+                                                event_id,
+                                            ),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            execution_id = %session.execution_id,
+                                            error = %e,
+                                            "failed to insert execution input-required state_change event"
+                                        );
+                                    }
+                                }
                             }
-                            Err(e) => {
+                            Ok(CasResult::Conflict) => {
                                 tracing::warn!(
                                     execution_id = %session.execution_id,
-                                    error = %e,
-                                    "failed to insert execution input-required state_change event"
+                                    "execution no longer working — skipping input-required transition"
                                 );
+                            }
+                            Ok(CasResult::NotFound) => {
+                                tracing::error!(
+                                    execution_id = %session.execution_id,
+                                    "execution row missing — data integrity issue"
+                                );
+                                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    execution_id = %session.execution_id,
+                                    error = %e,
+                                    "failed to transition execution to input-required"
+                                );
+                                return Err(StatusCode::INTERNAL_SERVER_ERROR);
                             }
                         }
                     }
@@ -586,30 +607,51 @@ async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>
             })?;
 
         if execution.status == "submitted" {
-            db::executions::update_status(&state.db_pool, &session.execution_id, "working")
-                .await
-                .map_err(|e| {
-                    tracing::error!("execution submitted→working failed: {e}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-
-            let exec_state_event = json!({"from": "submitted", "to": "working"});
-            let event_id = db::events::insert(
+            use db::executions::CasResult;
+            match db::executions::update_status_cas(
                 &state.db_pool,
                 &session.execution_id,
-                None,
-                "state_change",
-                &serde_json::to_string(&exec_state_event).unwrap(),
+                "working",
+                &["submitted"],
             )
             .await
             .map_err(|e| {
-                tracing::error!("execution state_change event failed: {e}");
+                tracing::error!("execution submitted→working failed: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-            let _ = state.event_broadcast.send(EventNotification::persisted(
-                session.execution_id.clone(),
-                event_id,
-            ));
+            })? {
+                CasResult::Applied => {
+                    let exec_state_event = json!({"from": "submitted", "to": "working"});
+                    let event_id = db::events::insert(
+                        &state.db_pool,
+                        &session.execution_id,
+                        None,
+                        "state_change",
+                        &serde_json::to_string(&exec_state_event).unwrap(),
+                    )
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("execution state_change event failed: {e}");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+                    let _ = state.event_broadcast.send(EventNotification::persisted(
+                        session.execution_id.clone(),
+                        event_id,
+                    ));
+                }
+                CasResult::Conflict => {
+                    tracing::debug!(
+                        execution_id = %session.execution_id,
+                        "execution no longer submitted — skipping working transition"
+                    );
+                }
+                CasResult::NotFound => {
+                    tracing::error!(
+                        execution_id = %session.execution_id,
+                        "execution row missing — data integrity issue"
+                    );
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
         }
 
         // Claimed successfully — try to pop initial task

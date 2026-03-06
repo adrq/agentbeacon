@@ -186,9 +186,8 @@ async fn cancel_execution(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<CancelExecutionResponse>, SchedulerError> {
+    // Pre-read for fast rejection (not authoritative — just avoids unnecessary CAS)
     let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
-
-    // Check if already terminal
     if matches!(exec.status.as_str(), "completed" | "failed" | "canceled") {
         return Err(SchedulerError::Conflict(format!(
             "execution is already in terminal state: {}",
@@ -196,62 +195,129 @@ async fn cancel_execution(
         )));
     }
 
-    // Terminate all sessions via cascade from root session
-    use crate::services::cascade::{CascadeMode, terminate_subtree};
-
-    let sessions = db::sessions::list_by_execution(&state.db_pool, &id).await?;
-    // Find root session (no parent) and cascade from there
-    if let Some(root) = sessions.iter().find(|s| s.parent_session_id.is_none()) {
-        terminate_subtree(
-            &state.db_pool,
-            &root.id,
-            true,
-            CascadeMode::Cancel,
-            &state.event_broadcast,
-            &state.task_queue,
-        )
-        .await?;
-    }
-
-    // Safety sweep: cancel any sessions not reachable from the root tree.
-    // Re-fetch to get current statuses after terminate_subtree.
-    let remaining = db::sessions::list_by_execution(&state.db_pool, &id).await?;
-    for session in &remaining {
-        if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
-            db::sessions::update_status(&state.db_pool, &session.id, "canceled").await?;
-            let sweep_event = json!({"from": session.status, "to": "canceled"});
-            let event_id = db::events::insert(
-                &state.db_pool,
-                &id,
-                Some(&session.id),
-                "state_change",
-                &serde_json::to_string(&sweep_event).unwrap(),
-            )
-            .await?;
-            let _ = state
-                .event_broadcast
-                .send(EventNotification::persisted(id.clone(), event_id));
+    // CAS-first: establish this handler as the winner before touching sessions.
+    use db::executions::CasResult;
+    match db::executions::update_status_cas(
+        &state.db_pool,
+        &id,
+        "canceled",
+        &["submitted", "working", "input-required"],
+    )
+    .await?
+    {
+        CasResult::Applied => {}
+        CasResult::Conflict => {
+            let current = db::executions::get_by_id(&state.db_pool, &id).await?;
+            return Err(SchedulerError::Conflict(format!(
+                "execution transitioned to '{}' by concurrent handler",
+                current.status
+            )));
+        }
+        CasResult::NotFound => {
+            return Err(SchedulerError::NotFound(format!(
+                "execution not found: {id}"
+            )));
         }
     }
 
-    // Wake workers so they discover canceled sessions immediately
+    // --- Post-CAS best-effort: execution is irrevocably terminal. ---
+    // Cascade and sweep failures are logged but do NOT fail the request.
+
+    use crate::services::cascade::{CascadeMode, terminate_subtree};
+
+    match db::sessions::list_by_execution(&state.db_pool, &id).await {
+        Ok(sessions) => {
+            if let Some(root) = sessions.iter().find(|s| s.parent_session_id.is_none())
+                && let Err(e) = terminate_subtree(
+                    &state.db_pool,
+                    &root.id,
+                    true,
+                    CascadeMode::Cancel,
+                    &state.event_broadcast,
+                    &state.task_queue,
+                )
+                .await
+            {
+                tracing::warn!(execution_id = %id, error = %e, "post-CAS cascade failed");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(execution_id = %id, error = %e, "post-CAS session list for cascade failed");
+        }
+    }
+
+    // Safety sweep: cancel any non-terminal sessions.
+    // SQL guard (AND status NOT IN terminal) prevents overwriting sessions
+    // that became terminal between list read and update.
+    let sweep_sql = state.db_pool.prepare_query(
+        "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, \
+         completed_at = CURRENT_TIMESTAMP \
+         WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')",
+    );
+    match db::sessions::list_by_execution(&state.db_pool, &id).await {
+        Ok(remaining) => {
+            for session in &remaining {
+                if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
+                    match sqlx::query(&sweep_sql)
+                        .bind("canceled")
+                        .bind(&session.id)
+                        .execute(state.db_pool.as_ref())
+                        .await
+                    {
+                        Err(e) => {
+                            tracing::warn!(session_id = %session.id, error = %e, "post-CAS sweep failed");
+                        }
+                        Ok(result) if result.rows_affected() > 0 => {
+                            let sweep_event = json!({"from": session.status, "to": "canceled"});
+                            let _ = db::events::insert(
+                                &state.db_pool,
+                                &id,
+                                Some(&session.id),
+                                "state_change",
+                                &serde_json::to_string(&sweep_event).unwrap(),
+                            )
+                            .await
+                            .inspect_err(|e| {
+                                tracing::warn!(session_id = %session.id, error = %e, "post-CAS sweep event insert failed");
+                            })
+                            .ok()
+                            .map(|event_id| {
+                                let _ = state
+                                    .event_broadcast
+                                    .send(EventNotification::persisted(id.clone(), event_id));
+                            });
+                        }
+                        Ok(_) => {} // SQL guard blocked write — session already terminal
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(execution_id = %id, error = %e, "post-CAS session list for sweep failed");
+        }
+    }
+
     state.task_queue.wake_waiters();
 
-    // Cancel the execution itself
-    db::executions::update_status(&state.db_pool, &id, "canceled").await?;
-
+    // Record execution state_change event (best-effort)
     let exec_state_event = json!({"from": exec.status, "to": "canceled"});
-    let event_id = db::events::insert(
+    let _ = db::events::insert(
         &state.db_pool,
         &id,
         None,
         "state_change",
         &serde_json::to_string(&exec_state_event).unwrap(),
     )
-    .await?;
-    let _ = state
-        .event_broadcast
-        .send(EventNotification::persisted(id.clone(), event_id));
+    .await
+    .inspect_err(|e| {
+        tracing::warn!(execution_id = %id, error = %e, "post-CAS event insert failed");
+    })
+    .ok()
+    .map(|event_id| {
+        let _ = state
+            .event_broadcast
+            .send(EventNotification::persisted(id.clone(), event_id));
+    });
 
     let updated = db::executions::get_by_id(&state.db_pool, &id).await?;
     Ok(Json(CancelExecutionResponse {
@@ -264,9 +330,8 @@ async fn complete_execution(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<CompleteExecutionResponse>, SchedulerError> {
+    // Pre-read for fast rejection
     let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
-
-    // Only accept from working or input-required (not submitted or terminal)
     if !matches!(exec.status.as_str(), "working" | "input-required") {
         return Err(SchedulerError::Conflict(format!(
             "execution must be 'working' or 'input-required' to complete (current: {})",
@@ -274,67 +339,131 @@ async fn complete_execution(
         )));
     }
 
-    // Terminate all sessions via cascade from root session (Release mode).
-    // Release transitions: input-required → completed, working/submitted → canceled.
-    // A working root session becomes canceled (interrupted), which is correct —
-    // the execution is what the user completed, the session was actively working.
-    use crate::services::cascade::{CascadeMode, terminate_subtree};
-
-    let sessions = db::sessions::list_by_execution(&state.db_pool, &id).await?;
-    if let Some(root) = sessions.iter().find(|s| s.parent_session_id.is_none()) {
-        terminate_subtree(
-            &state.db_pool,
-            &root.id,
-            true,
-            CascadeMode::Release,
-            &state.event_broadcast,
-            &state.task_queue,
-        )
-        .await?;
-    }
-
-    // Safety sweep: complete/cancel any sessions not reachable from the root tree
-    let remaining = db::sessions::list_by_execution(&state.db_pool, &id).await?;
-    for session in &remaining {
-        if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
-            let target = match session.status.as_str() {
-                "input-required" => "completed",
-                _ => "canceled",
-            };
-            db::sessions::update_status(&state.db_pool, &session.id, target).await?;
-            let sweep_event = json!({"from": session.status, "to": target});
-            let event_id = db::events::insert(
-                &state.db_pool,
-                &id,
-                Some(&session.id),
-                "state_change",
-                &serde_json::to_string(&sweep_event).unwrap(),
-            )
-            .await?;
-            let _ = state
-                .event_broadcast
-                .send(EventNotification::persisted(id.clone(), event_id));
+    // CAS-first: establish this handler as the winner before touching sessions.
+    use db::executions::CasResult;
+    match db::executions::update_status_cas(
+        &state.db_pool,
+        &id,
+        "completed",
+        &["working", "input-required"],
+    )
+    .await?
+    {
+        CasResult::Applied => {}
+        CasResult::Conflict => {
+            let current = db::executions::get_by_id(&state.db_pool, &id).await?;
+            return Err(SchedulerError::Conflict(format!(
+                "execution transitioned to '{}' by concurrent handler",
+                current.status
+            )));
+        }
+        CasResult::NotFound => {
+            return Err(SchedulerError::NotFound(format!(
+                "execution not found: {id}"
+            )));
         }
     }
 
-    // Wake workers so they discover terminal states (after cascade + sweep)
+    // --- Post-CAS best-effort: execution is irrevocably terminal. ---
+    // Release transitions: input-required → completed, working/submitted → canceled.
+    use crate::services::cascade::{CascadeMode, terminate_subtree};
+
+    match db::sessions::list_by_execution(&state.db_pool, &id).await {
+        Ok(sessions) => {
+            if let Some(root) = sessions.iter().find(|s| s.parent_session_id.is_none())
+                && let Err(e) = terminate_subtree(
+                    &state.db_pool,
+                    &root.id,
+                    true,
+                    CascadeMode::Release,
+                    &state.event_broadcast,
+                    &state.task_queue,
+                )
+                .await
+            {
+                tracing::warn!(execution_id = %id, error = %e, "post-CAS cascade failed");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(execution_id = %id, error = %e, "post-CAS session list for cascade failed");
+        }
+    }
+
+    // Safety sweep: Release-mode transitions for unreachable sessions.
+    // SQL guard prevents TOCTOU overwrite of sessions that became terminal.
+    match db::sessions::list_by_execution(&state.db_pool, &id).await {
+        Ok(remaining) => {
+            let sweep_sql = state.db_pool.prepare_query(
+                "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, \
+                 completed_at = CURRENT_TIMESTAMP \
+                 WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')",
+            );
+            for session in &remaining {
+                if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
+                    let target = match session.status.as_str() {
+                        "input-required" => "completed",
+                        _ => "canceled",
+                    };
+                    match sqlx::query(&sweep_sql)
+                        .bind(target)
+                        .bind(&session.id)
+                        .execute(state.db_pool.as_ref())
+                        .await
+                    {
+                        Err(e) => {
+                            tracing::warn!(session_id = %session.id, error = %e, "post-CAS sweep failed");
+                        }
+                        Ok(result) if result.rows_affected() > 0 => {
+                            let sweep_event = json!({"from": session.status, "to": target});
+                            let _ = db::events::insert(
+                                &state.db_pool,
+                                &id,
+                                Some(&session.id),
+                                "state_change",
+                                &serde_json::to_string(&sweep_event).unwrap(),
+                            )
+                            .await
+                            .inspect_err(|e| {
+                                tracing::warn!(session_id = %session.id, error = %e, "post-CAS sweep event insert failed");
+                            })
+                            .ok()
+                            .map(|event_id| {
+                                let _ = state
+                                    .event_broadcast
+                                    .send(EventNotification::persisted(id.clone(), event_id));
+                            });
+                        }
+                        Ok(_) => {} // SQL guard blocked write — session already terminal
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(execution_id = %id, error = %e, "post-CAS session list for sweep failed");
+        }
+    }
+
     state.task_queue.wake_waiters();
 
-    // Complete the execution
-    db::executions::update_status(&state.db_pool, &id, "completed").await?;
-
+    // Record execution state_change event (best-effort)
     let exec_state_event = json!({"from": exec.status, "to": "completed"});
-    let event_id = db::events::insert(
+    let _ = db::events::insert(
         &state.db_pool,
         &id,
         None,
         "state_change",
         &serde_json::to_string(&exec_state_event).unwrap(),
     )
-    .await?;
-    let _ = state
-        .event_broadcast
-        .send(EventNotification::persisted(id.clone(), event_id));
+    .await
+    .inspect_err(|e| {
+        tracing::warn!(execution_id = %id, error = %e, "post-CAS event insert failed");
+    })
+    .ok()
+    .map(|event_id| {
+        let _ = state
+            .event_broadcast
+            .send(EventNotification::persisted(id.clone(), event_id));
+    });
 
     let updated = db::executions::get_by_id(&state.db_pool, &id).await?;
     Ok(Json(CompleteExecutionResponse {

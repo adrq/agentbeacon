@@ -405,16 +405,37 @@ async fn recover_session(
     // If root lead was input-required, also reset execution status to submitted
     // to match the session recovery. Don't regress working→submitted when
     // children may still be active on surviving workers.
-    if session.parent_session_id.is_none()
-        && prior_status == "input-required"
-        && let Err(e) =
-            db::executions::update_status(pool, &session.execution_id, "submitted").await
-    {
-        tracing::warn!(
-            execution_id = %session.execution_id,
-            error = %e,
-            "recovery: failed to reset execution status"
-        );
+    if session.parent_session_id.is_none() && prior_status == "input-required" {
+        use db::executions::CasResult;
+        match db::executions::update_status_cas(
+            pool,
+            &session.execution_id,
+            "submitted",
+            &["input-required"],
+        )
+        .await
+        {
+            Ok(CasResult::Applied) => {}
+            Ok(CasResult::Conflict) => {
+                tracing::warn!(
+                    execution_id = %session.execution_id,
+                    "recovery: execution no longer input-required — skipping reset"
+                );
+            }
+            Ok(CasResult::NotFound) => {
+                tracing::error!(
+                    execution_id = %session.execution_id,
+                    "recovery: execution row missing — data integrity issue"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    execution_id = %session.execution_id,
+                    error = %e,
+                    "recovery: failed to reset execution status"
+                );
+            }
+        }
     }
 
     // Log state_change event

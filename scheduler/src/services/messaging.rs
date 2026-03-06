@@ -55,24 +55,46 @@ pub async fn transition_to_working(
         sc_event_id,
     ));
 
-    // Propagate to execution if root session (skip if execution already working)
+    // Propagate to execution if root session.
+    // CAS prevents resurrecting a terminal execution (cancel/crash already won).
     let execution_status = if session.parent_session_id.is_none() {
         let execution = db::executions::get_by_id(db_pool, &session.execution_id).await?;
         if execution.status != "working" {
-            db::executions::update_status(db_pool, &session.execution_id, "working").await?;
-            let exec_state_event = json!({"from": execution.status, "to": "working"});
-            let exec_event_id = db::events::insert(
+            use db::executions::CasResult;
+            match db::executions::update_status_cas(
                 db_pool,
                 &session.execution_id,
-                None,
-                "state_change",
-                &serde_json::to_string(&exec_state_event).unwrap(),
+                "working",
+                &["submitted", "input-required"],
             )
-            .await?;
-            let _ = event_broadcast.send(EventNotification::persisted(
-                session.execution_id.clone(),
-                exec_event_id,
-            ));
+            .await?
+            {
+                CasResult::Applied => {
+                    let exec_state_event = json!({"from": execution.status, "to": "working"});
+                    let exec_event_id = db::events::insert(
+                        db_pool,
+                        &session.execution_id,
+                        None,
+                        "state_change",
+                        &serde_json::to_string(&exec_state_event).unwrap(),
+                    )
+                    .await?;
+                    let _ = event_broadcast.send(EventNotification::persisted(
+                        session.execution_id.clone(),
+                        exec_event_id,
+                    ));
+                }
+                CasResult::Conflict => {
+                    // Execution is terminal or already working — return actual status
+                    return Ok(("working".to_string(), execution.status));
+                }
+                CasResult::NotFound => {
+                    return Err(SchedulerError::NotFound(format!(
+                        "execution not found: {}",
+                        session.execution_id
+                    )));
+                }
+            }
         }
         "working".to_string()
     } else {

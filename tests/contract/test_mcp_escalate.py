@@ -51,6 +51,16 @@ def test_escalate_blocking_sets_execution_input_required(test_database):
             ctx["url"], agent_id, "test task"
         )
 
+        # Execution+session must be working for CAS to transition to input-required
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "UPDATE executions SET status = 'working' WHERE id = ?", (exec_id,)
+            )
+            conn.execute(
+                "UPDATE sessions SET status = 'working' WHERE id = ?", (session_id,)
+            )
+            conn.commit()
+
         mcp_tools_call(
             ctx["url"],
             session_id,

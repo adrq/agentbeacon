@@ -247,30 +247,6 @@ async fn resolve_wiki_auth(
     Ok(Some(session.id))
 }
 
-// --- Tag sync helper ---
-
-/// Sync page tags: delete all existing associations then insert new ones.
-async fn sync_page_tags(
-    pool: &DbPool,
-    page_id: &str,
-    tags: &[String],
-) -> Result<(), SchedulerError> {
-    // Trim, drop empty, deduplicate
-    let mut seen = std::collections::HashSet::new();
-    let clean: Vec<&str> = tags
-        .iter()
-        .map(|t| t.trim())
-        .filter(|t| !t.is_empty() && seen.insert(*t))
-        .collect();
-
-    db::wiki::delete_page_tags(pool, page_id).await?;
-    for tag_name in &clean {
-        let tag_id = db::wiki::get_or_create_tag(pool, tag_name).await?;
-        db::wiki::add_page_tag(pool, page_id, &tag_id).await?;
-    }
-    Ok(())
-}
-
 // --- Handlers ---
 
 async fn list_pages(
@@ -385,17 +361,13 @@ async fn put_page(
                 req.title.trim(),
                 &req.body,
                 session_id.as_deref(),
+                req.tags.as_deref(),
             )
             .await
             {
                 Ok(page) => {
                     if let Err(e) = state.wiki_search.index_page(&path.project_id, &page) {
                         tracing::warn!(error = %e, slug = %slug, "failed to update wiki search index");
-                    }
-                    if let Some(ref tags) = req.tags
-                        && let Err(e) = sync_page_tags(&state.db_pool, &page.id, tags).await
-                    {
-                        tracing::warn!(error = %e, slug = %slug, "failed to sync wiki page tags");
                     }
                     let tags = db::wiki::list_page_tags(&state.db_pool, &page.id)
                         .await
@@ -434,17 +406,13 @@ async fn put_page(
                 expected_rev,
                 session_id.as_deref(),
                 req.summary.as_deref(),
+                req.tags.as_deref(),
             )
             .await
             {
                 Ok(page) => {
                     if let Err(e) = state.wiki_search.index_page(&path.project_id, &page) {
                         tracing::warn!(error = %e, slug = %slug, "failed to update wiki search index");
-                    }
-                    if let Some(ref tags) = req.tags
-                        && let Err(e) = sync_page_tags(&state.db_pool, &page.id, tags).await
-                    {
-                        tracing::warn!(error = %e, slug = %slug, "failed to sync wiki page tags");
                     }
                     let tags = db::wiki::list_page_tags(&state.db_pool, &page.id)
                         .await

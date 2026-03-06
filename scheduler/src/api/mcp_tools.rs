@@ -556,28 +556,44 @@ async fn handle_escalate(
         ));
 
         if auth.role == McpRole::RootLead {
-            let execution = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
-                .await
-                .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-            db::executions::update_status(&state.db_pool, &auth.execution_id, "input-required")
-                .await
-                .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-            let exec_state_event = json!({"from": execution.status, "to": "input-required"});
-            let event_id = db::events::insert(
+            use db::executions::CasResult;
+            match db::executions::update_status_cas(
                 &state.db_pool,
                 &auth.execution_id,
-                None,
-                "state_change",
-                &serde_json::to_string(&exec_state_event).unwrap(),
+                "input-required",
+                &["working"],
             )
             .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-            let _ = state.event_broadcast.send(EventNotification::persisted(
-                auth.execution_id.clone(),
-                event_id,
-            ));
+            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?
+            {
+                CasResult::Applied => {
+                    let exec_state_event = json!({"from": "working", "to": "input-required"});
+                    let event_id = db::events::insert(
+                        &state.db_pool,
+                        &auth.execution_id,
+                        None,
+                        "state_change",
+                        &serde_json::to_string(&exec_state_event).unwrap(),
+                    )
+                    .await
+                    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+                    let _ = state.event_broadcast.send(EventNotification::persisted(
+                        auth.execution_id.clone(),
+                        event_id,
+                    ));
+                }
+                CasResult::Conflict => {
+                    tracing::debug!(
+                        execution_id = %auth.execution_id,
+                        "execution no longer working — skipping input-required transition"
+                    );
+                }
+                CasResult::NotFound => {
+                    return Err(JsonRpcError::internal_error(
+                        "execution row missing — data integrity issue",
+                    ));
+                }
+            }
         }
     }
 

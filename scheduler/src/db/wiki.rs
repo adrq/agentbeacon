@@ -46,6 +46,7 @@ pub struct WikiRevisionSummary {
     pub created_at: DateTime<Utc>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_page(
     pool: &DbPool,
     id: &str,
@@ -54,7 +55,13 @@ pub async fn create_page(
     title: &str,
     body: &str,
     created_by: Option<&str>,
+    tags: Option<&[String]>,
 ) -> Result<WikiPage, SchedulerError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin transaction failed: {e}")))?;
+
     let query = pool.prepare_query(
         "INSERT INTO wiki_pages (id, project_id, slug, title, body, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
@@ -67,7 +74,7 @@ pub async fn create_page(
         .bind(body)
         .bind(created_by)
         .bind(created_by)
-        .execute(pool.as_ref())
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             let msg = e.to_string();
@@ -77,6 +84,14 @@ pub async fn create_page(
                 SchedulerError::Database(format!("create wiki page failed: {e}"))
             }
         })?;
+
+    if let Some(tags) = tags {
+        sync_tags_in_tx(&mut tx, pool, id, tags).await?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("commit wiki create failed: {e}")))?;
 
     get_page_by_slug(pool, project_id, slug).await
 }
@@ -192,8 +207,36 @@ pub async fn update_page(
     expected_revision: i64,
     updated_by: Option<&str>,
     summary: Option<&str>,
+    tags: Option<&[String]>,
 ) -> Result<WikiPage, SchedulerError> {
     let revision_id = Uuid::new_v4().to_string();
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin transaction failed: {e}")))?;
+
+    // Step 0: Fetch page_id (needed for tag sync later)
+    let page_id_sql = pool.prepare_query(
+        "SELECT id FROM wiki_pages WHERE project_id = ? AND slug = ? AND deleted_at IS NULL",
+    );
+    let page_row = sqlx::query(&page_id_sql)
+        .bind(project_id)
+        .bind(slug)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("fetch page_id failed: {e}")))?;
+    let page_id = match page_row {
+        Some(row) => row.get::<String, _>("id"),
+        None => {
+            tx.rollback()
+                .await
+                .map_err(|e| SchedulerError::Database(format!("rollback failed: {e}")))?;
+            return Err(SchedulerError::NotFound(format!(
+                "wiki page not found: {slug}"
+            )));
+        }
+    };
 
     // Step 1: Archive current page state to revisions via INSERT-SELECT.
     // The WHERE clause includes revision_number check for OCC guard.
@@ -211,11 +254,10 @@ pub async fn update_page(
         .bind(project_id)
         .bind(slug)
         .bind(expected_revision)
-        .execute(pool.as_ref())
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             let msg = e.to_string();
-            // Concurrent archive race: unique index on (page_id, revision_number)
             if msg.contains("UNIQUE constraint failed")
                 || msg.contains("duplicate key value violates unique constraint")
             {
@@ -226,6 +268,9 @@ pub async fn update_page(
         })?;
 
     if archive_result.rows_affected() == 0 {
+        tx.rollback()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("rollback failed: {e}")))?;
         // Either page doesn't exist or revision mismatch — differentiate
         return match get_page_by_slug(pool, project_id, slug).await {
             Ok(_) => Err(SchedulerError::Conflict(
@@ -252,16 +297,27 @@ pub async fn update_page(
         .bind(project_id)
         .bind(slug)
         .bind(expected_revision)
-        .execute(pool.as_ref())
+        .execute(&mut *tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("update wiki page failed: {e}")))?;
 
     if update_result.rows_affected() == 0 {
-        // Concurrent update between archive and update (race)
+        tx.rollback()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("rollback failed: {e}")))?;
         return Err(SchedulerError::Conflict(
             "concurrent wiki page update".into(),
         ));
     }
+
+    // Step 3: Tag sync (if tags provided)
+    if let Some(tags) = tags {
+        sync_tags_in_tx(&mut tx, pool, &page_id, tags).await?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("commit wiki update failed: {e}")))?;
 
     get_page_by_slug(pool, project_id, slug).await
 }
@@ -413,6 +469,71 @@ fn parse_wiki_revision_row(row: sqlx::any::AnyRow) -> Result<WikiPageRevision, S
         created_by: row.get("created_by"),
         created_at: parse_timestamp(&row, "created_at")?,
     })
+}
+
+/// Sync page tags within an existing transaction.
+async fn sync_tags_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    pool: &DbPool,
+    page_id: &str,
+    tags: &[String],
+) -> Result<(), SchedulerError> {
+    let mut seen = std::collections::HashSet::new();
+    let clean: Vec<&str> = tags
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty() && seen.insert(*t))
+        .collect();
+
+    // Delete existing associations
+    let delete_sql = pool.prepare_query("DELETE FROM wiki_page_tags WHERE page_id = ?");
+    sqlx::query(&delete_sql)
+        .bind(page_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("delete wiki page tags failed: {e}")))?;
+
+    // Insert new associations
+    for tag_name in &clean {
+        let tag_id = Uuid::new_v4().to_string();
+        let insert_tag = if pool.is_postgres() {
+            pool.prepare_query(
+                "INSERT INTO wiki_tags (id, name) VALUES (?, ?) ON CONFLICT (name) DO NOTHING",
+            )
+        } else {
+            "INSERT OR IGNORE INTO wiki_tags (id, name) VALUES (?, ?)".to_string()
+        };
+        sqlx::query(&insert_tag)
+            .bind(&tag_id)
+            .bind(tag_name)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("insert wiki tag failed: {e}")))?;
+
+        let select_tag = pool.prepare_query("SELECT id FROM wiki_tags WHERE name = ?");
+        let row = sqlx::query(&select_tag)
+            .bind(tag_name)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("select wiki tag failed: {e}")))?;
+        let resolved_id: String = row.get("id");
+
+        let insert_assoc = if pool.is_postgres() {
+            pool.prepare_query(
+                "INSERT INTO wiki_page_tags (page_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            )
+        } else {
+            "INSERT OR IGNORE INTO wiki_page_tags (page_id, tag_id) VALUES (?, ?)".to_string()
+        };
+        sqlx::query(&insert_assoc)
+            .bind(page_id)
+            .bind(&resolved_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("add wiki page tag failed: {e}")))?;
+    }
+
+    Ok(())
 }
 
 // --- Tags ---
@@ -734,6 +855,9 @@ pub async fn list_changes(
         binds.push(exec_id.to_string());
     }
 
+    // LIMIT interpolated directly — `limit` is a clamped i64, not user-controlled.
+    // Cannot use bind parameter because `binds` is Vec<String> and PostgreSQL
+    // rejects text-typed LIMIT values.
     sql.push_str(&format!(
         " ORDER BY r.created_at DESC, r.revision_number DESC LIMIT {limit}"
     ));

@@ -1,4 +1,5 @@
-use sqlx::Executor;
+use sqlx::pool::PoolConnection;
+use sqlx::{Acquire, Executor};
 
 use super::DbPool;
 use crate::error::SchedulerError;
@@ -240,14 +241,6 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         // Migration 0002 uses DROP TABLE which triggers CASCADE with foreign_keys ON.
         // Disable FKs before the migration and re-enable after.
         let needs_fk_disable = !is_postgres && (version == 2 || version == 5);
-        if needs_fk_disable {
-            pool.as_ref()
-                .execute("PRAGMA foreign_keys = OFF")
-                .await
-                .map_err(|e| {
-                    SchedulerError::Database(format!("disable foreign_keys failed: {e}"))
-                })?;
-        }
 
         // Adapt migration for database-specific syntax
         let migration = if is_postgres {
@@ -290,28 +283,71 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
             .filter(|s| !s.is_empty())
             .collect();
 
-        for stmt in statements {
-            pool.as_ref().execute(stmt).await.map_err(|e| {
-                SchedulerError::Database(format!(
-                    "run migration failed: v{} statement: {e}\nStatement: {}",
-                    version,
-                    &stmt[..std::cmp::min(200, stmt.len())]
-                ))
-            })?;
-        }
+        // Acquire a single connection — PRAGMA and transaction MUST share it.
+        let mut conn = pool.as_ref().acquire().await.map_err(|e| {
+            SchedulerError::Database(format!(
+                "acquire connection for migration v{version} failed: {e}"
+            ))
+        })?;
 
-        // Re-enable FKs after migration
         if needs_fk_disable {
-            pool.as_ref()
-                .execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA foreign_keys = OFF")
                 .await
                 .map_err(|e| {
-                    SchedulerError::Database(format!("enable foreign_keys failed: {e}"))
+                    SchedulerError::Database(format!("disable foreign_keys failed: {e}"))
                 })?;
         }
+
+        let tx_result = execute_migration_version(&mut conn, version, &statements).await;
+
+        // ALWAYS re-enable FKs on the SAME connection.
+        if needs_fk_disable && let Err(fk_err) = conn.execute("PRAGMA foreign_keys = ON").await {
+            tracing::error!("failed to re-enable foreign_keys: {fk_err}");
+            // Detach the poisoned connection so it is NOT returned to the pool.
+            conn.detach();
+            let msg = if let Err(ref mig_err) = tx_result {
+                format!(
+                    "migration v{version} failed: {mig_err}; \
+                     additionally, FK re-enable failed: {fk_err}"
+                )
+            } else {
+                format!("enable foreign_keys failed after migration v{version}: {fk_err}")
+            };
+            return Err(SchedulerError::Database(msg));
+        }
+
+        tx_result?;
     }
 
     Ok(())
+}
+
+/// Execute a single migration version's statements within a transaction.
+///
+/// Takes an acquired connection — caller is responsible for FK pragma handling
+/// on the SAME connection (must be outside transaction).
+async fn execute_migration_version(
+    conn: &mut PoolConnection<sqlx::Any>,
+    version: i32,
+    statements: &[&str],
+) -> Result<(), SchedulerError> {
+    let mut tx: sqlx::Transaction<'_, sqlx::Any> = conn.begin().await.map_err(|e| {
+        SchedulerError::Database(format!(
+            "begin migration v{version} transaction failed: {e}"
+        ))
+    })?;
+    for stmt in statements {
+        tx.execute(*stmt).await.map_err(|e| {
+            SchedulerError::Database(format!(
+                "run migration failed: v{} statement: {e}\nStatement: {}",
+                version,
+                &stmt[..std::cmp::min(200, stmt.len())]
+            ))
+        })?;
+    }
+    tx.commit()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("commit migration v{version} failed: {e}")))
 }
 
 /// Check if migrations have been applied (for validation/testing)
@@ -328,6 +364,124 @@ pub async fn get_current_version(pool: &DbPool) -> Result<i32, SchedulerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Migration transaction rollback tests ---
+
+    static INIT_DRIVERS: std::sync::Once = std::sync::Once::new();
+
+    fn install_drivers() {
+        INIT_DRIVERS.call_once(|| {
+            sqlx::any::install_default_drivers();
+        });
+    }
+
+    async fn create_test_pool() -> crate::db::DbPool {
+        install_drivers();
+        crate::db::pool::create("sqlite::memory:")
+            .await
+            .expect("Failed to create test pool")
+    }
+
+    #[tokio::test]
+    async fn test_migration_rollback_on_failure() {
+        let pool = create_test_pool().await;
+        let mut conn = pool.as_ref().acquire().await.unwrap();
+
+        // Bootstrap schema_migrations table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+        // Synthetic migration: valid DDL + failing statement + version insert
+        let statements = &[
+            "CREATE TABLE test_rollback_table (id INTEGER PRIMARY KEY, name TEXT)",
+            "INSERT INTO nonexistent_table VALUES (1)",
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (9999, CURRENT_TIMESTAMP)",
+        ];
+        let result = execute_migration_version(&mut conn, 9999, statements).await;
+
+        assert!(result.is_err());
+
+        // Table should NOT exist (transaction rolled back)
+        let table_exists = sqlx::query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='test_rollback_table'",
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .unwrap();
+        assert!(
+            table_exists.is_none(),
+            "table should not exist after rollback"
+        );
+
+        // Version should NOT be recorded
+        let version_exists =
+            sqlx::query("SELECT version FROM schema_migrations WHERE version = 9999")
+                .fetch_optional(&mut *conn)
+                .await
+                .unwrap();
+        assert!(
+            version_exists.is_none(),
+            "version should not be recorded after rollback"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fk_pragma_restored_after_migration_failure() {
+        let pool = create_test_pool().await;
+        let mut conn = pool.as_ref().acquire().await.unwrap();
+
+        // Verify FK is ON by default
+        let fk_before: (i32,) = sqlx::query_as("PRAGMA foreign_keys")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(fk_before.0, 1, "foreign_keys should be ON before test");
+
+        // Simulate PRAGMA flow with a failing migration
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+
+        let statements = &[
+            "CREATE TABLE fk_test_table (id INTEGER PRIMARY KEY)",
+            "INSERT INTO nonexistent_table VALUES (1)",
+        ];
+        let result = execute_migration_version(&mut conn, 9998, statements).await;
+        assert!(result.is_err());
+
+        // Re-enable FK (mirrors production pattern)
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await
+            .expect("FK re-enable should succeed");
+
+        // Verify FK is back ON
+        let fk_after: (i32,) = sqlx::query_as("PRAGMA foreign_keys")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            fk_after.0, 1,
+            "foreign_keys should be ON after failed migration"
+        );
+
+        // Table should NOT exist (transaction rolled back)
+        let table_exists = sqlx::query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fk_test_table'",
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .unwrap();
+        assert!(
+            table_exists.is_none(),
+            "table should not exist after rollback"
+        );
+    }
 
     // Tests for the generic replace_type_with_tokenizer function
     #[test]

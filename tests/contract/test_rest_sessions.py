@@ -227,6 +227,17 @@ def test_full_ask_answer_round_trip(test_database):
             ctx["url"], agent_id, "design auth"
         )
 
+        # Execution must be working for CAS to transition to input-required
+        with db_conn(ctx["db_url"]) as conn:
+            conn.execute(
+                "UPDATE executions SET status = 'working' WHERE id = ?", (exec_id,)
+            )
+            conn.execute(
+                "UPDATE sessions SET status = 'working' WHERE id = ?",
+                (session_id,),
+            )
+            conn.commit()
+
         # 1. Ask a question (blocking)
         result = mcp_tools_call(
             ctx["url"],
