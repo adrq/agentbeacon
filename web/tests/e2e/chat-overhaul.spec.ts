@@ -47,9 +47,10 @@ test('user messages retain bubble layout', async ({ page }) => {
   await page.goto(`/#/execution/${execId}`);
 
   // Wait for question to appear, then answer it to generate a user message
-  await expect(page.locator('.question-text')).toContainText('Which approach should I take?', { timeout: 20000 });
-  await page.getByRole('radio', { name: /Refactor existing code/ }).click();
-  await page.getByRole('button', { name: /Submit/ }).click();
+  const main = page.locator('#main-content');
+  await expect(main.locator('.question-text')).toContainText('Which approach should I take?', { timeout: 20000 });
+  await main.getByRole('radio', { name: /Refactor existing code/ }).click();
+  await main.getByRole('button', { name: /Submit/ }).click();
 
   // Switch to Chat view and verify user bubble
   await page.getByRole('tab', { name: 'Chat' }).click();
@@ -182,9 +183,9 @@ test('platform events still render as tool-card', async ({ page }) => {
   await waitForWorkerIdle();
 
   const lead = await ensureTCLeadAgent();
-  await ensureTCChildAgent();
+  const child = await ensureTCChildAgent();
 
-  const { execId } = await createExecution(lead.id, 'Turn-complete rendering test', 'TC card test');
+  const { execId } = await createExecution(lead.id, 'Turn-complete rendering test', 'TC card test', [child.id]);
   await waitForWorkerPickup(execId, 15000);
   await waitForEvent(execId, 'turn_complete', 30000);
 

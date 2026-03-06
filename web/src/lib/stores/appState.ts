@@ -1,19 +1,24 @@
 import { writable } from 'svelte/store';
 import type { Theme, NavSection } from '../types';
 
+function safeGetItem(key: string): string | null {
+  try { return typeof window !== 'undefined' ? localStorage.getItem(key) : null; } catch { return null; }
+}
+
+function safeSetItem(key: string, value: string): void {
+  try { if (typeof window !== 'undefined') localStorage.setItem(key, value); } catch { /* localStorage unavailable */ }
+}
+
 function createThemeStore() {
   const getInitialTheme = (): Theme => {
-    if (typeof window === 'undefined') return 'dark';
-    const stored = localStorage.getItem('theme');
+    const stored = safeGetItem('theme');
     return (stored === 'light' || stored === 'dark') ? stored : 'dark';
   };
 
   const { subscribe, set, update } = writable<Theme>(getInitialTheme());
 
   const persistAndSet = (value: Theme) => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('theme', value);
-    }
+    safeSetItem('theme', value);
     set(value);
   };
 
@@ -23,9 +28,7 @@ function createThemeStore() {
     update: (updater: (value: Theme) => Theme) => {
       update((current) => {
         const next = updater(current);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('theme', next);
-        }
+        safeSetItem('theme', next);
         return next;
       });
     }
@@ -41,15 +44,10 @@ export const selectedAgentId = writable<string | null>(null);
 export const selectedFilterProjectId = writable<string | null>(null);
 
 function createPersistedBoolStore(key: string, defaultValue: boolean) {
-  const initial = typeof window !== 'undefined'
-    ? (localStorage.getItem(key) === 'true' ? true : localStorage.getItem(key) === 'false' ? false : defaultValue)
-    : defaultValue;
+  const stored = safeGetItem(key);
+  const initial = stored === 'true' ? true : stored === 'false' ? false : defaultValue;
   const store = writable<boolean>(initial);
-  store.subscribe(value => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(key, String(value));
-    }
-  });
+  store.subscribe(value => { safeSetItem(key, String(value)); });
   return store;
 }
 

@@ -87,7 +87,7 @@ test('home mode forces action panel open', async ({ page }) => {
   await page.goto('/');
   const panel = page.getByRole('complementary', { name: 'Decisions panel' });
   // In Home mode, panel should be expanded (showing header text, not just expand button)
-  await expect(panel.getByText('DECISIONS')).toBeVisible();
+  await expect(panel.locator('.panel-title')).toBeVisible();
 });
 
 test('sidebar state preserved across section switches', async ({ page }) => {

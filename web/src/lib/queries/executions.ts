@@ -54,6 +54,26 @@ export function executionEventsQuery(executionId: () => string | null | undefine
   }));
 }
 
+export function sessionDiffQuery(
+  sessionId: () => string | null | undefined,
+  isTerminal?: () => boolean,
+) {
+  return createQuery(() => ({
+    queryKey: ['session-diff', sessionId()],
+    queryFn: () => api.getSessionDiff(sessionId()!),
+    enabled: !!sessionId(),
+    staleTime: 5_000,
+    refetchInterval: () => {
+      if (isTerminal?.()) return false;
+      return 10_000;
+    },
+    retry: (failureCount: number, error: Error) => {
+      if (error.message.startsWith('API 4')) return false;
+      return failureCount < 2;
+    },
+  }));
+}
+
 export function inputRequiredSessionsQuery() {
   return createQuery(() => ({
     queryKey: ['sessions', { status: 'input-required' }],

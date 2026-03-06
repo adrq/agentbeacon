@@ -197,12 +197,15 @@ export async function waitForEvent(execId: string, textMatch: string, timeoutMs 
 }
 
 /** Create an execution and return its IDs. */
-export async function createExecution(agentId: string, prompt: string, title: string) {
-  const exec = await apiPost('/api/executions', {
-    agent_id: agentId,
-    prompt,
-    title,
-    cwd: '/tmp',
-  });
+export async function createExecution(
+  agentId: string,
+  prompt: string,
+  title: string,
+  extraAgentIds?: string[],
+) {
+  const body: Record<string, unknown> = extraAgentIds
+    ? { agent_ids: [agentId, ...extraAgentIds], prompt, title, cwd: '/tmp' }
+    : { agent_id: agentId, prompt, title, cwd: '/tmp' };
+  const exec = await apiPost('/api/executions', body);
   return { execId: exec.execution.id, sessionId: exec.session_id };
 }

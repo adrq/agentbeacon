@@ -81,13 +81,13 @@ test('no off-scale 12px font sizes in app shell', async ({ page }) => {
 
 test('geist fonts are loaded', async ({ page }) => {
   await page.goto('/');
-  const fontsLoaded = await page.evaluate(async () => {
-    await document.fonts.ready;
-    return {
-      geist: document.fonts.check('1em Geist'),
-      geistMono: document.fonts.check('1em "Geist Mono"'),
-    };
+  const fonts = await page.evaluate(async () => {
+    const [geist, geistMono] = await Promise.all([
+      document.fonts.load('1em Geist'),
+      document.fonts.load('1em "Geist Mono"'),
+    ]);
+    return { geistLoaded: geist.length > 0, geistMonoLoaded: geistMono.length > 0 };
   });
-  expect(fontsLoaded.geist).toBe(true);
-  expect(fontsLoaded.geistMono).toBe(true);
+  expect(fonts.geistLoaded).toBe(true);
+  expect(fonts.geistMonoLoaded).toBe(true);
 });

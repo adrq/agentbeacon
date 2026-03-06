@@ -10,6 +10,7 @@
   import SessionTree from './SessionTree.svelte';
   import EventsTimeline from './EventsTimeline.svelte';
   import ChatView from './ChatView.svelte';
+  import DiffPanel from './DiffPanel.svelte';
   import ElapsedTime from './ElapsedTime.svelte';
   import { executionsWithQuestions, noQuestionExecutions } from '../stores/questionState';
   import Button from './ui/button.svelte';
@@ -45,6 +46,10 @@
 
   let selectedSessionId = $state<string | null>(null);
 
+  // Ephemeral streaming state (not in TanStack cache — transient)
+  let ephemeralBuffers = $state<Map<string, { text: string; lastSeq: number }>>(new Map());
+  let lastPersistedSeq = new Map<string, number>();
+
   // Reset selected session and ephemeral state when execution changes
   let prevExecId = '';
   $effect.pre(() => {
@@ -57,14 +62,15 @@
   });
 
   // View toggle: log or chat, persisted to localStorage
-  type ViewMode = 'log' | 'chat';
-  const storedMode = typeof window !== 'undefined' ? localStorage.getItem('agentbeacon-event-view-mode') : null;
-  let viewMode = $state<ViewMode>(storedMode === 'log' || storedMode === 'chat' ? storedMode : 'log');
+  type ViewMode = 'log' | 'chat' | 'diff';
+  let storedMode: string | null = null;
+  try { storedMode = typeof window !== 'undefined' ? localStorage.getItem('agentbeacon-event-view-mode') : null; } catch { /* localStorage unavailable */ }
+  let viewMode = $state<ViewMode>(
+    storedMode === 'log' || storedMode === 'chat' || storedMode === 'diff' ? storedMode as ViewMode : 'log'
+  );
 
   $effect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('agentbeacon-event-view-mode', viewMode);
-    }
+    try { if (typeof window !== 'undefined') localStorage.setItem('agentbeacon-event-view-mode', viewMode); } catch { /* localStorage unavailable */ }
   });
 
   let leadSession = $derived(detail?.sessions.find(s => !s.parent_session_id) ?? null);
@@ -77,10 +83,6 @@
 
   // SSE connection state
   let sseActive = $state(false);
-
-  // Ephemeral streaming state (not in TanStack cache — transient)
-  let ephemeralBuffers = $state<Map<string, { text: string; lastSeq: number }>>(new Map());
-  let lastPersistedSeq = new Map<string, number>();
 
   // SSE connection lifecycle
   $effect(() => {
@@ -129,6 +131,7 @@
         if (event.event_type === 'state_change') {
           queryClient.invalidateQueries({ queryKey: ['execution', execId] });
           queryClient.invalidateQueries({ queryKey: ['executions'] });
+          queryClient.invalidateQueries({ queryKey: ['session-diff'] });
           if (event.session_id) {
             const p = event.payload as { to?: string };
             if (p.to === 'working') {
@@ -385,13 +388,22 @@
           aria-selected={viewMode === 'chat'}
           onclick={() => viewMode = 'chat'}
         >Chat</button>
+        <button
+          class="toggle-btn"
+          class:active={viewMode === 'diff'}
+          role="tab"
+          aria-selected={viewMode === 'diff'}
+          onclick={() => viewMode = 'diff'}
+        >Diff</button>
       </div>
     </div>
 
     {#if viewMode === 'log'}
       <EventsTimeline {events} {agents} sessions={detail.sessions} />
-    {:else}
+    {:else if viewMode === 'chat'}
       <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} />
+    {:else if viewMode === 'diff'}
+      <DiffPanel sessionId={activeSessionId} {isTerminal} />
     {/if}
   </div>
 

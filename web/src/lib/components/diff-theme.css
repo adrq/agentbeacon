@@ -1,0 +1,236 @@
+@import 'diff2html/bundles/css/diff2html.min.css';
+
+/* Reset diff2html wrapper backgrounds */
+.diff-panel .d2h-wrapper {
+  background: transparent;
+}
+
+/* File headers */
+.diff-panel .d2h-file-header {
+  background: hsl(var(--muted) / 0.3);
+  color: hsl(var(--foreground));
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  font-weight: 500;
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.diff-panel .d2h-file-name-wrapper {
+  display: flex;
+  align-items: center;
+}
+
+.diff-panel .d2h-file-name {
+  color: hsl(var(--foreground));
+}
+
+.diff-panel .d2h-file-stats {
+  font-size: var(--text-xs);
+}
+
+.diff-panel .d2h-file-stats .d2h-lines-added {
+  color: hsl(var(--status-success));
+  border-color: hsl(var(--status-success));
+}
+
+.diff-panel .d2h-file-stats .d2h-lines-deleted {
+  color: hsl(var(--status-danger));
+  border-color: hsl(var(--status-danger));
+}
+
+/* File wrapper */
+.diff-panel .d2h-file-wrapper {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  margin-bottom: 0.5rem;
+  overflow: hidden;
+}
+
+/* Diff table */
+.diff-panel .d2h-diff-table {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  border: none;
+}
+
+/* Code lines */
+.diff-panel .d2h-code-line,
+.diff-panel .d2h-code-line-ctn {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: hsl(var(--foreground));
+  background: transparent;
+}
+
+.diff-panel .d2h-code-line-prefix {
+  color: hsl(var(--muted-foreground));
+  user-select: none;
+}
+
+/* Line numbers */
+.diff-panel .d2h-code-linenumber {
+  color: hsl(var(--muted-foreground) / 0.6);
+  background: hsl(var(--muted) / 0.15);
+  border-right: 1px solid hsl(var(--border));
+  font-size: var(--text-sm);
+}
+
+/* Insertion lines */
+.diff-panel .d2h-ins {
+  background: hsl(var(--status-success) / 0.1);
+  border-color: hsl(var(--status-success) / 0.15);
+}
+
+.diff-panel .d2h-ins .d2h-code-line-ctn {
+  background: transparent;
+}
+
+.diff-panel .d2h-ins .d2h-code-line-prefix {
+  color: hsl(var(--status-success));
+}
+
+.diff-panel .d2h-ins .d2h-code-linenumber {
+  background: hsl(var(--status-success) / 0.15);
+  border-color: hsl(var(--status-success) / 0.1);
+}
+
+.diff-panel ins.d2h-change {
+  background: hsl(var(--status-success) / 0.25);
+  text-decoration: none;
+}
+
+/* Deletion lines */
+.diff-panel .d2h-del {
+  background: hsl(var(--status-danger) / 0.1);
+  border-color: hsl(var(--status-danger) / 0.15);
+}
+
+.diff-panel .d2h-del .d2h-code-line-ctn {
+  background: transparent;
+}
+
+.diff-panel .d2h-del .d2h-code-line-prefix {
+  color: hsl(var(--status-danger));
+}
+
+.diff-panel .d2h-del .d2h-code-linenumber {
+  background: hsl(var(--status-danger) / 0.15);
+  border-color: hsl(var(--status-danger) / 0.1);
+}
+
+.diff-panel del.d2h-change {
+  background: hsl(var(--status-danger) / 0.25);
+  text-decoration: none;
+}
+
+/* Hunk headers (@@ ... @@) */
+.diff-panel .d2h-info {
+  background: hsl(var(--muted) / 0.2);
+  color: hsl(var(--muted-foreground));
+  border-color: hsl(var(--border));
+}
+
+.diff-panel .d2h-info .d2h-code-line-ctn {
+  color: hsl(var(--muted-foreground));
+}
+
+/* Empty diff placeholder */
+.diff-panel .d2h-empty-diff {
+  color: hsl(var(--muted-foreground));
+}
+
+/* highlight.js token overrides — dark mode */
+.diff-panel .hljs-keyword {
+  color: hsl(var(--primary));
+}
+
+.diff-panel .hljs-string {
+  color: hsl(142 71% 65%);
+}
+
+.diff-panel .hljs-number {
+  color: hsl(25 95% 63%);
+}
+
+.diff-panel .hljs-comment {
+  color: hsl(var(--muted-foreground));
+}
+
+.diff-panel .hljs-function,
+.diff-panel .hljs-title {
+  color: hsl(280 80% 70%);
+}
+
+.diff-panel .hljs-built_in {
+  color: hsl(180 60% 55%);
+}
+
+.diff-panel .hljs-type {
+  color: hsl(40 80% 60%);
+}
+
+.diff-panel .hljs-attr,
+.diff-panel .hljs-attribute {
+  color: hsl(200 80% 65%);
+}
+
+.diff-panel .hljs-literal {
+  color: hsl(25 95% 63%);
+}
+
+.diff-panel .hljs-meta {
+  color: hsl(var(--muted-foreground));
+}
+
+.diff-panel .hljs-regexp {
+  color: hsl(0 72% 65%);
+}
+
+.diff-panel .hljs-params {
+  color: hsl(var(--foreground));
+}
+
+/* highlight.js — light theme overrides */
+.light .diff-panel .hljs-keyword {
+  color: hsl(217 90% 45%);
+}
+
+.light .diff-panel .hljs-string {
+  color: hsl(142 60% 35%);
+}
+
+.light .diff-panel .hljs-number {
+  color: hsl(25 85% 45%);
+}
+
+.light .diff-panel .hljs-comment {
+  color: hsl(var(--muted-foreground));
+}
+
+.light .diff-panel .hljs-function,
+.light .diff-panel .hljs-title {
+  color: hsl(280 65% 45%);
+}
+
+.light .diff-panel .hljs-built_in {
+  color: hsl(180 50% 35%);
+}
+
+.light .diff-panel .hljs-type {
+  color: hsl(40 70% 40%);
+}
+
+.light .diff-panel .hljs-attr,
+.light .diff-panel .hljs-attribute {
+  color: hsl(200 70% 40%);
+}
+
+.light .diff-panel .hljs-literal {
+  color: hsl(25 85% 45%);
+}
+
+.light .diff-panel .hljs-regexp {
+  color: hsl(0 60% 45%);
+}

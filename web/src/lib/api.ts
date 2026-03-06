@@ -1,6 +1,6 @@
 import type {
   Agent, AgentDiscoveryEntry, Driver, Execution, ExecutionDetail, Session, Event, Project,
-  CreateExecutionResponse, PostMessageResponse,
+  CreateExecutionResponse, PostMessageResponse, DiffResponse,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
 } from './types';
@@ -221,6 +221,24 @@ export class AgentBeaconAPI {
 
   async completeSession(sessionId: string): Promise<{ completed: boolean; sessions_terminated: number }> {
     return this.fetchJSON(`/sessions/${sessionId}/complete`, { method: 'POST' });
+  }
+
+  // Session diffs — custom fetch to handle 413 (truncated) as valid data
+  async getSessionDiff(sessionId: string, opts?: { base?: string; stat?: boolean }): Promise<DiffResponse> {
+    const search = new URLSearchParams();
+    if (opts?.base) search.set('base', opts.base);
+    if (opts?.stat) search.set('stat', 'true');
+    const qs = search.toString();
+    const url = `${this.baseURL}/sessions/${sessionId}/worktree/diff${qs ? `?${qs}` : ''}`;
+    const response = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
+    if (response.status === 413) {
+      return response.json();
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`API ${response.status}: ${text || response.statusText}`);
+    }
+    return response.json();
   }
 
   async postMessage(

@@ -82,6 +82,27 @@ export interface SessionSummary {
 // Full session from GET /api/sessions — same shape as SessionSummary
 export type Session = SessionSummary;
 
+// GET /api/sessions/{id}/worktree/diff
+export interface DiffFileEntry {
+  path: string;
+  status: string;      // M, A, D
+  insertions: number;
+  deletions: number;
+}
+
+export interface DiffSummary {
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+}
+
+export interface DiffResponse {
+  files: DiffFileEntry[];
+  summary: DiffSummary;
+  patch?: string;       // omitted when stat=true
+  truncated?: boolean;  // true on 413 responses (patch > 1MB)
+}
+
 // Platform events use the same shape as message events (role + parts with data payloads)
 export type PlatformPayload = MessagePayload;
 

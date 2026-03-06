@@ -102,28 +102,29 @@ test('demo scenario: question banner, options, submit, agent resumes', async ({ 
   const banner = page.locator('.question-banner');
   await expect(banner).toBeVisible({ timeout: 20000 });
 
-  await expect(page.locator('.question-text')).toContainText('Which approach should I take?');
+  const main = page.locator('#main-content');
+  await expect(main.locator('.question-text')).toContainText('Which approach should I take?');
 
-  await expect(page.getByRole('radio', { name: /Refactor existing code/ })).toBeVisible();
-  await expect(page.getByRole('radio', { name: /Write new module/ })).toBeVisible();
-  await expect(page.getByRole('radio', { name: /Add a wrapper/ })).toBeVisible();
-  await expect(page.getByRole('radio', { name: /Decide for me/ })).toBeVisible();
+  await expect(main.getByRole('radio', { name: /Refactor existing code/ })).toBeVisible();
+  await expect(main.getByRole('radio', { name: /Write new module/ })).toBeVisible();
+  await expect(main.getByRole('radio', { name: /Add a wrapper/ })).toBeVisible();
+  await expect(main.getByRole('radio', { name: /Decide for me/ })).toBeVisible();
 
   await expect(banner.locator('.banner-meta')).toContainText('Q&A flow test');
 
-  await expect(page.getByRole('button', { name: /Submit/ })).toBeDisabled();
+  await expect(main.getByRole('button', { name: /Submit/ })).toBeDisabled();
 
-  await page.getByRole('radio', { name: /Refactor existing code/ }).click();
-  await expect(page.getByRole('button', { name: /Submit/ })).toBeEnabled();
-  await page.getByRole('button', { name: /Submit/ }).click();
+  await main.getByRole('radio', { name: /Refactor existing code/ }).click();
+  await expect(main.getByRole('button', { name: /Submit/ })).toBeEnabled();
+  await main.getByRole('button', { name: /Submit/ }).click();
 
   // Demo Agent now asks a second question after the first answer.
   // Wait for the second question to appear (banner resets and shows new batch).
-  await expect(page.locator('.question-text')).toContainText(
+  await expect(main.locator('.question-text')).toContainText(
     'How should I handle edge cases?', { timeout: 25000 }
   );
-  await page.getByRole('radio', { name: /Strict validation/ }).click();
-  await page.getByRole('button', { name: /Submit/ }).click();
+  await main.getByRole('radio', { name: /Strict validation/ }).click();
+  await main.getByRole('button', { name: /Submit/ }).click();
 
   await expect(
     page.locator('.timeline-entry').filter({ hasText: 'Done!' })
@@ -281,9 +282,9 @@ test('turn_complete event renders with return arrow icon in log view', async ({ 
   await waitForWorkerIdle();
 
   const lead = await ensureTCLeadAgent();
-  await ensureTCChildAgent();
+  const child = await ensureTCChildAgent();
 
-  const { execId } = await createExecution(lead.id, 'Turn-complete rendering test', 'TC render test');
+  const { execId } = await createExecution(lead.id, 'Turn-complete rendering test', 'TC render test', [child.id]);
   await waitForWorkerPickup(execId, 15000);
 
   // Wait for turn-complete event to be recorded before navigating to UI
@@ -312,26 +313,27 @@ test('demo scenario: multi-turn Q&A with two question batches', async ({ page })
   await page.goto(`/#/execution/${execId}`);
 
   // --- First question batch ---
+  const main = page.locator('#main-content');
   const banner = page.locator('.question-banner');
   await expect(banner).toBeVisible({ timeout: 20000 });
-  await expect(page.locator('.question-text')).toContainText('Which approach should I take?');
+  await expect(main.locator('.question-text')).toContainText('Which approach should I take?');
 
-  await page.getByRole('radio', { name: /Refactor existing code/ }).click();
-  await page.getByRole('button', { name: /Submit/ }).click();
+  await main.getByRole('radio', { name: /Refactor existing code/ }).click();
+  await main.getByRole('button', { name: /Submit/ }).click();
 
   // --- Second question batch (key assertion: banner shows new question) ---
   // The banner transitions from Q1 → submitted → reset → Q2. The text change
   // is the reliable signal that the full reactive cycle completed.
-  await expect(page.locator('.question-text')).toContainText(
+  await expect(main.locator('.question-text')).toContainText(
     'How should I handle edge cases?', { timeout: 25000 }
   );
 
   // Verify second batch options are correct
-  await expect(page.getByRole('radio', { name: /Strict validation/ })).toBeVisible();
-  await expect(page.getByRole('radio', { name: /Lenient parsing/ })).toBeVisible();
+  await expect(main.getByRole('radio', { name: /Strict validation/ })).toBeVisible();
+  await expect(main.getByRole('radio', { name: /Lenient parsing/ })).toBeVisible();
 
-  await page.getByRole('radio', { name: /Strict validation/ }).click();
-  await page.getByRole('button', { name: /Submit/ }).click();
+  await main.getByRole('radio', { name: /Strict validation/ }).click();
+  await main.getByRole('button', { name: /Submit/ }).click();
 
   // Agent completes — "Done!" appears in timeline
   await expect(

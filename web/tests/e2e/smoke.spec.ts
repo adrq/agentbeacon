@@ -88,10 +88,9 @@ test('turn-complete delivers child output to parent', async ({ page }) => {
   await waitForWorkerIdle();
 
   const lead = await ensureTCLeadAgent();
-  // Ensure child agent is seeded too
-  await ensureTCChildAgent();
+  const child = await ensureTCChildAgent();
 
-  const { execId } = await createExecution(lead.id, 'Turn-complete E2E test', 'TC round-trip');
+  const { execId } = await createExecution(lead.id, 'Turn-complete E2E test', 'TC round-trip', [child.id]);
   await waitForWorkerPickup(execId, 15000);
 
   // Wait for turn-complete event to be recorded before navigating to UI
