@@ -50,25 +50,33 @@ def enqueue_session(
     session_id="sess-1",
     execution_id="exec-1",
     prompt_text="hello from test",
+    extra_args=None,
+    parent_name=None,
 ):
     """Enqueue a session with ACP mock agent config."""
+    args = ["run", "python", "-m", "agentbeacon.mock_agent", "--mode", "acp"]
+    if extra_args:
+        args.extend(extra_args)
     task_payload = {
         "agent_id": "mock-agent",
         "driver": {"platform": "acp", "config": {}},
         "agent_config": {
             "command": "uv",
-            "args": ["run", "python", "-m", "agentbeacon.mock_agent", "--mode", "acp"],
+            "args": args,
             "timeout": 30,
         },
         "message": {"role": "user", "parts": [{"kind": "text", "text": prompt_text}]},
     }
+    body = {
+        "sessionId": session_id,
+        "executionId": execution_id,
+        "taskPayload": task_payload,
+    }
+    if parent_name is not None:
+        body["parent_name"] = parent_name
     resp = requests.post(
         f"{scheduler_url}/test/enqueue_session",
-        json={
-            "sessionId": session_id,
-            "executionId": execution_id,
-            "taskPayload": task_payload,
-        },
+        json=body,
         timeout=5,
     )
     assert resp.status_code == 200, f"Enqueue session failed: {resp.text}"

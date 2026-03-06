@@ -10,9 +10,14 @@ Scenarios:
   DelegateAskScenario — lead delegates, then asks user after turn-complete result
   DelegateMultiScenario — lead delegates N children sequentially
   DelegateReleaseScenario — lead delegates, then releases the child
+  EndTurnMessageScenario — child discovers parent via REST API, sends message, ends turn
 """
 
 import json
+import os
+import sys
+
+import httpx
 
 from .mcp_client import McpClient
 
@@ -235,5 +240,68 @@ class DelegateMultiScenario(_BaseScenario):
 
         # Phases 1..N: each turn-complete notification
         self._send_marker(f"DELEGATE_MULTI_PHASE_{self.phase}_ACK")
+        self.phase += 1
+        return "end_turn"
+
+
+class EndTurnMessageScenario(_BaseScenario):
+    """Child agent: discovers parent via REST API, sends message, then ends turn.
+
+    Uses AGENTBEACON_* env vars (set by ACP executor) to:
+    1. Call GET /api/executions/{exec_id}/agents to discover parent hierarchical name
+    2. Call POST /api/messages to send message to parent
+
+    Phase 0: discover parent, send message, end_turn
+    Phase N: end_turn (same as EndTurnScenario)
+    """
+
+    async def handle_prompt(self, prompt_text: str) -> str:
+        if self.phase == 0:
+            self._send_marker("END_TURN_MSG_PHASE_0")
+
+            api_base = os.environ.get("AGENTBEACON_API_BASE", "")
+            session_id = os.environ.get("AGENTBEACON_SESSION_ID", "")
+            execution_id = os.environ.get("AGENTBEACON_EXECUTION_ID", "")
+
+            if api_base and session_id and execution_id:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        # Discover all sessions in this execution
+                        resp = await client.get(
+                            f"{api_base}/api/executions/{execution_id}/agents",
+                            headers={"Authorization": f"Bearer {session_id}"},
+                        )
+                        resp.raise_for_status()
+                        agents = resp.json()
+
+                        # Find my entry and get parent's hierarchical name
+                        my_entry = next(
+                            (a for a in agents if a["session_id"] == session_id),
+                            None,
+                        )
+                        if my_entry and my_entry.get("parent_name"):
+                            post_resp = await client.post(
+                                f"{api_base}/api/messages",
+                                json={
+                                    "to": my_entry["parent_name"],
+                                    "body": f"Status update: completed task '{prompt_text}'",
+                                },
+                                headers={
+                                    "Authorization": f"Bearer {session_id}",
+                                    "Content-Type": "application/json",
+                                },
+                            )
+                            post_resp.raise_for_status()
+                            self._send_marker("END_TURN_MSG_SENT")
+                except Exception as exc:
+                    print(
+                        f"EndTurnMessageScenario HTTP error: {exc}",
+                        file=sys.stderr,
+                    )
+
+            self.phase = 1
+            return "end_turn"
+
+        self._send_marker(f"END_TURN_MSG_PHASE_{self.phase}")
         self.phase += 1
         return "end_turn"

@@ -127,6 +127,38 @@ def mock_agent_acp():
         proc.wait()
 
 
+@pytest.fixture
+def mock_agent_acp_scenario():
+    """Factory fixture: spawn ACP mock agent with a specific --scenario flag."""
+    procs = []
+
+    def _make(scenario: str):
+        proc = subprocess.Popen(
+            ["uv", "run", "mock-agent", "--mode", "acp", "--scenario", scenario],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        time.sleep(0.2)
+        procs.append(proc)
+        return proc
+
+    yield _make
+
+    for proc in procs:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        else:
+            proc.wait()
+
+
 def send_stdio_input(proc: subprocess.Popen, input_text: str) -> Dict[str, Any]:
     """Helper: Send input to stdio process and get JSON response."""
     proc.stdin.write(input_text + "\n")

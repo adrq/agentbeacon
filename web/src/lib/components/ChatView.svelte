@@ -92,6 +92,7 @@
   type ChatEntry =
     | { type: 'agent'; text: string; agentLabel: string; time: string; key: string; isStreaming: boolean }
     | { type: 'user'; text: string; time: string; key: string }
+    | { type: 'lateral'; senderName: string; text: string; time: string; key: string }
     | { type: 'state'; text: string; time: string; key: string }
     | { type: 'tool'; icon: string; text: string; time: string; key: string }
     | { type: 'tool_group'; group: ToolGroupEntry; key: string }
@@ -141,9 +142,20 @@
         const msg = ev.payload;
         const agentType = resolveAgentType(ev.session_id);
 
+        // Pre-scan for sender metadata (inter-agent message)
+        const senderPart = msg.parts.find(
+          p => p.kind === 'data' && (p.data as Record<string, unknown>)?.type === 'sender'
+        );
+        const senderName = senderPart
+          ? ((senderPart as { kind: 'data'; data: Record<string, unknown> }).data.name as string) || 'unknown'
+          : null;
+
         for (const part of msg.parts) {
           if (part.kind === 'data') {
             const d = part.data as Record<string, unknown>;
+
+            // Skip sender metadata part — handled via pre-scan above
+            if (d.type === 'sender') continue;
 
             // Platform events: route to existing renderers
             if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
@@ -239,7 +251,9 @@
             entries.push({ type: 'tool', icon: '\u25A1', text: `[file] ${name}`, time, key: `${ev.id}-${seq++}` });
           } else if (part.kind === 'text') {
             const text = part.text as string;
-            if (msg.role === 'user') {
+            if (senderName) {
+              entries.push({ type: 'lateral', senderName, text, time, key: `${ev.id}-${seq++}` });
+            } else if (msg.role === 'user') {
               entries.push({ type: 'user', text, time, key: `${ev.id}-${seq++}` });
             } else {
               const prevEntry = entries.length > 0 ? entries[entries.length - 1] : null;
@@ -356,6 +370,14 @@
             <div class="bubble user-bubble">
               <div class="bubble-text">{entry.text}</div>
               <div class="bubble-time">{entry.time}</div>
+            </div>
+          </div>
+        {:else if entry.type === 'lateral'}
+          <div class="chat-row lateral-row">
+            <div class="lateral-message">
+              <div class="lateral-header">From {entry.senderName}</div>
+              <div class="lateral-body">{entry.text}</div>
+              <div class="lateral-time">{entry.time}</div>
             </div>
           </div>
         {:else if entry.type === 'state'}
@@ -536,6 +558,40 @@
 
   .user-bubble .bubble-text {
     white-space: pre-wrap;
+  }
+
+  .lateral-row {
+    justify-content: flex-start;
+  }
+
+  .lateral-message {
+    max-width: 85%;
+    padding: 0.375rem 0.75rem;
+    border-left: 2px solid hsl(var(--status-working));
+    background: hsl(var(--muted) / 0.15);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .lateral-header {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: hsl(var(--status-working));
+    margin-bottom: 0.125rem;
+  }
+
+  .lateral-body {
+    white-space: pre-wrap;
+    color: hsl(var(--foreground));
+  }
+
+  .lateral-time {
+    font-size: 0.625rem;
+    color: hsl(var(--muted-foreground));
+    margin-top: 0.25rem;
+    font-family: var(--font-mono);
   }
 
   .bubble-time {

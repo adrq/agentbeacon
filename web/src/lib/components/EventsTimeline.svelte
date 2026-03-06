@@ -71,12 +71,23 @@
       const entries: ParsedEvent[] = [];
       const agentType = resolveAgentType(ev.session_id);
 
+      // Pre-scan for sender metadata (inter-agent message)
+      const senderPart = msg.parts.find(
+        p => p.kind === 'data' && (p.data as Record<string, unknown>)?.type === 'sender'
+      );
+      const senderName = senderPart
+        ? ((senderPart as { kind: 'data'; data: Record<string, unknown> }).data.name as string) || 'unknown'
+        : null;
+
       for (let i = 0; i < msg.parts.length; i++) {
         const part = msg.parts[i];
         const key = `${ev.id}-${i}`;
 
         if (part.kind === 'data') {
           const d = part.data as Record<string, unknown>;
+
+          // Skip sender metadata part — handled via pre-scan above
+          if (d.type === 'sender') continue;
 
           // Platform events
           if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
@@ -138,7 +149,9 @@
           entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[file] ${name}` });
         } else if (part.kind === 'text') {
           const text = part.text as string;
-          if (msg.role === 'user') {
+          if (senderName) {
+            entries.push({ key, time, icon: '\u2709', iconClass: 'lateral', text: `${senderName}: "${truncate(text, 80)}"` });
+          } else if (msg.role === 'user') {
             entries.push({ key, time, icon: '\u25B6', iconClass: 'user', text: `User: ${truncate(text, 100)}` });
           } else {
             entries.push({ key, time, icon: '\u25CF', iconClass: 'agent', text: truncate(text, 120) });
@@ -259,6 +272,7 @@
   .ev-icon.turn-complete { color: hsl(var(--status-success)); }
   .ev-icon.user { color: hsl(var(--primary)); }
   .ev-icon.agent { color: hsl(var(--muted-foreground)); }
+  .ev-icon.lateral { color: hsl(var(--status-working)); }
 
   .ev-text {
     flex: 1;

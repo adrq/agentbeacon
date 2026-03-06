@@ -16,6 +16,7 @@ renamed to type:
 import time
 
 import pytest
+import requests
 
 from tests.testhelpers import cleanup_processes
 from tests.integration.worker_test_helpers import (
@@ -24,6 +25,7 @@ from tests.integration.worker_test_helpers import (
     clear_state,
     enqueue_session,
     get_agent_output,
+    get_events,
     get_results,
     mark_complete,
     poll_until,
@@ -245,5 +247,53 @@ def test_send_tool_call_update_produces_data_part(mock_scheduler):
         )
     finally:
         mark_complete(url)
+        time.sleep(1)
+        cleanup_processes([worker])
+
+
+def test_end_turn_message_scenario_sends_message(mock_scheduler):
+    """EndTurnMessageScenario discovers parent and sends inter-agent message."""
+    url, _, _ = mock_scheduler
+    clear_state(url)
+
+    enqueue_session(
+        url,
+        session_id="sess-msg-1",
+        execution_id="exec-msg-1",
+        prompt_text="do the task",
+        extra_args=["--scenario", "end-turn-message"],
+        parent_name="lead/main",
+    )
+    worker = start_worker(url)
+    try:
+        assert poll_until(lambda: len(get_results(url)) > 0, timeout=30), (
+            "Worker did not report session result"
+        )
+
+        # Session should complete without error
+        results = get_results(url)
+        assert results[0]["sessionId"] == "sess-msg-1"
+        assert results[0]["error"] is None, f"Unexpected error: {results[0]}"
+
+        # Mock scheduler should have captured the inter-agent message
+        messages = requests.get(f"{url}/test/messages", timeout=5).json()
+        assert len(messages) == 1, f"Expected 1 captured message, got: {messages}"
+        assert messages[0]["to"] == "lead/main"
+        assert "do the task" in messages[0]["body"]
+
+        # Worker events should contain END_TURN_MSG_SENT marker
+        events = get_events(url)
+        event_texts = []
+        for ev in events:
+            payload = ev.get("payload", {})
+            if isinstance(payload, dict) and "parts" in payload:
+                for part in payload["parts"]:
+                    if part.get("kind") == "text":
+                        event_texts.append(part["text"])
+        assert any("END_TURN_MSG_SENT" in t for t in event_texts), (
+            f"Expected END_TURN_MSG_SENT marker in events, got texts: {event_texts}"
+        )
+    finally:
+        mark_complete(url, session_id="sess-msg-1")
         time.sleep(1)
         cleanup_processes([worker])

@@ -178,6 +178,46 @@ export async function ensureTCChildAgent(): Promise<{ id: string; name: string }
   return { id: agent.id, name: agent.name };
 }
 
+/** Discover hierarchical name for a session via the agents discovery endpoint. */
+export async function getHierarchicalName(execId: string, sessionId: string): Promise<string> {
+  const agents: { session_id: string; name: string }[] = await apiGet(
+    `/api/executions/${execId}/agents`,
+  );
+  const entry = agents.find(a => a.session_id === sessionId);
+  if (!entry) throw new Error(`Session ${sessionId} not found in execution ${execId} agents`);
+  return entry.name;
+}
+
+/** Send an inter-agent message using the /api/messages REST endpoint. */
+export async function sendAgentMessage(senderSessionId: string, toHierarchicalName: string, body: string) {
+  const res = await fetch(`${API_URL}/api/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${senderSessionId}`,
+    },
+    body: JSON.stringify({ to: toHierarchicalName, body }),
+  });
+  if (!res.ok) throw new Error(`POST /api/messages failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+/** Ensure the 'TC Msg Lead Agent' exists (must be pre-seeded). */
+export async function ensureTCMsgLeadAgent(): Promise<{ id: string; name: string }> {
+  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  const agent = agents.find(a => a.name === 'TC Msg Lead Agent');
+  if (!agent) throw new Error('TC Msg Lead Agent not found — run scripts/seed_agents.py first');
+  return { id: agent.id, name: agent.name };
+}
+
+/** Ensure the 'TC Msg Child Agent' exists (must be pre-seeded). */
+export async function ensureTCMsgChildAgent(): Promise<{ id: string; name: string }> {
+  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  const agent = agents.find(a => a.name === 'TC Msg Child Agent');
+  if (!agent) throw new Error('TC Msg Child Agent not found — run scripts/seed_agents.py first');
+  return { id: agent.id, name: agent.name };
+}
+
 /** Poll execution events until one contains the given text. */
 export async function waitForEvent(execId: string, textMatch: string, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;

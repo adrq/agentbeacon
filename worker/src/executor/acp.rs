@@ -68,7 +68,27 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         .context("failed to parse ACP agent config")?;
     acp_config.validate()?;
 
-    let legacy_config = acp_config.to_legacy();
+    let mut legacy_config = acp_config.to_legacy();
+    // Inject AGENTBEACON_* env vars (parity with SDK executor path in sdk.rs:190-198)
+    let env = legacy_config.env.get_or_insert_with(HashMap::new);
+    env.insert(
+        "AGENTBEACON_SESSION_ID".to_string(),
+        config.session_id.clone(),
+    );
+    env.insert(
+        "AGENTBEACON_API_BASE".to_string(),
+        config.scheduler_url.clone(),
+    );
+    env.insert(
+        "AGENTBEACON_EXECUTION_ID".to_string(),
+        config.execution_id.clone(),
+    );
+    if let Some(ref pid) = config.project_id {
+        env.insert("AGENTBEACON_PROJECT_ID".to_string(), pid.clone());
+    } else {
+        // Override any inherited value so the child doesn't see a stale project ID
+        env.insert("AGENTBEACON_PROJECT_ID".to_string(), String::new());
+    }
     let init_timeout = Duration::from_secs(acp_config.timeout.unwrap_or(30));
 
     let mut child = spawn_acp_subprocess(&legacy_config)?;

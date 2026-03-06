@@ -135,6 +135,12 @@ export type MessagePart =
   | { kind: 'file'; file: { name: string }; mimeType?: string }
   | { kind: string; [key: string]: unknown };
 
+export interface SenderData {
+  type: 'sender';
+  name: string;
+  session_id: string;
+}
+
 export type DataPartPayload =
   | EscalateData
   | DelegateData
@@ -143,6 +149,7 @@ export type DataPartPayload =
   | ToolCallUpdateData
   | ThinkingData
   | PlanData
+  | SenderData
   | { type: string; [key: string]: unknown };
 
 export interface EscalateData {
@@ -254,6 +261,10 @@ export function isThinkingData(d: DataPartPayload): d is ThinkingData {
 
 export function isPlanData(d: DataPartPayload): d is PlanData {
   return d.type === 'plan';
+}
+
+export function isSenderData(d: DataPartPayload): d is SenderData {
+  return d.type === 'sender';
 }
 
 // Wiki types

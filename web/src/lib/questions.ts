@@ -42,10 +42,16 @@ export function extractQuestions(events: Event[]): { batchId: string; questions:
     }
   }
 
-  // Check if the latest batch was already answered (user message after the ask)
-  const hasAnswer = events.some(ev =>
-    ev.id > latestMaxId && isMessagePayload(ev.payload) && ev.payload.role === 'user'
-  );
+  // Check if the latest batch was already answered (human user message after the ask).
+  // Exclude inter-agent messages (distinguished by a sender data part).
+  const hasAnswer = events.some(ev => {
+    if (ev.id <= latestMaxId) return false;
+    if (!isMessagePayload(ev.payload) || ev.payload.role !== 'user') return false;
+    const hasSender = ev.payload.parts.some(
+      p => p.kind === 'data' && (p.data as Record<string, unknown>)?.type === 'sender'
+    );
+    return !hasSender;
+  });
   if (hasAnswer) return { batchId: '', questions: [] };
 
   const batch = batches.get(latestBatchId) ?? [];

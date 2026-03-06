@@ -146,6 +146,7 @@ class EnqueueSessionRequest(BaseModel):
     sessionId: str
     executionId: str
     taskPayload: Any
+    parent_name: Optional[str] = None
 
     class Config:
         extra = "forbid"
@@ -206,6 +207,8 @@ command_queue: List[str] = []
 results: List[Dict[str, Any]] = []
 sync_log: List[Dict[str, Any]] = []
 worker_events: List[Dict[str, Any]] = []
+captured_messages: List[Dict[str, Any]] = []
+execution_sessions: Dict[str, List[Dict[str, str]]] = {}
 
 
 @app.post("/api/worker/sync")
@@ -302,6 +305,19 @@ def worker_event(request: Dict[str, Any]) -> StatusResponse:
     return StatusResponse(status="event received")
 
 
+@app.get("/api/executions/{execution_id}/agents")
+def get_execution_agents(execution_id: str) -> List[Dict[str, Any]]:
+    """Return agents for an execution (used by EndTurnMessageScenario)."""
+    return execution_sessions.get(execution_id, [])
+
+
+@app.post("/api/messages")
+def receive_agent_message(request: Dict[str, Any]) -> StatusResponse:
+    """Capture inter-agent messages sent by mock agent scenarios."""
+    captured_messages.append(request)
+    return StatusResponse(status="message received")
+
+
 @app.post("/test/enqueue_session")
 def enqueue_session(request: EnqueueSessionRequest) -> StatusResponse:
     """Test endpoint: add a session assignment to the queue."""
@@ -310,6 +326,15 @@ def enqueue_session(request: EnqueueSessionRequest) -> StatusResponse:
             "sessionId": request.sessionId,
             "executionId": request.executionId,
             "taskPayload": request.taskPayload,
+        }
+    )
+    # Track session for /api/executions/{id}/agents
+    if request.executionId not in execution_sessions:
+        execution_sessions[request.executionId] = []
+    execution_sessions[request.executionId].append(
+        {
+            "session_id": request.sessionId,
+            "parent_name": request.parent_name,
         }
     )
     return StatusResponse(status="session enqueued")
@@ -361,6 +386,12 @@ def get_worker_events() -> List[Dict[str, Any]]:
     return worker_events
 
 
+@app.get("/test/messages")
+def get_captured_messages() -> List[Dict[str, Any]]:
+    """Test endpoint: retrieve captured inter-agent messages."""
+    return captured_messages
+
+
 @app.get("/api/health")
 def health_check() -> HealthResponse:
     """Health check endpoint."""
@@ -377,6 +408,8 @@ def clear_all() -> StatusResponse:
     results.clear()
     sync_log.clear()
     worker_events.clear()
+    captured_messages.clear()
+    execution_sessions.clear()
     return StatusResponse(status="cleared")
 
 
