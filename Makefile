@@ -72,7 +72,9 @@ test-all: test-rust test-int test-e2e
 # Run target
 run: all
 	@echo "Starting AgentBeacon on port $${AGENTBEACON_PORT:-9456}..."
-	./bin/agentbeacon --scheduler-port $${AGENTBEACON_PORT:-9456}
+	@touch scheduler-$${AGENTBEACON_PORT:-9456}.db
+	AGENTBEACON_EXECUTORS_DIR=$${AGENTBEACON_EXECUTORS_DIR:-$(CURDIR)/executors/dist} \
+		./bin/agentbeacon --scheduler-port $${AGENTBEACON_PORT:-9456}
 
 # Clean build artifacts
 clean:
