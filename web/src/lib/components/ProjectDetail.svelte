@@ -7,6 +7,7 @@
   import Button from './ui/button.svelte';
   import ProjectForm from './ProjectForm.svelte';
   import ExecutionListItem from './ExecutionListItem.svelte';
+  import { openSearchTab } from '../stores/wikiState.svelte';
 
   interface Props {
     projectId: string;
@@ -70,6 +71,7 @@
       <div class="header-top">
         <h2 class="detail-title">{project.name}</h2>
         <div class="header-actions">
+          <Button variant="ghost" size="sm" onclick={() => { openSearchTab(projectId); router.navigate('#/wiki'); }}>Wiki</Button>
           <Button variant="ghost" size="sm" onclick={() => editing = true}>Edit</Button>
           <Button variant="ghost" size="sm" onclick={() => showDeleteConfirm = true}>Delete</Button>
         </div>

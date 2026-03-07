@@ -14,6 +14,8 @@
   import ElapsedTime from './ElapsedTime.svelte';
   import { executionsWithQuestions, noQuestionExecutions } from '../stores/questionState';
   import Button from './ui/button.svelte';
+  import { openSearchTab } from '../stores/wikiState.svelte';
+  import { router } from '../router';
 
   export interface ExecutionPrefill {
     projectId?: string | null;
@@ -317,6 +319,11 @@
         {#if isTerminal && onrerun}
           <Button variant="secondary" size="sm" onclick={handleRerun}>
             Re-run
+          </Button>
+        {/if}
+        {#if detail.execution.project_id}
+          <Button variant="ghost" size="sm" onclick={() => { openSearchTab(detail!.execution.project_id!); router.navigate('#/wiki'); }}>
+            Wiki
           </Button>
         {/if}
       </div>

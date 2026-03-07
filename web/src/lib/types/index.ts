@@ -5,7 +5,7 @@ export type ExecutionStatus =
 export type SessionStatus = ExecutionStatus;
 export type EventType = 'message' | 'state_change' | 'platform';
 export type Theme = 'light' | 'dark';
-export type NavSection = 'home' | 'executions' | 'projects' | 'agents';
+export type NavSection = 'home' | 'executions' | 'projects' | 'agents' | 'wiki';
 export type AgentType = 'claude_sdk' | 'codex_sdk' | 'copilot_sdk' | 'opencode_sdk' | 'acp' | 'a2a';
 
 export interface Project {

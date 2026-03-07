@@ -5,6 +5,13 @@ import type {
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
 } from './types';
 
+export class ApiError extends Error {
+  constructor(public status: number, public body: string) {
+    super(`API ${status}: ${body}`);
+    this.name = 'ApiError';
+  }
+}
+
 export class AgentBeaconAPI {
   private baseURL: string;
 
@@ -22,7 +29,7 @@ export class AgentBeaconAPI {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      throw new Error(`API ${response.status}: ${text || response.statusText}`);
+      throw new ApiError(response.status, text || response.statusText);
     }
 
     const contentType = response.headers.get('content-type');
@@ -42,7 +49,7 @@ export class AgentBeaconAPI {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      throw new Error(`API ${response.status}: ${text || response.statusText}`);
+      throw new ApiError(response.status, text || response.statusText);
     }
   }
 
@@ -236,7 +243,7 @@ export class AgentBeaconAPI {
     }
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      throw new Error(`API ${response.status}: ${text || response.statusText}`);
+      throw new ApiError(response.status, text || response.statusText);
     }
     return response.json();
   }

@@ -1,11 +1,11 @@
 import { writable } from 'svelte/store';
 import type { Theme, NavSection } from '../types';
 
-function safeGetItem(key: string): string | null {
+export function safeGetItem(key: string): string | null {
   try { return typeof window !== 'undefined' ? localStorage.getItem(key) : null; } catch { return null; }
 }
 
-function safeSetItem(key: string, value: string): void {
+export function safeSetItem(key: string, value: string): void {
   try { if (typeof window !== 'undefined') localStorage.setItem(key, value); } catch { /* localStorage unavailable */ }
 }
 

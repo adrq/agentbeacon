@@ -20,6 +20,7 @@
   import AgentDetail from './AgentDetail.svelte';
   import AgentsWelcome from './AgentsWelcome.svelte';
   import ProjectsWelcome from './ProjectsWelcome.svelte';
+  import WikiSection from './wiki/WikiSection.svelte';
   import QuestionStateProvider from './QuestionStateProvider.svelte';
 
   let showNewModal = $state(false);
@@ -36,6 +37,7 @@
   });
 
   let isHome = $derived($activeSection === 'home');
+  let sidebarHidden = $derived($activeSection === 'home' || $activeSection === 'wiki');
   let effectiveCollapsed = $derived(isHome ? false : (isTablet || $actionPanelCollapsed));
 
   const execsQuery = executionsQuery();
@@ -112,7 +114,7 @@
 
 <div class="shell-body">
   <NavRail onToggleDecisions={toggleActionPanel} panelOpen={!effectiveCollapsed} />
-  <SplitPanel storageKey="agentbeacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35} collapsed={!$sidebarOpen}>
+  <SplitPanel storageKey="agentbeacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35} collapsed={sidebarHidden || !$sidebarOpen}>
     {#snippet left()}
       <div class="sidebar">
         <div class="sidebar-panel" class:hidden={$activeSection !== 'executions'}>
@@ -160,6 +162,8 @@
           {:else}
             <AgentsWelcome />
           {/if}
+        {:else if $activeSection === 'wiki'}
+          <WikiSection />
         {/if}
       </div>
     {/snippet}

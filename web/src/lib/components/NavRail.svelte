@@ -16,11 +16,16 @@
     { label: 'Executions', section: 'executions' },
     { label: 'Projects', section: 'projects' },
     { label: 'Agents', section: 'agents' },
+    { label: 'Wiki', section: 'wiki' },
   ];
 
   function handleNavClick(section: NavSection) {
     if (section === 'home') {
       router.navigate('#/');
+      return;
+    }
+    if (section === 'wiki') {
+      router.navigate('#/wiki');
       return;
     }
     if ($activeSection === section && $sidebarOpen) {
@@ -68,6 +73,11 @@
           <path d="M12 7v4" />
           <line x1="8" y1="16" x2="8" y2="16" />
           <line x1="16" y1="16" x2="16" y2="16" />
+        </svg>
+      {:else if item.section === 'wiki'}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+          <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
         </svg>
       {/if}
     </button>
