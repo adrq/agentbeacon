@@ -3,6 +3,7 @@ use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(name = "agentbeacon-worker")]
+#[command(version)]
 #[command(about = "AgentBeacon distributed task execution worker")]
 pub struct Args {
     /// Scheduler URL for syncing and task retrieval

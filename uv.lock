@@ -26,17 +26,13 @@ wheels = [
 name = "agentbeacon"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
+
+[package.dev-dependencies]
+dev = [
     { name = "a2a-sdk" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jsonschema" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "httpx" },
     { name = "pre-commit" },
     { name = "psutil" },
     { name = "psycopg2-binary" },
@@ -45,20 +41,17 @@ dev = [
     { name = "pyyaml" },
     { name = "requests" },
     { name = "ruff" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
-requires-dist = [
+
+[package.metadata.requires-dev]
+dev = [
     { name = "a2a-sdk", specifier = ">=0.3.6" },
     { name = "fastapi", specifier = ">=0.104.0" },
     { name = "httpx", specifier = ">=0.25.0" },
     { name = "jsonschema", specifier = ">=4.25.1" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "httpx", specifier = ">=0.25.0" },
     { name = "pre-commit", specifier = ">=3.5.0" },
     { name = "psutil", specifier = ">=5.8.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.0" },
@@ -67,6 +60,7 @@ dev = [
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "requests", specifier = ">=2.25.0" },
     { name = "ruff", specifier = ">=0.14.2" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0" },
 ]
 
 [[package]]

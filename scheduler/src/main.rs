@@ -1,3 +1,7 @@
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
@@ -21,7 +25,7 @@ use scheduler::{
 /// AgentBeacon — Agent orchestration and execution tracking
 #[derive(Parser, Debug)]
 #[command(name = "agentbeacon")]
-#[command(version = "1.0.0")]
+#[command(version)]
 #[command(about = "AgentBeacon scheduler with optional worker supervision", long_about = None)]
 struct Cli {
     /// Port to listen on

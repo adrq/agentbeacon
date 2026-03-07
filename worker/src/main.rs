@@ -1,3 +1,7 @@
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod acp;
 mod cli;
 mod embedded_executors;

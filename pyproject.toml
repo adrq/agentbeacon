@@ -3,24 +3,21 @@ name = "agentbeacon"
 version = "0.1.0"
 description = "AI agent orchestration platform"
 requires-python = ">=3.10"
-dependencies = [
-    "a2a-sdk>=0.3.6",
-    "fastapi>=0.104.0",
-    "httpx>=0.25.0",
-    "jsonschema>=4.25.1",
-    "uvicorn[standard]>=0.24.0",
-]
 
 [project.scripts]
 mock-agent = "agentbeacon.mock_agent.__main__:main"
 
 [dependency-groups]
 dev = [
+    "a2a-sdk>=0.3.6",
+    "fastapi>=0.104.0",
+    "httpx>=0.25.0",
+    "jsonschema>=4.25.1",
+    "uvicorn[standard]>=0.24.0",
     "pre-commit>=3.5.0",
     "pytest>=7.0.0",
     "requests>=2.25.0",
     "psutil>=5.8.0",
-    "httpx>=0.25.0",
     "pyyaml>=6.0.2",
     "psycopg2-binary>=2.9.0",
     "pytest-xdist>=3.5.0",

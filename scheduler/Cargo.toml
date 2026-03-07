@@ -1,36 +1,36 @@
 [package]
 name = "scheduler"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [[bin]]
 name = "agentbeacon"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.100"
+anyhow.workspace = true
 async-stream = "0.3"
 axum = "0.8.6"
-chrono = { version = "0.4.42", features = ["serde"] }
-clap = { version = "4.5.48", features = ["derive", "env"] }
+chrono = { workspace = true, features = ["serde"] }
+clap.workspace = true
 common = { path = "../common" }
 futures-util = "0.3"
 hex = "0.4"
-jsonschema = "0.33.0"
+jsonschema.workspace = true
 regex = "1.11"
-rust-embed = { version = "8.7.2", features = ["include-exclude"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-serde_yaml = "0.9.34"
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sha2 = "0.10"
 sqlparser = "0.58"
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "postgres", "any", "runtime-tokio-native-tls", "macros", "migrate", "chrono"] }
-thiserror = "2.0.17"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "postgres", "any", "tls-rustls-ring-webpki", "macros", "migrate", "chrono"] }
+thiserror.workspace = true
 tantivy = "0.25"
-tokio = { version = "1.47.1", features = ["full"] }
+tokio.workspace = true
 tower-http = { version = "0.6.6", features = ["cors", "compression-gzip"] }
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt", "json"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "json"] }
 rand = "0.8.5"
-uuid = { version = "1.18.1", features = ["v4", "serde"] }
+uuid = { workspace = true, features = ["serde"] }
 nix = { version = "0.30.1", features = ["signal"] }
+mimalloc = "0.1"

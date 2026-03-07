@@ -1,29 +1,30 @@
 [package]
 name = "worker"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [[bin]]
 name = "agentbeacon-worker"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.100"
+anyhow.workspace = true
 async-trait = "0.1"
-clap = { version = "4.5.48", features = ["derive", "env"] }
-common = { version = "0.1.0", path = "../common" }
+clap.workspace = true
+common = { path = "../common" }
 humantime = "2.3.0"
 libc = "0.2"
-reqwest = { version = "0.12.23", features = ["json", "rustls-tls"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-thiserror = "2.0.17"
-tokio = { version = "1.47.1", features = ["full"] }
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-uuid = { version = "1.18.1", features = ["v4"] }
-rust-embed = { version = "8.7.2", features = ["include-exclude"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls", "charset", "http2", "system-proxy"] }
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
 dirs = "6"
+mimalloc = "0.1"
 
 [dev-dependencies]
 tokio-test = "0.4.4"
