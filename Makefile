@@ -1,6 +1,9 @@
-.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-all run clean pre-commit dev-backend dev-frontend
+.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-all build-musl build-musl-x64 build-musl-arm64 test-musl run clean pre-commit dev-backend dev-frontend
 
 RUST_STRICT_FLAGS ?= -Dwarnings
+
+# Directory containing the zig binary from the ziglang PyPI package
+ZIG_DIR = $(shell uv run python -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))')
 
 # Default target
 all: build-frontend executors build
@@ -45,6 +48,47 @@ build-worker:
 	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo build --release --bin agentbeacon-worker
 	@mkdir -p bin
 	cp target/release/agentbeacon-worker bin/
+
+# Build fully static x86_64 musl binaries
+build-musl-x64: build-frontend executors
+	@command -v cargo-zigbuild >/dev/null 2>&1 || { echo "Installing cargo-zigbuild..."; cargo install cargo-zigbuild; }
+	@rustup target list --installed | grep -q x86_64-unknown-linux-musl || rustup target add x86_64-unknown-linux-musl
+	@echo "Building musl-static x86_64 binaries..."
+	PATH="$(ZIG_DIR):$$PATH" RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo zigbuild --target x86_64-unknown-linux-musl --release
+	@output=$$(readelf -d target/x86_64-unknown-linux-musl/release/agentbeacon) \
+		|| { echo "ERROR: readelf failed on agentbeacon"; exit 1; }; \
+		if echo "$$output" | grep -q NEEDED; then echo "ERROR: agentbeacon has dynamic dependencies"; exit 1; fi
+	@output=$$(readelf -d target/x86_64-unknown-linux-musl/release/agentbeacon-worker) \
+		|| { echo "ERROR: readelf failed on agentbeacon-worker"; exit 1; }; \
+		if echo "$$output" | grep -q NEEDED; then echo "ERROR: agentbeacon-worker has dynamic dependencies"; exit 1; fi
+	@echo "musl-static x86_64 binaries verified at target/x86_64-unknown-linux-musl/release/"
+
+# Build fully static aarch64 musl binaries (cross-compiled from x86_64)
+build-musl-arm64: build-frontend executors
+	@command -v cargo-zigbuild >/dev/null 2>&1 || { echo "Installing cargo-zigbuild..."; cargo install cargo-zigbuild; }
+	@rustup target list --installed | grep -q aarch64-unknown-linux-musl || rustup target add aarch64-unknown-linux-musl
+	@echo "Building musl-static aarch64 binaries (cross-compiling)..."
+	PATH="$(ZIG_DIR):$$PATH" RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo zigbuild --target aarch64-unknown-linux-musl --release
+	@output=$$(readelf -d target/aarch64-unknown-linux-musl/release/agentbeacon) \
+		|| { echo "ERROR: readelf failed on agentbeacon"; exit 1; }; \
+		if echo "$$output" | grep -q NEEDED; then echo "ERROR: agentbeacon has dynamic dependencies"; exit 1; fi
+	@file target/aarch64-unknown-linux-musl/release/agentbeacon | grep -q "aarch64" \
+		|| { echo "ERROR: agentbeacon is not aarch64"; exit 1; }
+	@output=$$(readelf -d target/aarch64-unknown-linux-musl/release/agentbeacon-worker) \
+		|| { echo "ERROR: readelf failed on agentbeacon-worker"; exit 1; }; \
+		if echo "$$output" | grep -q NEEDED; then echo "ERROR: agentbeacon-worker has dynamic dependencies"; exit 1; fi
+	@file target/aarch64-unknown-linux-musl/release/agentbeacon-worker | grep -q "aarch64" \
+		|| { echo "ERROR: agentbeacon-worker is not aarch64"; exit 1; }
+	@echo "musl-static aarch64 binaries verified at target/aarch64-unknown-linux-musl/release/"
+
+# Build both musl targets
+build-musl: build-musl-x64 build-musl-arm64
+	@echo "All musl-static binaries built successfully."
+
+# Build and verify musl-static binaries
+test-musl: build-musl
+	@echo "Running musl binary verification tests..."
+	uv run pytest -v -m musl tests
 
 # Run Rust unit and integration tests
 test: all

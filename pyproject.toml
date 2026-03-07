@@ -22,6 +22,7 @@ dev = [
     "psycopg2-binary>=2.9.0",
     "pytest-xdist>=3.5.0",
     "ruff>=0.14.2",
+    "ziglang>=0.13.0",
 ]
 
 [build-system]
@@ -35,5 +36,6 @@ packages = ["agentbeacon"]
 markers = [
     "claude: tests requiring Claude auth (run with pytest -m claude)",
     "copilot: tests requiring Copilot/GitHub auth (run with pytest -m copilot)",
+    "musl: tests verifying musl-static builds (run with pytest -m musl)",
 ]
-addopts = "-m 'not claude and not copilot'"
+addopts = "-m 'not claude and not copilot and not musl'"
