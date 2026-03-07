@@ -87,6 +87,7 @@ web/playwright/.cache/
 *.pkg
 *.dmg
 *.msi
+*.whl
 
 requirements/*
 .claude/*

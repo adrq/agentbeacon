@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-all build-musl build-musl-x64 build-musl-arm64 test-musl run clean pre-commit dev-backend dev-frontend
+.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging run clean pre-commit dev-backend dev-frontend
 
 RUST_STRICT_FLAGS ?= -Dwarnings
 
@@ -89,6 +89,21 @@ build-musl: build-musl-x64 build-musl-arm64
 test-musl: build-musl
 	@echo "Running musl binary verification tests..."
 	uv run pytest -v -m musl tests
+
+# Generate PyPI wheel for x86_64 musl
+build-wheel-x64: build-musl-x64
+	uv run python scripts/build_wheel.py --target x86_64-unknown-linux-musl --output-dir dist/
+
+# Generate PyPI wheel for aarch64 musl
+build-wheel-arm64: build-musl-arm64
+	uv run python scripts/build_wheel.py --target aarch64-unknown-linux-musl --output-dir dist/
+
+# Generate both platform wheels
+build-wheels: build-wheel-x64 build-wheel-arm64
+
+# Run packaging tests (builds musl for host architecture first)
+test-packaging: build-musl-$(if $(filter aarch64,$(shell uname -m)),arm64,x64)
+	uv run pytest -v -m packaging tests
 
 # Run Rust unit and integration tests
 test: all

@@ -37,5 +37,6 @@ markers = [
     "claude: tests requiring Claude auth (run with pytest -m claude)",
     "copilot: tests requiring Copilot/GitHub auth (run with pytest -m copilot)",
     "musl: tests verifying musl-static builds (run with pytest -m musl)",
+    "packaging: tests verifying wheel generation (run with pytest -m packaging)",
 ]
-addopts = "-m 'not claude and not copilot and not musl'"
+addopts = "-m 'not claude and not copilot and not musl and not packaging'"
