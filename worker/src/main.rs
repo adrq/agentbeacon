@@ -1,5 +1,6 @@
 mod acp;
 mod cli;
+mod embedded_executors;
 mod executor;
 mod sync;
 
@@ -31,7 +32,16 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
         .init();
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    // Resolve executor directory: CLI/env override → embedded extraction
+    if args.executors_dir.is_none() && std::env::var("AGENTBEACON_EXECUTORS_DIR").is_err() {
+        let data_dir = embedded_executors::resolve_data_dir();
+        let dir = embedded_executors::extract_if_needed(&data_dir)
+            .context("Failed to extract embedded executors")?;
+        args.executors_dir = Some(dir.to_string_lossy().to_string());
+        args.node_modules_dir = Some(data_dir.join("node_modules").to_string_lossy().to_string());
+    }
 
     validate_startup(&args).await?;
 
@@ -284,6 +294,7 @@ async fn run_session(
         scheduler_url: args.scheduler_url.clone(),
         node_path: args.node_path.clone(),
         executors_dir: args.executors_dir.clone(),
+        node_modules_dir: args.node_modules_dir.clone(),
         inactivity_timeout: args.inactivity_timeout,
         project_id,
     };

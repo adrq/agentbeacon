@@ -37,13 +37,19 @@ pub struct Args {
     #[arg(long, env = "AGENTBEACON_NODE_PATH")]
     pub node_path: Option<String>,
 
-    /// Path to executors/dist directory (for Claude executor)
+    /// Override path to executor JS files (optional, for development).
+    /// When not set, the worker extracts embedded executors to the platform data directory.
     #[arg(long, env = "AGENTBEACON_EXECUTORS_DIR")]
     pub executors_dir: Option<String>,
 
     /// Max time with no agent output during an active turn before killing it
     #[arg(long, default_value = "30m", value_parser = parse_inactivity_timeout)]
     pub inactivity_timeout: Duration,
+
+    /// Internal: resolved node_modules path for embedded executor mode.
+    /// Not a CLI flag — set programmatically during startup.
+    #[arg(skip)]
+    pub node_modules_dir: Option<String>,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, humantime::DurationError> {

@@ -73,8 +73,10 @@ pub struct SessionConfig {
     pub scheduler_url: String,
     /// Override for Node.js binary path (stdio-bridge executors)
     pub node_path: Option<String>,
-    /// Override for executors/dist directory (stdio-bridge executors)
+    /// Path to executor JS files. Set from embedded extraction or AGENTBEACON_EXECUTORS_DIR override.
     pub executors_dir: Option<String>,
+    /// Resolved node_modules path for SDK module resolution (embedded executor mode)
+    pub node_modules_dir: Option<String>,
     /// Max time with no agent output during an active turn before killing it
     pub inactivity_timeout: Duration,
     pub project_id: Option<String>,

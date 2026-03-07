@@ -22,6 +22,9 @@ tokio = { version = "1.47.1", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 uuid = { version = "1.18.1", features = ["v4"] }
+rust-embed = { version = "8.7.2", features = ["include-exclude"] }
+dirs = "6"
 
 [dev-dependencies]
 tokio-test = "0.4.4"
+tempfile = "3"

@@ -49,16 +49,16 @@ fi
 export AGENTBEACON_EXECUTORS_DIR="${AGENTBEACON_EXECUTORS_DIR:-$(pwd)/executors/dist}"
 export AGENTBEACON_MOCK_SDK="${AGENTBEACON_MOCK_SDK:-1}"
 
-echo "==> Starting orchestrator (scheduler + worker) on port ${AGENTBEACON_PORT}..."
-./bin/agentbeacon --workers 2 --scheduler-port "$AGENTBEACON_PORT" --worker-poll-interval 1s &
+echo "==> Starting agentbeacon (scheduler + workers) on port ${AGENTBEACON_PORT}..."
+./bin/agentbeacon --workers 2 --port "$AGENTBEACON_PORT" --worker-poll-interval 1s &
 ORCH_PID=$!
 
 cleanup() {
     echo ""
-    echo "==> Stopping orchestrator (PID $ORCH_PID)..."
-    # SIGTERM lets the orchestrator gracefully stop its children
+    echo "==> Stopping agentbeacon (PID $ORCH_PID)..."
+    # SIGTERM lets agentbeacon gracefully stop its workers
     kill $ORCH_PID 2>/dev/null || true
-    # Give it time to propagate SIGTERM to scheduler + workers
+    # Give it time to propagate SIGTERM to workers
     for i in $(seq 1 5); do
         kill -0 $ORCH_PID 2>/dev/null || break
         sleep 1

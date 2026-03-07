@@ -162,7 +162,9 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
         .executors_dir
         .clone()
         .or_else(|| std::env::var("AGENTBEACON_EXECUTORS_DIR").ok())
-        .context("AGENTBEACON_EXECUTORS_DIR must be set (via --executors-dir or env var)")?;
+        .context(
+            "No executor directory available. Set AGENTBEACON_EXECUTORS_DIR for manual override.",
+        )?;
 
     let script_path = format!("{}/{}", executors_dir, kind.script_name());
 
@@ -195,6 +197,9 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
         cmd.env("AGENTBEACON_PROJECT_ID", pid);
     } else {
         cmd.env_remove("AGENTBEACON_PROJECT_ID");
+    }
+    if let Some(ref nm_dir) = config.node_modules_dir {
+        cmd.env("NODE_PATH", nm_dir);
     }
 
     let mut child = cmd.spawn().with_context(|| {
