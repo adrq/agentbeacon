@@ -532,6 +532,53 @@ pub async fn find_over_budget(
     rows.into_iter().map(parse_session_row).collect()
 }
 
+/// Find stale sessions for non-resumable agent types (e.g., ACP).
+/// These cannot be recovered via resume — they must be permanently failed.
+/// Also catches deleted agents of any type (can't resume if agent config is gone).
+pub async fn find_stale_non_resumable(
+    pool: &DbPool,
+    updated_before: &str,
+) -> Result<Vec<Session>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
+    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
+
+    let ts_cast = if pool.is_postgres() {
+        "::timestamptz"
+    } else {
+        ""
+    };
+
+    let sql = format!(
+        "SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
+               s.agent_session_id, s.cwd, s.worktree_path, s.status, \
+               s.metadata, s.slug, s.recovery_attempts, \
+               {cr} as created_at, {up} as updated_at, \
+               {co} as completed_at \
+        FROM sessions s \
+        JOIN agents a ON s.agent_id = a.id \
+        JOIN executions e ON s.execution_id = e.id \
+        WHERE s.status IN ('working', 'input-required') \
+          AND (a.agent_type NOT IN ('claude_sdk', 'copilot_sdk') OR a.deleted_at IS NOT NULL) \
+          AND e.status NOT IN ('completed', 'failed', 'canceled') \
+          AND s.updated_at < ?{ts_cast}",
+        cr = created_fmt.replace("created_at", "s.created_at"),
+        up = updated_fmt.replace("updated_at", "s.updated_at"),
+        co = completed_fmt.replace("completed_at", "s.completed_at"),
+    );
+    let query = pool.prepare_query(&sql);
+
+    let rows = sqlx::query(&query)
+        .bind(updated_before)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("find stale non-resumable sessions failed: {e}"))
+        })?;
+
+    rows.into_iter().map(parse_session_row).collect()
+}
+
 /// Atomically fail a stale over-budget session.
 /// Sets status to 'failed' so the session is terminal even if downstream
 /// cascade/notify (handle_session_failure) encounters errors.

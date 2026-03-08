@@ -14,6 +14,13 @@ pub struct RecoveryStats {
     pub skipped: usize,
 }
 
+pub struct LivenessScanStats {
+    pub recovered: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub non_resumable_failed: usize,
+}
+
 /// Scan for orphaned sessions and resubmit them for recovery.
 ///
 /// Runs after a grace period following scheduler startup. Sessions whose
@@ -200,6 +207,147 @@ pub async fn recover_orphaned_sessions(
     }
 
     stats
+}
+
+/// Run a full liveness scan: recover resumable sessions + fail non-resumable ones.
+pub async fn run_liveness_scan(
+    pool: &DbPool,
+    task_queue: &TaskQueue,
+    event_broadcast: &broadcast::Sender<EventNotification>,
+    max_recovery_attempts: i64,
+    updated_before: DateTime<Utc>,
+) -> LivenessScanStats {
+    // Resumable sessions (claude_sdk, copilot_sdk)
+    let recovery = recover_orphaned_sessions(
+        pool,
+        task_queue,
+        event_broadcast,
+        max_recovery_attempts,
+        updated_before,
+    )
+    .await;
+
+    // Non-resumable sessions (ACP, deleted agents, etc.)
+    let non_resumable_failed =
+        fail_stale_non_resumable(pool, task_queue, event_broadcast, updated_before).await;
+
+    LivenessScanStats {
+        recovered: recovery.recovered,
+        failed: recovery.failed,
+        skipped: recovery.skipped,
+        non_resumable_failed,
+    }
+}
+
+/// Permanently fail stale sessions for non-resumable agent types.
+/// Infallible — logs errors internally.
+async fn fail_stale_non_resumable(
+    pool: &DbPool,
+    task_queue: &TaskQueue,
+    event_broadcast: &broadcast::Sender<EventNotification>,
+    updated_before: DateTime<Utc>,
+) -> usize {
+    let updated_before_str = if pool.is_postgres() {
+        updated_before
+            .format("%Y-%m-%d %H:%M:%S%.6f+00")
+            .to_string()
+    } else {
+        updated_before.format("%Y-%m-%d %H:%M:%S").to_string()
+    };
+
+    let sessions = match db::sessions::find_stale_non_resumable(pool, &updated_before_str).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "liveness scan: find_stale_non_resumable query failed");
+            return 0;
+        }
+    };
+
+    if sessions.is_empty() {
+        return 0;
+    }
+
+    tracing::info!(
+        count = sessions.len(),
+        "liveness scan: found stale non-resumable sessions"
+    );
+
+    let mut count = 0usize;
+    for session in &sessions {
+        match db::sessions::try_claim_for_failure(pool, &session.id, &updated_before_str).await {
+            Ok(false) => {
+                tracing::info!(
+                    session_id = %session.id,
+                    "liveness: non-resumable session updated since scan, skipping"
+                );
+                continue;
+            }
+            Err(e) => {
+                tracing::error!(
+                    session_id = %session.id,
+                    error = %e,
+                    "liveness: CAS claim failed for non-resumable session"
+                );
+                continue;
+            }
+            Ok(true) => {} // claimed
+        }
+
+        tracing::warn!(
+            session_id = %session.id,
+            agent_id = %session.agent_id,
+            status = %session.status,
+            "permanently failing non-resumable stale session"
+        );
+
+        // Emit state_change event (try_claim_for_failure already set status='failed',
+        // so handle_session_failure will skip its own transition + event)
+        let event_payload = json!({
+            "from": session.status,
+            "to": "failed",
+            "error_kind": "non_resumable_stale",
+            "error": "session agent type does not support resume",
+        });
+        match db::events::insert(
+            pool,
+            &session.execution_id,
+            Some(&session.id),
+            "state_change",
+            &serde_json::to_string(&event_payload).unwrap(),
+        )
+        .await
+        {
+            Ok(event_id) => {
+                let _ = event_broadcast.send(EventNotification::persisted(
+                    session.execution_id.clone(),
+                    event_id,
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %session.id,
+                    error = %e,
+                    "liveness: failed to insert state_change event for non-resumable failure"
+                );
+            }
+        }
+
+        // Cascade children + notify parent/execution
+        crate::services::crash::handle_session_failure(
+            pool,
+            task_queue,
+            event_broadcast,
+            &session.id,
+            Some("non_resumable_stale"),
+            Some("session agent type does not support resume"),
+            None,
+        )
+        .await;
+
+        count += 1;
+    }
+
+    count
 }
 
 /// Recover a single orphaned session: atomically claim via CAS, reset to

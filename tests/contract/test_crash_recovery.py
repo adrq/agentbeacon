@@ -188,14 +188,13 @@ def test_recovery_skips_session_without_agent_session_id(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_recovery_skips_acp_sessions(test_database):
-    """ACP agent type sessions are NOT recovered."""
+    """ACP sessions are permanently failed (not recovered via resume)."""
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx1:
         _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1, agent_type="acp")
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        time.sleep(NEGATIVE_WAIT)
-        session = _get_session(ctx2["db_url"], lead_sid)
-        assert session["status"] == "working"
+        session = _wait_for_recovery(ctx2["db_url"], lead_sid)
+        assert session["status"] == "failed"
         assert session["recovery_attempts"] == 0
 
 

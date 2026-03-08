@@ -176,6 +176,12 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .unwrap_or(30)
         .max(3); // Floor: grace period must exceed SQLite's second-precision window
 
+    let liveness_interval_secs = std::env::var("AGENTBEACON_LIVENESS_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(90)
+        .max(60); // Floor: must exceed long-poll timeout (30s) with margin for jitter
+
     // Build application state and router
     let app_state = AppState::new(
         db_pool,
@@ -209,17 +215,24 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         );
     }
 
-    // Spawn delayed recovery scan (runs after grace period to let workers reconnect)
+    // Spawn periodic liveness scan (replaces one-shot startup recovery)
+    info!(
+        liveness_interval_secs,
+        recovery_grace_secs, max_recovery_attempts, "Liveness detection configured"
+    );
     let recovery_pool = app_state.db_pool.clone();
     let recovery_queue = app_state.task_queue.clone();
     let recovery_broadcast = event_broadcast.clone();
     tokio::spawn(async move {
+        // Initial grace period — let workers reconnect after restart
         tokio::time::sleep(Duration::from_secs(recovery_grace_secs)).await;
+
+        // First scan uses startup_time as cutoff (preserving grace-period semantics)
         info!(
-            "Running recovery scan (grace period {}s elapsed)...",
+            "Running initial liveness scan (grace period {}s elapsed)...",
             recovery_grace_secs
         );
-        let stats = services::recovery::recover_orphaned_sessions(
+        let stats = services::recovery::run_liveness_scan(
             &recovery_pool,
             &recovery_queue,
             &recovery_broadcast,
@@ -227,13 +240,40 @@ async fn bootstrap(cli: Cli) -> Result<()> {
             startup_time,
         )
         .await;
-        if stats.recovered > 0 || stats.failed > 0 {
+        if stats.recovered > 0 || stats.failed > 0 || stats.non_resumable_failed > 0 {
             info!(
                 recovered = stats.recovered,
                 failed = stats.failed,
                 skipped = stats.skipped,
-                "Recovery scan complete"
+                non_resumable_failed = stats.non_resumable_failed,
+                "Initial liveness scan complete"
             );
+        }
+
+        // Periodic loop — detect stale sessions from crashed/hung workers
+        let interval = Duration::from_secs(liveness_interval_secs);
+        loop {
+            tokio::time::sleep(interval).await;
+
+            let cutoff =
+                chrono::Utc::now() - chrono::Duration::seconds(liveness_interval_secs as i64);
+            let stats = services::recovery::run_liveness_scan(
+                &recovery_pool,
+                &recovery_queue,
+                &recovery_broadcast,
+                max_recovery_attempts,
+                cutoff,
+            )
+            .await;
+            if stats.recovered > 0 || stats.failed > 0 || stats.non_resumable_failed > 0 {
+                info!(
+                    recovered = stats.recovered,
+                    failed = stats.failed,
+                    skipped = stats.skipped,
+                    non_resumable_failed = stats.non_resumable_failed,
+                    "Periodic liveness scan complete"
+                );
+            }
         }
     });
 
