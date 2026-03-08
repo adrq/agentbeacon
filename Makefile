@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging run clean pre-commit dev-backend dev-frontend
+.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm run clean pre-commit dev-backend dev-frontend
 
 RUST_STRICT_FLAGS ?= -Dwarnings
 
@@ -104,6 +104,26 @@ build-wheels: build-wheel-x64 build-wheel-arm64
 # Run packaging tests (builds musl for host architecture first)
 test-packaging: build-musl-$(if $(filter aarch64,$(shell uname -m)),arm64,x64)
 	uv run pytest -v -m packaging tests
+
+# Generate npm platform package for x86_64
+build-npm-x64: build-musl-x64
+	uv run python scripts/build_npm.py platform --target x86_64-unknown-linux-musl --output-dir dist/npm/
+
+# Generate npm platform package for aarch64
+build-npm-arm64: build-musl-arm64
+	uv run python scripts/build_npm.py platform --target aarch64-unknown-linux-musl --output-dir dist/npm/
+
+# Generate npm wrapper package
+build-npm-wrapper:
+	uv run python scripts/build_npm.py wrapper --output-dir dist/npm/
+
+# Generate all npm packages (both platform + wrapper)
+# CI target: requires both architectures. For local dev, use build-npm-x64 or build-npm-arm64.
+build-npm: build-npm-x64 build-npm-arm64 build-npm-wrapper
+
+# Run npm packaging tests (builds musl for host architecture first)
+test-npm: build-musl-$(if $(filter aarch64,$(shell uname -m)),arm64,x64)
+	uv run pytest -v -m npm tests
 
 # Run Rust unit and integration tests
 test: all
