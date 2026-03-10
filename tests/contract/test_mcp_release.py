@@ -40,7 +40,7 @@ def _create_grandchild_session(ctx, parent_id, exec_id, agent_id, status="submit
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_release_terminates_child(test_database):
+def test_release_input_required_child_completes_it(test_database):
     """Release transitions child from input-required to completed."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
@@ -225,14 +225,132 @@ def test_release_rejects_sibling(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_release_requires_input_required_state(test_database):
-    """Release fails if target is not input-required."""
+def test_release_working_child_cancels_it(test_database):
+    """Release on a working child cancels it (parent can pivot at any time)."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
         child_id = _create_child_session(
             ctx, lead_sid, exec_id, agent_id, status="working"
+        )
+
+        result = mcp_tools_call(
+            ctx["url"], lead_sid, "release", {"session_id": child_id}
+        )
+
+        assert result.get("isError") is False
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["released"] is True
+
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (child_id,)
+            ).fetchone()
+            event_row = conn.execute(
+                "SELECT payload FROM events WHERE session_id = ? AND event_type = 'state_change' ORDER BY id DESC LIMIT 1",
+                (child_id,),
+            ).fetchone()
+        assert row[0] == "canceled"
+        assert event_row is not None, "no state_change event for working→canceled"
+        event_payload = json.loads(event_row[0])
+        assert event_payload["from"] == "working"
+        assert event_payload["to"] == "canceled"
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_release_submitted_child_cancels_it(test_database):
+    """Release on a submitted child cancels it."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
+        exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
+
+        child_id = _create_child_session(
+            ctx, lead_sid, exec_id, agent_id, status="submitted"
+        )
+
+        result = mcp_tools_call(
+            ctx["url"], lead_sid, "release", {"session_id": child_id}
+        )
+
+        assert result.get("isError") is False
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["released"] is True
+
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (child_id,)
+            ).fetchone()
+            event_row = conn.execute(
+                "SELECT payload FROM events WHERE session_id = ? AND event_type = 'state_change' ORDER BY id DESC LIMIT 1",
+                (child_id,),
+            ).fetchone()
+        assert row[0] == "canceled"
+        assert event_row is not None, "no state_change event for submitted→canceled"
+        event_payload = json.loads(event_row[0])
+        assert event_payload["from"] == "submitted"
+        assert event_payload["to"] == "canceled"
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_release_working_root_with_mixed_descendants(test_database):
+    """Releasing a working child cascades correctly to mixed-state descendants."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
+        exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
+
+        child_id = _create_child_session(
+            ctx, lead_sid, exec_id, agent_id, status="working"
+        )
+        gc_working = _create_grandchild_session(
+            ctx, child_id, exec_id, agent_id, status="working"
+        )
+        gc_input_req = _create_grandchild_session(
+            ctx, child_id, exec_id, agent_id, status="input-required"
+        )
+        gc_completed = _create_grandchild_session(
+            ctx, child_id, exec_id, agent_id, status="completed"
+        )
+
+        result = mcp_tools_call(
+            ctx["url"], lead_sid, "release", {"session_id": child_id}
+        )
+
+        payload = json.loads(result["content"][0]["text"])
+        # child (working→canceled) + gc_working (→canceled) + gc_input_req (→completed) = 3
+        # gc_completed is already terminal → skipped
+        assert payload["sessions_terminated"] == 3
+
+        with db_conn(ctx["db_url"]) as conn:
+            child_status = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (child_id,)
+            ).fetchone()[0]
+            working_status = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (gc_working,)
+            ).fetchone()[0]
+            input_req_status = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (gc_input_req,)
+            ).fetchone()[0]
+            completed_status = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (gc_completed,)
+            ).fetchone()[0]
+
+        assert child_status == "canceled"
+        assert working_status == "canceled"
+        assert input_req_status == "completed"
+        assert completed_status == "completed"  # unchanged
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "failed", "canceled"])
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_release_rejects_already_terminal(test_database, terminal_status):
+    """Release fails if target is already in a terminal state."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
+        exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
+
+        child_id = _create_child_session(
+            ctx, lead_sid, exec_id, agent_id, status=terminal_status
         )
 
         data = mcp_call(
@@ -243,7 +361,7 @@ def test_release_requires_input_required_state(test_database):
         )
 
         assert data["error"]["code"] == -32602
-        assert "input-required" in data["error"]["message"]
+        assert "terminal" in data["error"]["message"]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

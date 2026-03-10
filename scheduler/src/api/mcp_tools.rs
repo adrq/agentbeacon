@@ -436,10 +436,10 @@ async fn handle_release(
         ));
     }
 
-    // State: target must be input-required
-    if target.status != "input-required" {
+    // Skip if already terminal
+    if matches!(target.status.as_str(), "completed" | "failed" | "canceled") {
         return Err(JsonRpcError::invalid_params(&format!(
-            "cannot release session in '{}' state (must be 'input-required')",
+            "session is already in terminal state '{}'",
             target.status
         )));
     }
@@ -450,7 +450,7 @@ async fn handle_release(
     let result = terminate_subtree(
         &state.db_pool,
         target_session_id,
-        true, // include root — target itself transitions to completed
+        true, // include root — target transitions per CascadeMode::Release rules
         CascadeMode::Release,
         &state.event_broadcast,
         &state.task_queue,
@@ -497,7 +497,7 @@ fn release_schema() -> JsonValue {
     json!({
         "name": "release",
         "title": "Release",
-        "description": "Terminate a child session and free its resources. The child must be in 'input-required' state. Also terminates any descendants.",
+        "description": "Terminate a child session and free its resources. Works in any non-terminal state (including while the child is working). Also terminates any descendants.",
         "inputSchema": {
             "type": "object",
             "properties": {
