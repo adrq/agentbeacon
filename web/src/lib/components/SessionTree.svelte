@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SessionSummary, Agent } from '../types';
   import { api } from '../api';
+  import { toasts } from '../stores/toasts';
 
   interface Props {
     sessions: SessionSummary[];
@@ -19,6 +20,7 @@
       onstatuschange?.();
     } catch (err) {
       console.error('Failed to cancel session:', err);
+      toasts.error(`Failed to cancel session: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   }
 
@@ -29,6 +31,7 @@
       onstatuschange?.();
     } catch (err) {
       console.error('Failed to complete session:', err);
+      toasts.error(`Failed to complete session: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   }
 

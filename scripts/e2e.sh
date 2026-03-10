@@ -50,7 +50,7 @@ export AGENTBEACON_EXECUTORS_DIR="${AGENTBEACON_EXECUTORS_DIR:-$(pwd)/executors/
 export AGENTBEACON_MOCK_SDK="${AGENTBEACON_MOCK_SDK:-1}"
 
 echo "==> Starting agentbeacon (scheduler + workers) on port ${AGENTBEACON_PORT}..."
-./bin/agentbeacon --workers 2 --port "$AGENTBEACON_PORT" --worker-poll-interval 1s &
+./bin/agentbeacon --workers 4 --port "$AGENTBEACON_PORT" --worker-poll-interval 1s &
 ORCH_PID=$!
 
 cleanup() {

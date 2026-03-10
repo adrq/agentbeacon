@@ -25,6 +25,13 @@
   let messageText = $state('');
   let sending = $state(false);
   let sendError: string | null = $state(null);
+  let textareaEl: HTMLTextAreaElement;
+
+  function autoResize() {
+    if (!textareaEl) return;
+    textareaEl.style.height = 'auto';
+    textareaEl.style.height = Math.min(textareaEl.scrollHeight, 135) + 'px';
+  }
 
   // The viewed session determines whether the input is enabled
   let viewedSession = $derived(sessions.find(s => s.id === sessionId) ?? null);
@@ -53,6 +60,11 @@
       handleSend();
     }
   }
+
+  $effect(() => {
+    messageText; // track dependency
+    autoResize();
+  });
 
   function handleScroll() {
     if (!scrollContainer) return;
@@ -449,7 +461,9 @@
       placeholder={viewedSession?.status === 'input-required' ? 'Type a message...' : viewedSession?.status === 'working' ? 'Message will be delivered after current step...' : 'Agent is working...'}
       disabled={!inputEnabled || sending}
       bind:value={messageText}
+      bind:this={textareaEl}
       onkeydown={handleKeydown}
+      oninput={autoResize}
       rows="1"
     ></textarea>
     <button
@@ -721,9 +735,11 @@
     font-size: 0.8125rem;
     font-family: inherit;
     line-height: 1.5;
+    max-height: 135px;
+    overflow-y: auto;
     resize: none;
     outline: none;
-    transition: border-color 0.15s;
+    transition: border-color 0.15s, height 0.1s ease;
   }
 
   .chat-input:focus {

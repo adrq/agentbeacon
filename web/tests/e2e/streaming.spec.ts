@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   ensureDirectAgent, ensureShowcaseAgent, createExecution,
-  waitForWorkerIdle, waitForTurnEnd, waitForWorkerPickup,
+  waitForWorkerIdle, waitForTurnEnd, waitForWorkerPickup, waitForWorking,
 } from './helpers';
 
 test.beforeAll(async () => {
@@ -113,4 +113,19 @@ test('markdown renders correctly in accumulated block', async ({ page }) => {
   await expect(markdown.locator('h1')).toContainText('Analysis Results');
   await expect(markdown.locator('strong').first()).toBeVisible();
   await expect(markdown.locator('blockquote')).toBeVisible();
+});
+
+// --- SSE indicator ---
+
+test('SSE indicator shows Live for active execution', async ({ page }) => {
+  const agent = await ensureDirectAgent();
+  const { execId } = await createExecution(agent.id, 'HANG', 'SSE indicator test');
+  await waitForWorking(execId);
+
+  await page.goto(`/#/execution/${execId}`);
+
+  const indicator = page.locator('.sse-indicator');
+  await expect(indicator).toBeVisible({ timeout: 10000 });
+  await expect(indicator).toHaveClass(/connected/);
+  await expect(indicator.locator('.sse-label')).toHaveText('Live');
 });

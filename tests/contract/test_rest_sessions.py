@@ -293,15 +293,17 @@ def test_full_ask_answer_round_trip(test_database):
         events = resp.json()
         event_types = [e["event_type"] for e in events]
         assert event_types.count("platform") == 1
-        assert event_types.count("message") == 1
+        assert event_types.count("message") == 2  # initial prompt + user answer
         assert event_types.count("state_change") >= 2
 
         # 6. Verify user message event payload shape (no question_event_id)
+        # Skip the initial prompt event (first message) and check the answer event
         msg_events = [e for e in events if e["event_type"] == "message"]
         user_events = [e for e in msg_events if e["payload"].get("role") == "user"]
-        assert len(user_events) == 1
-        assert user_events[0]["payload"]["parts"][0]["kind"] == "text"
-        assert "question_event_id" not in user_events[0]["payload"]
+        assert len(user_events) == 2  # initial prompt + user answer
+        answer_event = user_events[1]  # second user event is the answer
+        assert answer_event["payload"]["parts"][0]["kind"] == "text"
+        assert "question_event_id" not in answer_event["payload"]
 
 
 # --- /message endpoint: A2A task payload tests ---

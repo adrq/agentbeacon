@@ -196,3 +196,73 @@ test('platform events still render as tool-card', async ({ page }) => {
   const toolCard = page.locator('.tool-card').filter({ hasText: 'Child reported' });
   await expect(toolCard).toBeVisible({ timeout: 10000 });
 });
+
+// --- Initial prompt visible as user bubble ---
+
+test('initial prompt visible in chat view', async ({ page }) => {
+  const agent = await ensureDirectAgent();
+  const { execId } = await createExecution(agent.id, 'SEND_MARKDOWN', 'Prompt visibility test');
+  await waitForTurnEnd(execId);
+
+  await page.goto(`/#/execution/${execId}`);
+  await page.getByRole('tab', { name: 'Chat' }).click();
+
+  const userBubble = page.locator('.user-bubble').first();
+  await expect(userBubble).toBeVisible({ timeout: 10000 });
+  await expect(userBubble).toContainText('SEND_MARKDOWN');
+
+  const userRow = page.locator('.user-row').first();
+  const justifyContent = await userRow.evaluate(el => getComputedStyle(el).justifyContent);
+  expect(justifyContent).toBe('flex-end');
+});
+
+// --- Textarea auto-grow ---
+
+test('textarea auto-grows on multiline input', async ({ page }) => {
+  const agent = await ensureDirectAgent();
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Textarea grow test');
+  await waitForTurnEnd(execId);
+
+  await page.goto(`/#/execution/${execId}`);
+  await page.getByRole('tab', { name: 'Chat' }).click();
+
+  const textarea = page.getByRole('textbox', { name: 'Message to agent' });
+  await expect(textarea).toBeVisible({ timeout: 10000 });
+
+  const initialHeight = await textarea.evaluate(el => el.getBoundingClientRect().height);
+
+  await textarea.fill('Line 1');
+  await textarea.press('Shift+Enter');
+  await textarea.pressSequentially('Line 2');
+  await textarea.press('Shift+Enter');
+  await textarea.pressSequentially('Line 3');
+  await textarea.press('Shift+Enter');
+  await textarea.pressSequentially('Line 4');
+
+  const grownHeight = await textarea.evaluate(el => el.getBoundingClientRect().height);
+  expect(grownHeight).toBeGreaterThan(initialHeight);
+});
+
+test('textarea resets to single row after send', async ({ page }) => {
+  const agent = await ensureDirectAgent();
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Textarea reset test');
+  await waitForTurnEnd(execId);
+
+  await page.goto(`/#/execution/${execId}`);
+  await page.getByRole('tab', { name: 'Chat' }).click();
+
+  const textarea = page.getByRole('textbox', { name: 'Message to agent' });
+  await expect(textarea).toBeEnabled({ timeout: 10000 });
+
+  const initialHeight = await textarea.evaluate(el => el.getBoundingClientRect().height);
+
+  await textarea.fill('Line 1\nLine 2\nLine 3');
+
+  const sendBtn = page.getByRole('button', { name: 'Send message' });
+  await sendBtn.click();
+
+  await page.waitForTimeout(500);
+
+  const resetHeight = await textarea.evaluate(el => el.getBoundingClientRect().height);
+  expect(resetHeight).toBeLessThanOrEqual(initialHeight + 2);
+});

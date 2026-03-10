@@ -4,7 +4,7 @@
   import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
-  import { connectExecutionSSE } from '../sse';
+  import { connectExecutionSSE, type SSEConnection } from '../sse';
   import StatusBadge from './StatusBadge.svelte';
   import QuestionBanner from './QuestionBanner.svelte';
   import SessionTree from './SessionTree.svelte';
@@ -52,6 +52,11 @@
   let ephemeralBuffers = $state<Map<string, { text: string; lastSeq: number }>>(new Map());
   let lastPersistedSeq = new Map<string, number>();
 
+  // SSE connection state (declared before $effect.pre that references them)
+  let sseActive = $state(false);
+  let sseReconnecting = $state(false);
+  let sseConnection = $state<SSEConnection | null>(null);
+
   // Reset selected session and ephemeral state when execution changes
   let prevExecId = '';
   $effect.pre(() => {
@@ -60,6 +65,8 @@
       selectedSessionId = null;
       lastPersistedSeq.clear();
       ephemeralBuffers = new Map();
+      sseReconnecting = false;
+      sseConnection = null;
     }
   });
 
@@ -82,9 +89,6 @@
   let isCompletable = $derived(
     detail?.execution.status === 'working' || detail?.execution.status === 'input-required'
   );
-
-  // SSE connection state
-  let sseActive = $state(false);
 
   // SSE connection lifecycle
   $effect(() => {
@@ -170,15 +174,20 @@
         });
         ephemeralBuffers = new Map(ephemeralBuffers);
       },
-      () => { sseActive = true; },
+      () => { sseActive = true; sseReconnecting = false; },
       () => {
         sseActive = false;
+        sseReconnecting = false;
       },
+      () => { sseReconnecting = true; },
     );
+    sseConnection = conn;
 
     return () => {
       conn.close();
       sseActive = false;
+      sseReconnecting = false;
+      sseConnection = null;
     };
   });
 
@@ -375,9 +384,17 @@
     <div class="events-header">
       <span class="section-heading">Events</span>
       {#if !isTerminal}
-        <span class="sse-indicator" class:connected={sseActive} title={sseActive ? 'Live (SSE)' : 'Polling'}>
+        <span class="sse-indicator"
+          class:connected={sseActive}
+          class:reconnecting={sseReconnecting && !sseActive}
+          class:disconnected={!sseActive && !sseReconnecting}
+          title={sseActive ? 'Live (SSE)' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}
+        >
           <span class="sse-dot"></span>
-          <span class="sse-label">{sseActive ? 'Live' : 'Polling'}</span>
+          <span class="sse-label">{sseActive ? 'Live' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}</span>
+          {#if !sseActive && !sseReconnecting}
+            <button class="sse-retry" onclick={() => sseConnection?.reconnect()}>Retry</button>
+          {/if}
         </span>
       {/if}
       <div class="view-toggle" role="tablist" aria-label="Event view mode">
@@ -581,6 +598,39 @@
 
   .sse-indicator.connected .sse-label {
     color: hsl(var(--status-success));
+  }
+
+  .sse-indicator.reconnecting {
+    border-color: hsl(var(--status-attention) / 0.3);
+    background: hsl(var(--status-attention) / 0.08);
+  }
+
+  .sse-indicator.reconnecting .sse-dot {
+    background: hsl(var(--status-attention));
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  .sse-indicator.reconnecting .sse-label {
+    color: hsl(var(--status-attention));
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .sse-retry {
+    border: none;
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.625rem;
+    cursor: pointer;
+    text-decoration: underline;
+    padding: 0;
+  }
+
+  .sse-retry:hover {
+    color: hsl(var(--primary));
   }
 
   .view-toggle {

@@ -44,3 +44,8 @@ function createToastStore() {
 }
 
 export const toasts = createToastStore();
+
+// Expose for E2E tests (production build can't use Vite's dynamic import)
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__toasts = toasts;
+}

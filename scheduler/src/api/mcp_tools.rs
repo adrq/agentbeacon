@@ -2,6 +2,7 @@ use std::sync::LazyLock;
 
 use jsonschema::Validator;
 use serde_json::{Value as JsonValue, json};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::api::auth::{McpRole, McpSession};
@@ -9,7 +10,6 @@ use crate::api::jsonrpc::{JsonRpcError, JsonRpcResponse};
 use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
-use crate::queue::TaskAssignment;
 
 static DELEGATE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
     Validator::new(&delegate_schema()["inputSchema"]).expect("delegate schema must compile")
@@ -266,7 +266,7 @@ async fn handle_delegate(
         slug: child_slug.clone(),
         hierarchical_name: child_hier_name,
         agent_config_name: agent.name.clone(),
-        parent_info: parent_hier_name,
+        parent_info: parent_hier_name.clone(),
         available_agents,
     };
     let briefing = crate::services::briefing::build_environment_briefing(&briefing_ctx);
@@ -290,7 +290,32 @@ async fn handle_delegate(
     let combined = crate::services::briefing::prepend_briefing(&briefing, existing_prompt);
     agent_config["system_prompt"] = JsonValue::String(combined);
 
-    // Build task payload and enqueue
+    // Record delegation event + child prompt atomically so observers never
+    // see a partial delegation (event without prompt or vice versa).
+    let delegate_event_str = serde_json::to_string(&json!({
+        "role": "agent",
+        "parts": [{"kind": "data", "data": {
+            "type": "delegate",
+            "agent": agent_name,
+            "child_session_id": child_session_id,
+            "prompt": prompt
+        }}]
+    }))
+    .unwrap();
+    let child_prompt_str = serde_json::to_string(&json!({
+        "role": "user",
+        "parts": [
+            {"kind": "data", "data": {
+                "type": "sender",
+                "name": &parent_hier_name,
+                "session_id": &auth.session_id,
+            }},
+            {"kind": "text", "text": &prompt},
+        ]
+    }))
+    .unwrap();
+
+    // Build task payload before the transaction so all values are ready.
     let mut task_payload = json!({
         "agent_id": agent.id,
         "driver": {
@@ -309,40 +334,68 @@ async fn handle_delegate(
     if let Some(ref pid) = auth.project_id {
         task_payload["project_id"] = JsonValue::String(pid.clone());
     }
+    let task_payload_json = serde_json::to_string(&task_payload).map_err(|e| {
+        JsonRpcError::internal_error(&format!("serialize task_payload failed: {e}"))
+    })?;
 
-    state
-        .task_queue
-        .push(TaskAssignment {
-            execution_id: auth.execution_id.clone(),
-            session_id: child_session_id.clone(),
-            task_payload,
-        })
+    // Single transaction: delegation event + child prompt + task queue entry.
+    // If any insert fails the whole thing rolls back — no orphaned state.
+    let insert_event_sql = state.db_pool.prepare_query(
+        "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, ?, ?) RETURNING id",
+    );
+    let insert_task_sql = state.db_pool.prepare_query(
+        "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
+    );
+    let mut tx = state
+        .db_pool
+        .begin()
         .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+        .map_err(|e| JsonRpcError::internal_error(&format!("begin transaction failed: {e}")))?;
 
-    // Record delegation event on lead session
-    let event_payload = json!({
-        "role": "agent",
-        "parts": [{"kind": "data", "data": {
-            "type": "delegate",
-            "agent": agent_name,
-            "child_session_id": child_session_id,
-            "prompt": prompt
-        }}]
-    });
-    let event_id = db::events::insert(
-        &state.db_pool,
-        &auth.execution_id,
-        Some(&auth.session_id),
-        "platform",
-        &serde_json::to_string(&event_payload).unwrap(),
-    )
-    .await
-    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    let event_id: i64 = sqlx::query(&insert_event_sql)
+        .bind(&auth.execution_id)
+        .bind(Some(&auth.session_id))
+        .bind("platform")
+        .bind(&delegate_event_str)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&format!("insert delegate event failed: {e}")))?
+        .try_get("id")
+        .map_err(|e| JsonRpcError::internal_error(&format!("get event id failed: {e}")))?;
+
+    let prompt_event_id: i64 = sqlx::query(&insert_event_sql)
+        .bind(&auth.execution_id)
+        .bind(Some(&*child_session_id))
+        .bind("message")
+        .bind(&child_prompt_str)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&format!("insert child prompt failed: {e}")))?
+        .try_get("id")
+        .map_err(|e| JsonRpcError::internal_error(&format!("get prompt id failed: {e}")))?;
+
+    sqlx::query(&insert_task_sql)
+        .bind(&auth.execution_id)
+        .bind(&*child_session_id)
+        .bind(&task_payload_json)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&format!("insert task_queue failed: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&format!("commit transaction failed: {e}")))?;
+
+    // Broadcast SSE + wake workers after commit
     let _ = state.event_broadcast.send(EventNotification::persisted(
         auth.execution_id.clone(),
         event_id,
     ));
+    let _ = state.event_broadcast.send(EventNotification::persisted(
+        auth.execution_id.clone(),
+        prompt_event_id,
+    ));
+    state.task_queue.wake_waiters();
 
     let result_text = serde_json::to_string(&json!({"session_id": child_session_id})).unwrap();
     Ok(json!({

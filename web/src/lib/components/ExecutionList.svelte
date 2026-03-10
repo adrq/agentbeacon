@@ -27,6 +27,20 @@
   );
 
   let searchText = $state('');
+  let statusFilter = $state<'all' | 'active' | 'done' | 'fail'>('all');
+
+  const STATUS_GROUPS: Record<string, string[]> = {
+    active: ['working', 'input-required', 'submitted'],
+    done: ['completed'],
+    fail: ['failed', 'canceled'],
+  };
+
+  const STATUS_PILLS = [
+    { value: 'all', label: 'All' },
+    { value: 'active', label: 'Active' },
+    { value: 'done', label: 'Done' },
+    { value: 'fail', label: 'Fail' },
+  ] as const;
 
   let sorted = $derived([...executions].sort((a, b) => {
     const orderDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
@@ -34,13 +48,19 @@
     return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
   }));
 
+  let statusFiltered = $derived(
+    statusFilter === 'all'
+      ? sorted
+      : sorted.filter(e => STATUS_GROUPS[statusFilter].includes(e.status))
+  );
+
   let filtered = $derived(
     searchText.trim()
-      ? sorted.filter(e => {
+      ? statusFiltered.filter(e => {
           const q = searchText.toLowerCase();
           return (e.title?.toLowerCase().includes(q)) || e.input.toLowerCase().includes(q);
         })
-      : sorted
+      : statusFiltered
   );
 
   function handleAttentionClick() {
@@ -89,6 +109,18 @@
       </select>
     </div>
   {/if}
+
+  <div class="status-pills" role="radiogroup" aria-label="Filter by status">
+    {#each STATUS_PILLS as pill}
+      <button
+        class="status-pill"
+        class:active={statusFilter === pill.value}
+        role="radio"
+        aria-checked={statusFilter === pill.value}
+        onclick={() => statusFilter = pill.value}
+      >{pill.label}</button>
+    {/each}
+  </div>
 
   {#if inputRequiredCount > 0}
     <button class="attention-banner" onclick={handleAttentionClick} aria-label="Jump to first execution awaiting input">
@@ -237,6 +269,37 @@
     font-size: 0.6875rem;
     font-weight: 800;
     flex-shrink: 0;
+  }
+
+  .status-pills {
+    display: flex;
+    gap: 2px;
+    padding: 0.5rem;
+    border-bottom: 1px solid hsl(var(--border));
+  }
+
+  .status-pill {
+    flex: 1;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+  }
+
+  .status-pill:hover:not(.active) {
+    background: hsl(var(--muted) / 0.5);
+  }
+
+  .status-pill.active {
+    background: hsl(var(--primary) / 0.12);
+    color: hsl(var(--primary));
+    border-color: hsl(var(--primary) / 0.3);
+    font-weight: 600;
   }
 
   .list-message {

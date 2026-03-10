@@ -316,6 +316,21 @@ async fn persist_and_enqueue(
         ));
     }
 
+    // Record the initial prompt as the session's first message event.
+    let prompt_payload = serde_json::to_string(&json!({
+        "role": "user",
+        "parts": [{"kind": "text", "text": prompt}]
+    }))
+    .unwrap();
+    db::events::insert(
+        db_pool,
+        execution_id,
+        Some(session_id),
+        "message",
+        &prompt_payload,
+    )
+    .await?;
+
     // Record initial state_change event
     let state_event = json!({"from": null, "to": "submitted"});
     db::events::insert(
