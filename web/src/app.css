@@ -118,6 +118,9 @@
 
 .markdown-body a { color: hsl(var(--primary)); text-decoration: underline; }
 
+.markdown-body pre.mermaid { background: transparent; text-align: center; padding: 1em 0; overflow-x: auto; }
+.markdown-body pre.mermaid svg { max-width: 100%; height: auto; }
+
 /* AlertDialog button styles (used by AlertDialog.Cancel / AlertDialog.Action across views) */
 .alert-btn {
   padding: 0.375rem 0.75rem;

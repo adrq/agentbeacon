@@ -127,7 +127,7 @@ def generate_metadata(name: str, version: str) -> str:
         f"Metadata-Version: 2.1\n"
         f"Name: {name}\n"
         f"Version: {version}\n"
-        f"Summary: AI agent orchestration platform\n"
+        f"Summary: Multi-agent orchestrator for AI coding tools\n"
         f"License: Apache-2.0\n"
         f"Requires-Python: >=3.10\n"
         f"Classifier: License :: OSI Approved :: Apache Software License\n"

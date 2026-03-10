@@ -29,11 +29,13 @@
   let sending = $state(false);
   let sendError: string | null = $state(null);
   let textareaEl: HTMLTextAreaElement;
+  let plusMenuOpen = $state(false);
 
   function autoResize() {
     if (!textareaEl) return;
     textareaEl.style.height = 'auto';
-    textareaEl.style.height = Math.min(textareaEl.scrollHeight, 135) + 'px';
+    const minH = 60; // ~3 lines
+    textareaEl.style.height = Math.max(minH, Math.min(textareaEl.scrollHeight, 135)) + 'px';
   }
 
   // The viewed session determines whether the input is enabled
@@ -63,6 +65,21 @@
       handleSend();
     }
   }
+
+  // Close plus menu on outside click
+  function handleDocClick(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (plusMenuOpen && !target?.closest('.plus-btn') && !target?.closest('.plus-menu')) {
+      plusMenuOpen = false;
+    }
+  }
+
+  $effect(() => {
+    if (plusMenuOpen) {
+      document.addEventListener('click', handleDocClick, true);
+      return () => document.removeEventListener('click', handleDocClick, true);
+    }
+  });
 
   $effect(() => {
     messageText; // track dependency
@@ -473,7 +490,25 @@
   {#if sendError}
     <div class="send-error">{sendError}</div>
   {/if}
-  <div class="chat-input-row">
+  {#if plusMenuOpen}
+    <div class="plus-menu" role="menu">
+      <button class="plus-menu-item" role="menuitem" disabled title="Coming soon">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M14 10l-3.5-3.5L7 10M14 13H2V3h12v10z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="5" cy="6" r="1.25" stroke="currentColor" stroke-width="1.3"/>
+        </svg>
+        Upload image
+      </button>
+      <button class="plus-menu-item" role="menuitem" disabled title="Coming soon">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M9 2H4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V6L9 2z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M9 2v4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Attach file
+      </button>
+    </div>
+  {/if}
+  <div class="chat-input-card">
     <textarea
       class="chat-input"
       aria-label="Message to agent"
@@ -483,20 +518,36 @@
       bind:this={textareaEl}
       onkeydown={handleKeydown}
       oninput={autoResize}
-      rows="1"
+      rows="3"
     ></textarea>
-    <button
-      class="send-btn"
-      disabled={!canSend}
-      onclick={handleSend}
-      aria-label="Send message"
-    >
-      {#if sending}
-        ...
-      {:else}
-        Send
-      {/if}
-    </button>
+    <div class="chat-input-toolbar">
+      <div class="toolbar-left">
+        <button
+          class="toolbar-btn plus-btn"
+          aria-label="Attach content"
+          aria-expanded={plusMenuOpen}
+          onclick={() => { plusMenuOpen = !plusMenuOpen; }}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <button
+        class="send-btn"
+        disabled={!canSend}
+        onclick={handleSend}
+        aria-label="Send message"
+      >
+        {#if sending}
+          <span class="sending-dots">...</span>
+        {:else}
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M14 2L7 9M14 2l-4 12-3-5-5-3 12-4z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        {/if}
+      </button>
+    </div>
   </div>
 </div>
 </div>
@@ -765,31 +816,33 @@
     font-size: 0.6875rem;
   }
 
-  .chat-input-row {
-    display: flex;
-    gap: 0.5rem;
-    align-items: flex-end;
+  .chat-input-card {
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius-lg);
+    background: hsl(var(--background));
+    transition: border-color 0.15s;
+  }
+
+  .chat-input-card:focus-within {
+    border-color: hsl(var(--primary));
   }
 
   .chat-input {
-    flex: 1;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid hsl(var(--border));
-    border-radius: var(--radius);
-    background: hsl(var(--background));
+    display: block;
+    width: 100%;
+    padding: 0.625rem 0.75rem 0.375rem;
+    border: none;
+    background: transparent;
     color: hsl(var(--foreground));
     font-size: 0.8125rem;
     font-family: inherit;
     line-height: 1.5;
+    min-height: 60px;
     max-height: 135px;
     overflow-y: auto;
     resize: none;
     outline: none;
-    transition: border-color 0.15s, height 0.1s ease;
-  }
-
-  .chat-input:focus {
-    border-color: hsl(var(--primary));
+    transition: height 0.1s ease;
   }
 
   .chat-input:disabled {
@@ -801,16 +854,83 @@
     color: hsl(var(--muted-foreground));
   }
 
-  .send-btn {
-    padding: 0.5rem 1rem;
+  .chat-input-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.25rem 0.375rem;
+    border-top: 1px solid hsl(var(--border) / 0.5);
+  }
+
+  .toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 0.125rem;
+  }
+
+  .toolbar-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+  }
+
+  .toolbar-btn:hover {
+    background: hsl(var(--muted) / 0.5);
+    color: hsl(var(--foreground));
+  }
+
+  .plus-menu {
+    padding: 0.25rem;
+    border: 1px solid hsl(var(--border));
     border-radius: var(--radius);
+    background: hsl(var(--card));
+    box-shadow: 0 4px 12px hsl(var(--shadow-hsl) / 0.2);
+    display: inline-flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+    margin-bottom: 0.375rem;
+  }
+
+  .plus-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.625rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.75rem;
+    cursor: default;
+    opacity: 0.5;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .plus-menu-item svg {
+    flex-shrink: 0;
+  }
+
+  .send-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 1.75rem;
+    border-radius: var(--radius-sm);
     border: none;
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));
-    font-size: 0.8125rem;
-    font-weight: 600;
     cursor: pointer;
-    transition: opacity 0.15s;
+    transition: opacity 0.15s, filter 0.15s;
     flex-shrink: 0;
   }
 
@@ -819,7 +939,12 @@
   }
 
   .send-btn:disabled {
-    opacity: 0.4;
+    opacity: 0.3;
     cursor: not-allowed;
+  }
+
+  .sending-dots {
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
   }
 </style>

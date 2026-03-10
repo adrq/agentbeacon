@@ -6,6 +6,7 @@ export interface WikiTab {
   id: string;
   type: 'search' | 'page';
   projectId?: string;
+  projectName?: string;
   slug?: string;
   title: string;
   editorDraft?: string;
@@ -65,11 +66,15 @@ export function getActiveTab(): WikiTab {
   return tabs.find(t => t.id === activeTabId) ?? tabs[0];
 }
 
-export function openPage(projectId: string, slug: string, title: string, isCreate?: boolean): void {
+export function openPage(projectId: string, slug: string, title: string, isCreate?: boolean, projectName?: string): void {
   const existing = tabs.find(t => t.type === 'page' && t.projectId === projectId && t.slug === slug);
   if (existing) {
     if (isCreate && !existing.isCreate) {
       tabs = tabs.map(t => t.id === existing.id ? { ...t, isCreate: true } : t);
+      persistTabs();
+    }
+    if (projectName && !existing.projectName) {
+      tabs = tabs.map(t => t.id === existing.id ? { ...t, projectName } : t);
       persistTabs();
     }
     activeTabId = existing.id;
@@ -77,7 +82,7 @@ export function openPage(projectId: string, slug: string, title: string, isCreat
     return;
   }
   const key = dedupKey(projectId, slug);
-  const newTab: WikiTab = { id: key, type: 'page', projectId, slug, title, isCreate };
+  const newTab: WikiTab = { id: key, type: 'page', projectId, projectName, slug, title, isCreate };
   tabs = [...tabs, newTab];
   activeTabId = newTab.id;
   persistTabs();
@@ -127,6 +132,14 @@ export function updateTabEditMeta(id: string, baseRevision: number | undefined, 
 export function clearTabCreateFlag(id: string): void {
   tabs = tabs.map(t => t.id === id ? { ...t, isCreate: undefined } : t);
   persistTabs();
+}
+
+export function updateTabProjectName(id: string, projectName: string): void {
+  const tab = tabs.find(t => t.id === id);
+  if (tab && !tab.projectName) {
+    tabs = tabs.map(t => t.id === id ? { ...t, projectName } : t);
+    persistTabs();
+  }
 }
 
 export function updateTabProjectId(id: string, projectId: string | null): void {

@@ -45,9 +45,13 @@
 
   let pages = $derived(pagesQuery.data ?? []);
 
+  function selectedProjectName(): string | undefined {
+    return (projects.data ?? []).find(p => p.id === selectedProjectId)?.name;
+  }
+
   function handleResultClick(slug: string, title: string) {
     if (!selectedProjectId) return;
-    openPage(selectedProjectId, slug, title);
+    openPage(selectedProjectId, slug, title, undefined, selectedProjectName());
   }
 
   function formatDate(iso: string): string {
@@ -76,7 +80,7 @@
     slugError = '';
     showCreateForm = false;
     // Open as a new page tab with create intent
-    openPage(selectedProjectId, newSlug, newSlug, true);
+    openPage(selectedProjectId, newSlug, newSlug, true, selectedProjectName());
   }
 </script>
 

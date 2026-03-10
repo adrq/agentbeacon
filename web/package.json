@@ -30,6 +30,7 @@
     "@tanstack/svelte-query": "^6.0.18",
     "bits-ui": "^2.15.8",
     "diff2html": "^3.4.56",
+    "mermaid": "^11.13.0",
     "rehype-sanitize": "^6.0.0",
     "rehype-stringify": "^10.0.1",
     "remark-gfm": "^4.0.1",

@@ -133,7 +133,7 @@ def generate_wrapper_package_json(version: str) -> str:
     data = {
         "name": PACKAGE_NAME,
         "version": version,
-        "description": "AI agent orchestration platform",
+        "description": "Multi-agent orchestrator for AI coding tools",
         "license": "Apache-2.0",
         "repository": {
             "type": "git",

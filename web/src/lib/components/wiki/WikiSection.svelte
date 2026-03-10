@@ -1,14 +1,29 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Tabs } from 'bits-ui';
-  import { getWikiTabs, getActiveTabId, setActiveTab, closeTab, openSearchTab, openPage } from '../../stores/wikiState.svelte';
+  import { getWikiTabs, getActiveTabId, setActiveTab, closeTab, openSearchTab, openPage, updateTabProjectName } from '../../stores/wikiState.svelte';
+  import { projectsQuery } from '../../queries/projects';
   import { router } from '../../router';
   import type { RouteState } from '../../router';
   import WikiSearchTab from './WikiSearchTab.svelte';
   import WikiPageView from './WikiPageView.svelte';
 
+  const projects = projectsQuery();
   let tabs = $derived(getWikiTabs());
   let activeId = $derived(getActiveTabId());
+
+  function projectName(id: string): string | undefined {
+    return (projects.data ?? []).find(p => p.id === id)?.name;
+  }
+
+  // Hash a string to a hue (0-360) for per-project badge colors
+  function projectHue(id: string): number {
+    let hash = 0;
+    for (let i = 0; i < id.length; i++) {
+      hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
+    }
+    return ((hash % 360) + 360) % 360;
+  }
 
   function handleValueChange(value: string) {
     setActiveTab(value);
@@ -33,7 +48,7 @@
   // Handle deep links: URL -> open tab
   function handleWikiRoute(route: RouteState) {
     if (route.section === 'wiki' && route.projectId && route.wikiSlug) {
-      openPage(route.projectId, route.wikiSlug, route.wikiSlug);
+      openPage(route.projectId, route.wikiSlug, route.wikiSlug, undefined, projectName(route.projectId));
     } else if (route.section === 'wiki') {
       const activeTab = tabs.find(t => t.id === activeId);
       if (!activeTab || activeTab.type !== 'search') {
@@ -46,6 +61,19 @@
   onMount(() => {
     handleWikiRoute(router.getCurrentRoute());
     return router.onRouteChange(handleWikiRoute);
+  });
+
+  // Backfill projectName on tabs once project data loads (handles deep links
+  // where projectsQuery hadn't resolved when the tab was created).
+  $effect(() => {
+    const projectList = projects.data;
+    if (!projectList?.length) return;
+    for (const tab of tabs) {
+      if (tab.type === 'page' && tab.projectId && !tab.projectName) {
+        const name = projectList.find(p => p.id === tab.projectId)?.name;
+        if (name) updateTabProjectName(tab.id, name);
+      }
+    }
   });
 
   // Two-way hash sync: active tab -> URL
@@ -68,7 +96,7 @@
 </script>
 
 <div class="wiki-section">
-  <Tabs.Root value={activeId} onValueChange={handleValueChange}>
+  <Tabs.Root value={activeId} onValueChange={handleValueChange} class="wiki-tabs-root">
     <div class="tab-bar-container">
       <Tabs.List class="wiki-tab-list">
         {#each tabs as tab (tab.id)}
@@ -77,9 +105,13 @@
               value={tab.id}
               class="wiki-tab-trigger"
             >
-              <span class="tab-label" title={tab.type === 'page' ? `${tab.title} (${tab.projectId})` : tab.title}>
+              <span class="tab-label" title={tab.type === 'page' ? `${tab.title} (${tab.projectName ?? tab.projectId})` : tab.title}>
                 {#if tab.type === 'page' && tab.projectId}
-                  <span class="tab-project-badge">{tab.projectId.slice(0, 4)}</span>
+                  <span
+                    class="tab-project-dot"
+                    style="background: hsl({projectHue(tab.projectId)} 50% 55%);"
+                    title={tab.projectName ?? projectName(tab.projectId) ?? tab.projectId.slice(0, 8)}
+                  ></span>
                 {/if}
                 {tab.title}
               </span>
@@ -190,15 +222,11 @@
     gap: 0.25rem;
   }
 
-  .tab-project-badge {
-    font-size: 0.5625rem;
-    font-weight: 600;
-    padding: 0 0.25rem;
-    border-radius: var(--radius-sm);
-    background: hsl(var(--primary) / 0.12);
-    color: hsl(var(--primary));
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
+  .tab-project-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
 
   .tab-close {
@@ -252,8 +280,16 @@
     height: 14px;
   }
 
+  :global(.wiki-tabs-root) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
   :global(.wiki-tab-content) {
     flex: 1;
+    min-height: 0;
     overflow: hidden;
     display: flex;
     flex-direction: column;
