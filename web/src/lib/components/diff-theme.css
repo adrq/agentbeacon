@@ -55,8 +55,18 @@
   border: none;
 }
 
-/* Code lines */
-.diff-panel .d2h-code-line,
+/* Code lines — override diff2html's 8em padding + calc width that reserves
+   space for absolutely-positioned line numbers. We use static table-cell
+   layout instead, so the padding reserve is no longer needed. */
+.diff-panel .d2h-code-line {
+  padding: 0 0.5em;
+  width: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: hsl(var(--foreground));
+  background: transparent;
+}
+
 .diff-panel .d2h-code-line-ctn {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
@@ -69,12 +79,31 @@
   user-select: none;
 }
 
-/* Line numbers */
+/* Line numbers — override diff2html's position:absolute + 7.5em width.
+   Use static table-cell layout so line numbers flow naturally in the table. */
 .diff-panel .d2h-code-linenumber {
+  position: static;
+  display: table-cell;
+  width: 4em;
+  min-width: 4em;
+  white-space: nowrap;
+  vertical-align: top;
+  padding: 0 0.5em;
+  text-align: right;
   color: hsl(var(--muted-foreground) / 0.6);
   background: hsl(var(--muted) / 0.15);
   border-right: 1px solid hsl(var(--border));
   font-size: var(--text-sm);
+}
+
+.diff-panel .d2h-code-linenumber .line-num1 {
+  float: left;
+  width: 2em;
+}
+
+.diff-panel .d2h-code-linenumber .line-num2 {
+  float: right;
+  width: 2em;
 }
 
 /* Insertion lines */

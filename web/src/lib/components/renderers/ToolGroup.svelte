@@ -9,7 +9,11 @@
   let { call, result }: Props = $props();
 
   let title = $derived(call.title || 'Unknown tool');
-  let displayStatus = $derived(result?.isError === true ? 'failed' : call.status);
+  let displayStatus = $derived(
+    result?.isError === true ? 'failed' :
+    result != null ? 'completed' :
+    call.status
+  );
   let isError = $derived(result?.isError === true || displayStatus === 'failed');
   let isCompleted = $derived(displayStatus === 'completed');
   let isRunning = $derived(displayStatus === 'running');
@@ -25,7 +29,7 @@
       const valStr = typeof val === 'string'
         ? (val.length > 60 ? val.slice(0, 60) + '\u2026' : val)
         : JSON.stringify(val)?.slice(0, 60) ?? '';
-      const suffix = entries.length > 1 ? ` + ${entries.length - 1} more` : '';
+      const suffix = entries.length > 1 ? ` + ${entries.length - 1} more fields` : '';
       return `${key}: ${valStr}${suffix}`;
     }
     return String(input).slice(0, 80);

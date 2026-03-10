@@ -117,6 +117,7 @@
     display: flex;
     gap: 0;
     min-height: 0;
+    min-width: 0;
     flex: 1;
   }
 
@@ -125,6 +126,8 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .split-panel-container:not(.dragging) .left-panel {

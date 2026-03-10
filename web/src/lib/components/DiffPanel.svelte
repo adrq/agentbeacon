@@ -93,7 +93,10 @@
 <style>
   .diff-panel {
     flex: 1;
+    min-height: 0;
+    min-width: 0;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 0.75rem 1rem;
   }
 
@@ -138,6 +141,23 @@
   }
 
   .diff-content {
+    overflow-x: auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Prevent diff2html tables from pushing the container wider than viewport.
+     Each file-diff scrolls independently within its wrapper. */
+  .diff-content :global(.d2h-wrapper) {
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .diff-content :global(.d2h-file-wrapper) {
+    max-width: 100%;
+  }
+
+  .diff-content :global(.d2h-file-diff) {
     overflow-x: auto;
   }
 </style>

@@ -53,7 +53,7 @@ function normalizeSdkPart(raw: Record<string, unknown>): NormalizedData {
         normalized: 'tool_call',
         toolCallId: (raw.id as string) ?? '',
         title: (raw.name as string) ?? '',
-        status: 'completed',
+        status: 'running',
         input: raw.input,
       };
     case 'tool_result':

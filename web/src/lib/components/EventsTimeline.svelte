@@ -3,13 +3,17 @@
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData } from '../types';
   import { normalizeDataPart } from '../normalize';
+  import { EVENT_FILTER_GROUPS, EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
+
   interface Props {
     events: Event[];
     agents?: Agent[];
     sessions?: SessionSummary[];
+    eventFilter?: EventFilter;
+    onfilterchange?: (filter: EventFilter) => void;
   }
 
-  let { events, agents = [], sessions = [] }: Props = $props();
+  let { events, agents = [], sessions = [], eventFilter = 'all', onfilterchange }: Props = $props();
 
   function resolveAgentType(sessionId: string | null): AgentType {
     const session = sessions.find(s => s.id === sessionId);
@@ -26,7 +30,7 @@
   }
 
   $effect(() => {
-    const _len = parsed.length; // dependency: re-run when entries change
+    const _len = events.length; // dependency: re-run when any event arrives
     if (shouldAutoScroll && scrollContainer) {
       tick().then(() => {
         if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
@@ -49,6 +53,7 @@
     icon: string;
     iconClass: string;
     text: string;
+    entryType: string;
   }
 
   function parseEventParts(ev: Event, seenToolCalls: Set<string>): ParsedEvent[] {
@@ -63,6 +68,7 @@
         icon: isFailed ? '\u2716' : '\u25CF',
         iconClass: isFailed ? 'error' : 'state-change',
         text: p.from ? `${p.from} \u2192 ${p.to}` : `started \u2192 ${p.to}`,
+        entryType: isFailed ? 'error' : 'state',
       }];
     }
 
@@ -94,23 +100,23 @@
             const ask = d as unknown as import('../types').EscalateData;
             if (ask.batch_index > 0) continue;
             if (ask.importance === 'fyi') {
-              entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(ask.question, 80)}` });
+              entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(ask.question, 80)}`, entryType: 'fyi' });
             } else {
               const qText = ask.batch_size > 1
                 ? `Asked ${ask.batch_size} questions: "${truncate(ask.question, 60)}" + ${ask.batch_size - 1} more`
                 : `Asked: "${truncate(ask.question, 80)}"`;
-              entries.push({ key, time, icon: '\u26A0', iconClass: 'question', text: qText });
+              entries.push({ key, time, icon: '\u26A0', iconClass: 'question', text: qText, entryType: 'tool' });
             }
             continue;
           }
           if (isDelegateData(d as unknown as import('../types').DataPartPayload)) {
             const del = d as unknown as import('../types').DelegateData;
-            entries.push({ key, time, icon: '\u2192', iconClass: 'delegate', text: `Delegated to ${del.agent}` });
+            entries.push({ key, time, icon: '\u2192', iconClass: 'delegate', text: `Delegated to ${del.agent}`, entryType: 'tool' });
             continue;
           }
           if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
             const tc = d as unknown as import('../types').TurnCompleteData;
-            entries.push({ key, time, icon: '\u21A9', iconClass: 'turn-complete', text: `Child reported: "${truncate(tc.message, 80)}"` });
+            entries.push({ key, time, icon: '\u21A9', iconClass: 'turn-complete', text: `Child reported: "${truncate(tc.message, 80)}"`, entryType: 'tool' });
             continue;
           }
 
@@ -119,26 +125,26 @@
           switch (norm.normalized) {
             case 'tool_call':
               if (norm.toolCallId) seenToolCalls.add(norm.toolCallId);
-              entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: norm.title || 'Unknown tool' });
+              entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: norm.title || 'Unknown tool', entryType: 'tool_group' });
               break;
             case 'tool_result':
               if (norm.toolCallId && seenToolCalls.has(norm.toolCallId) && !norm.isError) break;
-              entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: `Result (${norm.toolCallId})` });
+              entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: `Result (${norm.toolCallId})`, entryType: 'tool_group' });
               break;
             case 'thinking':
-              entries.push({ key, time, icon: '\u22EF', iconClass: 'agent', text: truncate(norm.text, 200) });
+              entries.push({ key, time, icon: '\u22EF', iconClass: 'agent', text: truncate(norm.text, 200), entryType: 'thinking' });
               break;
             case 'unknown': {
               const rawType = norm.raw.type as string | undefined;
               if (rawType === 'plan' && isPlanData(norm.raw as unknown as import('../types').DataPartPayload)) {
                 const plan = norm.raw as unknown as import('../types').PlanData;
-                entries.push({ key, time, icon: '\u2630', iconClass: 'agent', text: `Plan (${plan.entries.length} steps)` });
+                entries.push({ key, time, icon: '\u2630', iconClass: 'agent', text: `Plan (${plan.entries.length} steps)`, entryType: 'tool' });
               } else if (rawType === 'current_mode_update') {
-                entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[mode_change]` });
+                entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[mode_change]`, entryType: 'tool' });
               } else if (rawType === 'available_commands_update') {
-                entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[available_commands]` });
+                entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[available_commands]`, entryType: 'tool' });
               } else {
-                entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[${rawType ?? 'data'}]` });
+                entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[${rawType ?? 'data'}]`, entryType: 'data_fallback' });
               }
               break;
             }
@@ -146,15 +152,15 @@
         } else if (part.kind === 'file') {
           const name = 'file' in part && typeof part.file === 'object' && part.file && 'name' in part.file
             ? (part.file as { name: string }).name : 'file';
-          entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[file] ${name}` });
+          entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[file] ${name}`, entryType: 'tool' });
         } else if (part.kind === 'text') {
           const text = part.text as string;
           if (senderName) {
-            entries.push({ key, time, icon: '\u2709', iconClass: 'lateral', text: `${senderName}: "${truncate(text, 80)}"` });
+            entries.push({ key, time, icon: '\u2709', iconClass: 'lateral', text: `${senderName}: "${truncate(text, 80)}"`, entryType: 'lateral' });
           } else if (msg.role === 'user') {
-            entries.push({ key, time, icon: '\u25B6', iconClass: 'user', text: `User: ${truncate(text, 100)}` });
+            entries.push({ key, time, icon: '\u25B6', iconClass: 'user', text: `User: ${truncate(text, 100)}`, entryType: 'user' });
           } else {
-            entries.push({ key, time, icon: '\u25CF', iconClass: 'agent', text: truncate(text, 120) });
+            entries.push({ key, time, icon: '\u25CF', iconClass: 'agent', text: truncate(text, 120), entryType: 'agent' });
           }
         } else {
           // Fallback for unknown part kinds (tool-use, thinking, cost, etc.)
@@ -164,7 +170,7 @@
             : 'name' in part && typeof part.name === 'string'
               ? part.name
               : '';
-          entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: detail ? `[${label}] ${detail}` : `[${label}]` });
+          entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: detail ? `[${label}] ${detail}` : `[${label}]`, entryType: 'tool' });
         }
       }
 
@@ -186,14 +192,30 @@
   }
 
   let parsed = $derived(parseAllEvents(events));
+
+  let filteredParsed = $derived(
+    eventFilter === 'all' ? parsed
+      : parsed.filter(entry => EVENT_FILTER_GROUPS[eventFilter]?.has(entry.entryType) ?? false)
+  );
 </script>
 
 <div class="timeline-section">
+  <div class="event-filter-pills" role="radiogroup" aria-label="Filter events">
+    {#each EVENT_FILTER_PILLS as pill}
+      <button
+        class="event-filter-pill"
+        class:active={eventFilter === pill.value}
+        role="radio"
+        aria-checked={eventFilter === pill.value}
+        onclick={() => onfilterchange?.(pill.value)}
+      >{pill.label}</button>
+    {/each}
+  </div>
   <div class="timeline-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll}>
-    {#if parsed.length === 0}
-      <div class="timeline-empty">No events yet</div>
+    {#if filteredParsed.length === 0}
+      <div class="timeline-empty">{parsed.length === 0 ? 'No events yet' : 'No matching events'}</div>
     {:else}
-      {#each parsed as ev (ev.key)}
+      {#each filteredParsed as ev (ev.key)}
         <div class="timeline-entry" class:error-entry={ev.iconClass === 'error'}>
           <span class="ev-time">{ev.time}</span>
           <span class="ev-icon {ev.iconClass}">{ev.icon}</span>
@@ -205,6 +227,33 @@
 </div>
 
 <style>
+  .event-filter-pills {
+    display: flex;
+    gap: 2px;
+    padding: 0.375rem 1rem;
+    flex-shrink: 0;
+  }
+  .event-filter-pill {
+    padding: 0.1875rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+  }
+  .event-filter-pill:hover:not(.active) {
+    background: hsl(var(--muted) / 0.5);
+  }
+  .event-filter-pill.active {
+    background: hsl(var(--primary) / 0.12);
+    color: hsl(var(--primary));
+    border-color: hsl(var(--primary) / 0.3);
+    font-weight: 600;
+  }
+
   .timeline-section {
     flex: 1;
     display: flex;

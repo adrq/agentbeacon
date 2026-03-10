@@ -10,6 +10,7 @@
   import ThinkingBlock from './renderers/ThinkingBlock.svelte';
   import DataFallback from './renderers/DataFallback.svelte';
   import ErrorPanel from './renderers/ErrorPanel.svelte';
+  import { EVENT_FILTER_GROUPS, EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
 
   interface Props {
     events: Event[];
@@ -17,9 +18,11 @@
     sessions: SessionSummary[];
     sessionId: string | null;
     ephemeralText?: string;
+    eventFilter?: EventFilter;
+    onfilterchange?: (filter: EventFilter) => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '' }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', eventFilter = 'all', onfilterchange }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
   let messageText = $state('');
@@ -360,15 +363,31 @@
     }
     return entries;
   });
+
+  let filteredParsed = $derived(
+    eventFilter === 'all' ? parsed
+      : parsed.filter(entry => EVENT_FILTER_GROUPS[eventFilter]?.has(entry.type) ?? false)
+  );
 </script>
 
 <div class="chat-container">
+<div class="event-filter-pills" role="radiogroup" aria-label="Filter events">
+  {#each EVENT_FILTER_PILLS as pill}
+    <button
+      class="event-filter-pill"
+      class:active={eventFilter === pill.value}
+      role="radio"
+      aria-checked={eventFilter === pill.value}
+      onclick={() => onfilterchange?.(pill.value)}
+    >{pill.label}</button>
+  {/each}
+</div>
 <div class="chat-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll}>
-  {#if parsed.length === 0}
-    <div class="chat-empty">No messages yet</div>
+  {#if filteredParsed.length === 0}
+    <div class="chat-empty">{parsed.length === 0 ? 'No messages yet' : 'No matching events'}</div>
   {:else}
     <div class="chat-messages">
-      {#each parsed as entry (entry.key)}
+      {#each filteredParsed as entry (entry.key)}
         {#if entry.type === 'agent'}
           <div class="chat-row agent-row">
             <div class="agent-prose">
@@ -483,6 +502,33 @@
 </div>
 
 <style>
+  .event-filter-pills {
+    display: flex;
+    gap: 2px;
+    padding: 0.375rem 1rem;
+    flex-shrink: 0;
+  }
+  .event-filter-pill {
+    padding: 0.1875rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+  }
+  .event-filter-pill:hover:not(.active) {
+    background: hsl(var(--muted) / 0.5);
+  }
+  .event-filter-pill.active {
+    background: hsl(var(--primary) / 0.12);
+    color: hsl(var(--primary));
+    border-color: hsl(var(--primary) / 0.3);
+    font-weight: 600;
+  }
+
   .chat-container {
     display: flex;
     flex-direction: column;

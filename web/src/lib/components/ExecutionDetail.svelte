@@ -16,6 +16,7 @@
   import Button from './ui/button.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
   import { router } from '../router';
+  import type { EventFilter } from '../eventFilterGroups';
 
   export interface ExecutionPrefill {
     projectId?: string | null;
@@ -52,6 +53,9 @@
   let ephemeralBuffers = $state<Map<string, { text: string; lastSeq: number }>>(new Map());
   let lastPersistedSeq = new Map<string, number>();
 
+  // Event filter state (shared between Chat and Log views, resets on exec change)
+  let eventFilter = $state<EventFilter>('all');
+
   // SSE connection state (declared before $effect.pre that references them)
   let sseActive = $state(false);
   let sseReconnecting = $state(false);
@@ -63,6 +67,9 @@
     if (executionId !== prevExecId) {
       prevExecId = executionId;
       selectedSessionId = null;
+      eventFilter = 'all';
+      const hashView = getHashViewParam();
+      if (hashView) viewMode = hashView;
       lastPersistedSeq.clear();
       ephemeralBuffers = new Map();
       sseReconnecting = false;
@@ -70,16 +77,51 @@
     }
   });
 
-  // View toggle: log or chat, persisted to localStorage
+  // View toggle: log, chat, or diff — persisted to both URL hash param and localStorage
   type ViewMode = 'log' | 'chat' | 'diff';
+  const validModes = new Set<string>(['log', 'chat', 'diff']);
+
+  function getHashViewParam(): ViewMode | null {
+    try {
+      const hash = window.location.hash;
+      const qIdx = hash.indexOf('?');
+      if (qIdx === -1) return null;
+      const params = new URLSearchParams(hash.slice(qIdx + 1));
+      const v = params.get('view');
+      return v && validModes.has(v) ? v as ViewMode : null;
+    } catch { return null; }
+  }
+
+  function setHashViewParam(mode: ViewMode) {
+    try {
+      const hash = window.location.hash;
+      const qIdx = hash.indexOf('?');
+      const basePath = qIdx === -1 ? hash : hash.slice(0, qIdx);
+      const params = qIdx === -1 ? new URLSearchParams() : new URLSearchParams(hash.slice(qIdx + 1));
+      if (mode === 'log') {
+        params.delete('view');
+      } else {
+        params.set('view', mode);
+      }
+      const qs = params.toString();
+      const newHash = qs ? `${basePath}?${qs}` : basePath;
+      if (window.location.hash !== newHash) {
+        history.replaceState(null, '', newHash);
+      }
+    } catch { /* navigation unavailable */ }
+  }
+
+  // Initialize: URL hash param takes priority, then localStorage, then default 'log'
+  let hashMode = typeof window !== 'undefined' ? getHashViewParam() : null;
   let storedMode: string | null = null;
   try { storedMode = typeof window !== 'undefined' ? localStorage.getItem('agentbeacon-event-view-mode') : null; } catch { /* localStorage unavailable */ }
   let viewMode = $state<ViewMode>(
-    storedMode === 'log' || storedMode === 'chat' || storedMode === 'diff' ? storedMode as ViewMode : 'log'
+    hashMode ?? (storedMode && validModes.has(storedMode) ? storedMode as ViewMode : 'log')
   );
 
   $effect(() => {
     try { if (typeof window !== 'undefined') localStorage.setItem('agentbeacon-event-view-mode', viewMode); } catch { /* localStorage unavailable */ }
+    setHashViewParam(viewMode);
   });
 
   let leadSession = $derived(detail?.sessions.find(s => !s.parent_session_id) ?? null);
@@ -423,9 +465,9 @@
     </div>
 
     {#if viewMode === 'log'}
-      <EventsTimeline {events} {agents} sessions={detail.sessions} />
+      <EventsTimeline {events} {agents} sessions={detail.sessions} {eventFilter} onfilterchange={(f) => eventFilter = f} />
     {:else if viewMode === 'chat'}
-      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} />
+      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} {eventFilter} onfilterchange={(f) => eventFilter = f} />
     {:else if viewMode === 'diff'}
       <DiffPanel sessionId={activeSessionId} {isTerminal} />
     {/if}
@@ -477,6 +519,8 @@
 <style>
   .detail-view {
     flex: 1;
+    min-height: 0;
+    min-width: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;

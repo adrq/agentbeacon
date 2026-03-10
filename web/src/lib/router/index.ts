@@ -23,7 +23,7 @@ class HashRouter {
   }
 
   private parseHash(hash: string): RouteState {
-    const cleanHash = hash.replace(/^#?\/?/, '');
+    const cleanHash = hash.replace(/^#?\/?/, '').split('?')[0];
 
     const execMatch = cleanHash.match(/^execution\/([^/]+)$/);
     if (execMatch) {
