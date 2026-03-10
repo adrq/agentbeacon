@@ -55,8 +55,8 @@ def _make_stub_binaries(binary_dir: Path) -> None:
 def _make_stub_wheels(dist_dir: Path) -> list[Path]:
     dist_dir.mkdir(parents=True, exist_ok=True)
     names = [
-        "agentbeacon-0.1.0-py3-none-manylinux_2_17_x86_64.whl",
-        "agentbeacon-0.1.0-py3-none-manylinux_2_17_aarch64.whl",
+        "agentbeacon-0.1.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.musllinux_1_1_x86_64.whl",
+        "agentbeacon-0.1.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.musllinux_1_1_aarch64.whl",
     ]
     paths = []
     for name in names:
@@ -149,7 +149,10 @@ def test_is_prerelease_rc():
 def test_find_wheels_pep440_prerelease(tmp_path):
     tmp_path.mkdir(exist_ok=True)
     # build_wheel.py produces PEP 440 names (alpha.1 -> a1).
-    whl = tmp_path / "agentbeacon-1.0.0a1-py3-none-manylinux_2_17_x86_64.whl"
+    whl = (
+        tmp_path
+        / "agentbeacon-1.0.0a1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.musllinux_1_1_x86_64.whl"
+    )
     whl.write_bytes(b"PK\x03\x04")
     # publish.py converts raw SemVer to PEP 440 before calling find_wheels.
     found = find_wheels(tmp_path, semver_to_pep440("1.0.0-alpha.1"))
@@ -280,7 +283,10 @@ def test_find_wheels_empty_dir_raises(tmp_path):
 def test_find_wheels_ignores_other_versions(tmp_path):
     _make_stub_wheels(tmp_path)
     # Add a wheel for a different version.
-    stale = tmp_path / "agentbeacon-0.0.9-py3-none-manylinux_2_17_x86_64.whl"
+    stale = (
+        tmp_path
+        / "agentbeacon-0.0.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.musllinux_1_1_x86_64.whl"
+    )
     stale.write_bytes(b"PK\x03\x04")
     found = find_wheels(tmp_path, "0.1.0")
     assert len(found) == 2
@@ -300,7 +306,10 @@ def test_validate_wheel_set_complete(tmp_path):
 def test_validate_wheel_set_missing_arch_raises(tmp_path):
     tmp_path.mkdir(exist_ok=True)
     # Only x86_64, missing aarch64.
-    whl = tmp_path / "agentbeacon-0.1.0-py3-none-manylinux_2_17_x86_64.whl"
+    whl = (
+        tmp_path
+        / "agentbeacon-0.1.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.musllinux_1_1_x86_64.whl"
+    )
     whl.write_bytes(b"PK\x03\x04")
     with pytest.raises(FileNotFoundError, match="Missing wheels.*aarch64"):
         validate_wheel_set([whl])
