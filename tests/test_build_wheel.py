@@ -58,9 +58,10 @@ def test_semver_to_pep440_unknown_raises():
 # ---------------------------------------------------------------------------
 
 
-def test_extract_version():
-    cargo_toml = Path(__file__).resolve().parent.parent / "Cargo.toml"
-    assert extract_version(cargo_toml) == "0.1.0"
+def test_extract_version(tmp_path):
+    cargo_toml = tmp_path / "Cargo.toml"
+    cargo_toml.write_text('[workspace.package]\nversion = "3.2.1"\n')
+    assert extract_version(cargo_toml) == "3.2.1"
 
 
 def test_extract_version_missing_workspace_raises(tmp_path):
