@@ -97,7 +97,8 @@ def test_worktree_info_named_branch(test_database):
             resp = httpx.post(
                 f"{ctx['url']}/api/executions",
                 json={
-                    "agent_id": agent_id,
+                    "root_agent_id": agent_id,
+                    "agent_ids": [agent_id],
                     "prompt": "test",
                     "project_id": project["id"],
                     "branch": "test-feature",

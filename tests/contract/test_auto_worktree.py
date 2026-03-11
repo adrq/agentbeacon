@@ -138,7 +138,8 @@ def test_explicit_branch_still_works(test_database):
             resp = httpx.post(
                 f"{ctx['url']}/api/executions",
                 json={
-                    "agent_id": agent_id,
+                    "root_agent_id": agent_id,
+                    "agent_ids": [agent_id],
                     "prompt": "test",
                     "project_id": project["id"],
                     "branch": "test-feature",
@@ -224,11 +225,12 @@ def test_no_orphaned_worktree_on_early_validation_failure(test_database):
                 ctx["url"], "cleanup-project", path=git_dir
             )
 
-            # Use invalid agent_id to trigger early validation failure (before worktree creation)
+            # Use invalid root_agent_id to trigger early validation failure (before worktree creation)
             resp = httpx.post(
                 f"{ctx['url']}/api/executions",
                 json={
-                    "agent_id": "nonexistent-agent",
+                    "root_agent_id": "nonexistent-agent",
+                    "agent_ids": ["nonexistent-agent"],
                     "prompt": "test",
                     "project_id": project["id"],
                 },

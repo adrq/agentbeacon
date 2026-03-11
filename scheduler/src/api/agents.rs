@@ -21,6 +21,7 @@ pub struct AgentResponse {
     pub driver_id: Option<String>,
     pub config: serde_json::Value,
     pub sandbox_config: Option<serde_json::Value>,
+    pub system_prompt: Option<String>,
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -46,6 +47,7 @@ impl From<db::agents::Agent> for AgentResponse {
             driver_id: a.driver_id,
             config,
             sandbox_config,
+            system_prompt: a.system_prompt,
             enabled: a.enabled,
             created_at: a.created_at.to_rfc3339(),
             updated_at: a.updated_at.to_rfc3339(),
@@ -60,6 +62,7 @@ pub struct CreateAgentRequest {
     pub driver_id: String,
     pub config: serde_json::Value,
     pub sandbox_config: Option<serde_json::Value>,
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +73,7 @@ pub struct UpdateAgentRequest {
     pub config: Option<serde_json::Value>,
     pub sandbox_config: Option<Option<serde_json::Value>>,
     pub enabled: Option<bool>,
+    pub system_prompt: Option<Option<String>>,
 }
 
 async fn list_agents(
@@ -144,6 +148,7 @@ async fn create_agent(
         req.description.as_deref(),
         sandbox_str.as_deref(),
         Some(&resolved_driver_id),
+        req.system_prompt.as_deref(),
     )
     .await?;
 
@@ -187,6 +192,8 @@ async fn update_agent(
 
     let sandbox_ref = sandbox_config.as_ref().map(|opt| opt.as_deref());
 
+    let system_prompt = req.system_prompt.as_ref().map(|opt| opt.as_deref());
+
     let trimmed_name = req.name.as_ref().map(|n| n.trim().to_string());
 
     let agent = db::agents::update(
@@ -197,6 +204,7 @@ async fn update_agent(
         config_str.as_deref(),
         sandbox_ref,
         req.enabled,
+        system_prompt,
     )
     .await?;
 
@@ -214,9 +222,6 @@ async fn delete_agent(
             "agent has {active_count} active session(s)"
         )));
     }
-
-    // Clear default_agent_id on projects referencing this agent
-    db::projects::clear_default_agent(&state.db_pool, &id).await?;
 
     // Soft delete
     db::agents::soft_delete(&state.db_pool, &id).await?;

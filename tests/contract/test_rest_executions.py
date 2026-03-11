@@ -35,7 +35,8 @@ def test_create_execution_status_is_submitted(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "test task",
                 "cwd": tempfile.gettempdir(),
             },
@@ -48,12 +49,13 @@ def test_create_execution_status_is_submitted(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_create_execution_nonexistent_agent_returns_400(test_database):
-    """Nonexistent agent_id returns 400 (validation error), not 404."""
+    """Nonexistent root_agent_id returns 400 (validation error), not 404."""
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": "nonexistent-id",
+                "root_agent_id": "nonexistent-id",
+                "agent_ids": ["nonexistent-id"],
                 "prompt": "test",
                 "cwd": tempfile.gettempdir(),
             },
@@ -70,7 +72,8 @@ def test_create_execution_disabled_agent_returns_400(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "test",
                 "cwd": tempfile.gettempdir(),
             },

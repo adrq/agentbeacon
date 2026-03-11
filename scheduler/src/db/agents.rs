@@ -15,6 +15,7 @@ pub struct Agent {
     pub driver_id: Option<String>,
     pub config: String,                 // JSON
     pub sandbox_config: Option<String>, // JSON
+    pub system_prompt: Option<String>,
     pub enabled: bool,
     pub deleted_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -31,9 +32,10 @@ pub async fn create(
     description: Option<&str>,
     sandbox_config: Option<&str>,
     driver_id: Option<&str>,
+    system_prompt: Option<&str>,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO agents (id, name, description, agent_type, driver_id, config, sandbox_config) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agents (id, name, description, agent_type, driver_id, config, sandbox_config, system_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
 
     sqlx::query(&query)
@@ -44,6 +46,7 @@ pub async fn create(
         .bind(driver_id)
         .bind(config)
         .bind(sandbox_config)
+        .bind(system_prompt)
         .execute(pool.as_ref())
         .await
         .map_err(|e| {
@@ -65,7 +68,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Agent, SchedulerError>
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, description, agent_type, driver_id, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE id = ? AND deleted_at IS NULL",
+        "SELECT id, name, description, agent_type, driver_id, config, sandbox_config, system_prompt, enabled, {} as created_at, {} as updated_at FROM agents WHERE id = ? AND deleted_at IS NULL",
         created_fmt, updated_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -84,7 +87,7 @@ pub async fn get_by_name(pool: &DbPool, name: &str) -> Result<Agent, SchedulerEr
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, description, agent_type, driver_id, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE name = ? AND deleted_at IS NULL",
+        "SELECT id, name, description, agent_type, driver_id, config, sandbox_config, system_prompt, enabled, {} as created_at, {} as updated_at FROM agents WHERE name = ? AND deleted_at IS NULL",
         created_fmt, updated_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -103,7 +106,7 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Agent>, SchedulerError> {
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, description, agent_type, driver_id, config, sandbox_config, enabled, {} as created_at, {} as updated_at FROM agents WHERE deleted_at IS NULL ORDER BY name",
+        "SELECT id, name, description, agent_type, driver_id, config, sandbox_config, system_prompt, enabled, {} as created_at, {} as updated_at FROM agents WHERE deleted_at IS NULL ORDER BY name",
         created_fmt, updated_fmt
     );
 
@@ -115,6 +118,7 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Agent>, SchedulerError> {
     rows.into_iter().map(parse_agent_row).collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update(
     pool: &DbPool,
     id: &str,
@@ -123,6 +127,7 @@ pub async fn update(
     config: Option<&str>,
     sandbox_config: Option<Option<&str>>,
     enabled: Option<bool>,
+    system_prompt: Option<Option<&str>>,
 ) -> Result<Agent, SchedulerError> {
     let mut set_clauses = Vec::new();
     let mut bind_values: Vec<BindValue> = Vec::new();
@@ -160,6 +165,17 @@ pub async fn update(
     if let Some(v) = enabled {
         set_clauses.push("enabled = ?".to_string());
         bind_values.push(BindValue::Bool(v));
+    }
+    if let Some(sp_opt) = system_prompt {
+        match sp_opt {
+            Some(v) => {
+                set_clauses.push("system_prompt = ?".to_string());
+                bind_values.push(BindValue::Str(v.to_string()));
+            }
+            None => {
+                set_clauses.push("system_prompt = NULL".to_string());
+            }
+        }
     }
 
     set_clauses.push("updated_at = CURRENT_TIMESTAMP".to_string());
@@ -253,6 +269,7 @@ fn parse_agent_row(row: sqlx::any::AnyRow) -> Result<Agent, SchedulerError> {
         driver_id: row.get("driver_id"),
         config: row.get("config"),
         sandbox_config: row.get("sandbox_config"),
+        system_prompt: row.get("system_prompt"),
         enabled: parse_bool(&row, "enabled"),
         deleted_at: None, // filtered by WHERE deleted_at IS NULL
         created_at: parse_timestamp(&row, "created_at")?,

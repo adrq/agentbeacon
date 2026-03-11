@@ -22,14 +22,21 @@ You can message any agent whose hierarchical name you know — use Agent Discove
 `GET /api/messages?session_id={session_id}&since_id={last_event_id}`
 Returns messages you've received for the given session. Use `since_id` to poll for new messages.
 
-## Agent Discovery
+## Agent Pool
 
-Discover the other agents working alongside you. Call this to find agent names,
-roles, and statuses before messaging or coordinating.
+Query the configured agent pool — the agent configs available for delegation in this execution.
+
+### List agent configs
+`GET /api/executions/{execution_id}/agents`
+Returns agent configs (id, name, description, type) available for delegation.
+
+## Running Sessions
+
+Discover the live sessions (running agent instances) in your execution.
 
 ### List sessions in execution
-`GET /api/executions/{execution_id}/agents`
-Returns all sessions with hierarchical names, agent types, statuses, and parent relationships.
+`GET /api/executions/{execution_id}/sessions`
+Returns all sessions with hierarchical names, agent types, roles, statuses, and parent relationships.
 
 ## Wiki
 
@@ -80,15 +87,19 @@ Same endpoint as list, with `q` query param for BM25 full-text search.
 ## Examples
 
 ```bash
+# Discover agent configs available for delegation
+curl $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/agents \
+  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
+
+# Discover running sessions (peer agents)
+curl $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/sessions \
+  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
+
 # Send a message to another agent
 curl -X POST $AGENTBEACON_API_BASE/api/messages \
   -H "Authorization: Bearer $AGENTBEACON_SESSION_ID" \
   -H "Content-Type: application/json" \
   -d '{"to":"swift-falcon/bold-eagle","body":"auth module ready for review"}'
-
-# Discover all agents in this execution
-curl $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/agents \
-  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
 
 # Read a wiki page
 curl $AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/architecture \

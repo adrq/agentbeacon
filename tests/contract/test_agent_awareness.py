@@ -224,3 +224,33 @@ def test_api_docs_endpoint(test_database):
         assert "AgentBeacon REST API Reference" in resp.text
         assert "POST /api/messages" in resp.text
         assert "revision_number" in resp.text
+        # Stage 2: docs split agent discovery into pool + sessions
+        assert "Agent Pool" in resp.text
+        assert "Running Sessions" in resp.text
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_system_prompt_from_column(test_database):
+    """system_prompt column value appears in task_payload briefing."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(
+            ctx["db_url"],
+            name="prompt-agent",
+            system_prompt="You are a Rust expert.",
+        )
+
+        _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
+
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT task_payload FROM task_queue WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+
+        assert row is not None
+        payload = json.loads(row[0])
+        system_prompt = payload["agent_config"]["system_prompt"]
+        # Briefing is prepended
+        assert "AgentBeacon Environment" in system_prompt
+        # Agent's own system_prompt from column is included
+        assert "You are a Rust expert." in system_prompt

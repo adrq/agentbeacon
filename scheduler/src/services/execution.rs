@@ -391,25 +391,17 @@ async fn persist_and_enqueue(
     db::execution_agents::insert_batch(db_pool, execution_id, agent_ids).await?;
 
     // Build environment briefing for the root lead session.
-    // Must happen after insert_batch so available agents can be queried.
-    let available_agents =
-        db::execution_agents::list_agent_configs_for_execution(db_pool, execution_id).await?;
-
     let briefing_ctx = crate::services::briefing::BriefingContext {
         role: crate::services::briefing::BriefingRole::RootLead,
         slug: slug.clone(),
         hierarchical_name: slug.clone(),
         agent_config_name: agent.name.clone(),
         parent_info: "user".to_string(),
-        available_agents,
     };
-    let briefing = crate::services::briefing::build_environment_briefing(&briefing_ctx);
+    let briefing =
+        crate::services::briefing::build_environment_briefing(db_pool, &briefing_ctx).await;
 
-    let existing_prompt = task_payload
-        .get("agent_config")
-        .and_then(|c| c.get("system_prompt"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let existing_prompt = agent.system_prompt.as_deref().unwrap_or("");
     let combined = crate::services::briefing::prepend_briefing(&briefing, existing_prompt);
     task_payload["agent_config"]["system_prompt"] = JsonValue::String(combined);
 

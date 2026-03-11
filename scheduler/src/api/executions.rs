@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tracing::warn;
 
 use crate::api::types::{EventResponse, ExecutionResponse, SessionResponse};
 use crate::app::{AppState, EventNotification};
@@ -33,8 +34,8 @@ pub struct ExecutionDetailResponse {
 /// Request body for creating an execution
 #[derive(Debug, Deserialize)]
 pub struct CreateExecutionRequest {
-    pub agent_id: Option<String>,
-    pub agent_ids: Option<Vec<String>>,
+    pub root_agent_id: String,
+    pub agent_ids: Vec<String>,
     pub prompt: String,
     pub project_id: Option<String>,
     pub title: Option<String>,
@@ -103,34 +104,27 @@ async fn create_execution_handler(
     State(state): State<AppState>,
     Json(req): Json<CreateExecutionRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    // Resolve lead agent_id: accept agent_id (singular) or agent_ids (array), not both
-    let (lead_agent_id, all_agent_ids) = match (&req.agent_id, &req.agent_ids) {
-        (Some(_), Some(_)) => {
-            return Err(SchedulerError::ValidationFailed(
-                "provide agent_id or agent_ids, not both".to_string(),
-            ));
-        }
-        (None, None) => {
-            return Err(SchedulerError::ValidationFailed(
-                "agent_id or agent_ids is required".to_string(),
-            ));
-        }
-        (Some(id), None) => (id.clone(), vec![id.clone()]),
-        (None, Some(ids)) => {
-            if ids.is_empty() {
-                return Err(SchedulerError::ValidationFailed(
-                    "agent_ids must be non-empty".to_string(),
-                ));
-            }
-            let mut seen = std::collections::HashSet::new();
-            let deduped: Vec<String> = ids
-                .iter()
-                .filter(|id| seen.insert((*id).clone()))
-                .cloned()
-                .collect();
-            (ids[0].clone(), deduped)
-        }
-    };
+    // Validate agent_ids non-empty and root_agent_id ∈ agent_ids
+    if req.agent_ids.is_empty() {
+        return Err(SchedulerError::ValidationFailed(
+            "agent_ids must be non-empty".to_string(),
+        ));
+    }
+    if !req.agent_ids.contains(&req.root_agent_id) {
+        return Err(SchedulerError::ValidationFailed(
+            "root_agent_id must be in agent_ids".to_string(),
+        ));
+    }
+
+    // Deduplicate
+    let mut seen = std::collections::HashSet::new();
+    let all_agent_ids: Vec<String> = req
+        .agent_ids
+        .iter()
+        .filter(|id| seen.insert((*id).clone()))
+        .cloned()
+        .collect();
+    let lead_agent_id = req.root_agent_id.clone();
 
     // Validate all agent IDs exist and are enabled
     for aid in &all_agent_ids {
@@ -483,53 +477,157 @@ async fn execution_events(
     Ok(Json(events.into_iter().map(Into::into).collect()))
 }
 
-/// Session-level discovery entry with hierarchical names
+/// Verify optional session auth matches the execution_id in the path.
+/// User callers (no auth) pass through; session callers get 403 on mismatch.
+async fn verify_execution_scope(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    path_execution_id: &str,
+) -> Result<(), SchedulerError> {
+    if let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok())
+        && auth_header.len() > 7
+        && auth_header[..7].eq_ignore_ascii_case("bearer ")
+    {
+        let token = &auth_header[7..];
+        let session = db::sessions::get_by_id(&state.db_pool, token)
+            .await
+            .map_err(|_| SchedulerError::Unauthorized("invalid session token".to_string()))?;
+        if session.execution_id != path_execution_id {
+            return Err(SchedulerError::Forbidden(
+                "session not authorized for this execution".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Get agent config pool for an execution (GET /api/executions/:id/agents)
+///
+/// Returns the configured agent pool (what can be delegated to), not running sessions.
+async fn execution_agents_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<db::execution_agents::ExecutionAgentInfo>>, SchedulerError> {
+    verify_execution_scope(&state, &headers, &id).await?;
+    db::executions::get_by_id(&state.db_pool, &id).await?;
+    let entries =
+        db::execution_agents::list_agent_configs_for_execution(&state.db_pool, &id).await?;
+    Ok(Json(entries))
+}
+
+#[derive(Debug, Deserialize)]
+struct AddToPoolRequest {
+    agent_id: String,
+    #[serde(default = "default_true")]
+    add_to_project: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Add agent to execution pool (POST /api/executions/:id/agents).
+/// No session auth scoping — this is a user-only operation.
+async fn add_to_execution_pool(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<AddToPoolRequest>,
+) -> Result<impl IntoResponse, SchedulerError> {
+    let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
+
+    // Verify agent exists and is enabled
+    let agent = db::agents::get_by_id(&state.db_pool, &req.agent_id).await?;
+    if !agent.enabled {
+        return Err(SchedulerError::ValidationFailed(format!(
+            "agent is disabled: {}",
+            req.agent_id
+        )));
+    }
+
+    db::execution_agents::insert(&state.db_pool, &id, &req.agent_id).await?;
+
+    // Propagate to project pool if requested
+    if req.add_to_project
+        && let Some(ref project_id) = exec.project_id
+        && let Err(e) = db::project_agents::insert(&state.db_pool, project_id, &req.agent_id).await
+    {
+        warn!(project_id, agent_id = %req.agent_id, error = %e, "failed to propagate agent to project pool");
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Remove agent from execution pool (DELETE /api/executions/:id/agents/:agent_id).
+/// No session auth scoping — this is a user-only operation.
+async fn remove_from_execution_pool(
+    State(state): State<AppState>,
+    Path((id, agent_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, SchedulerError> {
+    db::executions::get_by_id(&state.db_pool, &id).await?;
+    let deleted = db::execution_agents::delete(&state.db_pool, &id, &agent_id).await?;
+    if !deleted {
+        return Err(SchedulerError::NotFound(format!(
+            "agent {agent_id} not in execution pool"
+        )));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Session discovery entry for the sessions endpoint
 #[derive(Debug, Serialize)]
-struct AgentDiscoveryEntry {
-    name: String,
-    agent_name: String,
+struct SessionDiscoveryResponse {
     session_id: String,
+    hierarchical_name: String,
+    agent_name: String,
+    role: String,
     status: String,
     parent_name: Option<String>,
 }
 
-/// Get agents/sessions for an execution (GET /api/executions/:id/agents)
-///
-/// Returns session-level discovery with hierarchical names.
-async fn execution_agents_handler(
+/// Get running sessions for an execution (GET /api/executions/:id/sessions)
+async fn execution_sessions_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<Vec<AgentDiscoveryEntry>>, SchedulerError> {
-    db::executions::get_by_id(&state.db_pool, &id).await?;
+) -> Result<Json<Vec<SessionDiscoveryResponse>>, SchedulerError> {
+    verify_execution_scope(&state, &headers, &id).await?;
 
-    // TODO: compute_hierarchical_names loads sessions internally; we load them
-    // again below for agent_id extraction. Acceptable at current scale (< 20 sessions).
+    let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
+
     let name_tuples =
         crate::services::messaging::compute_hierarchical_names(&state.db_pool, &id).await?;
     let name_map: std::collections::HashMap<String, String> = name_tuples.into_iter().collect();
 
-    let sessions = db::sessions::list_by_execution(&state.db_pool, &id).await?;
-
-    let agent_ids: Vec<String> = sessions.iter().map(|s| s.agent_id.clone()).collect();
-    let agent_names = db::agents::get_names_by_ids(&state.db_pool, &agent_ids).await?;
+    let discovery = db::sessions::list_discovery_by_execution(&state.db_pool, &id).await?;
 
     let mut entries = Vec::new();
-    for session in &sessions {
-        let hier_name = name_map.get(&session.id).cloned().unwrap_or_default();
-        let agent_name = agent_names
-            .get(&session.agent_id)
-            .cloned()
-            .unwrap_or_default();
+    for entry in &discovery {
+        let role = if entry.parent_session_id.is_none() {
+            "root-lead"
+        } else if entry.depth >= exec.max_depth {
+            "leaf"
+        } else {
+            "sub-lead"
+        };
 
-        entries.push(AgentDiscoveryEntry {
-            name: hier_name,
-            agent_name,
-            session_id: session.id.clone(),
-            status: session.status.clone(),
-            parent_name: session
-                .parent_session_id
-                .as_ref()
-                .and_then(|pid| name_map.get(pid).cloned()),
+        let hier_name = name_map
+            .get(&entry.session_id)
+            .cloned()
+            .unwrap_or_else(|| entry.slug.clone());
+
+        let parent_name = entry
+            .parent_session_id
+            .as_ref()
+            .and_then(|pid| name_map.get(pid).cloned());
+
+        entries.push(SessionDiscoveryResponse {
+            session_id: entry.session_id.clone(),
+            hierarchical_name: hier_name,
+            agent_name: entry.agent_name.clone(),
+            role: role.to_string(),
+            status: entry.status.clone(),
+            parent_name,
         });
     }
 
@@ -553,5 +651,16 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(complete_execution),
         )
         .route("/api/executions/{id}/events", get(execution_events))
-        .route("/api/executions/{id}/agents", get(execution_agents_handler))
+        .route(
+            "/api/executions/{id}/agents",
+            get(execution_agents_handler).post(add_to_execution_pool),
+        )
+        .route(
+            "/api/executions/{id}/agents/{agent_id}",
+            axum::routing::delete(remove_from_execution_pool),
+        )
+        .route(
+            "/api/executions/{id}/sessions",
+            get(execution_sessions_handler),
+        )
 }

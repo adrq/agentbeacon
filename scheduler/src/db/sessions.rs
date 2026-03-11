@@ -610,6 +610,55 @@ pub async fn try_claim_for_failure(
     Ok(result.rows_affected() > 0)
 }
 
+#[derive(Debug, Serialize)]
+pub struct SessionDiscoveryEntry {
+    pub session_id: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub slug: String,
+    pub status: String,
+    pub parent_session_id: Option<String>,
+    pub depth: i64,
+}
+
+pub async fn list_discovery_by_execution(
+    pool: &DbPool,
+    execution_id: &str,
+) -> Result<Vec<SessionDiscoveryEntry>, SchedulerError> {
+    let sql = pool.prepare_query(
+        "SELECT s.id, s.agent_id, a.name as agent_name, s.slug, s.status, \
+         s.parent_session_id, s.execution_id \
+         FROM sessions s \
+         JOIN agents a ON s.agent_id = a.id \
+         WHERE s.execution_id = ? \
+         ORDER BY s.created_at ASC",
+    );
+
+    let rows = sqlx::query(&sql)
+        .bind(execution_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list discovery sessions failed: {e}")))?;
+
+    let mut entries = Vec::new();
+    for row in &rows {
+        let session_id: String = row.get("id");
+        let exec_id: String = row.get("execution_id");
+        let depth = compute_depth(pool, &session_id, &exec_id).await?;
+        entries.push(SessionDiscoveryEntry {
+            session_id,
+            agent_id: row.get("agent_id"),
+            agent_name: row.get::<String, _>("agent_name"),
+            slug: row.get("slug"),
+            status: row.get("status"),
+            parent_session_id: row.get("parent_session_id"),
+            depth,
+        });
+    }
+
+    Ok(entries)
+}
+
 fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> {
     Ok(Session {
         id: row.get("id"),

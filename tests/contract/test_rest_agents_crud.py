@@ -1,7 +1,5 @@
 """Contract tests for agent CRUD: POST, GET by id, PATCH, DELETE /api/agents."""
 
-import tempfile
-
 import httpx
 import pytest
 
@@ -172,36 +170,6 @@ def test_delete_agent_name_reuse_after_delete(test_database):
         new_data = create_agent_via_api(ctx["url"], "reuse-name")
         assert new_data["name"] == "reuse-name"
         assert new_data["id"] != created["id"]
-
-
-@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_delete_agent_clears_project_default(test_database):
-    """Deleting an agent should clear it as default_agent_id on projects."""
-    with scheduler_context(db_url=test_database) as ctx:
-        agent = create_agent_via_api(ctx["url"], "default-agent")
-
-        # Create project with this agent as default
-        proj_resp = httpx.post(
-            f"{ctx['url']}/api/projects",
-            json={
-                "name": "test-project",
-                "path": tempfile.gettempdir(),
-                "default_agent_id": agent["id"],
-            },
-            timeout=5,
-        )
-        assert proj_resp.status_code == 201
-        proj = proj_resp.json()
-        assert proj["default_agent_id"] == agent["id"]
-
-        # Delete the agent
-        resp = httpx.delete(f"{ctx['url']}/api/agents/{agent['id']}", timeout=5)
-        assert resp.status_code == 204
-
-        # Verify project's default_agent_id is now null
-        resp = httpx.get(f"{ctx['url']}/api/projects/{proj['id']}", timeout=5)
-        assert resp.status_code == 200
-        assert resp.json()["default_agent_id"] is None
 
 
 # --- Driver relationship tests ---

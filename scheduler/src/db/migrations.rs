@@ -33,6 +33,8 @@ const MIGRATION_0012: &str = include_str!("../../migrations/0012_worktree_to_ses
 const MIGRATION_0012_PG: &str = include_str!("../../migrations/0012_pg_worktree_to_sessions.sql");
 const MIGRATION_0013: &str = include_str!("../../migrations/0013_wiki_extras.sql");
 const MIGRATION_0013_PG: &str = include_str!("../../migrations/0013_pg_wiki_extras.sql");
+const MIGRATION_0014: &str = include_str!("../../migrations/0014_dynamic_briefing.sql");
+const MIGRATION_0014_PG: &str = include_str!("../../migrations/0014_pg_dynamic_briefing.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -215,6 +217,11 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     } else {
         MIGRATION_0013
     };
+    let migration_0014 = if is_postgres {
+        MIGRATION_0014_PG
+    } else {
+        MIGRATION_0014
+    };
     let migrations = vec![
         (MIGRATION_0001, 1),
         (migration_0002, 2),
@@ -229,6 +236,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         (migration_0011, 11),
         (migration_0012, 12),
         (migration_0013, 13),
+        (migration_0014, 14),
     ];
 
     // Process each migration
@@ -240,7 +248,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
 
         // Migration 0002 uses DROP TABLE which triggers CASCADE with foreign_keys ON.
         // Disable FKs before the migration and re-enable after.
-        let needs_fk_disable = !is_postgres && (version == 2 || version == 5);
+        let needs_fk_disable = !is_postgres && (version == 2 || version == 5 || version == 14);
 
         // Adapt migration for database-specific syntax
         let migration = if is_postgres {

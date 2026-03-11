@@ -8,6 +8,7 @@ pub mod executions;
 pub mod helpers;
 pub mod migrations;
 pub mod pool;
+pub mod project_agents;
 pub mod projects;
 pub mod sessions;
 pub mod task_queue;

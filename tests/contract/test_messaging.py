@@ -4,7 +4,7 @@ Tests cover:
 - Shared service / post_message refactor (user messaging)
 - Lateral messaging (POST /api/messages)
 - Message history (GET /api/messages)
-- Discovery endpoint (GET /api/executions/{id}/agents)
+- Session discovery endpoint (GET /api/executions/{id}/sessions)
 - deliver_to_parent state transition
 - Slug generation
 """
@@ -63,8 +63,8 @@ def _get_messages(ctx, session_id, since_id=None):
 
 
 def _get_discovery(ctx, execution_id):
-    """GET /api/executions/{id}/agents."""
-    return httpx.get(f"{ctx['url']}/api/executions/{execution_id}/agents", timeout=5)
+    """GET /api/executions/{id}/sessions (session discovery endpoint)."""
+    return httpx.get(f"{ctx['url']}/api/executions/{execution_id}/sessions", timeout=5)
 
 
 def _worker_sync(url, payload=None, timeout=10):
@@ -79,12 +79,12 @@ def _worker_sync(url, payload=None, timeout=10):
 
 
 def _get_child_hier_name(ctx, exec_id, child_session_id):
-    """Get hierarchical name for a child session from discovery."""
+    """Get hierarchical name for a child session from session discovery."""
     disc = _get_discovery(ctx, exec_id)
     assert disc.status_code == 200
     for entry in disc.json():
         if entry["session_id"] == child_session_id:
-            return entry["name"]
+            return entry["hierarchical_name"]
     raise AssertionError(f"session {child_session_id} not in discovery")
 
 
@@ -263,7 +263,7 @@ def test_send_lateral_message_cross_execution_rejected(test_database):
 
         # Get name of session_b's root from its own execution
         disc = _get_discovery(ctx, exec_b)
-        b_name = disc.json()[0]["name"]
+        b_name = disc.json()[0]["hierarchical_name"]
 
         # Try to message session_b from execution A — should fail (name not in exec A)
         resp = _send_lateral(ctx, session_a, b_name, "cross exec")
@@ -400,7 +400,7 @@ def test_send_lateral_message_to_self(test_database):
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
         disc = _get_discovery(ctx, exec_id)
-        my_name = disc.json()[0]["name"]
+        my_name = disc.json()[0]["hierarchical_name"]
 
         _set_session_status(ctx["db_url"], session_id, "working")
 
@@ -429,12 +429,12 @@ def test_send_lateral_message_sender_uses_hierarchical_name(test_database):
         child_name = _get_child_hier_name(ctx, exec_id, child_session_id)
         _set_session_status(ctx["db_url"], child_session_id, "working")
 
-        # Get lead's hierarchical name from discovery
+        # Get lead's hierarchical name from session discovery
         disc = _get_discovery(ctx, exec_id)
         lead_name = None
         for entry in disc.json():
             if entry["session_id"] == lead_session_id:
-                lead_name = entry["name"]
+                lead_name = entry["hierarchical_name"]
                 break
         assert lead_name is not None
 
@@ -466,7 +466,7 @@ def test_send_lateral_message_from_terminated_session_rejected(test_database):
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
         disc = _get_discovery(ctx, exec_id)
-        my_name = disc.json()[0]["name"]
+        my_name = disc.json()[0]["hierarchical_name"]
 
         _set_session_status(ctx["db_url"], session_id, "completed")
 
@@ -611,12 +611,12 @@ def test_get_messages_nonexistent_session(test_database):
         assert resp.status_code == 404
 
 
-# --- Discovery (GET /api/executions/{id}/agents) ---
+# --- Discovery (GET /api/executions/{id}/sessions) ---
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_discovery_returns_session_entries(test_database):
-    """Discovery returns session-level entries, not just agent configs."""
+    """Session discovery returns session-level entries."""
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="disc-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
@@ -630,8 +630,8 @@ def test_discovery_returns_session_entries(test_database):
         assert entry["agent_name"] == "disc-agent"
         assert entry["status"] == "submitted"
         assert entry["parent_name"] is None
-        assert "name" in entry
-        assert len(entry["name"]) > 0
+        assert "hierarchical_name" in entry
+        assert len(entry["hierarchical_name"]) > 0
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -658,7 +658,7 @@ def test_discovery_hierarchical_names(test_database):
 
         resp = _get_discovery(ctx, exec_id)
         entries = resp.json()
-        name_map = {e["session_id"]: e["name"] for e in entries}
+        name_map = {e["session_id"]: e["hierarchical_name"] for e in entries}
 
         lead_name = name_map[lead_session]
         mid_name = name_map[mid_session]
@@ -695,7 +695,7 @@ def test_discovery_slugs_unique_among_siblings(test_database):
 
         resp = _get_discovery(ctx, exec_id)
         entries = resp.json()
-        name_map = {e["session_id"]: e["name"] for e in entries}
+        name_map = {e["session_id"]: e["hierarchical_name"] for e in entries}
 
         child1_name = name_map[child1]
         child2_name = name_map[child2]
@@ -719,7 +719,7 @@ def test_discovery_same_agent_different_slugs(test_database):
 
         resp = _get_discovery(ctx, exec_id)
         entries = resp.json()
-        name_map = {e["session_id"]: e["name"] for e in entries}
+        name_map = {e["session_id"]: e["hierarchical_name"] for e in entries}
 
         root_name = name_map[root_session]
         child_name = name_map[child_session]
@@ -779,7 +779,7 @@ def test_discovery_parent_name_populated(test_database):
         child_entry = name_map[child_session]
 
         assert lead_entry["parent_name"] is None
-        assert child_entry["parent_name"] == lead_entry["name"]
+        assert child_entry["parent_name"] == lead_entry["hierarchical_name"]
 
 
 # --- deliver_to_parent state transition ---
@@ -896,7 +896,7 @@ def test_discovery_pre_migration_sessions_fallback(test_database):
         entries = resp.json()
         assert len(entries) == 1
         # Fallback: truncated session ID (first 8 chars)
-        assert entries[0]["name"] == session_id[:8]
+        assert entries[0]["hierarchical_name"] == session_id[:8]
 
 
 # --- Slug uniqueness scoping ---

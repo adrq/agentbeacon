@@ -250,26 +250,15 @@ async fn handle_delegate(
 
     let child_hier_name = format!("{parent_hier_name}/{child_slug}");
 
-    // Only fetch agent pool for roles that display the delegation section
-    // (a delegated child is never RootLead — only SubLead or Leaf)
-    let available_agents = if matches!(child_role, crate::services::briefing::BriefingRole::SubLead)
-    {
-        db::execution_agents::list_agent_configs_for_execution(&state.db_pool, &auth.execution_id)
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?
-    } else {
-        vec![]
-    };
-
     let briefing_ctx = crate::services::briefing::BriefingContext {
         role: child_role,
         slug: child_slug.clone(),
         hierarchical_name: child_hier_name,
         agent_config_name: agent.name.clone(),
         parent_info: parent_hier_name.clone(),
-        available_agents,
     };
-    let briefing = crate::services::briefing::build_environment_briefing(&briefing_ctx);
+    let briefing =
+        crate::services::briefing::build_environment_briefing(&state.db_pool, &briefing_ctx).await;
 
     // Parse agent config for task payload
     let mut agent_config: JsonValue = serde_json::from_str::<JsonValue>(&agent.config)
@@ -282,11 +271,8 @@ async fn handle_delegate(
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(JsonValue::Null);
 
-    // Prepend briefing to existing system_prompt
-    let existing_prompt = agent_config
-        .get("system_prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    // Prepend briefing to existing system_prompt (from agent column, not config JSON)
+    let existing_prompt = agent.system_prompt.as_deref().unwrap_or("");
     let combined = crate::services::briefing::prepend_briefing(&briefing, existing_prompt);
     agent_config["system_prompt"] = JsonValue::String(combined);
 

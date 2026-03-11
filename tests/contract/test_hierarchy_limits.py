@@ -41,7 +41,8 @@ def _create_execution_with_limits(
 ):
     """Create execution via API with custom hierarchy limits."""
     payload = {
-        "agent_id": agent_id,
+        "root_agent_id": agent_id,
+        "agent_ids": [agent_id],
         "prompt": prompt,
         "title": prompt,
         "cwd": tempfile.gettempdir(),
@@ -424,7 +425,13 @@ def test_execution_creation_rejects_invalid_max_depth(test_database):
         # Too low
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_id": agent_id, "prompt": "test", "cwd": cwd, "max_depth": 0},
+            json={
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
+                "prompt": "test",
+                "cwd": cwd,
+                "max_depth": 0,
+            },
             timeout=10,
         )
         assert resp.status_code == 400
@@ -432,7 +439,13 @@ def test_execution_creation_rejects_invalid_max_depth(test_database):
         # Too high
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_id": agent_id, "prompt": "test", "cwd": cwd, "max_depth": 11},
+            json={
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
+                "prompt": "test",
+                "cwd": cwd,
+                "max_depth": 11,
+            },
             timeout=10,
         )
         assert resp.status_code == 400
@@ -448,7 +461,13 @@ def test_execution_creation_rejects_invalid_max_width(test_database):
         # Too low
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_id": agent_id, "prompt": "test", "cwd": cwd, "max_width": 0},
+            json={
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
+                "prompt": "test",
+                "cwd": cwd,
+                "max_width": 0,
+            },
             timeout=10,
         )
         assert resp.status_code == 400
@@ -456,7 +475,13 @@ def test_execution_creation_rejects_invalid_max_width(test_database):
         # Too high
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_id": agent_id, "prompt": "test", "cwd": cwd, "max_width": 51},
+            json={
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
+                "prompt": "test",
+                "cwd": cwd,
+                "max_width": 51,
+            },
             timeout=10,
         )
         assert resp.status_code == 400

@@ -444,15 +444,6 @@ async fn recover_session(
         Some(pid) => crate::services::messaging::hierarchical_name_for_session(pool, pid).await?,
         None => "user".to_string(),
     };
-    let available_agents = if matches!(
-        role,
-        crate::services::briefing::BriefingRole::SubLead
-            | crate::services::briefing::BriefingRole::RootLead
-    ) {
-        db::execution_agents::list_agent_configs_for_execution(pool, &session.execution_id).await?
-    } else {
-        vec![]
-    };
     let slug = if session.slug.is_empty() {
         session.id[..session.id.len().min(8)].to_string()
     } else {
@@ -464,13 +455,9 @@ async fn recover_session(
         hierarchical_name: hier_name,
         agent_config_name: agent.name.clone(),
         parent_info,
-        available_agents,
     };
-    let briefing = crate::services::briefing::build_environment_briefing(&briefing_ctx);
-    let existing_prompt = agent_config
-        .get("system_prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let briefing = crate::services::briefing::build_environment_briefing(pool, &briefing_ctx).await;
+    let existing_prompt = agent.system_prompt.as_deref().unwrap_or("");
     agent_config["system_prompt"] = serde_json::Value::String(
         crate::services::briefing::prepend_briefing(&briefing, existing_prompt),
     );

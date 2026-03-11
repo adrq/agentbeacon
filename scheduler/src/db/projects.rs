@@ -11,7 +11,6 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
-    pub default_agent_id: Option<String>,
     pub settings: String, // JSON
     pub deleted_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -23,18 +22,15 @@ pub async fn create(
     id: &str,
     name: &str,
     path: &str,
-    default_agent_id: Option<&str>,
     settings: Option<&str>,
 ) -> Result<Project, SchedulerError> {
-    let query = pool.prepare_query(
-        "INSERT INTO projects (id, name, path, default_agent_id, settings) VALUES (?, ?, ?, ?, ?)",
-    );
+    let query =
+        pool.prepare_query("INSERT INTO projects (id, name, path, settings) VALUES (?, ?, ?, ?)");
 
     sqlx::query(&query)
         .bind(id)
         .bind(name)
         .bind(path)
-        .bind(default_agent_id)
         .bind(settings.unwrap_or("{}"))
         .execute(pool.as_ref())
         .await
@@ -48,7 +44,7 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Project, SchedulerErro
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, path, default_agent_id, settings, {} as created_at, {} as updated_at FROM projects WHERE id = ? AND deleted_at IS NULL",
+        "SELECT id, name, path, settings, {} as created_at, {} as updated_at FROM projects WHERE id = ? AND deleted_at IS NULL",
         created_fmt, updated_fmt
     );
     let query = pool.prepare_query(&sql);
@@ -67,7 +63,7 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Project>, SchedulerError> {
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
 
     let sql = format!(
-        "SELECT id, name, path, default_agent_id, settings, {} as created_at, {} as updated_at FROM projects WHERE deleted_at IS NULL ORDER BY created_at DESC",
+        "SELECT id, name, path, settings, {} as created_at, {} as updated_at FROM projects WHERE deleted_at IS NULL ORDER BY created_at DESC",
         created_fmt, updated_fmt
     );
 
@@ -79,13 +75,11 @@ pub async fn list(pool: &DbPool) -> Result<Vec<Project>, SchedulerError> {
     rows.into_iter().map(parse_project_row).collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn update(
     pool: &DbPool,
     id: &str,
     name: Option<&str>,
     path: Option<&str>,
-    default_agent_id: Option<Option<&str>>,
     settings: Option<&str>,
 ) -> Result<Project, SchedulerError> {
     let mut set_clauses = Vec::new();
@@ -98,17 +92,6 @@ pub async fn update(
     if let Some(v) = path {
         set_clauses.push("path = ?".to_string());
         bind_values.push(Some(v.to_string()));
-    }
-    if let Some(agent_opt) = default_agent_id {
-        match agent_opt {
-            Some(v) => {
-                set_clauses.push("default_agent_id = ?".to_string());
-                bind_values.push(Some(v.to_string()));
-            }
-            None => {
-                set_clauses.push("default_agent_id = NULL".to_string());
-            }
-        }
     }
     if let Some(v) = settings {
         set_clauses.push("settings = ?".to_string());
@@ -173,27 +156,11 @@ pub async fn count_by_path(pool: &DbPool, path: &str) -> Result<i64, SchedulerEr
     Ok(row.get::<i64, _>("cnt"))
 }
 
-pub async fn clear_default_agent(pool: &DbPool, agent_id: &str) -> Result<(), SchedulerError> {
-    let query = pool
-        .prepare_query("UPDATE projects SET default_agent_id = NULL WHERE default_agent_id = ?");
-
-    sqlx::query(&query)
-        .bind(agent_id)
-        .execute(pool.as_ref())
-        .await
-        .map_err(|e| {
-            SchedulerError::Database(format!("clear default agent on projects failed: {e}"))
-        })?;
-
-    Ok(())
-}
-
 fn parse_project_row(row: sqlx::any::AnyRow) -> Result<Project, SchedulerError> {
     Ok(Project {
         id: row.get("id"),
         name: row.get("name"),
         path: row.get("path"),
-        default_agent_id: row.get("default_agent_id"),
         settings: row.get("settings"),
         deleted_at: None, // filtered by WHERE deleted_at IS NULL
         created_at: parse_timestamp(&row, "created_at")?,

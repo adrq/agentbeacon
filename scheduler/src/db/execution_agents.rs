@@ -39,9 +39,14 @@ pub async fn insert_batch(
     Ok(())
 }
 
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
 pub struct ExecutionAgentInfo {
+    pub agent_id: String,
     pub name: String,
     pub description: Option<String>,
+    pub agent_type: String,
 }
 
 pub async fn list_agent_configs_for_execution(
@@ -54,7 +59,7 @@ pub async fn list_agent_configs_for_execution(
         "a.enabled = 1"
     };
     let sql = format!(
-        "SELECT a.name, a.description \
+        "SELECT a.id as agent_id, a.name, a.description, a.agent_type \
          FROM execution_agents ea \
          JOIN agents a ON ea.agent_id = a.id \
          WHERE ea.execution_id = ? AND a.deleted_at IS NULL AND {enabled_filter} \
@@ -73,10 +78,30 @@ pub async fn list_agent_configs_for_execution(
     Ok(rows
         .iter()
         .map(|r| ExecutionAgentInfo {
+            agent_id: r.get::<String, _>("agent_id"),
             name: r.get::<String, _>("name"),
             description: r.get("description"),
+            agent_type: r.get::<String, _>("agent_type"),
         })
         .collect())
+}
+
+pub async fn delete(
+    pool: &DbPool,
+    execution_id: &str,
+    agent_id: &str,
+) -> Result<bool, SchedulerError> {
+    let query =
+        pool.prepare_query("DELETE FROM execution_agents WHERE execution_id = ? AND agent_id = ?");
+
+    let result = sqlx::query(&query)
+        .bind(execution_id)
+        .bind(agent_id)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("delete execution_agent failed: {e}")))?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn list_by_execution(

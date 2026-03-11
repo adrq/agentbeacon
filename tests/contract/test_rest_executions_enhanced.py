@@ -25,7 +25,11 @@ def test_create_execution_requires_project_id_or_cwd(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_id": agent_id, "prompt": "test"},
+            json={
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
+                "prompt": "test",
+            },
             timeout=5,
         )
         assert resp.status_code == 400
@@ -39,7 +43,8 @@ def test_create_execution_branch_and_cwd_mutually_exclusive(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "test",
                 "cwd": tempfile.gettempdir(),
                 "branch": "feature/test",
@@ -57,7 +62,8 @@ def test_create_execution_branch_requires_project_id(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "test",
                 "branch": "feature/test",
             },
@@ -74,7 +80,8 @@ def test_create_execution_invalid_cwd_relative_path(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "test",
                 "cwd": "relative/path",
             },
@@ -91,7 +98,8 @@ def test_create_execution_invalid_cwd_nonexistent(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "test",
                 "cwd": "/nonexistent/path/abc123",
             },
@@ -147,7 +155,8 @@ def test_create_execution_nonexistent_project_returns_400(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "test",
                 "project_id": "nonexistent-project-id",
             },
@@ -171,7 +180,8 @@ def test_create_execution_branch_requires_git_project(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "test",
                 "project_id": project["id"],
                 "branch": "feature/test",
@@ -296,7 +306,8 @@ def test_create_execution_with_context_id(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "test context",
                 "cwd": tempfile.gettempdir(),
                 "context_id": "my-custom-context",
@@ -351,7 +362,8 @@ def test_create_execution_response_shape(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "shape test",
                 "cwd": tempfile.gettempdir(),
             },
@@ -477,7 +489,8 @@ def test_create_execution_concurrent_warning(test_database):
         resp1 = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "first",
                 "project_id": project["id"],
             },
@@ -491,7 +504,8 @@ def test_create_execution_concurrent_warning(test_database):
         resp2 = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "second",
                 "project_id": project["id"],
             },
@@ -515,7 +529,8 @@ def test_create_execution_empty_prompt_returns_400(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
                 "prompt": "   ",
                 "cwd": tempfile.gettempdir(),
             },
@@ -557,6 +572,7 @@ def test_execution_with_agent_ids_populates_junction(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
+                "root_agent_id": agent1,
                 "agent_ids": [agent1, agent2],
                 "prompt": "multi-agent test",
                 "cwd": "/tmp",
@@ -576,17 +592,56 @@ def test_execution_with_agent_ids_populates_junction(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_execution_agents_discovery_returns_sessions(test_database):
-    """Discovery returns session-level entries with hierarchical names."""
+def test_execution_agents_returns_config_pool(test_database):
+    """GET /api/executions/{id}/agents returns config pool entries."""
     with scheduler_context(db_url=test_database) as ctx:
         agent1 = seed_test_agent(
             ctx["db_url"], name="disc-agent-1", agent_type="claude_sdk"
         )
-        seed_test_agent(ctx["db_url"], name="disc-agent-2", agent_type="claude_sdk")
+        agent2 = seed_test_agent(
+            ctx["db_url"], name="disc-agent-2", agent_type="claude_sdk"
+        )
 
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
+                "root_agent_id": agent1,
+                "agent_ids": [agent1, agent2],
+                "prompt": "discovery test",
+                "cwd": "/tmp",
+            },
+            timeout=5,
+        )
+        assert resp.status_code == 201
+        exec_id = resp.json()["execution"]["id"]
+
+        disc_resp = httpx.get(
+            f"{ctx['url']}/api/executions/{exec_id}/agents", timeout=5
+        )
+        assert disc_resp.status_code == 200
+        entries = disc_resp.json()
+        assert len(entries) == 2
+        agent_ids = {e["agent_id"] for e in entries}
+        assert agent_ids == {agent1, agent2}
+        # Config pool entries have agent_id, name, description, agent_type
+        for entry in entries:
+            assert "agent_id" in entry
+            assert "name" in entry
+            assert "agent_type" in entry
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_execution_sessions_returns_session_discovery(test_database):
+    """GET /api/executions/{id}/sessions returns session discovery entries."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent1 = seed_test_agent(
+            ctx["db_url"], name="disc-agent-1", agent_type="claude_sdk"
+        )
+
+        resp = httpx.post(
+            f"{ctx['url']}/api/executions",
+            json={
+                "root_agent_id": agent1,
                 "agent_ids": [agent1],
                 "prompt": "discovery test",
                 "cwd": "/tmp",
@@ -598,7 +653,7 @@ def test_execution_agents_discovery_returns_sessions(test_database):
         session_id = resp.json()["session_id"]
 
         disc_resp = httpx.get(
-            f"{ctx['url']}/api/executions/{exec_id}/agents", timeout=5
+            f"{ctx['url']}/api/executions/{exec_id}/sessions", timeout=5
         )
         assert disc_resp.status_code == 200
         entries = disc_resp.json()
@@ -606,31 +661,53 @@ def test_execution_agents_discovery_returns_sessions(test_database):
         entry = entries[0]
         assert entry["session_id"] == session_id
         assert entry["agent_name"] == "disc-agent-1"
-        assert "name" in entry
+        assert "hierarchical_name" in entry
         assert entry["parent_name"] is None
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_execution_requires_agent_id_or_agent_ids(test_database):
+def test_execution_requires_root_agent_id_and_agent_ids(test_database):
+    """Both root_agent_id and agent_ids are required."""
     with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
+
+        # Missing both root_agent_id and agent_ids → 422 (deserialization)
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={"prompt": "no agent", "cwd": "/tmp"},
             timeout=5,
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 422
+
+        # Missing agent_ids → 422
+        resp = httpx.post(
+            f"{ctx['url']}/api/executions",
+            json={"root_agent_id": agent_id, "prompt": "no pool", "cwd": "/tmp"},
+            timeout=5,
+        )
+        assert resp.status_code == 422
+
+        # Missing root_agent_id → 422
+        resp = httpx.post(
+            f"{ctx['url']}/api/executions",
+            json={"agent_ids": [agent_id], "prompt": "no root", "cwd": "/tmp"},
+            timeout=5,
+        )
+        assert resp.status_code == 422
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_execution_rejects_both_agent_id_and_agent_ids(test_database):
+def test_execution_rejects_root_agent_not_in_pool(test_database):
+    """root_agent_id must be in agent_ids."""
     with scheduler_context(db_url=test_database) as ctx:
-        agent_id = seed_test_agent(ctx["db_url"], name="both-test")
+        agent1 = seed_test_agent(ctx["db_url"], name="root-agent")
+        agent2 = seed_test_agent(ctx["db_url"], name="pool-agent")
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
             json={
-                "agent_id": agent_id,
-                "agent_ids": [agent_id],
-                "prompt": "both",
+                "root_agent_id": agent1,
+                "agent_ids": [agent2],
+                "prompt": "root not in pool",
                 "cwd": "/tmp",
             },
             timeout=5,

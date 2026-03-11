@@ -111,7 +111,12 @@ def test_empty_prompt_rejected(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_id": agent_id, "prompt": "", "cwd": "/tmp"},
+            json={
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
+                "prompt": "",
+                "cwd": "/tmp",
+            },
             timeout=5,
         )
         assert resp.status_code == 400

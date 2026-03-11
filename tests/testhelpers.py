@@ -1339,6 +1339,7 @@ def seed_test_agent(
     agent_type: str = "claude_sdk",
     agent_id: str = None,
     enabled: bool = True,
+    system_prompt: str = None,
 ) -> str:
     """Insert a test agent directly into the database.
 
@@ -1350,6 +1351,7 @@ def seed_test_agent(
         agent_type: Agent type (claude_sdk, codex_sdk, acp, etc.)
         agent_id: Agent ID (generated UUID if None)
         enabled: Whether agent is enabled
+        system_prompt: Optional system prompt text
 
     Returns:
         str: Agent ID
@@ -1360,8 +1362,8 @@ def seed_test_agent(
     with db_conn(db_url) as conn:
         driver_id = _ensure_driver(conn, agent_type)
         conn.execute(
-            "INSERT INTO agents (id, name, agent_type, driver_id, config, enabled) VALUES (?, ?, ?, ?, '{}', ?)",
-            (agent_id, name, agent_type, driver_id, enabled),
+            "INSERT INTO agents (id, name, agent_type, driver_id, config, enabled, system_prompt) VALUES (?, ?, ?, ?, '{}', ?, ?)",
+            (agent_id, name, agent_type, driver_id, enabled, system_prompt),
         )
         conn.commit()
 
@@ -1459,33 +1461,42 @@ def seed_acp_scenario_agent(
 
 def create_execution_via_api(
     scheduler_url: str,
-    agent_id: str,
-    prompt: str,
+    agent_id: str = None,
+    prompt: str = "test",
     title: str = None,
     cwd: str = None,
     project_id: str = None,
     branch: str = None,
     context_id: str = None,
+    root_agent_id: str = None,
+    agent_ids: list = None,
 ) -> tuple:
     """POST /api/executions, return (execution_id, session_id).
 
     Args:
         scheduler_url: Base URL of the scheduler
-        agent_id: Agent ID to assign the execution to
+        agent_id: Agent ID (convenience — converted to root_agent_id + agent_ids)
         prompt: User prompt text
         title: Optional execution title
         cwd: Working directory (defaults to tempfile.gettempdir())
         project_id: Optional project ID
         branch: Optional git branch name
         context_id: Optional context ID
+        root_agent_id: Root agent ID (new API)
+        agent_ids: List of agent IDs for execution pool (new API)
 
     Returns:
         tuple: (execution_id, session_id)
     """
+    # Backward compat: convert old agent_id to new API shape
+    if agent_id is not None and root_agent_id is None:
+        root_agent_id = agent_id
+        agent_ids = agent_ids or [agent_id]
+
     if cwd is None and project_id is None:
         cwd = tempfile.gettempdir()
 
-    payload = {"agent_id": agent_id, "prompt": prompt}
+    payload = {"root_agent_id": root_agent_id, "agent_ids": agent_ids, "prompt": prompt}
     if title is not None:
         payload["title"] = title
     if cwd is not None:
@@ -1639,6 +1650,7 @@ def seed_project(
     name: str = "test-project",
     path: str = None,
     project_id: str = None,
+    agent_ids: list = None,
 ) -> str:
     """Insert a test project directly into the database.
 
@@ -1647,6 +1659,7 @@ def seed_project(
         name: Project name
         path: Project path (defaults to a temp directory)
         project_id: Project ID (generated UUID if None)
+        agent_ids: Optional list of agent IDs to seed into project_agents
 
     Returns:
         str: Project ID
@@ -1661,6 +1674,12 @@ def seed_project(
             "INSERT INTO projects (id, name, path, settings) VALUES (?, ?, ?, '{}')",
             (project_id, name, path),
         )
+        if agent_ids:
+            for aid in agent_ids:
+                conn.execute(
+                    "INSERT OR IGNORE INTO project_agents (project_id, agent_id) VALUES (?, ?)",
+                    (project_id, aid),
+                )
         conn.commit()
 
     return project_id

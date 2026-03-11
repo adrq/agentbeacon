@@ -191,7 +191,7 @@ def test_delete_project_nonexistent_returns_404(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_create_project_with_default_agent(test_database):
+def test_create_project_seeds_agent_pool(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="my-agent")
 
@@ -200,25 +200,17 @@ def test_create_project_with_default_agent(test_database):
             json={
                 "name": "agent-project",
                 "path": tempfile.gettempdir(),
-                "default_agent_id": agent_id,
             },
             timeout=5,
         )
         assert resp.status_code == 201
-        data = resp.json()
-        assert data["default_agent_id"] == agent_id
+        project_id = resp.json()["id"]
 
-
-@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_create_project_invalid_default_agent(test_database):
-    with scheduler_context(db_url=test_database) as ctx:
-        resp = httpx.post(
-            f"{ctx['url']}/api/projects",
-            json={
-                "name": "bad-agent-project",
-                "path": tempfile.gettempdir(),
-                "default_agent_id": "nonexistent-agent",
-            },
-            timeout=5,
+        # Verify the enabled agent was seeded into project pool
+        pool_resp = httpx.get(
+            f"{ctx['url']}/api/projects/{project_id}/agents", timeout=5
         )
-        assert resp.status_code == 400
+        assert pool_resp.status_code == 200
+        pool = pool_resp.json()
+        pool_agent_ids = [e["agent_id"] for e in pool]
+        assert agent_id in pool_agent_ids

@@ -8,6 +8,7 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -19,7 +20,6 @@ pub struct ProjectResponse {
     pub id: String,
     pub name: String,
     pub path: String,
-    pub default_agent_id: Option<String>,
     pub settings: serde_json::Value,
     pub is_git: bool,
     pub created_at: String,
@@ -36,7 +36,6 @@ impl ProjectResponse {
             id: p.id,
             name: p.name,
             path: p.path,
-            default_agent_id: p.default_agent_id,
             settings,
             is_git,
             created_at: p.created_at.to_rfc3339(),
@@ -50,14 +49,12 @@ impl ProjectResponse {
 pub struct CreateProjectRequest {
     pub name: String,
     pub path: String,
-    pub default_agent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateProjectRequest {
     pub name: Option<String>,
     pub path: Option<String>,
-    pub default_agent_id: Option<Option<String>>,
     pub settings: Option<serde_json::Value>,
 }
 
@@ -90,23 +87,6 @@ async fn create_project(
     }
     let canonical_str = canonical.to_string_lossy().to_string();
 
-    // Validate default_agent_id if provided
-    if let Some(ref agent_id) = req.default_agent_id {
-        let agent = db::agents::get_by_id(&state.db_pool, agent_id)
-            .await
-            .map_err(|e| match e {
-                SchedulerError::NotFound(_) => {
-                    SchedulerError::ValidationFailed(format!("agent not found: {agent_id}"))
-                }
-                other => other,
-            })?;
-        if !agent.enabled {
-            return Err(SchedulerError::ValidationFailed(format!(
-                "agent is disabled: {agent_id}"
-            )));
-        }
-    }
-
     // Duplicate path warning
     let path_count = db::projects::count_by_path(&state.db_pool, &canonical_str).await?;
     let warning = if path_count > 0 {
@@ -116,15 +96,17 @@ async fn create_project(
     };
 
     let id = Uuid::new_v4().to_string();
-    let project = db::projects::create(
-        &state.db_pool,
-        &id,
-        name,
-        &canonical_str,
-        req.default_agent_id.as_deref(),
-        None,
-    )
-    .await?;
+    let project = db::projects::create(&state.db_pool, &id, name, &canonical_str, None).await?;
+
+    // Seed project_agents with all enabled agents
+    let all_agents = db::agents::list(&state.db_pool).await?;
+    for agent in &all_agents {
+        if agent.enabled
+            && let Err(e) = db::project_agents::insert(&state.db_pool, &id, &agent.id).await
+        {
+            warn!(project_id = %id, agent_id = %agent.id, error = %e, "failed to seed agent into project pool");
+        }
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -188,29 +170,11 @@ async fn update_project(
         None
     };
 
-    // Validate default_agent_id if provided and not null
-    if let Some(Some(ref agent_id)) = req.default_agent_id {
-        let agent = db::agents::get_by_id(&state.db_pool, agent_id)
-            .await
-            .map_err(|e| match e {
-                SchedulerError::NotFound(_) => {
-                    SchedulerError::ValidationFailed(format!("agent not found: {agent_id}"))
-                }
-                other => other,
-            })?;
-        if !agent.enabled {
-            return Err(SchedulerError::ValidationFailed(format!(
-                "agent is disabled: {agent_id}"
-            )));
-        }
-    }
-
     let settings_json = req
         .settings
         .as_ref()
         .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()));
 
-    let default_agent = req.default_agent_id.as_ref().map(|opt| opt.as_deref());
     let trimmed_name = req.name.as_ref().map(|n| n.trim().to_string());
 
     let project = db::projects::update(
@@ -218,7 +182,6 @@ async fn update_project(
         &id,
         trimmed_name.as_deref(),
         canonical_path.as_deref(),
-        default_agent,
         settings_json.as_deref(),
     )
     .await?;
@@ -234,6 +197,56 @@ async fn delete_project(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// --- Project agent pool sub-resources ---
+
+async fn list_project_agents(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Vec<db::project_agents::AgentPoolEntry>>, SchedulerError> {
+    // Verify project exists
+    db::projects::get_by_id(&state.db_pool, &id).await?;
+    let entries = db::project_agents::list_by_project(&state.db_pool, &id).await?;
+    Ok(Json(entries))
+}
+
+#[derive(Debug, Deserialize)]
+struct AddProjectAgentRequest {
+    agent_id: String,
+}
+
+async fn add_project_agent(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<AddProjectAgentRequest>,
+) -> Result<impl IntoResponse, SchedulerError> {
+    // Verify project exists
+    db::projects::get_by_id(&state.db_pool, &id).await?;
+    // Verify agent exists and is enabled
+    let agent = db::agents::get_by_id(&state.db_pool, &req.agent_id).await?;
+    if !agent.enabled {
+        return Err(SchedulerError::ValidationFailed(format!(
+            "agent is disabled: {}",
+            req.agent_id
+        )));
+    }
+    db::project_agents::insert(&state.db_pool, &id, &req.agent_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_project_agent(
+    State(state): State<AppState>,
+    AxumPath((id, agent_id)): AxumPath<(String, String)>,
+) -> Result<impl IntoResponse, SchedulerError> {
+    db::projects::get_by_id(&state.db_pool, &id).await?;
+    let deleted = db::project_agents::delete(&state.db_pool, &id, &agent_id).await?;
+    if !deleted {
+        return Err(SchedulerError::NotFound(format!(
+            "agent {agent_id} not in project pool"
+        )));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/projects", get(list_projects).post(create_project))
@@ -242,5 +255,13 @@ pub fn routes() -> Router<AppState> {
             get(get_project)
                 .patch(update_project)
                 .delete(delete_project),
+        )
+        .route(
+            "/api/projects/{id}/agents",
+            get(list_project_agents).post(add_project_agent),
+        )
+        .route(
+            "/api/projects/{id}/agents/{agent_id}",
+            axum::routing::delete(remove_project_agent),
         )
 }
