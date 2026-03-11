@@ -176,9 +176,9 @@ test('log view suppresses tool results with matching call', async ({ page }) => 
   await expect(gearEntries).toHaveCount(3);
 });
 
-// --- Test 8: Platform events still render as tool-card ---
+// --- Test 8: Child turn-complete renders as child-response block ---
 
-test('platform events still render as tool-card', async ({ page }) => {
+test('child turn-complete renders as child-response block', async ({ page }) => {
   test.setTimeout(60000);
   await waitForWorkerIdle();
 
@@ -192,9 +192,11 @@ test('platform events still render as tool-card', async ({ page }) => {
   await page.goto(`/#/execution/${execId}`);
   await page.getByRole('tab', { name: 'Chat' }).click();
 
-  // Platform event "Child reported" uses .tool-card class (NOT .tool-group)
-  const toolCard = page.locator('.tool-card').filter({ hasText: 'Child reported' });
-  await expect(toolCard).toBeVisible({ timeout: 10000 });
+  const childResponse = page.locator('.child-response');
+  await expect(childResponse).toBeVisible({ timeout: 10000 });
+  await expect(childResponse.locator('.child-response-header')).toBeVisible();
+  await expect(childResponse.locator('.child-response-body .markdown-body')).toBeVisible();
+  await expect(page.locator('.tool-card').filter({ hasText: 'Child reported' })).not.toBeVisible();
 });
 
 // --- Initial prompt visible as user bubble ---

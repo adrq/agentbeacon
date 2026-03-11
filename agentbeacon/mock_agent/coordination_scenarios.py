@@ -150,6 +150,47 @@ class EndTurnScenario(_BaseScenario):
         return "end_turn"
 
 
+class EndTurnMarkdownScenario(_BaseScenario):
+    """Child agent: responds with rich markdown content, then ends turn.
+
+    Phase 0: emits rich markdown as the response message -> end_turn
+    Phase N: emits END_TURN_MD_PHASE_{N} -> end_turn
+    """
+
+    MARKDOWN_RESPONSE = """\
+## Analysis Complete
+
+The refactoring identified **3 critical issues**:
+
+- Missing null check in `parseConfig()` — can crash on empty input
+- Unused import `collections.OrderedDict` in `utils.py`
+- Race condition in `WorkerPool.shutdown()` when tasks > threads
+
+### Recommended Fix
+
+```rust
+fn safe_parse(input: &str) -> Result<Config, ParseError> {
+    if input.is_empty() {
+        return Err(ParseError::EmptyInput);
+    }
+    serde_json::from_str(input).map_err(ParseError::Json)
+}
+```
+
+> All three issues have automated regression tests in the PR.\
+"""
+
+    async def handle_prompt(self, prompt_text: str) -> str:
+        if self.phase == 0:
+            self._send_marker(self.MARKDOWN_RESPONSE)
+            self.phase = 1
+            return "end_turn"
+
+        self._send_marker(f"END_TURN_MD_PHASE_{self.phase}")
+        self.phase += 1
+        return "end_turn"
+
+
 class DelegateReleaseScenario(_BaseScenario):
     """Lead agent: delegates to a child, then releases the child on next prompt.
 

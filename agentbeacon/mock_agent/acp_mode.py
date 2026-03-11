@@ -15,6 +15,7 @@ from .coordination_scenarios import (
     DelegateMultiScenario,
     DelegateReleaseScenario,
     DelegateScenario,
+    EndTurnMarkdownScenario,
     EndTurnMessageScenario,
     EndTurnScenario,
 )
@@ -144,6 +145,9 @@ class ACPHandler:
                 session_id, mcp_client, self.delegate_to, self.delegate_count
             ),
             "end-turn": lambda: EndTurnScenario(session_id, mcp_client),
+            "end-turn-markdown": lambda: EndTurnMarkdownScenario(
+                session_id, mcp_client
+            ),
             "end-turn-message": lambda: EndTurnMessageScenario(session_id, mcp_client),
             "delegate-release": lambda: DelegateReleaseScenario(
                 session_id, mcp_client, self.delegate_to

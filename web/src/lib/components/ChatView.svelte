@@ -132,7 +132,8 @@
     | { type: 'thinking'; data: NormalizedThinking; time: string; key: string }
     | { type: 'data_fallback'; data: Record<string, unknown>; time: string; key: string }
     | { type: 'error'; message: string; stderr?: string; time: string; key: string }
-    | { type: 'fyi'; text: string; time: string; key: string };
+    | { type: 'fyi'; text: string; time: string; key: string }
+    | { type: 'child_response'; agentLabel: string; text: string; time: string; key: string };
 
   function resolveAgentType(sessionId: string | null): AgentType {
     const session = sessions.find(s => s.id === sessionId);
@@ -210,7 +211,9 @@
             }
             if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
               const tc = d as unknown as import('../types').TurnCompleteData;
-              entries.push({ type: 'tool', icon: '\u21A9', text: `Child reported: ${tc.message}`, time, key: `${ev.id}-${seq++}` });
+              const childSession = sessions.find(s => s.id === tc.child_session_id);
+              const childAgentLabel = childSession ? agentName(childSession.agent_id) : 'Child';
+              entries.push({ type: 'child_response', agentLabel: childAgentLabel, text: tc.message, time, key: `${ev.id}-${seq++}` });
               continue;
             }
 
@@ -426,6 +429,14 @@
               <div class="lateral-header">From {entry.senderName}</div>
               <div class="lateral-body">{entry.text}</div>
               <div class="lateral-time">{entry.time}</div>
+            </div>
+          </div>
+        {:else if entry.type === 'child_response'}
+          <div class="chat-row child-response-row">
+            <div class="child-response">
+              <div class="child-response-header">{entry.agentLabel}</div>
+              <div class="child-response-body"><Markdown text={entry.text} /></div>
+              <div class="child-response-time">{entry.time}</div>
             </div>
           </div>
         {:else if entry.type === 'state'}
@@ -705,6 +716,40 @@
     font-family: var(--font-mono);
   }
 
+  .child-response-row {
+    justify-content: flex-start;
+  }
+
+  .child-response {
+    max-width: 85%;
+    padding: 0.375rem 0.75rem;
+    border-left: 2px solid hsl(var(--status-success));
+    background: hsl(var(--muted) / 0.15);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .child-response-header {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: hsl(var(--status-success));
+    margin-bottom: 0.125rem;
+  }
+
+  .child-response-body :global(.markdown-body) {
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  .child-response-time {
+    font-size: 0.625rem;
+    color: hsl(var(--muted-foreground));
+    margin-top: 0.25rem;
+    font-family: var(--font-mono);
+  }
+
   .bubble-time {
     font-size: 0.625rem;
     color: hsl(var(--muted-foreground));
@@ -719,7 +764,7 @@
     padding: 0.125rem 0.5rem;
   }
 
-  /* Platform event cards (delegate, turn_complete, escalate, plan) */
+  /* Platform event cards (delegate, escalate, plan) */
   .tool-card {
     display: inline-flex;
     align-items: center;

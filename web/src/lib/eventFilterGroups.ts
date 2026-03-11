@@ -1,7 +1,7 @@
 export type EventFilter = 'all' | 'messages' | 'tools' | 'errors' | 'status';
 
 export const EVENT_FILTER_GROUPS: Record<Exclude<EventFilter, 'all'>, Set<string>> = {
-  messages: new Set(['agent', 'user', 'lateral', 'thinking']),
+  messages: new Set(['agent', 'user', 'lateral', 'thinking', 'child_response']),
   tools:    new Set(['tool_group', 'tool_stream']),
   errors:   new Set(['error']),
   status:   new Set(['state', 'tool', 'fyi']),

@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
 import {
   ensureDirectAgent, ensureTCLeadAgent, ensureTCChildAgent,
+  ensureTCMarkdownLeadAgent, ensureTCChildMarkdownAgent,
   ensureTCMsgLeadAgent, ensureTCMsgChildAgent,
   createExecution, waitForWorkerIdle, waitForTurnEnd,
+  waitForWorkerPickup, waitForEvent,
   getHierarchicalName, sendAgentMessage, apiGet, apiPost,
 } from './helpers';
 
@@ -96,4 +98,133 @@ test('human user messages still render as user bubbles', async ({ page }) => {
   await page.getByRole('tab', { name: 'Chat' }).click();
   await expect(page.locator('.user-bubble').first()).toBeVisible({ timeout: 10000 });
   await expect(page.locator('.lateral-message')).not.toBeVisible();
+});
+
+// --- Test 5: Child response visible under Messages filter ---
+
+test('child response visible under Messages filter', async ({ page }) => {
+  test.setTimeout(60000);
+  await waitForWorkerIdle();
+
+  const lead = await ensureTCLeadAgent();
+  const child = await ensureTCChildAgent();
+  const { execId } = await createExecution(lead.id, 'Filter visibility test', 'msg filter', [child.id]);
+  await waitForWorkerPickup(execId, 15000);
+  await waitForEvent(execId, 'turn_complete', 30000);
+
+  await page.goto(`/#/execution/${execId}`);
+  await page.getByRole('tab', { name: 'Chat' }).click();
+
+  // Visible under All
+  await expect(page.locator('.child-response')).toBeVisible({ timeout: 10000 });
+
+  // Visible under Messages
+  await page.getByRole('radio', { name: 'Messages' }).click();
+  await expect(page.locator('.child-response')).toBeVisible({ timeout: 5000 });
+
+  // Hidden under Status
+  await page.getByRole('radio', { name: 'Status' }).click();
+  await expect(page.locator('.child-response')).not.toBeVisible();
+});
+
+// --- Test 6: Child response has green left border ---
+
+test('child response has green left border', async ({ page }) => {
+  test.setTimeout(60000);
+  await waitForWorkerIdle();
+
+  const lead = await ensureTCLeadAgent();
+  const child = await ensureTCChildAgent();
+  const { execId } = await createExecution(lead.id, 'Green border test', 'border test', [child.id]);
+  await waitForWorkerPickup(execId, 15000);
+  await waitForEvent(execId, 'turn_complete', 30000);
+
+  await page.goto(`/#/execution/${execId}`);
+  await page.getByRole('tab', { name: 'Chat' }).click();
+
+  const childResponse = page.locator('.child-response');
+  await expect(childResponse).toBeVisible({ timeout: 10000 });
+
+  const borderColor = await childResponse.evaluate(el => getComputedStyle(el).borderLeftColor);
+  // Expect a green-ish color (RGB green component > red and blue)
+  const match = borderColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+  expect(match).toBeTruthy();
+  if (match) {
+    const r = Number(match[1]);
+    const g = Number(match[2]);
+    const b = Number(match[3]);
+    expect(g).toBeGreaterThan(r);
+    expect(g).toBeGreaterThan(b);
+  }
+
+  // Verify left alignment
+  const row = page.locator('.child-response-row');
+  const justifyContent = await row.evaluate(el => getComputedStyle(el).justifyContent);
+  expect(justifyContent).toBe('flex-start');
+});
+
+// --- Test 7: Child response header shows child agent name ---
+
+test('child response header shows child agent name', async ({ page }) => {
+  test.setTimeout(60000);
+  await waitForWorkerIdle();
+
+  const lead = await ensureTCLeadAgent();
+  const child = await ensureTCChildAgent();
+  const { execId } = await createExecution(lead.id, 'Agent name test', 'name test', [child.id]);
+  await waitForWorkerPickup(execId, 15000);
+  await waitForEvent(execId, 'turn_complete', 30000);
+
+  await page.goto(`/#/execution/${execId}`);
+  await page.getByRole('tab', { name: 'Chat' }).click();
+
+  const header = page.locator('.child-response-header');
+  await expect(header).toBeVisible({ timeout: 10000 });
+  await expect(header).toContainText('TC Child Agent');
+});
+
+// --- Test 8: EventsTimeline still shows compact turn-complete summary ---
+
+test('EventsTimeline still shows compact turn-complete summary', async ({ page }) => {
+  test.setTimeout(60000);
+  await waitForWorkerIdle();
+
+  const lead = await ensureTCLeadAgent();
+  const child = await ensureTCChildAgent();
+  const { execId } = await createExecution(lead.id, 'Timeline compact test', 'timeline test', [child.id]);
+  await waitForWorkerPickup(execId, 15000);
+  await waitForEvent(execId, 'turn_complete', 30000);
+
+  await page.goto(`/#/execution/${execId}`);
+  // Log view is default — verify turn_complete shows as compact entry
+  const turnCompleteEntry = page.locator('.ev-icon.turn-complete');
+  await expect(turnCompleteEntry).toBeVisible({ timeout: 10000 });
+});
+
+// --- Test 9: Child markdown response renders rich content ---
+
+test('child markdown response renders headings, code blocks, and lists', async ({ page }) => {
+  test.setTimeout(60000);
+  await waitForWorkerIdle();
+
+  const lead = await ensureTCMarkdownLeadAgent();
+  const child = await ensureTCChildMarkdownAgent();
+  const { execId } = await createExecution(lead.id, 'Markdown render test', 'md test', [child.id]);
+  await waitForWorkerPickup(execId, 15000);
+  await waitForEvent(execId, 'turn_complete', 30000);
+
+  await page.goto(`/#/execution/${execId}`);
+  await page.getByRole('tab', { name: 'Chat' }).click();
+
+  const childResponse = page.locator('.child-response');
+  await expect(childResponse).toBeVisible({ timeout: 10000 });
+
+  const body = childResponse.locator('.child-response-body .markdown-body');
+  await expect(body).toBeVisible();
+
+  // Verify markdown elements rendered (not plain text)
+  await expect(body.locator('h2')).toBeVisible();
+  await expect(body.locator('code').first()).toBeVisible();
+  await expect(body.locator('ul li')).toHaveCount(3);
+  await expect(body.locator('blockquote')).toBeVisible();
 });

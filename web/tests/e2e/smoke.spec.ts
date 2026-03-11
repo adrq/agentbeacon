@@ -103,9 +103,9 @@ test('turn-complete delivers child output to parent', async ({ page }) => {
   await expect(tcEntry).toBeVisible({ timeout: 10000 });
   await expect(tcEntry).toContainText('END_TURN_PHASE_0');
 
-  // Switch to chat view and verify rendering there too
+  // Switch to chat view and verify child response renders as markdown block (not tool-card)
   await page.getByRole('tab', { name: 'Chat' }).click();
-  const chatEntry = page.locator('.tool-card').filter({ hasText: 'Child reported' });
+  const chatEntry = page.locator('.child-response');
   await expect(chatEntry).toBeVisible({ timeout: 5000 });
 });
 

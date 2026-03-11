@@ -116,7 +116,7 @@
           }
           if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
             const tc = d as unknown as import('../types').TurnCompleteData;
-            entries.push({ key, time, icon: '\u21A9', iconClass: 'turn-complete', text: `Child reported: "${truncate(tc.message, 80)}"`, entryType: 'tool' });
+            entries.push({ key, time, icon: '\u21A9', iconClass: 'turn-complete', text: `Child reported: "${truncate(tc.message, 80)}"`, entryType: 'child_response' });
             continue;
           }
 

@@ -178,6 +178,22 @@ export async function ensureTCChildAgent(): Promise<{ id: string; name: string }
   return { id: agent.id, name: agent.name };
 }
 
+/** Ensure the 'TC Markdown Lead Agent' exists (must be pre-seeded via scripts/seed_agents.py). */
+export async function ensureTCMarkdownLeadAgent(): Promise<{ id: string; name: string }> {
+  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  const agent = agents.find(a => a.name === 'TC Markdown Lead Agent');
+  if (!agent) throw new Error('TC Markdown Lead Agent not found — run scripts/seed_agents.py first');
+  return { id: agent.id, name: agent.name };
+}
+
+/** Ensure the 'TC Child Markdown Agent' exists (must be pre-seeded via scripts/seed_agents.py). */
+export async function ensureTCChildMarkdownAgent(): Promise<{ id: string; name: string }> {
+  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  const agent = agents.find(a => a.name === 'TC Child Markdown Agent');
+  if (!agent) throw new Error('TC Child Markdown Agent not found — run scripts/seed_agents.py first');
+  return { id: agent.id, name: agent.name };
+}
+
 /** Discover hierarchical name for a session via the agents discovery endpoint. */
 export async function getHierarchicalName(execId: string, sessionId: string): Promise<string> {
   const agents: { session_id: string; name: string }[] = await apiGet(
