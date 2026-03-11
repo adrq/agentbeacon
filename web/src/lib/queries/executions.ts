@@ -82,17 +82,28 @@ export function inputRequiredSessionsQuery() {
   }));
 }
 
+export function executionAgentsQuery(executionId: () => string | null) {
+  return createQuery(() => ({
+    queryKey: ['execution-agents', executionId()],
+    queryFn: () => api.getExecutionAgents(executionId()!),
+    enabled: !!executionId(),
+  }));
+}
+
 export function createExecutionMutation() {
   const queryClient = useQueryClient();
   return createMutation(() => ({
     mutationFn: (req: {
-      agent_id: string;
+      root_agent_id: string;
+      agent_ids: string[];
       prompt: string;
       title?: string;
       project_id?: string;
       context_id?: string;
       branch?: string;
       cwd?: string;
+      max_depth?: number;
+      max_width?: number;
     }) => api.createExecution(req),
     onSuccess: (_data: CreateExecutionResponse) => {
       queryClient.invalidateQueries({ queryKey: ['executions'] });

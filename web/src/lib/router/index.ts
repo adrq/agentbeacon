@@ -62,13 +62,17 @@ class HashRouter {
       return { section: 'wiki', executionId: null, projectId: null, agentId: null, wikiSlug: null };
     }
 
+    if (cleanHash === 'settings') {
+      return { section: 'settings', executionId: null, projectId: null, agentId: null, wikiSlug: null };
+    }
+
     return { section: 'home', executionId: null, projectId: null, agentId: null, wikiSlug: null };
   }
 
   private handleRouteChange() {
     const route = this.parseHash(window.location.hash);
     activeSection.set(route.section);
-    sidebarOpen.set(route.section !== 'home' && route.section !== 'wiki');
+    sidebarOpen.set(route.section !== 'home' && route.section !== 'wiki' && route.section !== 'settings');
     selectedExecutionId.set(route.executionId);
     // Don't set selectedProjectId for wiki routes — it would interfere with projects section
     if (route.section !== 'wiki') {

@@ -4,6 +4,8 @@
   import { projectsQuery } from '../queries/projects';
   import { createExecutionMutation } from '../queries/executions';
   import { router } from '../router';
+  import { api } from '../api';
+  import type { AgentPoolEntry } from '../types';
   import Button from './ui/button.svelte';
   import type { ExecutionPrefill } from './ExecutionDetail.svelte';
 
@@ -20,7 +22,8 @@
   const createMut = createExecutionMutation();
 
   let isOpen = $state(true);
-  let selectedAgentId = $state('');
+  let selectedRootAgentId = $state('');
+  let selectedAgentIds = $state<Set<string>>(new Set());
   let selectedProjectId = $state(initialProjectId ?? '');
   let task = $state('');
   let title = $state('');
@@ -29,15 +32,25 @@
   let maxDepth = $state('');
   let maxWidth = $state('');
   let showAdvanced = $state(false);
+  let showPool = $state(false);
   let error: string | null = $state(null);
 
-  // Apply prefill values once on mount (not on every reactive change)
+  // Apply prefill values once on mount
   let prefillApplied = false;
   $effect.pre(() => {
     if (prefill && !prefillApplied) {
       prefillApplied = true;
       if (prefill.projectId) selectedProjectId = prefill.projectId;
-      if (prefill.agentId) selectedAgentId = prefill.agentId;
+      if (prefill.agentId) {
+        selectedRootAgentId = prefill.agentId;
+        selectedAgentIds = new Set([prefill.agentId]);
+      }
+      if (prefill.agentIds) {
+        selectedAgentIds = new Set(prefill.agentIds);
+        if (prefill.agentId && prefill.agentIds.includes(prefill.agentId)) {
+          selectedRootAgentId = prefill.agentId;
+        }
+      }
       if (prefill.prompt) task = prefill.prompt;
       if (prefill.title) title = prefill.title;
     }
@@ -48,31 +61,68 @@
   let selectedProject = $derived(projectList.find(p => p.id === selectedProjectId) ?? null);
   let submitting = $derived(createMut.isPending);
 
+  // Single agent shortcut: auto-select when only one enabled agent
+  let singleAgentMode = $derived(enabledAgents.length === 1);
+
+  // Root agent dropdown shows only agents in the pool
+  let poolAgents = $derived(enabledAgents.filter(a => selectedAgentIds.has(a.id)));
+
   let canSubmit = $derived(
-    !!selectedAgentId && task.trim().length > 0 && (!!selectedProjectId || !!cwd.trim()) && !submitting
+    !!selectedRootAgentId
+    && selectedAgentIds.size > 0
+    && selectedAgentIds.has(selectedRootAgentId)
+    && task.trim().length > 0
+    && (!!selectedProjectId || !!cwd.trim())
+    && !submitting
   );
 
   // Auto-select agent when only one is available (skip when prefilled)
   $effect(() => {
-    if (!prefill && !selectedAgentId && enabledAgents.length === 1) {
-      selectedAgentId = enabledAgents[0].id;
+    if (!prefill && enabledAgents.length === 1) {
+      const agent = enabledAgents[0];
+      selectedRootAgentId = agent.id;
+      selectedAgentIds = new Set([agent.id]);
     }
   });
 
-  // When project is selected, auto-set agent to project's default and clear branch if non-git (skip when prefilled)
+  // When project is selected, fetch project's agent pool and pre-check those agents
   $effect(() => {
     if (!prefill && selectedProject) {
-      if (selectedProject.default_agent_id) {
-        const defaultAgent = enabledAgents.find(a => a.id === selectedProject!.default_agent_id);
-        if (defaultAgent) {
-          selectedAgentId = defaultAgent.id;
+      api.getProjectAgents(selectedProject.id).then((pool: AgentPoolEntry[]) => {
+        if (pool.length > 0) {
+          const ids = new Set(pool.map(a => a.agent_id).filter(id =>
+            enabledAgents.some(ea => ea.id === id)
+          ));
+          if (ids.size > 0) {
+            selectedAgentIds = ids;
+            // Auto-select root if only one pool agent
+            if (ids.size === 1) {
+              selectedRootAgentId = [...ids][0];
+            } else if (!ids.has(selectedRootAgentId)) {
+              selectedRootAgentId = '';
+            }
+          }
         }
-      }
+      }).catch(() => { /* project may not have pool yet */ });
+
       if (!selectedProject.is_git) {
         branch = '';
       }
     }
   });
+
+  function togglePoolAgent(agentId: string) {
+    const next = new Set(selectedAgentIds);
+    if (next.has(agentId)) {
+      next.delete(agentId);
+      if (selectedRootAgentId === agentId) {
+        selectedRootAgentId = '';
+      }
+    } else {
+      next.add(agentId);
+    }
+    selectedAgentIds = next;
+  }
 
   // Mutual exclusivity: branch and cwd
   function handleBranchInput(value: string) {
@@ -103,7 +153,8 @@
     const parsedDepth = maxDepth !== '' ? parseInt(String(maxDepth), 10) : undefined;
     const parsedWidth = maxWidth !== '' ? parseInt(String(maxWidth), 10) : undefined;
     const req = {
-      agent_id: selectedAgentId,
+      root_agent_id: selectedRootAgentId,
+      agent_ids: [...selectedAgentIds],
       prompt,
       title: title.trim() || generateTitle(prompt),
       ...(selectedProjectId && { project_id: selectedProjectId }),
@@ -148,15 +199,36 @@
         </select>
       </div>
 
+      {#if !singleAgentMode && enabledAgents.length > 1}
+        <button class="toggle-link" onclick={() => showPool = !showPool}>
+          {showPool ? 'Hide' : 'Show'} Agent Pool ({selectedAgentIds.size} selected)
+        </button>
+
+        {#if showPool}
+          <div class="pool-section">
+            {#each enabledAgents as agent (agent.id)}
+              <label class="pool-checkbox">
+                <input
+                  type="checkbox"
+                  checked={selectedAgentIds.has(agent.id)}
+                  onchange={() => togglePoolAgent(agent.id)}
+                />
+                <span>{agent.name}</span>
+              </label>
+            {/each}
+          </div>
+        {/if}
+      {/if}
+
       <div class="field">
-        <label class="field-label" for="exec-agent">Agent</label>
+        <label class="field-label" for="exec-agent">Root Agent</label>
         <select
           id="exec-agent"
           class="field-select"
-          bind:value={selectedAgentId}
+          bind:value={selectedRootAgentId}
         >
-          <option value="">Select an agent...</option>
-          {#each enabledAgents as agent}
+          <option value="">Select root agent...</option>
+          {#each poolAgents as agent}
             <option value={agent.id}>{agent.name}</option>
           {/each}
         </select>
@@ -245,7 +317,9 @@
         </div>
       {/if}
 
-      {#if !selectedProjectId && !cwd.trim()}
+      {#if enabledAgents.length === 0}
+        <div class="validation-hint">No enabled agents available.</div>
+      {:else if !selectedProjectId && !cwd.trim()}
         <div class="validation-hint">Select a project or specify a working directory.</div>
       {/if}
 
@@ -327,6 +401,30 @@
 
   .toggle-link:hover {
     opacity: 0.8;
+  }
+
+  .pool-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--muted) / 0.2);
+    margin-bottom: 0.75rem;
+  }
+
+  .pool-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    color: hsl(var(--foreground));
+    cursor: pointer;
+  }
+
+  .pool-checkbox input[type="checkbox"] {
+    accent-color: hsl(var(--primary));
   }
 
   .validation-hint {

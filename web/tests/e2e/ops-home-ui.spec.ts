@@ -39,7 +39,8 @@ test('activity feed shows project label when execution has project', async ({ pa
     path: '/tmp',
   });
   const exec = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'STREAM_CHUNKS',
     title: 'Feed project label test',
     project_id: project.id,

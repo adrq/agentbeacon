@@ -49,7 +49,8 @@ test('auto worktree execution shows working directory', async ({ page }) => {
 
   // Create execution via API (no branch = auto-worktree for git project)
   const exec = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'test auto worktree',
     title: 'Auto WT Test',
     project_id: project.id,
@@ -70,7 +71,8 @@ test('non git project shows no working directory', async ({ page }) => {
   createdProjectIds.push(project.id);
 
   const exec = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'test no worktree',
     title: 'No WT Test',
     project_id: project.id,
@@ -131,7 +133,8 @@ test('explicit branch override', async () => {
   createdProjectIds.push(project.id);
 
   const exec = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'test explicit branch',
     title: 'Explicit Branch',
     project_id: project.id,
@@ -154,7 +157,8 @@ test('explicit cwd overrides auto worktree', async ({ page }) => {
   createdProjectIds.push(project.id);
 
   const exec = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'test cwd override',
     title: 'CWD Override',
     project_id: project.id,
@@ -177,7 +181,8 @@ test('working directory copy button exists', async ({ page }) => {
   createdProjectIds.push(project.id);
 
   const exec = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'test copy',
     title: 'Copy Test',
     project_id: project.id,

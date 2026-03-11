@@ -56,6 +56,7 @@ export function createAgentMutation() {
       driver_id: string;
       config: Record<string, unknown>;
       sandbox_config?: Record<string, unknown> | null;
+      system_prompt?: string | null;
     }) => api.createAgent(req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] });
@@ -74,6 +75,7 @@ export function updateAgentMutation() {
         config?: Record<string, unknown>;
         sandbox_config?: Record<string, unknown> | null;
         enabled?: boolean;
+        system_prompt?: string | null;
       };
     }) => api.updateAgent(args.id, args.req),
     onSuccess: (_data, variables) => {

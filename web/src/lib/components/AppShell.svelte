@@ -21,6 +21,7 @@
   import AgentsWelcome from './AgentsWelcome.svelte';
   import ProjectsWelcome from './ProjectsWelcome.svelte';
   import WikiSection from './wiki/WikiSection.svelte';
+  import SettingsPage from './SettingsPage.svelte';
   import QuestionStateProvider from './QuestionStateProvider.svelte';
 
   let showNewModal = $state(false);
@@ -37,7 +38,7 @@
   });
 
   let isHome = $derived($activeSection === 'home');
-  let sidebarHidden = $derived($activeSection === 'home' || $activeSection === 'wiki');
+  let sidebarHidden = $derived($activeSection === 'home' || $activeSection === 'wiki' || $activeSection === 'settings');
   let effectiveCollapsed = $derived(isHome ? false : (isTablet || $actionPanelCollapsed));
 
   const execsQuery = executionsQuery();
@@ -164,6 +165,8 @@
           {/if}
         {:else if $activeSection === 'wiki'}
           <WikiSection />
+        {:else if $activeSection === 'settings'}
+          <SettingsPage />
         {/if}
       </div>
     {/snippet}

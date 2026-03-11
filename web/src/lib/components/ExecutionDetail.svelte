@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
   import type { Execution, Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
-  import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation } from '../queries/executions';
+  import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation, executionAgentsQuery } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { connectExecutionSSE, type SSEConnection } from '../sse';
@@ -21,6 +21,7 @@
   export interface ExecutionPrefill {
     projectId?: string | null;
     agentId?: string;
+    agentIds?: string[];
     prompt?: string;
     title?: string;
   }
@@ -40,6 +41,7 @@
   let agents = $derived<Agent[]>(agentsQ.data ?? []);
 
   const detailQuery = executionDetailQuery(() => executionId);
+  const poolQuery = executionAgentsQuery(() => executionId);
   const cancelMut = cancelExecutionMutation();
   const completeMut = completeExecutionMutation();
 
@@ -316,9 +318,11 @@
   function handleRerun() {
     if (!detail || !onrerun) return;
     const exec = detail.execution;
+    const pool = poolQuery.data ?? [];
     onrerun({
       projectId: exec.project_id,
       agentId: leadSession?.agent_id,
+      agentIds: pool.map(a => a.agent_id),
       prompt: exec.input,
       title: exec.title ? `Re-run: ${exec.title}` : undefined,
     });
@@ -409,6 +413,15 @@
         <span>Elapsed: {duration(detail.execution, completionTime)}</span>
         <span class="summary-sep">&middot;</span>
         <span>{detail.sessions.length} session{detail.sessions.length !== 1 ? 's' : ''}</span>
+      </div>
+    {/if}
+
+    {#if (poolQuery.data ?? []).length > 0}
+      <div class="pool-section">
+        <span class="pool-label">Agent Pool:</span>
+        {#each poolQuery.data ?? [] as entry (entry.agent_id)}
+          <span class="pool-chip">{entry.name}</span>
+        {/each}
       </div>
     {/if}
 
@@ -596,6 +609,31 @@
 
   .summary-sep {
     opacity: 0.4;
+  }
+
+  .pool-section {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    padding: 0.375rem 1rem;
+    font-size: 0.6875rem;
+    flex-shrink: 0;
+  }
+
+  .pool-label {
+    color: hsl(var(--muted-foreground));
+    font-weight: 500;
+  }
+
+  .pool-chip {
+    display: inline-block;
+    padding: 0.0625rem 0.375rem;
+    border-radius: var(--radius-sm);
+    background: hsl(var(--primary) / 0.1);
+    color: hsl(var(--primary));
+    font-size: 0.625rem;
+    font-weight: 500;
   }
 
   .events-header {

@@ -12,7 +12,13 @@ test('create execution with project selected', async ({ page }) => {
   await expect(dialog).toBeVisible();
 
   await dialog.getByLabel('Project').selectOption(project.id);
-  await dialog.getByLabel('Agent').selectOption(agent.id);
+
+  // Expand pool, check the agent, then collapse so Start stays in viewport
+  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+  await dialog.getByRole('checkbox', { name: agent.name }).check();
+  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+
+  await dialog.getByLabel('Root Agent').selectOption(agent.id);
 
   await dialog.getByRole('textbox', { name: 'Task' }).fill('Test with project');
   await dialog.getByRole('textbox', { name: /title/i }).fill('Project execution');
@@ -32,7 +38,12 @@ test('create execution with cwd instead of project', async ({ page }) => {
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
 
-  await dialog.getByLabel('Agent').selectOption(agent.id);
+  // Expand pool, check the agent, then collapse so Start stays in viewport
+  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+  await dialog.getByRole('checkbox', { name: agent.name }).check();
+  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+
+  await dialog.getByLabel('Root Agent').selectOption(agent.id);
   await dialog.getByRole('textbox', { name: 'Task' }).fill('Test with cwd');
   await dialog.getByRole('textbox', { name: /title/i }).fill('CWD execution');
 

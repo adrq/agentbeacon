@@ -19,7 +19,7 @@ export function projectDetailQuery(id: () => string | null) {
 export function createProjectMutation() {
   const queryClient = useQueryClient();
   return createMutation(() => ({
-    mutationFn: (req: { name: string; path: string; default_agent_id?: string | null }) =>
+    mutationFn: (req: { name: string; path: string }) =>
       api.createProject(req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -32,11 +32,41 @@ export function updateProjectMutation() {
   return createMutation(() => ({
     mutationFn: (args: {
       id: string;
-      req: { name?: string; path?: string; default_agent_id?: string | null; settings?: Record<string, unknown> };
+      req: { name?: string; path?: string; settings?: Record<string, unknown> };
     }) => api.updateProject(args.id, args.req),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       queryClient.invalidateQueries({ queryKey: ['project', variables.id] });
+    },
+  }));
+}
+
+export function projectAgentsQuery(projectId: () => string | null) {
+  return createQuery(() => ({
+    queryKey: ['project-agents', projectId()],
+    queryFn: () => api.getProjectAgents(projectId()!),
+    enabled: !!projectId(),
+  }));
+}
+
+export function addProjectAgentMutation() {
+  const queryClient = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (args: { projectId: string; agentId: string }) =>
+      api.addProjectAgent(args.projectId, args.agentId),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['project-agents', variables.projectId] });
+    },
+  }));
+}
+
+export function removeProjectAgentMutation() {
+  const queryClient = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (args: { projectId: string; agentId: string }) =>
+      api.removeProjectAgent(args.projectId, args.agentId),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['project-agents', variables.projectId] });
     },
   }));
 }

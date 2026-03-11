@@ -1,7 +1,8 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
-  import { projectDetailQuery, deleteProjectMutation } from '../queries/projects';
+  import { projectDetailQuery, deleteProjectMutation, projectAgentsQuery, addProjectAgentMutation, removeProjectAgentMutation } from '../queries/projects';
   import { agentsQuery } from '../queries/agents';
+  import type { AgentPoolEntry } from '../types';
   import { executionsQuery } from '../queries/executions';
   import { router } from '../router';
   import Button from './ui/button.svelte';
@@ -19,14 +20,20 @@
   const agents = agentsQuery();
   const projectExecsQuery = executionsQuery(() => projectId);
   const deleteMut = deleteProjectMutation();
+  const poolQuery = projectAgentsQuery(() => projectId);
+  const addPoolMut = addProjectAgentMutation();
+  const removePoolMut = removeProjectAgentMutation();
 
   let project = $derived(projectQuery.data ?? null);
   let editing = $state(false);
   let showDeleteConfirm = $state(false);
   let deleteError: string | null = $state(null);
+  let showAddAgent = $state(false);
 
-  let agentNameMap = $derived(
-    new Map((agents.data ?? []).map(a => [a.id, a.name]))
+  let poolAgents = $derived<AgentPoolEntry[]>(poolQuery.data ?? []);
+  let poolAgentIds = $derived(new Set(poolAgents.map(a => a.agent_id)));
+  let availableAgents = $derived(
+    (agents.data ?? []).filter(a => a.enabled && !poolAgentIds.has(a.id))
   );
 
   let executions = $derived(projectExecsQuery.data ?? []);
@@ -87,12 +94,6 @@
         <span class="info-value mono">{project.path}</span>
       </div>
       <div class="info-row">
-        <span class="info-label">Default Agent</span>
-        <span class="info-value">
-          {project.default_agent_id ? (agentNameMap.get(project.default_agent_id) ?? 'Unknown') : 'None'}
-        </span>
-      </div>
-      <div class="info-row">
         <span class="info-label">Created</span>
         <span class="info-value">{formatDate(project.created_at)}</span>
       </div>
@@ -100,6 +101,46 @@
         <span class="info-label">Updated</span>
         <span class="info-value">{formatDate(project.updated_at)}</span>
       </div>
+    </div>
+
+    <div class="pool-section">
+      <h3 class="section-heading">Agent Pool</h3>
+      {#if poolAgents.length === 0}
+        <p class="empty-text">No agents assigned to this project.</p>
+      {:else}
+        <div class="pool-tags">
+          {#each poolAgents as agent (agent.agent_id)}
+            <span class="pool-tag">
+              {agent.name}
+              <button
+                class="pool-tag-remove"
+                title="Remove {agent.name} from pool"
+                onclick={() => removePoolMut.mutate({ projectId, agentId: agent.agent_id })}
+              >&times;</button>
+            </span>
+          {/each}
+        </div>
+      {/if}
+      {#if showAddAgent && availableAgents.length > 0}
+        <select
+          class="pool-add-select"
+          onchange={(e) => {
+            const agentId = e.currentTarget.value;
+            if (agentId) {
+              addPoolMut.mutate({ projectId, agentId });
+              e.currentTarget.value = '';
+              showAddAgent = false;
+            }
+          }}
+        >
+          <option value="">Select agent to add...</option>
+          {#each availableAgents as agent}
+            <option value={agent.id}>{agent.name}</option>
+          {/each}
+        </select>
+      {:else if availableAgents.length > 0}
+        <button class="pool-add-btn" onclick={() => showAddAgent = true}>+ Add Agent</button>
+      {/if}
     </div>
 
     <div class="executions-section">
@@ -210,6 +251,68 @@
 
   .info-value.mono {
     font-family: var(--font-mono);
+  }
+
+  .pool-section {
+    margin-bottom: 1.5rem;
+  }
+
+  .pool-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin-top: 0.5rem;
+  }
+
+  .pool-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: hsl(var(--primary) / 0.1);
+    color: hsl(var(--primary));
+    font-size: 0.75rem;
+    font-weight: 500;
+  }
+
+  .pool-tag-remove {
+    background: none;
+    border: none;
+    color: hsl(var(--primary) / 0.6);
+    cursor: pointer;
+    font-size: 0.875rem;
+    line-height: 1;
+    padding: 0;
+  }
+
+  .pool-tag-remove:hover {
+    color: hsl(var(--status-danger));
+  }
+
+  .pool-add-btn {
+    background: none;
+    border: none;
+    color: hsl(var(--primary));
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 0;
+    margin-top: 0.5rem;
+  }
+
+  .pool-add-btn:hover {
+    opacity: 0.8;
+  }
+
+  .pool-add-select {
+    width: 100%;
+    padding: 0.375rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-size: 0.8125rem;
+    margin-top: 0.5rem;
   }
 
   .executions-section {

@@ -21,13 +21,15 @@ test('filter execution list by project', async ({ page }) => {
   cleanupProjectIds.push(projectA.id, projectB.id);
 
   const execA = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'Task for A',
     title: 'Exec A',
     project_id: projectA.id,
   });
   const execB = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'Task for B',
     title: 'Exec B',
     project_id: projectB.id,

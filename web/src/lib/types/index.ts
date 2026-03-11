@@ -5,14 +5,13 @@ export type ExecutionStatus =
 export type SessionStatus = ExecutionStatus;
 export type EventType = 'message' | 'state_change' | 'platform';
 export type Theme = 'light' | 'dark';
-export type NavSection = 'home' | 'executions' | 'projects' | 'agents' | 'wiki';
+export type NavSection = 'home' | 'executions' | 'projects' | 'agents' | 'wiki' | 'settings';
 export type AgentType = 'claude_sdk' | 'codex_sdk' | 'copilot_sdk' | 'opencode_sdk' | 'acp' | 'a2a';
 
 export interface Project {
   id: string;
   name: string;
   path: string;
-  default_agent_id: string | null;
   settings: Record<string, unknown>;
   is_git: boolean;
   created_at: string;
@@ -35,6 +34,7 @@ export interface Agent {
   agent_type: AgentType;
   driver_id: string | null;
   enabled: boolean;
+  system_prompt: string | null;
   config: Record<string, unknown>;
   sandbox_config: Record<string, unknown> | null;
   created_at: string;
@@ -346,11 +346,28 @@ export interface WikiPageExport {
   body: string;
 }
 
-// GET /api/executions/{id}/agents — session-level discovery
-export interface AgentDiscoveryEntry {
+// GET /api/executions/{id}/agents — config pool
+export interface AgentPoolEntry {
+  agent_id: string;
   name: string;
-  agent_name: string;
+  description: string | null;
+  agent_type: string;
+}
+
+// GET /api/executions/{id}/sessions — session discovery
+export interface SessionDiscoveryEntry {
   session_id: string;
+  hierarchical_name: string;
+  agent_name: string;
+  role: string;
   status: string;
   parent_name: string | null;
+}
+
+// GET/POST /api/config — briefing configuration
+export interface ConfigEntry {
+  name: string;
+  value: string;
+  created_at: string;
+  updated_at: string;
 }

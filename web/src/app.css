@@ -185,6 +185,8 @@
   padding: 1.5rem;
   width: 100%;
   max-width: 28rem;
+  max-height: 90vh;
+  overflow-y: auto;
   box-shadow: 0 8px 24px hsl(var(--shadow-hsl) / 0.2);
   z-index: 51;
 }

@@ -40,7 +40,13 @@ test('create execution via modal', async ({ page }) => {
   await expect(dialog).toBeVisible();
 
   await dialog.getByLabel('Project', { exact: true }).selectOption(project.id);
-  await dialog.getByLabel('Agent').selectOption(agent.id);
+
+  // Expand pool, check the agent, then collapse so Start stays in viewport
+  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+  await dialog.getByRole('checkbox', { name: agent.name }).check();
+  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+
+  await dialog.getByLabel('Root Agent').selectOption(agent.id);
 
   await page.getByRole('textbox', { name: 'Task' }).fill('Playwright smoke test task');
   await page.getByRole('textbox', { name: /title/i }).fill('Smoke test');

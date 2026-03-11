@@ -36,7 +36,8 @@ test('decision card shows execution title and project name', async ({ page }) =>
   }
 
   const exec = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'test polish decision card',
     title: 'Polish E2E Title',
     project_id: project!.id,
@@ -61,7 +62,8 @@ test('decision card shows execution title and project name', async ({ page }) =>
 test('question banner has visible background', async ({ page }) => {
   const agent = await ensureDemoAgent();
   const exec = await apiPost('/api/executions', {
-    agent_id: agent.id,
+    root_agent_id: agent.id,
+    agent_ids: [agent.id],
     prompt: 'test banner visibility',
     title: 'Banner Test',
     cwd: '/tmp',
@@ -190,6 +192,12 @@ test('form error has role=alert', async ({ page }) => {
 
   // Fill the form using known fixture labels (not fragile index-based selection)
   await dialog.locator('#exec-project').selectOption({ label: 'my-webapp' });
+
+  // Expand pool, check agent, then collapse so Start stays in viewport
+  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+  await dialog.getByRole('checkbox', { name: agent.name }).check();
+  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+
   await dialog.locator('#exec-agent').selectOption({ label: agent.name });
   await dialog.locator('#exec-task').fill('trigger error test');
   await expect(startBtn).toBeEnabled({ timeout: 3000 });

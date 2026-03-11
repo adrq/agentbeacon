@@ -1,7 +1,6 @@
 <script lang="ts">
   import { Dialog } from 'bits-ui';
   import type { Project } from '../types';
-  import { agentsQuery } from '../queries/agents';
   import { createProjectMutation, updateProjectMutation } from '../queries/projects';
   import Button from './ui/button.svelte';
 
@@ -13,19 +12,16 @@
 
   let { project, onsubmit, oncancel }: Props = $props();
 
-  const agents = agentsQuery();
   const createMut = createProjectMutation();
   const updateMut = updateProjectMutation();
 
   let isOpen = $state(true);
   let name = $state(project?.name ?? '');
   let path = $state(project?.path ?? '');
-  let defaultAgentId = $state(project?.default_agent_id ?? '');
   let error: string | null = $state(null);
   let warning: string | null = $state(null);
   let created = $state(false);
 
-  let enabledAgents = $derived((agents.data ?? []).filter(a => a.enabled));
   let isEdit = $derived(!!project);
   let submitting = $derived(createMut.isPending || updateMut.isPending);
   let canSubmit = $derived(name.trim().length > 0 && path.trim().length > 0 && !submitting && !created);
@@ -40,14 +36,11 @@
         const req: Record<string, unknown> = {};
         if (name.trim() !== project.name) req.name = name.trim();
         if (path.trim() !== project.path) req.path = path.trim();
-        const newDefault = defaultAgentId || null;
-        if (newDefault !== project.default_agent_id) req.default_agent_id = newDefault;
         await updateMut.mutateAsync({ id: project.id, req });
       } else {
         const result = await createMut.mutateAsync({
           name: name.trim(),
           path: path.trim(),
-          default_agent_id: defaultAgentId || null,
         });
         if (result.warning) {
           warning = result.warning;
@@ -99,20 +92,6 @@
         />
       </div>
 
-      <div class="field">
-        <label class="field-label" for="project-agent">Default Agent <span class="optional">(optional)</span></label>
-        <select
-          id="project-agent"
-          class="field-select"
-          bind:value={defaultAgentId}
-        >
-          <option value="">None</option>
-          {#each enabledAgents as agent}
-            <option value={agent.id}>{agent.name}</option>
-          {/each}
-        </select>
-      </div>
-
       {#if error}
         <div class="modal-error" role="alert">{error}</div>
       {/if}
@@ -147,12 +126,7 @@
     color: hsl(var(--foreground));
   }
 
-  .optional {
-    color: hsl(var(--muted-foreground));
-    font-weight: 400;
-  }
-
-  .field-select, .field-input {
+  .field-input {
     width: 100%;
     padding: 0.5rem 0.625rem;
     border: 1px solid hsl(var(--border));
@@ -163,7 +137,7 @@
     font-family: inherit;
   }
 
-  .field-select:focus, .field-input:focus {
+  .field-input:focus {
     outline: none;
     border-color: hsl(var(--primary));
     box-shadow: 0 0 0 2px hsl(var(--primary) / 0.15);

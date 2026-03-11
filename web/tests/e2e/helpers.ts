@@ -194,14 +194,14 @@ export async function ensureTCChildMarkdownAgent(): Promise<{ id: string; name: 
   return { id: agent.id, name: agent.name };
 }
 
-/** Discover hierarchical name for a session via the agents discovery endpoint. */
+/** Discover hierarchical name for a session via the sessions discovery endpoint. */
 export async function getHierarchicalName(execId: string, sessionId: string): Promise<string> {
-  const agents: { session_id: string; name: string }[] = await apiGet(
-    `/api/executions/${execId}/agents`,
+  const sessions: { session_id: string; hierarchical_name: string }[] = await apiGet(
+    `/api/executions/${execId}/sessions`,
   );
-  const entry = agents.find(a => a.session_id === sessionId);
-  if (!entry) throw new Error(`Session ${sessionId} not found in execution ${execId} agents`);
-  return entry.name;
+  const entry = sessions.find(s => s.session_id === sessionId);
+  if (!entry) throw new Error(`Session ${sessionId} not found in execution ${execId} sessions`);
+  return entry.hierarchical_name;
 }
 
 /** Send an inter-agent message using the /api/messages REST endpoint. */
@@ -259,9 +259,8 @@ export async function createExecution(
   title: string,
   extraAgentIds?: string[],
 ) {
-  const body: Record<string, unknown> = extraAgentIds
-    ? { agent_ids: [agentId, ...extraAgentIds], prompt, title, cwd: '/tmp' }
-    : { agent_id: agentId, prompt, title, cwd: '/tmp' };
+  const agent_ids = extraAgentIds ? [agentId, ...extraAgentIds] : [agentId];
+  const body = { root_agent_id: agentId, agent_ids, prompt, title, cwd: '/tmp' };
   const exec = await apiPost('/api/executions', body);
   return { execId: exec.execution.id, sessionId: exec.session_id };
 }

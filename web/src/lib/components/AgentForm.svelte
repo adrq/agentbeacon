@@ -25,6 +25,7 @@
 
   let name = $state(agent?.name ?? template?.name ?? '');
   let description = $state(agent?.description ?? template?.description ?? '');
+  let systemPrompt = $state(agent?.system_prompt ?? '');
   let selectedDriverId = $state<string>(agent?.driver_id ?? driverId ?? '');
   let configText = $state(JSON.stringify(agent?.config ?? template?.config ?? {}, null, 2));
   let sandboxConfigText = $state(
@@ -95,6 +96,8 @@
         if (name.trim() !== agent.name) req.name = name.trim();
         const newDesc = description.trim() || null;
         if (newDesc !== (agent.description ?? null)) req.description = newDesc;
+        const newSysPrompt = systemPrompt.trim() || null;
+        if (newSysPrompt !== (agent.system_prompt ?? null)) req.system_prompt = newSysPrompt;
         if (JSON.stringify(config) !== JSON.stringify(agent.config)) req.config = config;
         const oldSandbox = agent.sandbox_config ? JSON.stringify(agent.sandbox_config) : null;
         const newSandbox = sandboxConfig ? JSON.stringify(sandboxConfig) : null;
@@ -107,6 +110,7 @@
           driver_id: selectedDriverId,
           config,
           sandbox_config: sandboxConfig,
+          system_prompt: systemPrompt.trim() || null,
         });
       }
       onsubmit?.();
@@ -169,6 +173,18 @@
         {#if isEdit}
           <span class="field-hint">Driver cannot be changed after creation.</span>
         {/if}
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="agent-system-prompt">System Prompt <span class="optional">(optional)</span></label>
+        <textarea
+          id="agent-system-prompt"
+          class="field-textarea"
+          bind:value={systemPrompt}
+          rows="4"
+          placeholder="Custom instructions for this agent..."
+        ></textarea>
+        <span class="field-hint">Prepended to agent's context at execution start.</span>
       </div>
 
       <div class="field">

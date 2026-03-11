@@ -1,5 +1,5 @@
 import type {
-  Agent, AgentDiscoveryEntry, Driver, Execution, ExecutionDetail, Session, Event, Project,
+  Agent, AgentPoolEntry, SessionDiscoveryEntry, ConfigEntry, Driver, Execution, ExecutionDetail, Session, Event, Project,
   CreateExecutionResponse, PostMessageResponse, DiffResponse,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
@@ -65,7 +65,6 @@ export class AgentBeaconAPI {
   async createProject(req: {
     name: string;
     path: string;
-    default_agent_id?: string | null;
   }): Promise<Project & { warning?: string }> {
     return this.fetchJSON('/projects', {
       method: 'POST',
@@ -76,7 +75,6 @@ export class AgentBeaconAPI {
   async updateProject(id: string, req: {
     name?: string;
     path?: string;
-    default_agent_id?: string | null;
     settings?: Record<string, unknown>;
   }): Promise<Project> {
     return this.fetchJSON(`/projects/${id}`, {
@@ -134,6 +132,7 @@ export class AgentBeaconAPI {
     driver_id: string;
     config: Record<string, unknown>;
     sandbox_config?: Record<string, unknown> | null;
+    system_prompt?: string | null;
   }): Promise<Agent> {
     return this.fetchJSON('/agents', {
       method: 'POST',
@@ -147,6 +146,7 @@ export class AgentBeaconAPI {
     config?: Record<string, unknown>;
     sandbox_config?: Record<string, unknown> | null;
     enabled?: boolean;
+    system_prompt?: string | null;
   }): Promise<Agent> {
     return this.fetchJSON(`/agents/${id}`, {
       method: 'PATCH',
@@ -158,8 +158,53 @@ export class AgentBeaconAPI {
     return this.fetchNoContent(`/agents/${id}`, { method: 'DELETE' });
   }
 
-  async getExecutionAgents(executionId: string): Promise<AgentDiscoveryEntry[]> {
-    return this.fetchJSON<AgentDiscoveryEntry[]>(`/executions/${executionId}/agents`);
+  async getExecutionAgents(executionId: string): Promise<AgentPoolEntry[]> {
+    return this.fetchJSON<AgentPoolEntry[]>(`/executions/${executionId}/agents`);
+  }
+
+  async addExecutionAgent(executionId: string, req: { agent_id: string; add_to_project?: boolean }): Promise<void> {
+    return this.fetchNoContent(`/executions/${executionId}/agents`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async removeExecutionAgent(executionId: string, agentId: string): Promise<void> {
+    return this.fetchNoContent(`/executions/${executionId}/agents/${agentId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getExecutionSessions(executionId: string): Promise<SessionDiscoveryEntry[]> {
+    return this.fetchJSON<SessionDiscoveryEntry[]>(`/executions/${executionId}/sessions`);
+  }
+
+  async getProjectAgents(projectId: string): Promise<AgentPoolEntry[]> {
+    return this.fetchJSON<AgentPoolEntry[]>(`/projects/${projectId}/agents`);
+  }
+
+  async addProjectAgent(projectId: string, agentId: string): Promise<void> {
+    return this.fetchNoContent(`/projects/${projectId}/agents`, {
+      method: 'POST',
+      body: JSON.stringify({ agent_id: agentId }),
+    });
+  }
+
+  async removeProjectAgent(projectId: string, agentId: string): Promise<void> {
+    return this.fetchNoContent(`/projects/${projectId}/agents/${agentId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getConfig(): Promise<ConfigEntry[]> {
+    return this.fetchJSON<ConfigEntry[]>('/config');
+  }
+
+  async updateConfig(name: string, value: string): Promise<ConfigEntry> {
+    return this.fetchJSON<ConfigEntry>('/config', {
+      method: 'POST',
+      body: JSON.stringify({ name, value }),
+    });
   }
 
   // Executions
@@ -181,7 +226,8 @@ export class AgentBeaconAPI {
   }
 
   async createExecution(req: {
-    agent_id: string;
+    root_agent_id: string;
+    agent_ids: string[];
     prompt: string;
     title?: string;
     project_id?: string;
