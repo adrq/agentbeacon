@@ -43,6 +43,15 @@ type MockSDKMessage =
       };
     };
 
+// Transient failure simulation — counter persists for executor lifetime (cumulative
+// across sessions). When set, the first N calls to query() throw an AxiosError-like
+// error before yielding any messages.
+let queryCallCount = 0;
+const transientFailureCount = parseInt(
+  process.env.AGENTBEACON_MOCK_SDK_TRANSIENT_FAILURES ?? "0",
+  10,
+);
+
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function abortError(): Error {
@@ -345,6 +354,13 @@ export async function* query(params: {
   prompt: string | AsyncIterable<UserMessage>;
   options?: Record<string, unknown>;
 }): AsyncGenerator<MockSDKMessage, void> {
+  queryCallCount++;
+  if (transientFailureCount > 0 && queryCallCount <= transientFailureCount) {
+    const err = new Error("timeout of 5000ms exceeded");
+    err.name = "AxiosError";
+    throw err;
+  }
+
   const signal = (
     params.options?.abortController as AbortController | undefined
   )?.signal;

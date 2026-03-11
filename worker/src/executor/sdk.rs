@@ -202,6 +202,14 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
         cmd.env("NODE_PATH", nm_dir);
     }
 
+    // Suppress SDK's nonessential HTTP traffic (telemetry, update checks, connectivity
+    // pings) — these use hardcoded 5000ms timeouts that cause spurious AxiosErrors.
+    // Not all ancillary calls are gated by this flag; the TS-side retry logic is the
+    // primary defense.
+    if kind == SdkKind::Claude {
+        cmd.env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+    }
+
     let mut child = cmd.spawn().with_context(|| {
         format!(
             "failed to spawn {} executor: {node_path} {script_path}",
