@@ -276,6 +276,13 @@ export class AgentBeaconAPI {
     return this.fetchJSON(`/sessions/${sessionId}/complete`, { method: 'POST' });
   }
 
+  async recoverSession(sessionId: string, message?: string): Promise<{ session: Session; execution_recovered: boolean }> {
+    return this.fetchJSON(`/sessions/${sessionId}/recover`, {
+      method: 'POST',
+      body: JSON.stringify({ message: message ?? undefined }),
+    });
+  }
+
   // Session diffs — custom fetch to handle 413 (truncated) as valid data
   async getSessionDiff(sessionId: string, opts?: { base?: string; stat?: boolean }): Promise<DiffResponse> {
     const search = new URLSearchParams();

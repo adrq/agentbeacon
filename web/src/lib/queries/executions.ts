@@ -132,3 +132,16 @@ export function completeExecutionMutation() {
     },
   }));
 }
+
+export function recoverSessionMutation() {
+  const queryClient = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (params: { sessionId: string; message?: string }) =>
+      api.recoverSession(params.sessionId, params.message),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['executions'] });
+      queryClient.invalidateQueries({ queryKey: ['execution'] });
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    },
+  }));
+}

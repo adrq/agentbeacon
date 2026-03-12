@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
   import type { Execution, Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
-  import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation, executionAgentsQuery } from '../queries/executions';
+  import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation, executionAgentsQuery, recoverSessionMutation } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { connectExecutionSSE, type SSEConnection } from '../sse';
@@ -44,6 +44,7 @@
   const poolQuery = executionAgentsQuery(() => executionId);
   const cancelMut = cancelExecutionMutation();
   const completeMut = completeExecutionMutation();
+  const recoverMut = recoverSessionMutation();
 
   let detail = $derived(detailQuery.data ?? null);
   let loading = $derived(detailQuery.isLoading);
@@ -132,6 +133,9 @@
   let isCancellable = $derived(cancellableStatuses.has(detail?.execution.status ?? ''));
   let isCompletable = $derived(
     detail?.execution.status === 'working' || detail?.execution.status === 'input-required'
+  );
+  let isRecoverable = $derived(
+    detail?.execution.status === 'failed' && leadSession?.status === 'failed' && leadSession?.agent_session_id != null
   );
 
   // SSE connection lifecycle
@@ -314,6 +318,19 @@
     }
   }
 
+  // Recover execution (targets root lead session)
+  let recoverError: string | null = $state(null);
+
+  async function handleRecover() {
+    if (!detail || !leadSession) return;
+    recoverError = null;
+    try {
+      await recoverMut.mutateAsync({ sessionId: leadSession.id });
+    } catch (e) {
+      recoverError = e instanceof Error ? e.message : 'Recovery failed';
+    }
+  }
+
   // Re-run execution
   function handleRerun() {
     if (!detail || !onrerun) return;
@@ -371,8 +388,13 @@
             {completeMut.isPending ? 'Completing...' : 'Complete'}
           </Button>
         {/if}
+        {#if isRecoverable}
+          <Button variant="secondary" size="sm" disabled={recoverMut.isPending} onclick={handleRecover}>
+            {recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}
+          </Button>
+        {/if}
         {#if isTerminal && onrerun}
-          <Button variant="secondary" size="sm" onclick={handleRerun}>
+          <Button variant={isRecoverable ? 'outline' : 'secondary'} size="sm" onclick={handleRerun}>
             Re-run
           </Button>
         {/if}
@@ -382,6 +404,9 @@
           </Button>
         {/if}
       </div>
+      {#if recoverError}
+        <div class="action-error">{recoverError}</div>
+      {/if}
       <div class="detail-meta">
         {#if leadSession}
           <span>Agent: {agentName(leadSession.agent_id)}</span>
@@ -432,7 +457,12 @@
         sessions={detail.sessions}
         {agents}
         {selectedSessionId}
+        {isTerminal}
         onselectsession={handleSessionSelect}
+        onstatuschange={() => {
+          queryClient.invalidateQueries({ queryKey: ['execution', executionId] });
+          queryClient.invalidateQueries({ queryKey: ['executions'] });
+        }}
       />
     {/if}
 
@@ -757,6 +787,12 @@
   }
 
   .detail-error {
+    color: hsl(var(--status-danger));
+  }
+
+  .action-error {
+    padding: 0.375rem 1rem;
+    font-size: 0.8125rem;
     color: hsl(var(--status-danger));
   }
 

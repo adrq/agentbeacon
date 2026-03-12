@@ -350,74 +350,17 @@ async fn fail_stale_non_resumable(
     count
 }
 
-/// Recover a single orphaned session: atomically claim via CAS, reset to
-/// submitted, and enqueue a resume task — all within a single transaction.
-///
-/// Returns `Ok(true)` if recovered, `Ok(false)` if the session was updated
-/// between the SELECT scan and the CAS (worker reconnected — skip).
-async fn recover_session(
+/// Build the task payload for resuming a session (shared by auto and manual recovery).
+async fn build_recovery_task_payload(
     pool: &DbPool,
-    task_queue: &TaskQueue,
-    event_broadcast: &broadcast::Sender<EventNotification>,
     session: &db::sessions::Session,
-    updated_before: &str,
-) -> Result<bool, SchedulerError> {
-    // --- Pre-transaction reads ---
-
-    // Look up agent — NotFound means deleted, permanently fail.
-    // Transient DB errors are propagated so the session can be retried next restart.
-    let agent = match db::agents::get_by_id(pool, &session.agent_id).await {
-        Ok(a) => a,
-        Err(SchedulerError::NotFound(_)) => {
-            tracing::warn!(
-                session_id = %session.id,
-                agent_id = %session.agent_id,
-                "recovery: agent not found or deleted, permanently failing session"
-            );
-            crate::services::crash::handle_session_failure(
-                pool,
-                task_queue,
-                event_broadcast,
-                &session.id,
-                Some("recovery_failed"),
-                Some("agent not found or deleted during recovery"),
-                None,
-            )
-            .await;
-            return Ok(true);
-        }
-        Err(e) => return Err(e),
-    };
-
-    // Guard: cwd must be present (required for resume)
-    let cwd = match &session.cwd {
-        Some(c) => c.clone(),
-        None => {
-            tracing::warn!(
-                session_id = %session.id,
-                "recovery: session has no cwd, permanently failing"
-            );
-            crate::services::crash::handle_session_failure(
-                pool,
-                task_queue,
-                event_broadcast,
-                &session.id,
-                Some("recovery_failed"),
-                Some("session has no cwd — cannot resume"),
-                None,
-            )
-            .await;
-            return Ok(true);
-        }
-    };
-
-    let prior_status = session.status.clone();
-
-    // --- Briefing build + task payload construction (outside transaction) ---
-
-    let recovery_message = "[recovery] Session resumed.";
-
-    let execution = db::executions::get_by_id(pool, &session.execution_id).await?;
+    agent: &db::agents::Agent,
+    execution: &db::Execution,
+    recovery_message: &str,
+) -> Result<serde_json::Value, SchedulerError> {
+    let cwd = session.cwd.as_deref().ok_or_else(|| {
+        SchedulerError::ValidationFailed("no working directory available for recovery".to_string())
+    })?;
 
     let mut agent_config: serde_json::Value =
         serde_json::from_str::<serde_json::Value>(&agent.config)
@@ -479,6 +422,78 @@ async fn recover_session(
     if let Some(ref pid) = execution.project_id {
         task_payload["project_id"] = serde_json::Value::String(pid.clone());
     }
+
+    Ok(task_payload)
+}
+
+/// Recover a single orphaned session: atomically claim via CAS, reset to
+/// submitted, and enqueue a resume task — all within a single transaction.
+///
+/// Returns `Ok(true)` if recovered, `Ok(false)` if the session was updated
+/// between the SELECT scan and the CAS (worker reconnected — skip).
+async fn recover_session(
+    pool: &DbPool,
+    task_queue: &TaskQueue,
+    event_broadcast: &broadcast::Sender<EventNotification>,
+    session: &db::sessions::Session,
+    updated_before: &str,
+) -> Result<bool, SchedulerError> {
+    // --- Pre-transaction reads ---
+
+    // Look up agent — NotFound means deleted, permanently fail.
+    // Transient DB errors are propagated so the session can be retried next restart.
+    let agent = match db::agents::get_by_id(pool, &session.agent_id).await {
+        Ok(a) => a,
+        Err(SchedulerError::NotFound(_)) => {
+            tracing::warn!(
+                session_id = %session.id,
+                agent_id = %session.agent_id,
+                "recovery: agent not found or deleted, permanently failing session"
+            );
+            crate::services::crash::handle_session_failure(
+                pool,
+                task_queue,
+                event_broadcast,
+                &session.id,
+                Some("recovery_failed"),
+                Some("agent not found or deleted during recovery"),
+                None,
+            )
+            .await;
+            return Ok(true);
+        }
+        Err(e) => return Err(e),
+    };
+
+    // Guard: cwd must be present (required for resume)
+    if session.cwd.is_none() {
+        tracing::warn!(
+            session_id = %session.id,
+            "recovery: session has no cwd, permanently failing"
+        );
+        crate::services::crash::handle_session_failure(
+            pool,
+            task_queue,
+            event_broadcast,
+            &session.id,
+            Some("recovery_failed"),
+            Some("session has no cwd — cannot resume"),
+            None,
+        )
+        .await;
+        return Ok(true);
+    }
+
+    let prior_status = session.status.clone();
+
+    // --- Briefing build + task payload construction (outside transaction) ---
+
+    let recovery_message = "[recovery] Session resumed.";
+
+    let execution = db::executions::get_by_id(pool, &session.execution_id).await?;
+
+    let task_payload =
+        build_recovery_task_payload(pool, session, &agent, &execution, recovery_message).await?;
 
     // --- Atomic CAS UPDATE + task_queue INSERT in a single transaction ---
 
@@ -612,4 +627,282 @@ async fn recover_session(
     );
 
     Ok(true)
+}
+
+// --- Manual (user-initiated) recovery ---
+
+pub struct ManualRecoveryResult {
+    pub session_id: String,
+    pub execution_id: String,
+    pub execution_recovered: bool,
+}
+
+/// Resumable agent types that support recovery (have persistent session state).
+fn is_resumable_agent_type(agent_type: &str) -> bool {
+    matches!(agent_type, "claude_sdk" | "copilot_sdk")
+}
+
+/// Attempt manual recovery of a failed session.
+///
+/// Resets the session to `submitted`, resets `recovery_attempts` to 0,
+/// enqueues a resume task, and optionally recovers the execution if
+/// this is the root lead session of a failed execution.
+pub async fn attempt_manual_recovery(
+    pool: &DbPool,
+    task_queue: &TaskQueue,
+    event_broadcast: &broadcast::Sender<EventNotification>,
+    session_id: &str,
+    user_message: Option<&str>,
+) -> Result<ManualRecoveryResult, SchedulerError> {
+    // 1. Get session, verify status == "failed"
+    let session = db::sessions::get_by_id(pool, session_id).await?;
+    if session.status != "failed" {
+        return Err(SchedulerError::Conflict(format!(
+            "session must be 'failed' to recover (current: {})",
+            session.status
+        )));
+    }
+
+    // 2. Get execution
+    let execution = db::executions::get_by_id(pool, &session.execution_id).await?;
+
+    // 3. Execution state guard
+    let is_root_lead = session.parent_session_id.is_none();
+    let mut recover_execution = false;
+    match execution.status.as_str() {
+        "completed" => {
+            return Err(SchedulerError::Conflict(
+                "cannot recover session in a completed execution".to_string(),
+            ));
+        }
+        "canceled" => {
+            return Err(SchedulerError::Conflict(
+                "cannot recover session in a canceled execution".to_string(),
+            ));
+        }
+        "failed" => {
+            if is_root_lead {
+                recover_execution = true;
+            } else {
+                return Err(SchedulerError::Conflict(
+                    "cannot recover child session while execution is failed — recover the root lead session first".to_string(),
+                ));
+            }
+        }
+        _ => {
+            // submitted, working, input-required → session-only recovery
+        }
+    }
+
+    // 4. Validate agent (get_by_id filters deleted_at IS NULL, so NotFound covers deletion;
+    //    the explicit deleted_at check is a defensive safety net)
+    let agent = db::agents::get_by_id(pool, &session.agent_id).await?;
+    if !agent.enabled {
+        return Err(SchedulerError::ValidationFailed(format!(
+            "agent is disabled: {}",
+            agent.name
+        )));
+    }
+    if !is_resumable_agent_type(&agent.agent_type) {
+        return Err(SchedulerError::ValidationFailed(format!(
+            "agent type '{}' does not support recovery",
+            agent.agent_type
+        )));
+    }
+
+    // 5. Validate session has agent_session_id and cwd
+    if session.agent_session_id.is_none() {
+        return Err(SchedulerError::ValidationFailed(
+            "no agent session ID available for recovery".to_string(),
+        ));
+    }
+    if session.cwd.is_none() {
+        return Err(SchedulerError::ValidationFailed(
+            "no working directory available for recovery".to_string(),
+        ));
+    }
+
+    // 6. Build task payload
+    let recovery_message = user_message.unwrap_or("[recovery] Session resumed by user.");
+    let task_payload =
+        build_recovery_task_payload(pool, &session, &agent, &execution, recovery_message).await?;
+
+    // 7. Single atomic transaction
+    let session_cas_sql = pool.prepare_query(
+        "UPDATE sessions SET status = 'submitted', recovery_attempts = 0, \
+         updated_at = CURRENT_TIMESTAMP, completed_at = NULL \
+         WHERE id = ? AND status = 'failed'",
+    );
+    let insert_sql = pool.prepare_query(
+        "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
+    );
+    let payload_json = serde_json::to_string(&task_payload)
+        .map_err(|e| SchedulerError::Database(format!("serialize task_payload failed: {e}")))?;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin transaction failed: {e}")))?;
+
+    // Session CAS: failed → submitted
+    let cas_result = sqlx::query(&session_cas_sql)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("CAS recovery claim failed: {e}")))?;
+
+    if cas_result.rows_affected() == 0 {
+        tx.rollback()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("rollback failed: {e}")))?;
+        return Err(SchedulerError::Conflict(
+            "session status changed concurrently — recovery aborted".to_string(),
+        ));
+    }
+
+    // Re-check execution state inside the transaction for child-only recovery.
+    // Guards against TOCTOU: a concurrent cancel/complete could have flipped the
+    // execution to terminal after our pre-transaction check but before the CAS.
+    if !recover_execution {
+        let exec_check_sql = pool.prepare_query("SELECT status FROM executions WHERE id = ?");
+        let exec_row = sqlx::query_scalar::<_, String>(&exec_check_sql)
+            .bind(&session.execution_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("execution re-check failed: {e}")))?;
+        if matches!(exec_row.as_str(), "completed" | "canceled" | "failed") {
+            tx.rollback()
+                .await
+                .map_err(|e| SchedulerError::Database(format!("rollback failed: {e}")))?;
+            return Err(SchedulerError::Conflict(format!(
+                "execution became '{}' concurrently — recovery aborted",
+                exec_row
+            )));
+        }
+    }
+
+    // Drain stale task_queue rows for this session before inserting recovery task.
+    // Messages delivered while the session was working (pre-crash) may still be queued.
+    // pop_by_session() is FIFO, so without this drain the worker would consume a stale
+    // message (lacking resumeSessionId/agent_config) instead of the recovery payload.
+    // The messages are preserved in the events table — only the delivery mechanism is cleared.
+    let drain_sql = pool.prepare_query("DELETE FROM task_queue WHERE session_id = ?");
+    sqlx::query(&drain_sql)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("drain stale tasks failed: {e}")))?;
+
+    // Task queue insert
+    sqlx::query(&insert_sql)
+        .bind(&session.execution_id)
+        .bind(session_id)
+        .bind(&payload_json)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("recovery task_queue insert failed: {e}")))?;
+
+    // Conditional execution CAS: failed → submitted (only for root lead)
+    if recover_execution {
+        let exec_cas_sql = pool.prepare_query(
+            "UPDATE executions SET status = 'submitted', \
+             updated_at = CURRENT_TIMESTAMP, completed_at = NULL \
+             WHERE id = ? AND status = 'failed'",
+        );
+        let exec_result = sqlx::query(&exec_cas_sql)
+            .bind(&session.execution_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("execution CAS recovery failed: {e}")))?;
+
+        if exec_result.rows_affected() == 0 {
+            tx.rollback()
+                .await
+                .map_err(|e| SchedulerError::Database(format!("rollback failed: {e}")))?;
+            return Err(SchedulerError::Conflict(
+                "execution status changed concurrently — recovery aborted".to_string(),
+            ));
+        }
+    }
+
+    tx.commit().await.map_err(|e| {
+        SchedulerError::Database(format!("commit manual recovery transaction failed: {e}"))
+    })?;
+
+    // 8. Emit state_change events (before waking workers to avoid event ordering race)
+    let session_event = json!({
+        "from": "failed",
+        "to": "submitted",
+        "manual_recovery": true,
+    });
+    match db::events::insert(
+        pool,
+        &session.execution_id,
+        Some(session_id),
+        "state_change",
+        &serde_json::to_string(&session_event).unwrap(),
+    )
+    .await
+    {
+        Ok(event_id) => {
+            let _ = event_broadcast.send(EventNotification::persisted(
+                session.execution_id.clone(),
+                event_id,
+            ));
+        }
+        Err(e) => {
+            tracing::warn!(
+                session_id = session_id,
+                error = %e,
+                "manual recovery: failed to insert session state_change event"
+            );
+        }
+    }
+
+    if recover_execution {
+        let exec_event = json!({
+            "from": "failed",
+            "to": "submitted",
+            "manual_recovery": true,
+        });
+        match db::events::insert(
+            pool,
+            &session.execution_id,
+            None,
+            "state_change",
+            &serde_json::to_string(&exec_event).unwrap(),
+        )
+        .await
+        {
+            Ok(event_id) => {
+                let _ = event_broadcast.send(EventNotification::persisted(
+                    session.execution_id.clone(),
+                    event_id,
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    execution_id = %session.execution_id,
+                    error = %e,
+                    "manual recovery: failed to insert execution state_change event"
+                );
+            }
+        }
+    }
+
+    // 9. Wake task queue waiters (after events to reduce ordering race window)
+    task_queue.wake_waiters();
+
+    tracing::info!(
+        session_id = session_id,
+        execution_id = %session.execution_id,
+        execution_recovered = recover_execution,
+        "manual recovery: session resubmitted"
+    );
+
+    Ok(ManualRecoveryResult {
+        session_id: session_id.to_string(),
+        execution_id: session.execution_id.clone(),
+        execution_recovered: recover_execution,
+    })
 }

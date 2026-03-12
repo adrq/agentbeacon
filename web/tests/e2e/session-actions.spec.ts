@@ -29,8 +29,9 @@ test('session cancel button cancels input-required session', async ({ page }) =>
   await sessionNode.hover();
   await cancelBtn.click();
 
-  // Verify session transitions to canceled (scope to session tree to avoid sidebar matches)
-  await expect(sessionNode).toContainText('canceled', { timeout: 10000 });
+  // After cancel, the execution becomes terminal and the tree auto-collapses.
+  // Verify via the header status badge instead of the (now hidden) tree node.
+  await expect(page.locator('.detail-title-row')).toContainText('Canceled', { timeout: 10000 });
 });
 
 test('session complete button completes input-required session', async ({ page }) => {
@@ -48,8 +49,9 @@ test('session complete button completes input-required session', async ({ page }
   await sessionNode.hover();
   await completeBtn.click();
 
-  // Verify session transitions to completed (scope to session tree to avoid sidebar matches)
-  await expect(sessionNode).toContainText('completed', { timeout: 10000 });
+  // After complete, the execution becomes terminal and the tree auto-collapses.
+  // Verify via the header status badge instead of the (now hidden) tree node.
+  await expect(page.locator('.detail-title-row')).toContainText('Completed', { timeout: 10000 });
 });
 
 test('session action buttons hidden on terminal sessions', async ({ page }) => {
@@ -60,6 +62,11 @@ test('session action buttons hidden on terminal sessions', async ({ page }) => {
   await waitForTerminal(execId);
 
   await page.goto(`/#/execution/${execId}`);
+
+  // Tree defaults to collapsed for terminal executions — open it first
+  const disclosure = page.locator('.tree-disclosure');
+  await expect(disclosure).toBeVisible({ timeout: 10000 });
+  await disclosure.click();
 
   const sessionNode = page.locator('.tree-node').first();
   await expect(sessionNode).toBeVisible({ timeout: 10000 });

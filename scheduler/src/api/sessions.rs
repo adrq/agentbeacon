@@ -620,6 +620,51 @@ async fn notify_parent_of_termination(
     Ok(())
 }
 
+/// Request body for manual recovery
+#[derive(Debug, Deserialize)]
+pub struct RecoverSessionRequest {
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecoverSessionResponse {
+    pub session: SessionResponse,
+    pub execution_recovered: bool,
+}
+
+/// Attempt to recover a failed session (POST /api/sessions/{id}/recover)
+async fn recover_session_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RecoverSessionRequest>,
+) -> Result<impl IntoResponse, SchedulerError> {
+    if let Some(ref msg) = req.message
+        && msg.chars().count() > 10_000
+    {
+        return Err(SchedulerError::ValidationFailed(
+            "message must be 10,000 characters or fewer".to_string(),
+        ));
+    }
+
+    let result = crate::services::recovery::attempt_manual_recovery(
+        &state.db_pool,
+        &state.task_queue,
+        &state.event_broadcast,
+        &id,
+        req.message.as_deref(),
+    )
+    .await?;
+
+    let updated = db::sessions::get_by_id(&state.db_pool, &id).await?;
+    Ok((
+        StatusCode::OK,
+        Json(RecoverSessionResponse {
+            session: updated.into(),
+            execution_recovered: result.execution_recovered,
+        }),
+    ))
+}
+
 /// Session routes
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -642,5 +687,9 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/sessions/{id}/complete",
             axum::routing::post(complete_session),
+        )
+        .route(
+            "/api/sessions/{id}/recover",
+            axum::routing::post(recover_session_handler),
         )
 }

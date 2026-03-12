@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { SessionSummary, Agent } from '../types';
   import { api } from '../api';
   import { toasts } from '../stores/toasts';
@@ -7,11 +8,14 @@
     sessions: SessionSummary[];
     agents: Agent[];
     selectedSessionId?: string | null;
+    isTerminal?: boolean;
     onselectsession?: (sessionId: string | null) => void;
     onstatuschange?: () => void;
   }
 
-  let { sessions, agents, selectedSessionId = null, onselectsession, onstatuschange }: Props = $props();
+  let { sessions, agents, selectedSessionId = null, isTerminal = false, onselectsession, onstatuschange }: Props = $props();
+
+  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
 
   async function handleCancel(e: Event, sessionId: string) {
     e.stopPropagation();
@@ -35,8 +39,19 @@
     }
   }
 
+  async function handleRecover(e: Event, sessionId: string) {
+    e.stopPropagation();
+    try {
+      await api.recoverSession(sessionId);
+      onstatuschange?.();
+    } catch (err) {
+      console.error('Failed to recover session:', err);
+      toasts.error(`Failed to recover session: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  }
+
   function isNonTerminal(status: string): boolean {
-    return !['completed', 'failed', 'canceled'].includes(status);
+    return !TERMINAL_STATUSES.has(status);
   }
 
   interface TreeNode {
@@ -86,20 +101,111 @@
     onselectsession?.(next);
   }
 
+  // --- New state for disclosure + auto-collapse ---
+
+  let treeOpen = $state(true);
+  let userToggledTree = false;
+  let manuallyExpanded = $state<Set<string>>(new Set());
+  let treeContainer: HTMLDivElement | undefined = $state();
+
+  // Reset state when switching executions
+  let prevExecutionId = '';
+  $effect.pre(() => {
+    const execId = sessions[0]?.execution_id ?? '';
+    if (execId !== prevExecutionId) {
+      prevExecutionId = execId;
+      manuallyExpanded = new Set();
+      userToggledTree = false;
+      treeOpen = !isTerminal;
+    }
+  });
+
+  // Auto-close when execution becomes terminal during live viewing
+  $effect(() => {
+    if (isTerminal && !userToggledTree) {
+      treeOpen = false;
+    }
+  });
+
+  // Derived computations
+  let activeCount = $derived(sessions.filter(s => !TERMINAL_STATUSES.has(s.status)).length);
+  let totalCount = $derived(sessions.length);
   let tree = $derived(buildTree(sessions));
+
+  // Scroll selected session into view (depends on treeOpen so it re-triggers when tree opens)
+  $effect(() => {
+    const open = treeOpen;
+    const sid = selectedSessionId;
+    if (!open || !sid || !treeContainer) return;
+    tick().then(() => {
+      const el = treeContainer?.querySelector(`[data-session-id="${CSS.escape(sid)}"]`);
+      el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+  });
+
+  // --- Auto-collapse helpers ---
+
+  function partitionChildren(children: TreeNode[]): { active: TreeNode[]; terminal: TreeNode[] } {
+    const active: TreeNode[] = [];
+    const terminal: TreeNode[] = [];
+    for (const child of children) {
+      if (TERMINAL_STATUSES.has(child.session.status)) {
+        terminal.push(child);
+      } else {
+        active.push(child);
+      }
+    }
+    return { active, terminal };
+  }
+
+  function terminalSummaryText(nodes: TreeNode[]): string {
+    const counts: Record<string, number> = {};
+    for (const n of nodes) {
+      counts[n.session.status] = (counts[n.session.status] ?? 0) + 1;
+    }
+    const order = ['completed', 'failed', 'canceled'];
+    return order
+      .filter(s => counts[s])
+      .map(s => `${counts[s]} ${s}`)
+      .join(', ');
+  }
+
+  function containsSession(nodes: TreeNode[], id: string | null | undefined): boolean {
+    if (!id) return false;
+    return nodes.some(n => n.session.id === id || containsSession(n.children, id));
+  }
+
+  function toggleExpand(parentId: string) {
+    const next = new Set(manuallyExpanded);
+    if (next.has(parentId)) {
+      next.delete(parentId);
+    } else {
+      next.add(parentId);
+    }
+    manuallyExpanded = next;
+  }
 </script>
 
 {#snippet renderNode(node: TreeNode, depth: number)}
   {@const s = node.session}
+  {@const { active, terminal } = partitionChildren(node.children)}
+  {@const isExpanded = manuallyExpanded.has(s.id) || containsSession(terminal, selectedSessionId)}
+
   <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
   <div
     class="tree-node {s.status}"
     class:active={selectedSessionId === s.id}
-    style="padding-left: {1 + depth * 1}rem"
+    style="padding-left: {1 + depth}rem"
+    data-session-id={s.id}
     onclick={() => handleClick(s.id)}
   >
     {#if depth > 0}
       <span class="tree-branch">└─</span>
+    {/if}
+    {#if terminal.length > 0}
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <span class="node-chevron" class:expanded={isExpanded}
+        onclick={(e) => { e.stopPropagation(); toggleExpand(s.id); }}>&#x25B8;</span>
     {/if}
     <span class="node-icon">{statusIcon(s.status)}</span>
     <span class="node-label">{depth === 0 ? `Lead (${agentName(s.agent_id)})` : agentName(s.agent_id)}</span>
@@ -114,31 +220,121 @@
         &#x2713;
       </button>
     {/if}
+    {#if s.status === 'failed' && s.agent_session_id}
+      <button class="action-btn recover-btn" title="Attempt recovery" onclick={(e) => handleRecover(e, s.id)}>
+        &#x21BB;
+      </button>
+    {/if}
   </div>
-  {#each node.children as child}
+
+  <!-- Active children: always rendered -->
+  {#each active as child}
     {@render renderNode(child, depth + 1)}
   {/each}
+
+  <!-- Terminal children: collapsed summary or expanded -->
+  {#if terminal.length > 0}
+    {#if isExpanded}
+      {#each terminal as child}
+        {@render renderNode(child, depth + 1)}
+      {/each}
+    {:else}
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <div
+        class="terminal-summary"
+        style="padding-left: {1 + (depth + 1) * 1}rem"
+        onclick={(e) => { e.stopPropagation(); toggleExpand(s.id); }}
+      >
+        <span class="tree-branch">└─</span>
+        <span class="summary-text">{terminalSummaryText(terminal)}</span>
+      </div>
+    {/if}
+  {/if}
 {/snippet}
 
 <div class="session-tree">
-  <div class="tree-header">Sessions</div>
-  {#each tree as node}
-    {@render renderNode(node, 0)}
-  {/each}
+  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+  <div class="tree-disclosure" onclick={() => { userToggledTree = true; treeOpen = !treeOpen; }}>
+    <span class="disclosure-chevron" class:open={treeOpen}>&#x25B8;</span>
+    <span class="disclosure-label">Sessions</span>
+    <span class="disclosure-counts">
+      {#if activeCount > 0}
+        <span class="count-active">{activeCount} active</span>
+      {/if}
+      {#if activeCount > 0 && totalCount > activeCount}
+        <span class="count-sep">&middot;</span>
+      {/if}
+      <span class="count-total">{totalCount} total</span>
+    </span>
+  </div>
+
+  {#if treeOpen}
+    <div class="tree-body scroll-thin" bind:this={treeContainer}>
+      {#each tree as node}
+        {@render renderNode(node, 0)}
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
   .session-tree {
     padding: 0.5rem 0;
+    flex-shrink: 0;
   }
 
-  .tree-header {
+  .tree-disclosure {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    width: 100%;
+    padding: 0.25rem 1rem;
+    cursor: pointer;
     font-size: 0.6875rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: hsl(var(--muted-foreground));
-    padding: 0 1rem 0.375rem;
+    transition: background 0.1s;
+  }
+
+  .tree-disclosure:hover {
+    background: hsl(var(--muted) / 0.3);
+  }
+
+  .disclosure-chevron {
+    font-size: 0.5rem;
+    transition: transform 0.15s ease;
+    display: inline-block;
+  }
+
+  .disclosure-chevron.open {
+    transform: rotate(90deg);
+  }
+
+  .disclosure-counts {
+    margin-left: auto;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  .count-active {
+    color: hsl(var(--status-working));
+  }
+
+  .count-total {
+    color: hsl(var(--muted-foreground));
+  }
+
+  .count-sep {
+    opacity: 0.4;
+    margin: 0 0.25rem;
+  }
+
+  .tree-body {
+    max-height: clamp(120px, 20vh, 300px);
+    overflow-y: auto;
   }
 
   .tree-node {
@@ -197,6 +393,43 @@
     flex-shrink: 0;
   }
 
+  .node-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 0.875rem;
+    height: 0.875rem;
+    cursor: pointer;
+    font-size: 0.5rem;
+    color: hsl(var(--muted-foreground));
+    flex-shrink: 0;
+    transition: transform 0.15s ease;
+  }
+
+  .node-chevron.expanded {
+    transform: rotate(90deg);
+  }
+
+  .node-chevron:hover {
+    color: hsl(var(--foreground));
+  }
+
+  .terminal-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.25rem 1rem;
+    cursor: pointer;
+    font-size: 0.75rem;
+    color: hsl(var(--muted-foreground));
+    font-style: italic;
+    transition: background 0.1s;
+  }
+
+  .terminal-summary:hover {
+    background: hsl(var(--muted) / 0.3);
+  }
+
   .action-btn {
     display: inline-flex;
     align-items: center;
@@ -226,5 +459,10 @@
   .complete-btn:hover {
     color: hsl(var(--status-success));
     background: hsl(var(--status-success) / 0.1);
+  }
+
+  .recover-btn:hover {
+    color: hsl(var(--status-working));
+    background: hsl(var(--status-working) / 0.1);
   }
 </style>

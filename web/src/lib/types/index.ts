@@ -73,6 +73,7 @@ export interface SessionSummary {
   cwd: string | null;
   worktree_path: string | null;
   status: SessionStatus;
+  recovery_attempts: number;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
