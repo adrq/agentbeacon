@@ -177,44 +177,52 @@ pub async fn create_execution(
         .unwrap_or_else(|| execution_id.clone());
 
     // Working directory resolution + worktree creation
-    let (session_cwd, worktree_path) = if let Some(cwd_val) = resolved_cwd_from_param {
-        // A) Explicit cwd takes priority — no worktree
-        (cwd_val, None)
-    } else if let Some(b) = branch {
-        // B) Explicit branch — create worktree with named branch
-        let proj = project.as_ref().unwrap();
-        let wt_path = common::session_dir(&proj.id, &execution_id, &session_id);
-        let wt_path_str = wt_path.to_string_lossy().to_string();
-        create_worktree(&proj.path, &wt_path, Some(b))?;
-        (wt_path_str.clone(), Some(wt_path_str))
-    } else if let Some(ref proj) = project {
-        // C) Project exists — auto-worktree for git repos with commits
-        let is_git = Path::new(&proj.path).join(".git").is_dir();
-        let has_commits = if is_git {
-            let output = std::process::Command::new("git")
-                .args(["-C", &proj.path, "rev-parse", "HEAD"])
+    let (session_cwd, worktree_path, base_commit_sha) =
+        if let Some(cwd_val) = resolved_cwd_from_param {
+            // A) Explicit cwd takes priority — no worktree
+            // Capture HEAD SHA if cwd is inside a git repo so diff works after commits
+            let base_sha = std::process::Command::new("git")
+                .args(["-C", &cwd_val, "rev-parse", "HEAD"])
                 .output()
-                .map_err(|e| SchedulerError::Database(format!("failed to run git: {e}")))?;
-            output.status.success()
-        } else {
-            false
-        };
-
-        if has_commits {
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            (cwd_val, None, base_sha)
+        } else if let Some(b) = branch {
+            // B) Explicit branch — create worktree with named branch
+            let proj = project.as_ref().unwrap();
             let wt_path = common::session_dir(&proj.id, &execution_id, &session_id);
             let wt_path_str = wt_path.to_string_lossy().to_string();
-            create_worktree(&proj.path, &wt_path, None)?;
-            (wt_path_str.clone(), Some(wt_path_str))
+            let base_sha = create_worktree(&proj.path, &wt_path, Some(b))?;
+            (wt_path_str.clone(), Some(wt_path_str), Some(base_sha))
+        } else if let Some(ref proj) = project {
+            // C) Project exists — auto-worktree for git repos with commits
+            let is_git = Path::new(&proj.path).join(".git").is_dir();
+            let has_commits = if is_git {
+                let output = std::process::Command::new("git")
+                    .args(["-C", &proj.path, "rev-parse", "HEAD"])
+                    .output()
+                    .map_err(|e| SchedulerError::Database(format!("failed to run git: {e}")))?;
+                output.status.success()
+            } else {
+                false
+            };
+
+            if has_commits {
+                let wt_path = common::session_dir(&proj.id, &execution_id, &session_id);
+                let wt_path_str = wt_path.to_string_lossy().to_string();
+                let base_sha = create_worktree(&proj.path, &wt_path, None)?;
+                (wt_path_str.clone(), Some(wt_path_str), Some(base_sha))
+            } else {
+                // Non-git or empty git repo (no commits): use project path directly
+                (proj.path.clone(), None, None)
+            }
         } else {
-            // Non-git or empty git repo (no commits): use project path directly
-            (proj.path.clone(), None)
-        }
-    } else {
-        // D) Should not reach here due to validation above
-        return Err(SchedulerError::ValidationFailed(
-            "at least project_id or cwd is required".to_string(),
-        ));
-    };
+            // D) Should not reach here due to validation above
+            return Err(SchedulerError::ValidationFailed(
+                "at least project_id or cwd is required".to_string(),
+            ));
+        };
 
     // Persist to DB and enqueue. If a worktree was created, clean it up on failure
     // so retries don't fail with "branch already exists".
@@ -227,6 +235,7 @@ pub async fn create_execution(
         project_id,
         title,
         worktree_path.as_deref(),
+        base_commit_sha.as_deref(),
         &session_id,
         &agent,
         &session_cwd,
@@ -256,6 +265,7 @@ async fn persist_and_enqueue(
     project_id: Option<&str>,
     title: Option<&str>,
     worktree_path: Option<&str>,
+    base_commit_sha: Option<&str>,
     session_id: &str,
     agent: &db::agents::Agent,
     session_cwd: &str,
@@ -291,6 +301,7 @@ async fn persist_and_enqueue(
             None,
             Some(session_cwd),
             worktree_path,
+            base_commit_sha,
             &slug,
         )
         .await
@@ -442,7 +453,7 @@ fn create_worktree(
     project_path: &str,
     worktree_path: &Path,
     branch: Option<&str>,
-) -> Result<(), SchedulerError> {
+) -> Result<String, SchedulerError> {
     if let Some(parent) = worktree_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             SchedulerError::Database(format!("create worktree parent directory failed: {e}"))
@@ -482,7 +493,24 @@ fn create_worktree(
         )));
     }
 
-    Ok(())
+    // Capture the HEAD SHA of the newly created worktree
+    let sha_output = std::process::Command::new("git")
+        .args(["-C", &*wt_str, "rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| SchedulerError::Database(format!("failed to get worktree HEAD: {e}")))?;
+    if !sha_output.status.success() {
+        let stderr = String::from_utf8_lossy(&sha_output.stderr);
+        // Clean up the just-created worktree before returning error
+        cleanup_worktree(Some(project_path), &wt_str, branch);
+        return Err(SchedulerError::Database(format!(
+            "git rev-parse HEAD failed in worktree: {stderr}"
+        )));
+    }
+    let base_sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+
+    Ok(base_sha)
 }
 
 /// Best-effort cleanup of a worktree and its directory after a failure.

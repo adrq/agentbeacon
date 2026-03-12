@@ -469,3 +469,172 @@ def test_diff_large_patch_truncation(test_database):
             assert resp_stat.status_code == 200
     finally:
         shutil.rmtree(git_dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_diff_committed_changes_still_visible(test_database):
+    """Committed changes are visible in default diff (base_commit_sha fix).
+
+    This is the core regression test: before the fix, committing changes
+    in a detached-HEAD worktree caused the diff to go empty because
+    `git diff HEAD --` compares working tree against the latest commit.
+    With base_commit_sha, the diff is computed against the initial HEAD.
+    """
+    git_dir = make_git_repo()
+    try:
+        with scheduler_context(db_url=test_database) as ctx:
+            agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
+            project = create_project_via_api(ctx["url"], "diff-committed", path=git_dir)
+
+            exec_id, _ = create_execution_via_api(
+                ctx["url"], agent_id, "test", project_id=project["id"]
+            )
+
+            root = get_root_session(ctx["url"], exec_id)
+            wt_path = root["worktree_path"]
+            assert wt_path is not None
+
+            # Verify base_commit_sha is set on the session
+            assert root.get("base_commit_sha") is not None
+            assert len(root["base_commit_sha"]) == 40  # full SHA
+
+            # Make changes and COMMIT them (simulating agent behavior)
+            with open(os.path.join(wt_path, "agent_work.txt"), "w") as f:
+                f.write("work done by agent\n")
+            subprocess.run(
+                ["git", "-C", wt_path, "add", "agent_work.txt"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", wt_path, "commit", "-m", "agent commit"],
+                check=True,
+                capture_output=True,
+            )
+
+            # Default diff (no base param) should still show the committed changes
+            resp = httpx.get(
+                f"{ctx['url']}/api/sessions/{root['id']}/worktree/diff", timeout=10
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+
+            assert data["summary"]["files_changed"] >= 1
+            agent_file = next(
+                (f for f in data["files"] if f["path"] == "agent_work.txt"), None
+            )
+            assert agent_file is not None, (
+                "committed file should appear in default diff"
+            )
+            assert agent_file["status"] == "A"
+
+            # Explicit ?base=HEAD should show empty (no uncommitted changes)
+            resp_head = httpx.get(
+                f"{ctx['url']}/api/sessions/{root['id']}/worktree/diff",
+                params={"base": "HEAD"},
+                timeout=10,
+            )
+            assert resp_head.status_code == 200
+            head_data = resp_head.json()
+            assert head_data["summary"]["files_changed"] == 0
+    finally:
+        shutil.rmtree(git_dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_diff_committed_plus_uncommitted(test_database):
+    """Both committed and uncommitted changes visible in default diff."""
+    git_dir = make_git_repo()
+    try:
+        with scheduler_context(db_url=test_database) as ctx:
+            agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
+            project = create_project_via_api(ctx["url"], "diff-mixed", path=git_dir)
+
+            exec_id, _ = create_execution_via_api(
+                ctx["url"], agent_id, "test", project_id=project["id"]
+            )
+
+            root = get_root_session(ctx["url"], exec_id)
+            wt_path = root["worktree_path"]
+
+            # Commit one file
+            with open(os.path.join(wt_path, "committed.txt"), "w") as f:
+                f.write("committed\n")
+            subprocess.run(
+                ["git", "-C", wt_path, "add", "committed.txt"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", wt_path, "commit", "-m", "first commit"],
+                check=True,
+                capture_output=True,
+            )
+
+            # Leave another file uncommitted
+            with open(os.path.join(wt_path, "uncommitted.txt"), "w") as f:
+                f.write("uncommitted\n")
+            subprocess.run(
+                ["git", "-C", wt_path, "add", "uncommitted.txt"],
+                check=True,
+                capture_output=True,
+            )
+
+            # Default diff should show BOTH files
+            resp = httpx.get(
+                f"{ctx['url']}/api/sessions/{root['id']}/worktree/diff", timeout=10
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+
+            paths = {f["path"] for f in data["files"]}
+            assert "committed.txt" in paths, "committed file should be in diff"
+            assert "uncommitted.txt" in paths, "uncommitted file should be in diff"
+    finally:
+        shutil.rmtree(git_dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_diff_multiple_commits(test_database):
+    """Multiple agent commits all visible in default diff."""
+    git_dir = make_git_repo()
+    try:
+        with scheduler_context(db_url=test_database) as ctx:
+            agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
+            project = create_project_via_api(ctx["url"], "diff-multi", path=git_dir)
+
+            exec_id, _ = create_execution_via_api(
+                ctx["url"], agent_id, "test", project_id=project["id"]
+            )
+
+            root = get_root_session(ctx["url"], exec_id)
+            wt_path = root["worktree_path"]
+
+            # Make multiple commits
+            for i in range(3):
+                fname = f"file_{i}.txt"
+                with open(os.path.join(wt_path, fname), "w") as f:
+                    f.write(f"content {i}\n")
+                subprocess.run(
+                    ["git", "-C", wt_path, "add", fname],
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "-C", wt_path, "commit", "-m", f"commit {i}"],
+                    check=True,
+                    capture_output=True,
+                )
+
+            # Default diff should show all 3 files
+            resp = httpx.get(
+                f"{ctx['url']}/api/sessions/{root['id']}/worktree/diff", timeout=10
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+
+            paths = {f["path"] for f in data["files"]}
+            for i in range(3):
+                assert f"file_{i}.txt" in paths
+    finally:
+        shutil.rmtree(git_dir, ignore_errors=True)

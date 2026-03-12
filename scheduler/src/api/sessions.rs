@@ -436,8 +436,13 @@ async fn session_diff(
         ));
     }
 
-    // Validate base ref
-    let base = query.base.as_deref().unwrap_or("HEAD");
+    // Use stored base SHA (initial worktree HEAD) as default to show cumulative
+    // changes even after the agent makes commits. Explicit ?base= overrides.
+    let base = query
+        .base
+        .as_deref()
+        .or(session.base_commit_sha.as_deref())
+        .unwrap_or("HEAD");
     if base.starts_with('-') {
         return Err(SchedulerError::ValidationFailed(
             "invalid base ref".to_string(),

@@ -52,6 +52,8 @@ pub struct SessionResponse {
     pub agent_session_id: Option<String>,
     pub cwd: Option<String>,
     pub worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_commit_sha: Option<String>,
     pub status: String,
     pub recovery_attempts: i64,
     pub metadata: serde_json::Value,
@@ -71,6 +73,7 @@ impl From<db::sessions::Session> for SessionResponse {
             agent_session_id: s.agent_session_id,
             cwd: s.cwd,
             worktree_path: s.worktree_path,
+            base_commit_sha: s.base_commit_sha,
             status: s.status,
             recovery_attempts: s.recovery_attempts,
             metadata,
