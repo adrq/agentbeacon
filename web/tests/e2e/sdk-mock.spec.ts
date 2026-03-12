@@ -51,6 +51,15 @@ test('claude mock: full showcase renders all SDK content types', async ({ page }
   await expect(markdown.locator('table')).toBeVisible();
   await expect(markdown.locator('pre')).toBeVisible();
   await expect(page.locator('.shiki').first()).toBeVisible({ timeout: 15000 });
+
+  // TodoWrite: checklist visible in chat view
+  const todoChecklist = page.locator('.todo-checklist');
+  await expect(todoChecklist).toBeVisible();
+
+  // Switch to log view: TodoWrite entry with hamburger icon
+  await page.getByRole('tab', { name: 'Log' }).click();
+  const todoEntry = page.locator('.timeline-entry').filter({ hasText: 'Tasks (5 items)' });
+  await expect(todoEntry).toBeVisible();
 });
 
 // --- Test 2: Copilot mock renders all SDK content types ---

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Event, Agent, SessionSummary, AgentType } from '../types';
+  import type { Event, Agent, SessionSummary, AgentType, TodoItem } from '../types';
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData } from '../types';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
@@ -10,6 +10,8 @@
   import ThinkingBlock from './renderers/ThinkingBlock.svelte';
   import DataFallback from './renderers/DataFallback.svelte';
   import ErrorPanel from './renderers/ErrorPanel.svelte';
+  import TodoChecklist from './renderers/TodoChecklist.svelte';
+  import TodoPanel from './TodoPanel.svelte';
   import { EVENT_FILTER_GROUPS, EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
 
   interface Props {
@@ -133,7 +135,8 @@
     | { type: 'data_fallback'; data: Record<string, unknown>; time: string; key: string }
     | { type: 'error'; message: string; stderr?: string; time: string; key: string }
     | { type: 'fyi'; text: string; time: string; key: string }
-    | { type: 'child_response'; agentLabel: string; text: string; time: string; key: string };
+    | { type: 'child_response'; agentLabel: string; text: string; time: string; key: string }
+    | { type: 'todo_write'; todos: TodoItem[]; time: string; key: string };
 
   function resolveAgentType(sessionId: string | null): AgentType {
     const session = sessions.find(s => s.id === sessionId);
@@ -221,6 +224,22 @@
             const norm = normalizeDataPart(agentType, d);
             switch (norm.normalized) {
               case 'tool_call': {
+                // TodoWrite → emit as todo_write entry (not generic tool_group)
+                if (norm.title === 'TodoWrite' && norm.input && typeof norm.input === 'object') {
+                  const input = norm.input as { todos?: unknown[] };
+                  if (Array.isArray(input.todos)) {
+                    const todos: TodoItem[] = input.todos.filter((t: any) => t != null && typeof t === 'object').map((t: any) => ({
+                      content: String(t.content ?? ''),
+                      status: (['pending', 'in_progress', 'completed'].includes(t.status) ? t.status : 'pending') as TodoItem['status'],
+                    }));
+                    entries.push({ type: 'todo_write', todos, time, key: `${ev.id}-${seq++}` });
+                    // Register in toolGroups so tool_result merges silently (no orphan entry)
+                    if (norm.toolCallId) {
+                      toolGroups.set(norm.toolCallId, { call: norm, time });
+                    }
+                    break;
+                  }
+                }
                 if (norm.toolCallId) {
                   const existing = toolGroups.get(norm.toolCallId);
                   if (existing) {
@@ -384,6 +403,15 @@
     return entries;
   });
 
+  let latestTodos = $derived.by((): TodoItem[] => {
+    for (let i = parsed.length - 1; i >= 0; i--) {
+      if (parsed[i].type === 'todo_write') {
+        return (parsed[i] as { type: 'todo_write'; todos: TodoItem[] }).todos;
+      }
+    }
+    return [];
+  });
+
   let filteredParsed = $derived(
     eventFilter === 'all' ? parsed
       : parsed.filter(entry => EVENT_FILTER_GROUPS[eventFilter]?.has(entry.type) ?? false)
@@ -451,6 +479,10 @@
           <div class="chat-row tool-row">
             <ToolStream groups={entry.groups} live={entry.live} />
           </div>
+        {:else if entry.type === 'todo_write' && entry.todos.length > 0}
+          <div class="chat-row tool-row">
+            <TodoChecklist todos={entry.todos} />
+          </div>
         {:else if entry.type === 'thinking'}
           <div class="chat-row tool-row">
             <ThinkingBlock data={entry.data} />
@@ -484,9 +516,14 @@
   {/if}
 </div>
 
+{#if latestTodos.length > 0}
+  <TodoPanel todos={latestTodos} />
+{/if}
+
 {#if !shouldAutoScroll}
   <button
     class="scroll-to-bottom"
+    class:has-panel={latestTodos.length > 0}
     onclick={() => {
       if (scrollContainer) {
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
@@ -837,6 +874,10 @@
     box-shadow: 0 2px 4px hsl(var(--shadow-hsl) / 0.15);
     z-index: 10;
     transition: opacity 0.15s;
+  }
+
+  .scroll-to-bottom.has-panel {
+    bottom: 7rem;
   }
 
   .scroll-to-bottom:hover {

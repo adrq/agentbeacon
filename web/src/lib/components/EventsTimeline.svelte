@@ -125,6 +125,14 @@
           switch (norm.normalized) {
             case 'tool_call':
               if (norm.toolCallId) seenToolCalls.add(norm.toolCallId);
+              // TodoWrite → compact "Tasks (N items)" entry
+              if (norm.title === 'TodoWrite' && norm.input && typeof norm.input === 'object') {
+                const input = norm.input as { todos?: unknown[] };
+                if (Array.isArray(input.todos)) {
+                  entries.push({ key, time, icon: '\u2630', iconClass: 'agent', text: `Tasks (${input.todos.length} items)`, entryType: 'todo_write' });
+                  break;
+                }
+              }
               entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: norm.title || 'Unknown tool', entryType: 'tool_group' });
               break;
             case 'tool_result':

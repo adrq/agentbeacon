@@ -207,6 +207,11 @@ export interface PlanData {
   entries: unknown[];
 }
 
+export interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
 export interface StateChangePayload {
   from: string | null;
   to: string;

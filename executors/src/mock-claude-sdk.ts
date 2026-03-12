@@ -252,7 +252,100 @@ async function* showcaseTurn(
     },
   };
 
-  // 8b. Streaming text deltas (simulating real-time text generation)
+  // 8b. TodoWrite — task checklist snapshot
+  checkAbort(signal);
+  await delay(80);
+  yield {
+    type: "assistant",
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_mock_todo_001",
+          name: "TodoWrite",
+          input: {
+            todos: [
+              {
+                content: "Read configuration file",
+                status: "completed",
+                activeForm: "config.rs",
+              },
+              {
+                content: "Search for TODO/FIXME items",
+                status: "completed",
+                activeForm: "src/",
+              },
+              {
+                content: "Fix default port value",
+                status: "completed",
+                activeForm: "config.rs",
+              },
+              {
+                content: "Add port validation",
+                status: "in_progress",
+                activeForm: "config.rs",
+              },
+              {
+                content: "Update tests",
+                status: "pending",
+                activeForm: "tests/",
+              },
+            ],
+          },
+        },
+      ],
+    },
+  };
+
+  // 8c. tool_result for TodoWrite
+  checkAbort(signal);
+  await delay(50);
+  yield {
+    type: "user",
+    session_id: sessionId,
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_mock_todo_001",
+          content: JSON.stringify({
+            oldTodos: [],
+            newTodos: [
+              {
+                content: "Read configuration file",
+                status: "completed",
+                activeForm: "config.rs",
+              },
+              {
+                content: "Search for TODO/FIXME items",
+                status: "completed",
+                activeForm: "src/",
+              },
+              {
+                content: "Fix default port value",
+                status: "completed",
+                activeForm: "config.rs",
+              },
+              {
+                content: "Add port validation",
+                status: "in_progress",
+                activeForm: "config.rs",
+              },
+              {
+                content: "Update tests",
+                status: "pending",
+                activeForm: "tests/",
+              },
+            ],
+          }),
+          is_error: false,
+        },
+      ],
+    },
+  };
+
+  // 8d. Streaming text deltas (simulating real-time text generation)
   checkAbort(signal);
   await delay(30);
   yield {
