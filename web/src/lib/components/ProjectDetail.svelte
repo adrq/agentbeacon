@@ -2,7 +2,8 @@
   import { AlertDialog } from 'bits-ui';
   import { projectDetailQuery, deleteProjectMutation, projectAgentsQuery, addProjectAgentMutation, removeProjectAgentMutation } from '../queries/projects';
   import { agentsQuery } from '../queries/agents';
-  import type { AgentPoolEntry } from '../types';
+  import { mcpServersQuery, projectMcpServersQuery, addProjectMcpServerMutation, removeProjectMcpServerMutation } from '../queries/mcp-servers';
+  import type { AgentPoolEntry, McpServerPoolEntry } from '../types';
   import { executionsQuery } from '../queries/executions';
   import { router } from '../router';
   import Button from './ui/button.svelte';
@@ -29,6 +30,18 @@
   let showDeleteConfirm = $state(false);
   let deleteError: string | null = $state(null);
   let showAddAgent = $state(false);
+  let showAddMcpServer = $state(false);
+
+  const allMcpServers = mcpServersQuery();
+  const mcpPoolQuery = projectMcpServersQuery(() => projectId);
+  const addMcpPoolMut = addProjectMcpServerMutation();
+  const removeMcpPoolMut = removeProjectMcpServerMutation();
+
+  let poolMcpServers = $derived<McpServerPoolEntry[]>(mcpPoolQuery.data ?? []);
+  let poolMcpServerIds = $derived(new Set(poolMcpServers.map(s => s.mcp_server_id)));
+  let availableMcpServers = $derived(
+    (allMcpServers.data ?? []).filter(s => !poolMcpServerIds.has(s.id))
+  );
 
   let poolAgents = $derived<AgentPoolEntry[]>(poolQuery.data ?? []);
   let poolAgentIds = $derived(new Set(poolAgents.map(a => a.agent_id)));
@@ -140,6 +153,46 @@
         </select>
       {:else if availableAgents.length > 0}
         <button class="pool-add-btn" onclick={() => showAddAgent = true}>+ Add Agent</button>
+      {/if}
+    </div>
+
+    <div class="pool-section">
+      <h3 class="section-heading">MCP Servers</h3>
+      {#if poolMcpServers.length === 0}
+        <p class="empty-text">No MCP servers assigned to this project.</p>
+      {:else}
+        <div class="pool-tags">
+          {#each poolMcpServers as server (server.mcp_server_id)}
+            <span class="pool-tag">
+              {server.name}
+              <button
+                class="pool-tag-remove"
+                title="Remove {server.name} from pool"
+                onclick={() => removeMcpPoolMut.mutate({ projectId, mcpServerId: server.mcp_server_id })}
+              >&times;</button>
+            </span>
+          {/each}
+        </div>
+      {/if}
+      {#if showAddMcpServer && availableMcpServers.length > 0}
+        <select
+          class="pool-add-select"
+          onchange={(e) => {
+            const mcpServerId = e.currentTarget.value;
+            if (mcpServerId) {
+              addMcpPoolMut.mutate({ projectId, mcpServerId });
+              e.currentTarget.value = '';
+              showAddMcpServer = false;
+            }
+          }}
+        >
+          <option value="">Select MCP server to add...</option>
+          {#each availableMcpServers as server}
+            <option value={server.id}>{server.name}</option>
+          {/each}
+        </select>
+      {:else if availableMcpServers.length > 0}
+        <button class="pool-add-btn" onclick={() => showAddMcpServer = true}>+ Add MCP Server</button>
       {/if}
     </div>
 

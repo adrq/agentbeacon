@@ -35,6 +35,8 @@ const MIGRATION_0013: &str = include_str!("../../migrations/0013_wiki_extras.sql
 const MIGRATION_0013_PG: &str = include_str!("../../migrations/0013_pg_wiki_extras.sql");
 const MIGRATION_0014: &str = include_str!("../../migrations/0014_dynamic_briefing.sql");
 const MIGRATION_0014_PG: &str = include_str!("../../migrations/0014_pg_dynamic_briefing.sql");
+const MIGRATION_0015: &str = include_str!("../../migrations/0015_mcp_servers.sql");
+const MIGRATION_0015_PG: &str = include_str!("../../migrations/0015_pg_mcp_servers.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -222,6 +224,11 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     } else {
         MIGRATION_0014
     };
+    let migration_0015 = if is_postgres {
+        MIGRATION_0015_PG
+    } else {
+        MIGRATION_0015
+    };
     let migrations = vec![
         (MIGRATION_0001, 1),
         (migration_0002, 2),
@@ -237,6 +244,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         (migration_0012, 12),
         (migration_0013, 13),
         (migration_0014, 14),
+        (migration_0015, 15),
     ];
 
     // Process each migration

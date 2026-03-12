@@ -386,6 +386,15 @@ async fn persist_and_enqueue(
         task_payload["project_id"] = JsonValue::String(pid.to_string());
     }
 
+    // Inject project MCP servers into task payload
+    if let Some(pid) = project_id {
+        let mcp_servers = db::project_mcp_servers::list_by_project(db_pool, pid).await?;
+        if !mcp_servers.is_empty() {
+            task_payload["mcp_servers"] =
+                crate::services::mcp::build_mcp_servers_payload(&mcp_servers);
+        }
+    }
+
     // Populate execution_agents junction before enqueue so the relationship
     // is committed before the worker can pick up the task.
     db::execution_agents::insert_batch(db_pool, execution_id, agent_ids).await?;

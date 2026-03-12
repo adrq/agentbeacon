@@ -1,6 +1,7 @@
 import type {
   Agent, AgentPoolEntry, SessionDiscoveryEntry, ConfigEntry, Driver, Execution, ExecutionDetail, Session, Event, Project,
   CreateExecutionResponse, PostMessageResponse, DiffResponse,
+  McpServer, McpServerPoolEntry,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
 } from './types';
@@ -192,6 +193,59 @@ export class AgentBeaconAPI {
 
   async removeProjectAgent(projectId: string, agentId: string): Promise<void> {
     return this.fetchNoContent(`/projects/${projectId}/agents/${agentId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // MCP Servers
+  async getMcpServers(): Promise<McpServer[]> {
+    return this.fetchJSON<McpServer[]>('/mcp-servers');
+  }
+
+  async createMcpServer(req: {
+    name: string;
+    transport_type: string;
+    config: Record<string, unknown>;
+  }): Promise<McpServer> {
+    return this.fetchJSON('/mcp-servers', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async getMcpServer(id: string): Promise<McpServer> {
+    return this.fetchJSON<McpServer>(`/mcp-servers/${id}`);
+  }
+
+  async updateMcpServer(id: string, req: {
+    name?: string;
+    transport_type?: string;
+    config?: Record<string, unknown>;
+  }): Promise<McpServer> {
+    return this.fetchJSON(`/mcp-servers/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async deleteMcpServer(id: string): Promise<void> {
+    return this.fetchNoContent(`/mcp-servers/${id}`, { method: 'DELETE' });
+  }
+
+  // Project MCP Servers
+  async getProjectMcpServers(projectId: string): Promise<McpServerPoolEntry[]> {
+    return this.fetchJSON<McpServerPoolEntry[]>(`/projects/${projectId}/mcp-servers`);
+  }
+
+  async addProjectMcpServer(projectId: string, mcpServerId: string): Promise<void> {
+    return this.fetchNoContent(`/projects/${projectId}/mcp-servers`, {
+      method: 'POST',
+      body: JSON.stringify({ mcp_server_id: mcpServerId }),
+    });
+  }
+
+  async removeProjectMcpServer(projectId: string, mcpServerId: string): Promise<void> {
+    return this.fetchNoContent(`/projects/${projectId}/mcp-servers/${mcpServerId}`, {
       method: 'DELETE',
     });
   }

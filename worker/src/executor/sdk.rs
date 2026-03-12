@@ -283,17 +283,10 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
         "{} executor started", kind.label()
     );
 
-    // Build MCP servers config
+    // Build MCP servers config: coordination server + user-configured servers
     let mcp_url = format!("{}/mcp", config.scheduler_url.trim_end_matches('/'));
-    let mcp_servers = serde_json::json!({
-        "agentbeacon": {
-            "type": "http",
-            "url": mcp_url,
-            "headers": {
-                "Authorization": format!("Bearer {}", config.session_id)
-            }
-        }
-    });
+    let mcp_servers =
+        build_mcp_servers_config(&mcp_url, &config.session_id, &config.user_mcp_servers);
 
     // Channels for the worker main loop
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -694,6 +687,36 @@ fn map_result_to_turn(
     }
 }
 
+/// Build the MCP servers JSON config by merging the coordination server
+/// with any user-configured servers from project settings.
+fn build_mcp_servers_config(
+    mcp_url: &str,
+    session_id: &str,
+    user_mcp_servers: &serde_json::Value,
+) -> serde_json::Value {
+    let mut mcp_servers = serde_json::json!({
+        "agentbeacon": {
+            "type": "http",
+            "url": mcp_url,
+            "headers": {
+                "Authorization": format!("Bearer {}", session_id)
+            }
+        }
+    });
+
+    if let serde_json::Value::Object(user_servers) = user_mcp_servers
+        && let serde_json::Value::Object(ref mut servers) = mcp_servers
+    {
+        for (name, config_val) in user_servers {
+            if name != "agentbeacon" {
+                servers.insert(name.clone(), config_val.clone());
+            }
+        }
+    }
+
+    mcp_servers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1043,5 +1066,75 @@ mod tests {
     #[test]
     fn test_sanitize_provider_none_passthrough() {
         assert!(sanitize_provider(None).is_none());
+    }
+
+    // --- MCP servers merge ---
+
+    #[test]
+    fn test_mcp_servers_merge_with_user_servers() {
+        let user = json!({
+            "playwright": {
+                "type": "stdio",
+                "command": "npx",
+                "args": ["@playwright/mcp"]
+            }
+        });
+        let result = build_mcp_servers_config("http://localhost:9456/mcp", "sess-123", &user);
+        let servers = result.as_object().unwrap();
+        assert_eq!(servers.len(), 2);
+        assert!(servers.contains_key("agentbeacon"));
+        assert!(servers.contains_key("playwright"));
+        assert_eq!(servers["playwright"]["command"], "npx");
+    }
+
+    #[test]
+    fn test_mcp_servers_agentbeacon_not_overridden() {
+        let user = json!({
+            "agentbeacon": {
+                "type": "http",
+                "url": "https://evil.example.com/mcp"
+            }
+        });
+        let result = build_mcp_servers_config("http://localhost:9456/mcp", "sess-123", &user);
+        let servers = result.as_object().unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers["agentbeacon"]["url"], "http://localhost:9456/mcp");
+    }
+
+    #[test]
+    fn test_mcp_servers_empty_user_config() {
+        let result = build_mcp_servers_config(
+            "http://localhost:9456/mcp",
+            "sess-123",
+            &serde_json::Value::Null,
+        );
+        let servers = result.as_object().unwrap();
+        assert_eq!(servers.len(), 1);
+        assert!(servers.contains_key("agentbeacon"));
+    }
+
+    #[test]
+    fn test_mcp_servers_empty_object_user_config() {
+        let result = build_mcp_servers_config("http://localhost:9456/mcp", "sess-123", &json!({}));
+        let servers = result.as_object().unwrap();
+        assert_eq!(servers.len(), 1);
+    }
+
+    #[test]
+    fn test_start_command_includes_stdio_mcp_server() {
+        let user = json!({
+            "playwright": {
+                "type": "stdio",
+                "command": "npx",
+                "args": ["@playwright/mcp"],
+                "env": {"DISPLAY": ":1"}
+            }
+        });
+        let result = build_mcp_servers_config("http://localhost:9456/mcp", "sess-123", &user);
+        let pw = &result["playwright"];
+        assert_eq!(pw["type"], "stdio");
+        assert_eq!(pw["command"], "npx");
+        assert_eq!(pw["args"][0], "@playwright/mcp");
+        assert_eq!(pw["env"]["DISPLAY"], ":1");
     }
 }

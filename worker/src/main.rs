@@ -288,6 +288,11 @@ async fn run_session(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let user_mcp_servers = task_payload
+        .get("mcp_servers")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
     let config = SessionConfig {
         session_id: session_id.to_string(),
         execution_id: initial_task.execution_id.clone(),
@@ -301,6 +306,7 @@ async fn run_session(
         node_modules_dir: args.node_modules_dir.clone(),
         inactivity_timeout: args.inactivity_timeout,
         project_id,
+        user_mcp_servers,
     };
 
     // Start executor

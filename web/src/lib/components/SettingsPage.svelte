@@ -2,6 +2,7 @@
   import { configQuery, updateConfigMutation } from '../queries/config';
   import type { ConfigEntry } from '../types';
   import Button from './ui/button.svelte';
+  import McpServersSection from './McpServersSection.svelte';
 
   const config = configQuery();
   const updateMut = updateConfigMutation();
@@ -114,6 +115,8 @@
       {/each}
     </div>
   {/if}
+
+  <McpServersSection />
 </div>
 
 <style>

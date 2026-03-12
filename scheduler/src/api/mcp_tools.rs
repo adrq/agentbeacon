@@ -320,6 +320,16 @@ async fn handle_delegate(
     if let Some(ref pid) = auth.project_id {
         task_payload["project_id"] = JsonValue::String(pid.clone());
     }
+    // Inject project MCP servers into task payload
+    if let Some(ref pid) = auth.project_id {
+        let mcp_servers = db::project_mcp_servers::list_by_project(&state.db_pool, pid)
+            .await
+            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+        if !mcp_servers.is_empty() {
+            task_payload["mcp_servers"] =
+                crate::services::mcp::build_mcp_servers_payload(&mcp_servers);
+        }
+    }
     let task_payload_json = serde_json::to_string(&task_payload).map_err(|e| {
         JsonRpcError::internal_error(&format!("serialize task_payload failed: {e}"))
     })?;

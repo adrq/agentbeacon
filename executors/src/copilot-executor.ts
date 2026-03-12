@@ -396,10 +396,10 @@ function buildMcpServers(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [name, config] of Object.entries(servers)) {
-    out[name] = {
-      ...config,
-      tools: config.tools ?? ["*"],
-    };
+    const mapped = { ...config, tools: config.tools ?? ["*"] };
+    // Copilot SDK uses "local" for stdio transport
+    if (mapped.type === "stdio") mapped.type = "local";
+    out[name] = mapped;
   }
   return out;
 }

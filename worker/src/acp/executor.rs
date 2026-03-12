@@ -182,6 +182,9 @@ pub(crate) async fn send_session_new(
     scheduler_url: &str,
     session_id: &str,
 ) -> Result<String> {
+    // TODO(KI-104): merge SessionConfig.user_mcp_servers here (needs format
+    // translation — ACP uses array of {name, type, url, headers:[{name,value}]},
+    // not the keyed-object Claude Desktop format used by the SDK path).
     let session_params = SessionNewParams {
         cwd: cwd.to_string(),
         mcp_servers: vec![serde_json::json!({

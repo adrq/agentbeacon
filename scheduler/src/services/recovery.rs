@@ -421,6 +421,13 @@ async fn build_recovery_task_payload(
     });
     if let Some(ref pid) = execution.project_id {
         task_payload["project_id"] = serde_json::Value::String(pid.clone());
+
+        // Inject project MCP servers into recovery payload (same as root/delegate)
+        let mcp_servers = db::project_mcp_servers::list_by_project(pool, pid).await?;
+        if !mcp_servers.is_empty() {
+            task_payload["mcp_servers"] =
+                crate::services::mcp::build_mcp_servers_payload(&mcp_servers);
+        }
     }
 
     Ok(task_payload)

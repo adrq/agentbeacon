@@ -347,6 +347,23 @@ export interface WikiPageExport {
   body: string;
 }
 
+// MCP Servers
+export interface McpServer {
+  id: string;
+  name: string;
+  transport_type: 'stdio' | 'http';
+  config: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface McpServerPoolEntry {
+  mcp_server_id: string;
+  name: string;
+  transport_type: string;
+  config: Record<string, unknown>;
+}
+
 // GET /api/executions/{id}/agents — config pool
 export interface AgentPoolEntry {
   agent_id: string;

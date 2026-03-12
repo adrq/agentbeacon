@@ -25,8 +25,14 @@ export interface ProviderConfig {
 
 export interface McpServerConfig {
   type: string;
-  url: string;
+  // HTTP transport
+  url?: string;
   headers?: Record<string, string>;
+  // stdio transport
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  // Common
   tools?: string[];
 }
 

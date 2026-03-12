@@ -80,6 +80,8 @@ pub struct SessionConfig {
     /// Max time with no agent output during an active turn before killing it
     pub inactivity_timeout: Duration,
     pub project_id: Option<String>,
+    /// User-configured MCP servers from project settings (merged with coordination server)
+    pub user_mcp_servers: serde_json::Value,
 }
 
 pub struct TurnResult {

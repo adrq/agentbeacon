@@ -247,6 +247,48 @@ async fn remove_project_agent(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// --- Project MCP server pool sub-resources ---
+
+async fn list_project_mcp_servers(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Vec<db::project_mcp_servers::McpServerPoolEntry>>, SchedulerError> {
+    db::projects::get_by_id(&state.db_pool, &id).await?;
+    let entries = db::project_mcp_servers::list_by_project(&state.db_pool, &id).await?;
+    Ok(Json(entries))
+}
+
+#[derive(Debug, Deserialize)]
+struct AddProjectMcpServerRequest {
+    mcp_server_id: String,
+}
+
+async fn add_project_mcp_server(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<AddProjectMcpServerRequest>,
+) -> Result<impl IntoResponse, SchedulerError> {
+    db::projects::get_by_id(&state.db_pool, &id).await?;
+    // Verify MCP server exists
+    db::mcp_servers::get_by_id(&state.db_pool, &req.mcp_server_id).await?;
+    db::project_mcp_servers::insert(&state.db_pool, &id, &req.mcp_server_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_project_mcp_server(
+    State(state): State<AppState>,
+    AxumPath((id, mcp_server_id)): AxumPath<(String, String)>,
+) -> Result<impl IntoResponse, SchedulerError> {
+    db::projects::get_by_id(&state.db_pool, &id).await?;
+    let deleted = db::project_mcp_servers::delete(&state.db_pool, &id, &mcp_server_id).await?;
+    if !deleted {
+        return Err(SchedulerError::NotFound(format!(
+            "MCP server {mcp_server_id} not in project pool"
+        )));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/projects", get(list_projects).post(create_project))
@@ -263,5 +305,13 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/projects/{id}/agents/{agent_id}",
             axum::routing::delete(remove_project_agent),
+        )
+        .route(
+            "/api/projects/{id}/mcp-servers",
+            get(list_project_mcp_servers).post(add_project_mcp_server),
+        )
+        .route(
+            "/api/projects/{id}/mcp-servers/{mcp_server_id}",
+            axum::routing::delete(remove_project_mcp_server),
         )
 }
