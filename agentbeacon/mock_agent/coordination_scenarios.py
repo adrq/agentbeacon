@@ -309,7 +309,7 @@ class EndTurnMessageScenario(_BaseScenario):
                     async with httpx.AsyncClient() as client:
                         # Discover all sessions in this execution
                         resp = await client.get(
-                            f"{api_base}/api/executions/{execution_id}/agents",
+                            f"{api_base}/api/executions/{execution_id}/sessions",
                             headers={"Authorization": f"Bearer {session_id}"},
                         )
                         resp.raise_for_status()

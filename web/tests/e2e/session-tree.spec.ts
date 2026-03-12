@@ -167,11 +167,12 @@ test('selecting session scrolls it into view in bounded tree', async ({ page }) 
   const { execId, sessionId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Scroll into view test');
   await waitForTurnEnd(execId);
 
-  // Add enough active child sessions to overflow the tree body
-  for (let i = 0; i < 15; i++) {
-    const childId = `child-siv-${i}-${Date.now()}`;
-    sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd) VALUES ('${childId}', '${execId}', '${sessionId}', '${agent.id}', 'submitted', 'c${i}', '/tmp')`);
-  }
+  // Add enough active child sessions to overflow the tree body (single transaction to avoid DB lock)
+  const ts = Date.now();
+  const inserts = Array.from({ length: 15 }, (_, i) =>
+    `INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd) VALUES ('child-siv-${i}-${ts}', '${execId}', '${sessionId}', '${agent.id}', 'submitted', 'c${i}', '/tmp');`
+  ).join('\n');
+  sqliteExec(`BEGIN; ${inserts} COMMIT;`);
 
   await page.goto(`/#/execution/${execId}`);
 

@@ -427,7 +427,7 @@
           <div class="chat-row lateral-row">
             <div class="lateral-message">
               <div class="lateral-header">From {entry.senderName}</div>
-              <div class="lateral-body">{entry.text}</div>
+              <div class="lateral-body"><Markdown text={entry.text} /></div>
               <div class="lateral-time">{entry.time}</div>
             </div>
           </div>
@@ -705,7 +705,6 @@
   }
 
   .lateral-body {
-    white-space: pre-wrap;
     color: hsl(var(--foreground));
   }
 

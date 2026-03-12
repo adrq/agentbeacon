@@ -68,12 +68,15 @@ test('copilot mock: full showcase renders all SDK content types', async ({ page 
   await expect(thinkingBlock).toBeVisible({ timeout: 10000 });
   await expect(thinkingBlock).toContainText('Thinking...');
 
-  // ToolGroup (Bash and Read)
+  // First Bash tool renders as standalone ToolGroup (before the streak of 3)
   const bashCard = page.locator('.tool-group').filter({ hasText: 'Bash' });
   await expect(bashCard).toBeVisible();
 
-  const readCard = page.locator('.tool-group').filter({ hasText: 'Read' });
-  await expect(readCard).toBeVisible();
+  // Read + Write + Bash (3 consecutive) are collapsed into a ToolStream summary
+  const toolStream = page.locator('.tool-stream-summary');
+  await expect(toolStream).toBeVisible();
+  await expect(toolStream).toContainText('Read');
+  await expect(toolStream).toContainText('Bash');
 
   // Text message with code block
   const agentProse = page.locator('.agent-prose').last();

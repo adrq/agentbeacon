@@ -307,7 +307,13 @@ def worker_event(request: Dict[str, Any]) -> StatusResponse:
 
 @app.get("/api/executions/{execution_id}/agents")
 def get_execution_agents(execution_id: str) -> List[Dict[str, Any]]:
-    """Return agents for an execution (used by EndTurnMessageScenario)."""
+    """Return agents for an execution."""
+    return execution_sessions.get(execution_id, [])
+
+
+@app.get("/api/executions/{execution_id}/sessions")
+def get_execution_sessions(execution_id: str) -> List[Dict[str, Any]]:
+    """Return sessions for an execution (used by EndTurnMessageScenario)."""
     return execution_sessions.get(execution_id, [])
 
 
