@@ -8,11 +8,16 @@ type MockSessionEvent =
   | { type: "assistant.message"; data: { messageId?: string; content: string } }
   | {
       type: "tool.execution_start";
-      data: { toolCallId: string; toolName: string };
+      data: { toolCallId: string; toolName: string; arguments?: unknown };
     }
   | {
       type: "tool.execution_complete";
-      data: { toolCallId: string; success?: boolean };
+      data: {
+        toolCallId: string;
+        success: boolean;
+        result?: { content: string; contents?: unknown[] };
+        error?: { message: string; code?: string };
+      };
     }
   | {
       type: "assistant.reasoning";
@@ -29,7 +34,8 @@ type MockSessionEvent =
         deltaContent: string;
         totalResponseSizeBytes?: number;
       };
-    };
+    }
+  | { type: "session.idle"; data: Record<string, never> };
 
 type MockEventType = MockSessionEvent["type"];
 type MockEventPayload<T extends MockEventType> = Extract<
@@ -91,41 +97,79 @@ class MockCopilotSession {
     if (catchAll) for (const h of catchAll) h(event);
   }
 
-  async sendAndWait(options: {
-    prompt: string;
-  }): Promise<{ data: { content: string } } | undefined> {
-    process.stderr.write(
-      `[mock-copilot-sdk] sendAndWait turn=${this._turnIndex}\n`,
-    );
+  async send(options: { prompt: string }): Promise<string> {
+    process.stderr.write(`[mock-copilot-sdk] send turn=${this._turnIndex}\n`);
     if (this._aborted) {
       this._aborted = false;
-      return undefined;
+      this.dispatch({ type: "session.idle", data: {} });
+      return `msg-${this._turnIndex}`;
     }
 
     await delay(50);
 
     if (this._aborted) {
       this._aborted = false;
-      return undefined;
+      this.dispatch({ type: "session.idle", data: {} });
+      return `msg-${this._turnIndex}`;
     }
 
-    let finalContent: string;
+    // Empty turn simulation — session.idle without any assistant.message
+    if (options.prompt === "__empty_turn__") {
+      this._turnIndex++;
+      this.dispatch({ type: "session.idle", data: {} });
+      return `msg-${this._turnIndex - 1}`;
+    }
+
+    // Fatal session error simulation — no session.idle, session is dead
+    if (options.prompt === "__fatal_session_error__") {
+      this._turnIndex++;
+      this.dispatch({
+        type: "session.error",
+        data: {
+          errorType: "connection_closed",
+          message: "WebSocket connection closed unexpectedly",
+        },
+      });
+      return `msg-${this._turnIndex - 1}`;
+    }
 
     if (this._turnIndex === 0) {
-      finalContent = this.showcaseScenario();
+      this.showcaseScenario();
     } else {
-      finalContent = this.echoScenario(options.prompt);
+      this.echoScenario(options.prompt);
     }
     this._turnIndex++;
 
-    // Return only the LAST assistant.message content, matching real SDK behavior.
-    return { data: { content: finalContent } };
+    // Signal turn complete
+    this.dispatch({ type: "session.idle", data: {} });
+    return `msg-${this._turnIndex - 1}`;
+  }
+
+  async sendAndWait(options: {
+    prompt: string;
+  }): Promise<{ data: { content: string } } | undefined> {
+    process.stderr.write(
+      `[mock-copilot-sdk] sendAndWait turn=${this._turnIndex}\n`,
+    );
+    // Track last assistant message content via a temporary listener
+    let lastContent: string | undefined;
+    const unsub = this.on(
+      "assistant.message",
+      (event: MockEventPayload<"assistant.message">) => {
+        lastContent = event.data.content;
+      },
+    );
+    await this.send(options);
+    unsub();
+    return lastContent !== undefined
+      ? { data: { content: lastContent } }
+      : undefined;
   }
 
   // Showcase scenario: reasoning, tool calls, then final assistant message.
-  // Events dispatched BEFORE sendAndWait returns so executor's on() handlers
+  // Events dispatched before session.idle so executor's on() handlers
   // accumulate pendingBlocks and flush on assistant.message.
-  private showcaseScenario(): string {
+  private showcaseScenario(): void {
     // --- Group 1: reasoning + tool ---
     this.dispatch({
       type: "assistant.reasoning",
@@ -137,11 +181,29 @@ class MockCopilotSession {
 
     this.dispatch({
       type: "tool.execution_start",
-      data: { toolCallId: "call_001", toolName: "Bash" },
+      data: {
+        toolCallId: "call_001",
+        toolName: "Bash",
+        arguments: { command: "find /workspace/tests -name '*.py'" },
+      },
     });
     this.dispatch({
       type: "tool.execution_complete",
-      data: { toolCallId: "call_001" },
+      data: {
+        toolCallId: "call_001",
+        success: true,
+        result: {
+          content: "/workspace/tests/test_main.py",
+          contents: [
+            {
+              type: "terminal",
+              text: "/workspace/tests/test_main.py",
+              exitCode: 0,
+              cwd: "/workspace",
+            },
+          ],
+        },
+      },
     });
 
     // Streaming deltas before flush
@@ -174,11 +236,72 @@ class MockCopilotSession {
 
     this.dispatch({
       type: "tool.execution_start",
-      data: { toolCallId: "call_002", toolName: "Read" },
+      data: {
+        toolCallId: "call_002",
+        toolName: "Read",
+        arguments: { file_path: "/workspace/tests/test_main.py" },
+      },
     });
     this.dispatch({
       type: "tool.execution_complete",
-      data: { toolCallId: "call_002" },
+      data: {
+        toolCallId: "call_002",
+        success: true,
+        result: { content: "def test_validate_port(): ..." },
+      },
+    });
+
+    // --- Group 2b: failed tool with error field only (exercises error message capture) ---
+    this.dispatch({
+      type: "tool.execution_start",
+      data: { toolCallId: "call_003", toolName: "Write" },
+    });
+    this.dispatch({
+      type: "tool.execution_complete",
+      data: {
+        toolCallId: "call_003",
+        success: false,
+        error: { message: "Permission denied: /etc/readonly-file" },
+      },
+    });
+
+    // --- Group 2c: failed tool with structured contents (e.g. bash exit-code 1) ---
+    this.dispatch({
+      type: "tool.execution_start",
+      data: {
+        toolCallId: "call_004",
+        toolName: "Bash",
+        arguments: { command: "make test" },
+      },
+    });
+    this.dispatch({
+      type: "tool.execution_complete",
+      data: {
+        toolCallId: "call_004",
+        success: false,
+        error: { message: "Command exited with code 1" },
+        result: {
+          content: "FAILED tests/test_main.py::test_validate_port",
+          contents: [
+            {
+              type: "terminal",
+              text: "FAILED tests/test_main.py::test_validate_port\n1 failed in 0.04s",
+              exitCode: 1,
+              cwd: "/workspace",
+            },
+          ],
+        },
+      },
+    });
+
+    // --- Recoverable session error (permission denied) ---
+    // The session continues after this; session.idle still fires normally.
+    this.dispatch({
+      type: "session.error",
+      data: {
+        errorType: "permission_denied",
+        message: "Tool execution not permitted: DeleteFile",
+      },
     });
 
     const finalContent = [
@@ -204,18 +327,15 @@ class MockCopilotSession {
       type: "assistant.message",
       data: { content: finalContent },
     });
-
-    return finalContent;
   }
 
   // Subsequent turns: simple echo.
-  private echoScenario(prompt: string): string {
+  private echoScenario(prompt: string): void {
     const content = `Acknowledged: ${prompt}`;
     this.dispatch({
       type: "assistant.message",
       data: { content },
     });
-    return content;
   }
 
   async abort(): Promise<void> {

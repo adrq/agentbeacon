@@ -81,7 +81,66 @@ async function nextCommand(): Promise<Command> {
 
 // --- Session runner ---
 
-const FATAL_ERROR_CODES = new Set(["connection_closed", "auth_failure"]);
+// Errors that mean the session is dead and session.idle will never arrive.
+// Everything else (permission_denied, model_call_failed, rate limiting, etc.)
+// is recoverable — the agent adjusts and the session reaches session.idle.
+// Unknown error types are treated as recoverable; the Rust inactivity timer
+// is the safety net if session.idle never fires.
+const FATAL_ERROR_TYPES = new Set(["connection_closed", "auth_failure"]);
+
+/**
+ * Wait for the session to become idle (turn complete).
+ *
+ * The SDK's sendAndWait() rejects on ALL session.error events, but we
+ * intentionally distinguish fatal from recoverable: fatal errors (connection
+ * loss, auth failure) reject immediately so the error message is preserved;
+ * recoverable errors are logged and we keep waiting for session.idle.
+ *
+ * No JS-side timeout — the Rust inactivity timer handles stalled sessions.
+ */
+function waitForIdle(session: CopilotSession): {
+  promise: Promise<void>;
+  cancel: () => void;
+} {
+  let resolve: () => void;
+  let reject: (err: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  const unsubIdle = session.on("session.idle", () => {
+    cleanup();
+    resolve();
+  });
+
+  const unsubError = session.on(
+    "session.error",
+    (event: SessionEventPayload<"session.error">) => {
+      if (FATAL_ERROR_TYPES.has(event.data.errorType)) {
+        cleanup();
+        reject(new Error(event.data.message));
+      }
+      // Recoverable errors are logged by the separate session.error handler
+      // and we continue waiting for session.idle.
+    },
+  );
+
+  let cleaned = false;
+  function cleanup() {
+    if (cleaned) return;
+    cleaned = true;
+    unsubIdle();
+    unsubError();
+  }
+
+  function cancel() {
+    cleanup();
+    resolve();
+  }
+
+  return { promise, cancel };
+}
 
 async function runSession(startCmd: StartCommand): Promise<void> {
   const client = new CopilotClient({
@@ -142,11 +201,13 @@ async function runSession(startCmd: StartCommand): Promise<void> {
     // buffered until the next assistant.message, then flushed together
     // so each message event carries the structured parts that preceded it.
     pendingBlocks = [];
+    let lastAssistantContent: string | undefined;
 
     session.on(
       "assistant.message",
       (event: SessionEventPayload<"assistant.message">) => {
         // Flush any accumulated tool/reasoning blocks before the text message
+        lastAssistantContent = event.data.content;
         pendingBlocks.push({ type: "text", text: event.data.content });
         emit({
           type: "message",
@@ -161,11 +222,15 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       "tool.execution_start",
       (event: SessionEventPayload<"tool.execution_start">) => {
         process.stderr.write(`[copilot] tool start: ${event.data.toolName}\n`);
-        pendingBlocks.push({
+        const block: Record<string, unknown> = {
           type: "tool_use",
           id: event.data.toolCallId,
           name: event.data.toolName,
-        });
+        };
+        if (event.data.arguments !== undefined) {
+          block.input = event.data.arguments;
+        }
+        pendingBlocks.push(block);
       },
     );
     session.on(
@@ -174,6 +239,26 @@ async function runSession(startCmd: StartCommand): Promise<void> {
         process.stderr.write(
           `[copilot] tool complete: ${event.data.toolCallId}\n`,
         );
+        let resultContent: string | unknown[];
+        if (
+          event.data.result?.contents &&
+          event.data.result.contents.length > 0
+        ) {
+          // Preserve structured content (terminal output, images, etc.)
+          // Available on both success and failure (e.g. bash exit-code 1).
+          resultContent = event.data.result.contents;
+        } else if (!event.data.success) {
+          resultContent =
+            event.data.error?.message ?? event.data.result?.content ?? "";
+        } else {
+          resultContent = event.data.result?.content ?? "";
+        }
+        pendingBlocks.push({
+          type: "tool_result",
+          tool_use_id: event.data.toolCallId,
+          content: resultContent,
+          is_error: !event.data.success,
+        });
       },
     );
 
@@ -201,27 +286,34 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       },
     );
 
-    // Handle session errors — unknown/untyped errors are fatal,
-    // only coded errors matching known recoverable patterns are logged.
+    // Log session errors — all are treated as fatal by waitForIdle(),
+    // which rejects and lets emitTurnResult() emit the sole terminal event.
     session.on(
       "session.error",
       (event: SessionEventPayload<"session.error">) => {
-        const errorType = event.data.errorType;
-        const message = event.data.message;
-        if (!errorType || FATAL_ERROR_CODES.has(errorType)) {
-          emit({ type: "error", message });
-        } else {
-          process.stderr.write(
-            `[copilot] recoverable error (${errorType}): ${message}\n`,
-          );
-        }
+        process.stderr.write(
+          `[copilot] session error (${event.data.errorType}): ${event.data.message}\n`,
+        );
       },
     );
 
     // First turn
     aborted = false;
-    let result = await session.sendAndWait({ prompt: startCmd.prompt });
-    emitTurnResult(result);
+    lastAssistantContent = undefined;
+    {
+      let fatalError: string | undefined;
+      const idle = waitForIdle(session);
+      try {
+        await session.send({ prompt: startCmd.prompt });
+        await idle.promise;
+      } catch (e: unknown) {
+        fatalError = String(e);
+        process.stderr.write(`[copilot] fatal during turn: ${fatalError}\n`);
+      } finally {
+        idle.cancel();
+      }
+      emitTurnResult(lastAssistantContent, fatalError);
+    }
 
     // Multi-turn loop
     while (true) {
@@ -236,8 +328,19 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       }
       if (cmd.type === "prompt") {
         aborted = false;
-        result = await session.sendAndWait({ prompt: cmd.text });
-        emitTurnResult(result);
+        lastAssistantContent = undefined;
+        let fatalError: string | undefined;
+        const idle = waitForIdle(session);
+        try {
+          await session.send({ prompt: cmd.text });
+          await idle.promise;
+        } catch (e: unknown) {
+          fatalError = String(e);
+          process.stderr.write(`[copilot] fatal during turn: ${fatalError}\n`);
+        } finally {
+          idle.cancel();
+        }
+        emitTurnResult(lastAssistantContent, fatalError);
       }
     }
 
@@ -249,7 +352,8 @@ async function runSession(startCmd: StartCommand): Promise<void> {
 }
 
 function emitTurnResult(
-  result: { data: { content: string } } | undefined,
+  lastAssistantContent: string | undefined,
+  fatalError?: string,
 ): void {
   // Flush any accumulated tool/reasoning blocks that weren't followed by an assistant.message
   if (pendingBlocks.length > 0) {
@@ -260,24 +364,28 @@ function emitTurnResult(
     });
     pendingBlocks = [];
   }
-  if (result === undefined) {
-    if (aborted) {
-      emit({
-        type: "result",
-        subtype: "cancelled",
-      });
-    } else {
-      emit({
-        type: "result",
-        subtype: "error_during_execution",
-        errors: ["sendAndWait returned undefined (possible timeout)"],
-      });
-    }
+  if (aborted) {
+    emit({
+      type: "result",
+      subtype: "cancelled",
+    });
+  } else if (fatalError) {
+    emit({
+      type: "result",
+      subtype: "error_during_execution",
+      errors: [fatalError],
+    });
+  } else if (lastAssistantContent === undefined) {
+    emit({
+      type: "result",
+      subtype: "error_during_execution",
+      errors: ["Turn completed without an assistant message"],
+    });
   } else {
     emit({
       type: "result",
       subtype: "success",
-      result: result.data.content,
+      result: lastAssistantContent,
     });
   }
   aborted = false;
