@@ -29,31 +29,28 @@ test('theme toggle switches between light and dark', async ({ page }) => {
   await expect(page.getByRole('button', { name: /Activate .+ theme/ })).toBeVisible();
 });
 
-test('create execution via modal', async ({ page }) => {
+test('create execution via form', async ({ page }) => {
   const agent = await ensureDirectAgent();
   const project = await ensureProject();
 
   await page.goto('/');
   await page.getByRole('button', { name: '+ New' }).click();
 
-  const dialog = page.getByRole('dialog', { name: 'New Execution' });
-  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New Execution' })).toBeVisible({ timeout: 5000 });
 
-  await dialog.getByLabel('Project', { exact: true }).selectOption(project.id);
+  await page.getByLabel('Project', { exact: true }).selectOption(project.id);
 
-  // Expand pool, check the agent, then collapse so Start stays in viewport
-  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
-  await dialog.getByRole('checkbox', { name: agent.name }).check();
-  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+  // Check the agent in pool
+  await page.getByRole('checkbox', { name: agent.name }).check();
 
-  await dialog.getByLabel('Root Agent').selectOption(agent.id);
+  await page.getByLabel('Root Agent').selectOption(agent.id);
 
   await page.getByRole('textbox', { name: 'Task' }).fill('Playwright smoke test task');
   await page.getByRole('textbox', { name: /title/i }).fill('Smoke test');
 
   await page.getByRole('button', { name: 'Start' }).click();
 
-  await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'New Execution' })).not.toBeVisible({ timeout: 5000 });
   await expect(page.getByRole('heading', { name: 'Smoke test' })).toBeVisible();
   // Worker may pick up the execution before this assertion fires, so accept any active status
   await expect(page.getByText(/Submitted|Working|Turn Complete|Awaiting Input/)).toBeVisible();

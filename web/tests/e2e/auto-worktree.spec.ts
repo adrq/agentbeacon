@@ -92,7 +92,7 @@ test('branch field in advanced section', async ({ page }) => {
   const gitPath = createGitProject();
   const noGitPath = createNonGitProject();
 
-  // Create both projects before opening dialog so they appear in dropdown
+  // Create both projects before opening form so they appear in dropdown
   const project = await apiPost('/api/projects', { name: 'WT Branch', path: gitPath });
   createdProjectIds.push(project.id);
   const noGitProject = await apiPost('/api/projects', { name: 'WT NoGit2', path: noGitPath });
@@ -101,29 +101,22 @@ test('branch field in advanced section', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '+ New' }).click();
 
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New Execution' })).toBeVisible({ timeout: 5000 });
 
   // Select git project
-  await dialog.getByLabel('Project').selectOption(project.id);
+  await page.locator('.form-panel').getByLabel('Project').selectOption(project.id);
 
-  // Branch field should NOT be visible before Advanced
-  await expect(dialog.getByLabel('Branch')).not.toBeVisible();
-
-  // Click Show Advanced
-  await dialog.getByText('Show Advanced').click();
-
-  // Branch field should now be visible with correct placeholder
-  const branchInput = dialog.getByLabel('Branch');
+  // Branch field should now be visible (advanced section is always visible) with correct placeholder
+  const branchInput = page.getByLabel('Branch');
   await expect(branchInput).toBeVisible();
   await expect(branchInput).toHaveAttribute('placeholder', 'Optional: explicit branch name');
 
   // Hint text present
-  await expect(dialog.getByText('Leave blank for automatic isolated copy')).toBeVisible();
+  await expect(page.getByText('Leave blank for automatic isolated copy')).toBeVisible();
 
   // Switch to non-git project: branch field should disappear
-  await dialog.getByLabel('Project').selectOption(noGitProject.id);
-  await expect(dialog.getByLabel('Branch')).not.toBeVisible();
+  await page.locator('.form-panel').getByLabel('Project').selectOption(noGitProject.id);
+  await expect(page.getByLabel('Branch')).not.toBeVisible();
 });
 
 test('explicit branch override', async () => {

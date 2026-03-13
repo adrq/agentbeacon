@@ -7,7 +7,6 @@
   import { executionsQuery } from '../queries/executions';
   import { router } from '../router';
   import Button from './ui/button.svelte';
-  import ProjectForm from './ProjectForm.svelte';
   import ExecutionListItem from './ExecutionListItem.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
 
@@ -26,7 +25,6 @@
   const removePoolMut = removeProjectAgentMutation();
 
   let project = $derived(projectQuery.data ?? null);
-  let editing = $state(false);
   let showDeleteConfirm = $state(false);
   let deleteError: string | null = $state(null);
   let showAddAgent = $state(false);
@@ -68,9 +66,6 @@
     }
   }
 
-  function handleEditComplete() {
-    editing = false;
-  }
 </script>
 
 {#if projectQuery.isLoading}
@@ -79,20 +74,12 @@
   <div class="detail-error">{projectQuery.error?.message ?? 'Not found'}</div>
 {:else if project}
   <div class="project-detail scroll-thin">
-    {#if editing}
-      <ProjectForm
-        {project}
-        onsubmit={handleEditComplete}
-        oncancel={() => editing = false}
-      />
-    {/if}
-
     <div class="detail-header">
       <div class="header-top">
         <h2 class="detail-title">{project.name}</h2>
         <div class="header-actions">
           <Button variant="ghost" size="sm" onclick={() => { openSearchTab(projectId); router.navigate('#/wiki'); }}>Wiki</Button>
-          <Button variant="ghost" size="sm" onclick={() => editing = true}>Edit</Button>
+          <Button variant="ghost" size="sm" onclick={() => router.navigate(`/projects/${projectId}/edit`)}>Edit</Button>
           <Button variant="ghost" size="sm" onclick={() => showDeleteConfirm = true}>Delete</Button>
         </div>
       </div>

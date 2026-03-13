@@ -32,16 +32,15 @@ test('add agent via sidebar', async ({ page }) => {
   // Click Add Agent in the welcome area (scope to avoid matching sidebar button)
   await page.locator('.agents-welcome').getByRole('button', { name: 'Add Agent' }).click();
 
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Add Agent' })).toBeVisible({ timeout: 5000 });
 
-  await dialog.getByLabel('Name').fill('E2E Test Agent');
-  await dialog.getByLabel('Driver').selectOption({ label: 'acp (ACP)' });
-  await dialog.getByRole('button', { name: 'Add' }).click();
+  await page.getByLabel('Name').fill('E2E Test Agent');
+  await page.getByLabel('Driver').selectOption({ label: 'acp (ACP)' });
+  await page.locator('.form-panel').getByRole('button', { name: 'Add' }).click();
 
-  await expect(dialog).not.toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'Add Agent' })).not.toBeVisible({ timeout: 5000 });
   // Agent should appear in the sidebar list
-  await expect(page.getByText('E2E Test Agent')).toBeVisible();
+  await expect(page.locator('.agent-list').getByText('E2E Test Agent')).toBeVisible();
 });
 
 test('edit agent via detail view', async ({ page }) => {
@@ -59,14 +58,13 @@ test('edit agent via detail view', async ({ page }) => {
 
   await page.locator('.main-content').getByRole('button', { name: 'Edit' }).click();
 
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
+  await expect(page.locator('.form-panel-title')).toHaveText('Edit Agent', { timeout: 5000 });
 
-  await dialog.getByLabel('Name').clear();
-  await dialog.getByLabel('Name').fill('Renamed Agent');
-  await dialog.getByRole('button', { name: 'Save' }).click();
+  await page.getByLabel('Name').clear();
+  await page.getByLabel('Name').fill('Renamed Agent');
+  await page.getByRole('button', { name: 'Save' }).click();
 
-  await expect(dialog).not.toBeVisible({ timeout: 5000 });
+  await expect(page.locator('.form-panel-title')).not.toBeVisible({ timeout: 5000 });
   await expect(page.getByRole('heading', { name: 'Renamed Agent' })).toBeVisible();
 });
 

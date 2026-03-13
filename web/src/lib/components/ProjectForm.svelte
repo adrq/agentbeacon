@@ -1,30 +1,73 @@
 <script lang="ts">
-  import { Dialog } from 'bits-ui';
-  import type { Project } from '../types';
-  import { createProjectMutation, updateProjectMutation } from '../queries/projects';
+  import { createProjectMutation, updateProjectMutation, projectDetailQuery } from '../queries/projects';
+  import { router } from '../router';
   import Button from './ui/button.svelte';
 
   interface Props {
-    project?: Project;
-    onsubmit?: () => void;
-    oncancel?: () => void;
+    projectId?: string;
   }
 
-  let { project, onsubmit, oncancel }: Props = $props();
+  let { projectId }: Props = $props();
 
+  const isEdit = !!projectId;
+  const projectQuery = projectDetailQuery(() => projectId ?? null);
   const createMut = createProjectMutation();
   const updateMut = updateProjectMutation();
 
-  let isOpen = $state(true);
-  let name = $state(project?.name ?? '');
-  let path = $state(project?.path ?? '');
+  let name = $state('');
+  let path = $state('');
   let error: string | null = $state(null);
   let warning: string | null = $state(null);
   let created = $state(false);
+  let createdId: string | null = $state(null);
+  let initialized = false;
 
-  let isEdit = $derived(!!project);
+  // Populate fields from fetched project data (edit mode)
+  $effect(() => {
+    const project = projectQuery.data;
+    if (project && !initialized) {
+      initialized = true;
+      name = project.name;
+      path = project.path;
+    }
+  });
+
+  let initialName = $derived(projectQuery.data?.name ?? '');
+  let initialPath = $derived(projectQuery.data?.path ?? '');
+  let isDirty = $derived(
+    !created && (isEdit
+      ? (name.trim() !== initialName || path.trim() !== initialPath)
+      : (name.trim().length > 0 || path.trim().length > 0))
+  );
+
   let submitting = $derived(createMut.isPending || updateMut.isPending);
   let canSubmit = $derived(name.trim().length > 0 && path.trim().length > 0 && !submitting && !created);
+
+  // Navigation guard — warns on dirty form
+  let guardCleanup: (() => void) | null = null;
+  let unloadHandler: ((e: BeforeUnloadEvent) => void) | null = null;
+  $effect(() => {
+    if (isDirty) {
+      guardCleanup = router.addNavigationGuard(() => true);
+      unloadHandler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+      window.addEventListener('beforeunload', unloadHandler);
+    } else {
+      guardCleanup?.();
+      guardCleanup = null;
+      if (unloadHandler) { window.removeEventListener('beforeunload', unloadHandler); unloadHandler = null; }
+    }
+    return () => {
+      guardCleanup?.();
+      guardCleanup = null;
+      if (unloadHandler) { window.removeEventListener('beforeunload', unloadHandler); unloadHandler = null; }
+    };
+  });
+
+  function clearGuard() {
+    guardCleanup?.();
+    guardCleanup = null;
+    if (unloadHandler) { window.removeEventListener('beforeunload', unloadHandler); unloadHandler = null; }
+  }
 
   async function handleSubmit() {
     if (!canSubmit) return;
@@ -32,11 +75,14 @@
     warning = null;
 
     try {
-      if (isEdit && project) {
+      if (isEdit && projectId) {
+        const project = projectQuery.data!;
         const req: Record<string, unknown> = {};
         if (name.trim() !== project.name) req.name = name.trim();
         if (path.trim() !== project.path) req.path = path.trim();
-        await updateMut.mutateAsync({ id: project.id, req });
+        await updateMut.mutateAsync({ id: projectId, req });
+        clearGuard();
+        router.navigate(`/projects/${projectId}`);
       } else {
         const result = await createMut.mutateAsync({
           name: name.trim(),
@@ -45,125 +91,81 @@
         if (result.warning) {
           warning = result.warning;
           created = true;
+          createdId = result.id;
           return;
         }
+        clearGuard();
+        router.navigate(`/projects/${result.id}`);
       }
-      onsubmit?.();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to save project';
     }
   }
 
-  function handleClose() {
-    isOpen = false;
-    if (created) {
-      onsubmit?.();
+  function handleCancel() {
+    clearGuard();
+    if (isEdit && projectId) {
+      router.navigate(`/projects/${projectId}`);
     } else {
-      oncancel?.();
+      router.navigate('/projects');
+    }
+  }
+
+  function handleWarningClose() {
+    clearGuard();
+    if (createdId) {
+      router.navigate(`/projects/${createdId}`);
     }
   }
 </script>
 
-<Dialog.Root bind:open={isOpen} onOpenChange={(o) => { if (!o) handleClose(); }}>
-  <Dialog.Portal>
-    <Dialog.Overlay class="modal-overlay" />
-    <Dialog.Content class="modal-content" aria-describedby={undefined}>
-      <Dialog.Title class="modal-title">{isEdit ? 'Edit Project' : 'Register Project'}</Dialog.Title>
-
-      <div class="field">
-        <label class="field-label" for="project-name">Name</label>
-        <input
-          id="project-name"
-          class="field-input"
-          type="text"
-          placeholder="my-app"
-          bind:value={name}
-        />
-      </div>
-
-      <div class="field">
-        <label class="field-label" for="project-path">Path</label>
-        <input
-          id="project-path"
-          class="field-input"
-          type="text"
-          placeholder="/home/user/code/my-app"
-          bind:value={path}
-        />
-      </div>
-
-      {#if error}
-        <div class="modal-error" role="alert">{error}</div>
+<div class="form-panel scroll-thin">
+  <div class="form-panel-header">
+    <h2 class="form-panel-title">{isEdit ? 'Edit Project' : 'Register Project'}</h2>
+    <div class="form-panel-actions">
+      {#if created}
+        <Button variant="default" onclick={handleWarningClose}>Close</Button>
+      {:else}
+        <Button variant="ghost" onclick={handleCancel}>Cancel</Button>
+        <Button variant="default" disabled={!canSubmit} onclick={handleSubmit}>
+          {submitting ? 'Saving...' : isEdit ? 'Save' : 'Register'}
+        </Button>
       {/if}
-      {#if warning}
-        <div class="modal-warning">{warning}</div>
-      {/if}
+    </div>
+  </div>
 
-      <div class="modal-actions">
-        {#if created}
-          <Button variant="default" onclick={handleClose}>Close</Button>
-        {:else}
-          <Button variant="ghost" onclick={handleClose}>Cancel</Button>
-          <Button variant="default" disabled={!canSubmit} onclick={handleSubmit}>
-            {submitting ? 'Saving...' : isEdit ? 'Save' : 'Register'}
-          </Button>
-        {/if}
-      </div>
-    </Dialog.Content>
-  </Dialog.Portal>
-</Dialog.Root>
+  {#if isEdit && projectQuery.isLoading}
+    <div class="form-loading">Loading project...</div>
+  {:else if isEdit && projectQuery.isError}
+    <div class="form-error-state">{projectQuery.error?.message ?? 'Failed to load project'}</div>
+  {:else}
+    <div class="field">
+      <label class="field-label" for="project-name">Name</label>
+      <input
+        id="project-name"
+        class="field-input"
+        type="text"
+        placeholder="my-app"
+        bind:value={name}
+      />
+    </div>
 
-<style>
-  .field {
-    margin-bottom: 1rem;
-  }
+    <div class="field">
+      <label class="field-label" for="project-path">Path</label>
+      <input
+        id="project-path"
+        class="field-input"
+        type="text"
+        placeholder="/home/user/code/my-app"
+        bind:value={path}
+      />
+    </div>
 
-  .field-label {
-    display: block;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    margin-bottom: 0.375rem;
-    color: hsl(var(--foreground));
-  }
-
-  .field-input {
-    width: 100%;
-    padding: 0.5rem 0.625rem;
-    border: 1px solid hsl(var(--border));
-    border-radius: var(--radius);
-    background: hsl(var(--background));
-    color: hsl(var(--foreground));
-    font-size: 0.8125rem;
-    font-family: inherit;
-  }
-
-  .field-input:focus {
-    outline: none;
-    border-color: hsl(var(--primary));
-    box-shadow: 0 0 0 2px hsl(var(--primary) / 0.15);
-  }
-
-  .modal-error {
-    padding: 0.375rem 0.625rem;
-    border-radius: var(--radius-sm);
-    background: hsl(var(--status-danger) / 0.1);
-    color: hsl(var(--status-danger));
-    font-size: 0.8125rem;
-    margin-bottom: 1rem;
-  }
-
-  .modal-warning {
-    padding: 0.375rem 0.625rem;
-    border-radius: var(--radius-sm);
-    background: hsl(var(--status-attention) / 0.1);
-    color: hsl(var(--status-attention));
-    font-size: 0.8125rem;
-    margin-bottom: 1rem;
-  }
-
-  .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-  }
-</style>
+    {#if error}
+      <div class="form-error" role="alert">{error}</div>
+    {/if}
+    {#if warning}
+      <div class="form-warning">{warning}</div>
+    {/if}
+  {/if}
+</div>

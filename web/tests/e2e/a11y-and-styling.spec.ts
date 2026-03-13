@@ -183,23 +183,20 @@ test('form error has role=alert', async ({ page }) => {
   await page.waitForTimeout(500);
 
   await page.getByRole('button', { name: '+ New' }).click();
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New Execution' })).toBeVisible({ timeout: 5000 });
 
   // Start button should be disabled when form is incomplete
-  const startBtn = dialog.getByRole('button', { name: 'Start' });
+  const startBtn = page.getByRole('button', { name: 'Start' });
   await expect(startBtn).toBeDisabled();
 
   // Fill the form using known fixture labels (not fragile index-based selection)
-  await dialog.locator('#exec-project').selectOption({ label: 'my-webapp' });
+  await page.locator('#exec-project').selectOption({ label: 'my-webapp' });
 
-  // Expand pool, check agent, then collapse so Start stays in viewport
-  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
-  await dialog.getByRole('checkbox', { name: agent.name }).check();
-  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+  // Check agent in pool
+  await page.getByRole('checkbox', { name: agent.name }).check();
 
-  await dialog.locator('#exec-agent').selectOption({ label: agent.name });
-  await dialog.locator('#exec-task').fill('trigger error test');
+  await page.locator('#exec-agent').selectOption({ label: agent.name });
+  await page.locator('#exec-task').fill('trigger error test');
   await expect(startBtn).toBeEnabled({ timeout: 3000 });
 
   // Intercept the API call to force a server error
@@ -214,12 +211,12 @@ test('form error has role=alert', async ({ page }) => {
   await startBtn.click();
 
   // The error div with role="alert" should now be visible
-  const alertEl = dialog.getByRole('alert');
+  const alertEl = page.getByRole('alert');
   await expect(alertEl).toBeVisible({ timeout: 5000 });
 
-  // Clean up route intercept and close modal
+  // Clean up route intercept and navigate away
   await page.unroute('**/api/executions');
-  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await page.locator('.form-panel').getByRole('button', { name: 'Cancel' }).click();
 });
 
 test('dark mode CSS variables are loaded', async ({ page }) => {

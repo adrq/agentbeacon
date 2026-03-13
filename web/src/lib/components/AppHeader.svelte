@@ -6,12 +6,6 @@
   import logoDarkUrl from '../../assets/logo-mark-dark.svg';
   import logoLightUrl from '../../assets/logo-mark-light.svg';
 
-  interface Props {
-    onnewexecution?: () => void;
-  }
-
-  let { onnewexecution }: Props = $props();
-
   let logoUrl = $derived($theme === 'light' ? logoLightUrl : logoDarkUrl);
 </script>
 
@@ -23,10 +17,10 @@
     </a>
   </div>
   <div class="header-right">
-    <Button variant="default" size="sm" onclick={() => onnewexecution?.()}>
+    <Button variant="default" size="sm" onclick={() => router.navigate('/executions/new')}>
       + New
     </Button>
-    <button class="settings-btn" title="Settings" aria-label="Settings" onclick={() => router.navigate('#/settings')}>
+    <button class="settings-btn" title="Settings" aria-label="Settings" onclick={() => router.navigate('/settings')}>
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M6.5 1L6.2 2.6C5.8 2.8 5.4 3 5.1 3.3L3.5 2.7L2 5.3L3.4 6.4C3.4 6.6 3.3 6.8 3.3 7V7C3.3 7.2 3.4 7.4 3.4 7.6L2 8.7L3.5 11.3L5.1 10.7C5.4 11 5.8 11.2 6.2 11.4L6.5 13H9.5L9.8 11.4C10.2 11.2 10.6 11 10.9 10.7L12.5 11.3L14 8.7L12.6 7.6C12.6 7.4 12.7 7.2 12.7 7V7C12.7 6.8 12.6 6.6 12.6 6.4L14 5.3L12.5 2.7L10.9 3.3C10.6 3 10.2 2.8 9.8 2.6L9.5 1H6.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
         <circle cx="8" cy="7" r="2" stroke="currentColor" stroke-width="1.2"/>

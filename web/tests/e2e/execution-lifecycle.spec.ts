@@ -57,7 +57,7 @@ test('cancel dialog: dismiss keeps execution running', async ({ page }) => {
 
 // --- Test 3: Re-run execution with prefill ---
 
-test('re-run: opens modal with prefilled data from terminal execution', async ({ page }) => {
+test('re-run: opens form with prefilled data from terminal execution', async ({ page }) => {
   const agent = await ensureDirectAgent();
   const { execId } = await createExecution(agent.id, 'EXIT_1', 'Rerun source');
   await waitForTerminal(execId);
@@ -70,14 +70,12 @@ test('re-run: opens modal with prefilled data from terminal execution', async ({
 
   await rerunBtn.click();
 
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText('Re-run Execution')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Re-run Execution' })).toBeVisible({ timeout: 5000 });
 
-  const taskTextarea = dialog.getByRole('textbox', { name: 'Task' });
+  const taskTextarea = page.getByRole('textbox', { name: 'Task' });
   await expect(taskTextarea).toHaveValue('EXIT_1');
 
-  const titleInput = dialog.getByRole('textbox', { name: /title/i });
+  const titleInput = page.getByRole('textbox', { name: /title/i });
   await expect(titleInput).toHaveValue('Re-run: Rerun source');
 });
 

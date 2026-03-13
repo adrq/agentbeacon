@@ -1,41 +1,32 @@
 <script lang="ts">
-  import { Dialog } from 'bits-ui';
-  import type { Agent } from '../types';
-  import { createAgentMutation, updateAgentMutation, driversQuery, createDriverMutation } from '../queries/agents';
-  import type { AgentTemplate } from '../utils/agentUtils';
+  import { get } from 'svelte/store';
+  import { agentDetailQuery, createAgentMutation, updateAgentMutation, driversQuery } from '../queries/agents';
+  import { agentFormPrefill } from '../stores/appState';
+  import { router } from '../router';
   import Button from './ui/button.svelte';
 
   interface Props {
-    agent?: Agent | null;
-    template?: AgentTemplate | null;
-    driverId?: string | null;
-    onsubmit?: () => void;
-    oncancel?: () => void;
+    agentId?: string;
   }
 
-  let { agent = null, template = null, driverId = null, onsubmit, oncancel }: Props = $props();
+  let { agentId }: Props = $props();
 
+  const isEdit = !!agentId;
+  const agentQuery = agentDetailQuery(() => agentId ?? null);
   const createMut = createAgentMutation();
   const updateMut = updateAgentMutation();
   const drivers = driversQuery();
-  const createDriverMut = createDriverMutation();
 
-  let isOpen = $state(true);
-  let isEdit = $derived(!!agent);
-
-  let name = $state(agent?.name ?? template?.name ?? '');
-  let description = $state(agent?.description ?? template?.description ?? '');
-  let systemPrompt = $state(agent?.system_prompt ?? '');
-  let selectedDriverId = $state<string>(agent?.driver_id ?? driverId ?? '');
-  let configText = $state(JSON.stringify(agent?.config ?? template?.config ?? {}, null, 2));
-  let sandboxConfigText = $state(
-    agent?.sandbox_config ? JSON.stringify(agent.sandbox_config, null, 2) : ''
-  );
-  let showSandbox = $state(!!agent?.sandbox_config);
+  let name = $state('');
+  let description = $state('');
+  let systemPrompt = $state('');
+  let selectedDriverId = $state('');
+  let configText = $state('{}');
+  let sandboxConfigText = $state('');
   let error: string | null = $state(null);
   let configError: string | null = $state(null);
-
-  let submitting = $derived(createMut.isPending || updateMut.isPending);
+  let initialized = false;
+  let prefillApplied = false;
 
   // Platform labels for display
   const platformLabels: Record<string, string> = {
@@ -46,6 +37,54 @@
     acp: 'ACP',
     a2a: 'A2A',
   };
+
+  // Populate from fetched agent data (edit mode)
+  $effect(() => {
+    const agent = agentQuery.data;
+    if (agent && !initialized) {
+      initialized = true;
+      name = agent.name;
+      description = agent.description ?? '';
+      systemPrompt = agent.system_prompt ?? '';
+      selectedDriverId = agent.driver_id ?? '';
+      configText = JSON.stringify(agent.config ?? {}, null, 2);
+      sandboxConfigText = agent.sandbox_config ? JSON.stringify(agent.sandbox_config, null, 2) : '';
+    }
+  });
+
+  // Apply prefill store (create mode with template)
+  $effect.pre(() => {
+    if (!isEdit && !prefillApplied) {
+      const prefill = get(agentFormPrefill);
+      if (prefill) {
+        prefillApplied = true;
+        if (prefill.template) {
+          name = prefill.template.name ?? '';
+          description = prefill.template.description ?? '';
+          configText = JSON.stringify(prefill.template.config ?? {}, null, 2);
+        }
+        if (prefill.driverId) selectedDriverId = prefill.driverId;
+        agentFormPrefill.set(null);
+      }
+    }
+  });
+
+  // Track initial values for dirty detection (edit mode)
+  let initialName = $derived(agentQuery.data?.name ?? '');
+  let initialDesc = $derived(agentQuery.data?.description ?? '');
+  let initialSysPrompt = $derived(agentQuery.data?.system_prompt ?? '');
+  let initialConfig = $derived(JSON.stringify(agentQuery.data?.config ?? {}, null, 2));
+  let initialSandbox = $derived(agentQuery.data?.sandbox_config ? JSON.stringify(agentQuery.data.sandbox_config, null, 2) : '');
+
+  let isDirty = $derived(
+    isEdit
+      ? (name !== initialName || description !== initialDesc || systemPrompt !== initialSysPrompt ||
+         configText !== initialConfig || sandboxConfigText !== initialSandbox)
+      : (name.trim().length > 0 || description.trim().length > 0 || systemPrompt.trim().length > 0 ||
+         selectedDriverId !== '' || configText !== '{}' || sandboxConfigText.trim().length > 0)
+  );
+
+  let submitting = $derived(createMut.isPending || updateMut.isPending);
 
   function parseJSON(text: string): Record<string, unknown> | null {
     try {
@@ -81,6 +120,32 @@
     configError = null;
   }
 
+  // Navigation guard — warns on dirty form
+  let guardCleanup: (() => void) | null = null;
+  let unloadHandler: ((e: BeforeUnloadEvent) => void) | null = null;
+  $effect(() => {
+    if (isDirty) {
+      guardCleanup = router.addNavigationGuard(() => true);
+      unloadHandler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+      window.addEventListener('beforeunload', unloadHandler);
+    } else {
+      guardCleanup?.();
+      guardCleanup = null;
+      if (unloadHandler) { window.removeEventListener('beforeunload', unloadHandler); unloadHandler = null; }
+    }
+    return () => {
+      guardCleanup?.();
+      guardCleanup = null;
+      if (unloadHandler) { window.removeEventListener('beforeunload', unloadHandler); unloadHandler = null; }
+    };
+  });
+
+  function clearGuard() {
+    guardCleanup?.();
+    guardCleanup = null;
+    if (unloadHandler) { window.removeEventListener('beforeunload', unloadHandler); unloadHandler = null; }
+  }
+
   async function handleSubmit() {
     if (!canSubmit) return;
     error = null;
@@ -91,7 +156,8 @@
     const sandboxConfig = sandboxConfigText.trim() ? parseJSON(sandboxConfigText) : null;
 
     try {
-      if (isEdit && agent) {
+      if (isEdit && agentId) {
+        const agent = agentQuery.data!;
         const req: Record<string, unknown> = {};
         if (name.trim() !== agent.name) req.name = name.trim();
         const newDesc = description.trim() || null;
@@ -102,9 +168,11 @@
         const oldSandbox = agent.sandbox_config ? JSON.stringify(agent.sandbox_config) : null;
         const newSandbox = sandboxConfig ? JSON.stringify(sandboxConfig) : null;
         if (newSandbox !== oldSandbox) req.sandbox_config = sandboxConfig;
-        await updateMut.mutateAsync({ id: agent.id, req });
+        await updateMut.mutateAsync({ id: agentId, req });
+        clearGuard();
+        router.navigate(`/agents/${agentId}`);
       } else {
-        await createMut.mutateAsync({
+        const result = await createMut.mutateAsync({
           name: name.trim(),
           description: description.trim() || null,
           driver_id: selectedDriverId,
@@ -112,16 +180,21 @@
           sandbox_config: sandboxConfig,
           system_prompt: systemPrompt.trim() || null,
         });
+        clearGuard();
+        router.navigate(`/agents/${result.id}`);
       }
-      onsubmit?.();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to save agent';
     }
   }
 
-  function handleClose() {
-    isOpen = false;
-    oncancel?.();
+  function handleCancel() {
+    clearGuard();
+    if (isEdit && agentId) {
+      router.navigate(`/agents/${agentId}`);
+    } else {
+      router.navigate('/agents');
+    }
   }
 
   function driverLabel(d: { name: string; platform: string }): string {
@@ -129,203 +202,103 @@
   }
 </script>
 
-<Dialog.Root bind:open={isOpen} onOpenChange={(o) => { if (!o) handleClose(); }}>
-  <Dialog.Portal>
-    <Dialog.Overlay class="modal-overlay" />
-    <Dialog.Content class="modal-content modal-content-wide" aria-describedby={undefined}>
-      <Dialog.Title class="modal-title">{isEdit ? 'Edit Agent' : 'Add Agent'}</Dialog.Title>
+<div class="form-panel scroll-thin">
+  <div class="form-panel-header">
+    <h2 class="form-panel-title">{isEdit ? 'Edit Agent' : 'Add Agent'}</h2>
+    <div class="form-panel-actions">
+      <Button variant="ghost" onclick={handleCancel}>Cancel</Button>
+      <Button variant="default" disabled={!canSubmit} onclick={handleSubmit}>
+        {submitting ? 'Saving...' : isEdit ? 'Save' : 'Add'}
+      </Button>
+    </div>
+  </div>
 
-      <div class="field">
-        <label class="field-label" for="agent-name">Name</label>
-        <input
-          id="agent-name"
-          class="field-input"
-          type="text"
-          placeholder="My Agent"
-          bind:value={name}
-        />
-      </div>
+  {#if isEdit && agentQuery.isLoading}
+    <div class="form-loading">Loading agent...</div>
+  {:else if isEdit && agentQuery.isError}
+    <div class="form-error-state">{agentQuery.error?.message ?? 'Failed to load agent'}</div>
+  {:else}
+    <div class="field">
+      <label class="field-label" for="agent-name">Name</label>
+      <input
+        id="agent-name"
+        class="field-input"
+        type="text"
+        placeholder="My Agent"
+        bind:value={name}
+      />
+    </div>
 
-      <div class="field">
-        <label class="field-label" for="agent-description">Description <span class="optional">(optional)</span></label>
-        <input
-          id="agent-description"
-          class="field-input"
-          type="text"
-          placeholder="What this agent does"
-          bind:value={description}
-        />
-      </div>
+    <div class="field">
+      <label class="field-label" for="agent-description">Description <span class="optional">(optional)</span></label>
+      <input
+        id="agent-description"
+        class="field-input"
+        type="text"
+        placeholder="What this agent does"
+        bind:value={description}
+      />
+    </div>
 
-      <div class="field">
-        <label class="field-label" for="agent-driver-select">Driver</label>
-        <select
-          id="agent-driver-select"
-          class="field-select"
-          bind:value={selectedDriverId}
-          disabled={isEdit}
-        >
-          <option value="" disabled>Select a driver...</option>
-          {#each drivers.data ?? [] as d}
-            <option value={d.id}>{driverLabel(d)}</option>
-          {/each}
-        </select>
-        {#if isEdit}
-          <span class="field-hint">Driver cannot be changed after creation.</span>
-        {/if}
-      </div>
-
-      <div class="field">
-        <label class="field-label" for="agent-system-prompt">System Prompt <span class="optional">(optional)</span></label>
-        <textarea
-          id="agent-system-prompt"
-          class="field-textarea"
-          bind:value={systemPrompt}
-          rows="4"
-          placeholder="Custom instructions for this agent..."
-        ></textarea>
-        <span class="field-hint">Prepended to agent's context at execution start.</span>
-      </div>
-
-      <div class="field">
-        <label class="field-label" for="agent-config">Config (JSON)</label>
-        <textarea
-          id="agent-config"
-          class="field-textarea mono"
-          bind:value={configText}
-          onblur={validateConfig}
-          rows="6"
-        ></textarea>
-        {#if configError}
-          <span class="field-error">{configError}</span>
-        {/if}
-      </div>
-
-      <button class="toggle-link" onclick={() => showSandbox = !showSandbox}>
-        {showSandbox ? 'Hide' : 'Show'} Sandbox Config
-      </button>
-
-      {#if showSandbox}
-        <div class="field">
-          <label class="field-label" for="agent-sandbox">Sandbox Config (JSON) <span class="optional">(optional)</span></label>
-          <textarea
-            id="agent-sandbox"
-            class="field-textarea mono"
-            bind:value={sandboxConfigText}
-            rows="4"
-          ></textarea>
-        </div>
+    <div class="field">
+      <label class="field-label" for="agent-driver-select">Driver</label>
+      <select
+        id="agent-driver-select"
+        class="field-select"
+        bind:value={selectedDriverId}
+        disabled={isEdit}
+      >
+        <option value="" disabled>Select a driver...</option>
+        {#each drivers.data ?? [] as d}
+          <option value={d.id}>{driverLabel(d)}</option>
+        {/each}
+      </select>
+      {#if isEdit}
+        <span class="field-hint">Driver cannot be changed after creation.</span>
       {/if}
+    </div>
 
-      {#if error}
-        <div class="modal-error">{error}</div>
+    <div class="field">
+      <label class="field-label" for="agent-config">Config (JSON)</label>
+      <textarea
+        id="agent-config"
+        class="field-textarea mono"
+        bind:value={configText}
+        onblur={validateConfig}
+        rows="6"
+      ></textarea>
+      {#if configError}
+        <span class="field-error">{configError}</span>
       {/if}
+    </div>
 
-      <div class="modal-actions">
-        <Button variant="ghost" onclick={handleClose}>Cancel</Button>
-        <Button variant="default" disabled={!canSubmit} onclick={handleSubmit}>
-          {submitting ? 'Saving...' : isEdit ? 'Save' : 'Add'}
-        </Button>
-      </div>
-    </Dialog.Content>
-  </Dialog.Portal>
-</Dialog.Root>
+    <hr class="form-section-divider" />
+    <div class="form-section-label">Advanced</div>
 
-<style>
-  :global(.modal-content-wide) {
-    max-width: 32rem !important;
-  }
+    <div class="field">
+      <label class="field-label" for="agent-system-prompt">System Prompt <span class="optional">(optional)</span></label>
+      <textarea
+        id="agent-system-prompt"
+        class="field-textarea"
+        bind:value={systemPrompt}
+        rows="4"
+        placeholder="Custom instructions for this agent..."
+      ></textarea>
+      <span class="field-hint">Prepended to agent's context at execution start.</span>
+    </div>
 
-  .field {
-    margin-bottom: 1rem;
-  }
+    <div class="field">
+      <label class="field-label" for="agent-sandbox">Sandbox Config (JSON) <span class="optional">(optional)</span></label>
+      <textarea
+        id="agent-sandbox"
+        class="field-textarea mono"
+        bind:value={sandboxConfigText}
+        rows="4"
+      ></textarea>
+    </div>
 
-  .field-label {
-    display: block;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    margin-bottom: 0.375rem;
-    color: hsl(var(--foreground));
-  }
-
-  .optional {
-    color: hsl(var(--muted-foreground));
-    font-weight: 400;
-  }
-
-  .field-select, .field-textarea, .field-input {
-    width: 100%;
-    padding: 0.5rem 0.625rem;
-    border: 1px solid hsl(var(--border));
-    border-radius: var(--radius);
-    background: hsl(var(--background));
-    color: hsl(var(--foreground));
-    font-size: 0.8125rem;
-    font-family: inherit;
-  }
-
-  .field-select:focus, .field-textarea:focus, .field-input:focus {
-    outline: none;
-    border-color: hsl(var(--primary));
-    box-shadow: 0 0 0 2px hsl(var(--primary) / 0.15);
-  }
-
-  .field-select:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .field-textarea {
-    resize: vertical;
-    min-height: 4rem;
-  }
-
-  .field-textarea.mono {
-    font-family: var(--font-mono);
-    font-size: 0.6875rem;
-    line-height: 1.5;
-  }
-
-  .field-hint {
-    display: block;
-    font-size: 0.6875rem;
-    color: hsl(var(--muted-foreground));
-    margin-top: 0.25rem;
-  }
-
-  .field-error {
-    display: block;
-    font-size: 0.6875rem;
-    color: hsl(var(--status-danger));
-    margin-top: 0.25rem;
-  }
-
-  .toggle-link {
-    background: none;
-    border: none;
-    font-size: 0.6875rem;
-    color: hsl(var(--primary));
-    cursor: pointer;
-    padding: 0;
-    margin-bottom: 0.75rem;
-  }
-
-  .toggle-link:hover {
-    opacity: 0.8;
-  }
-
-  .modal-error {
-    padding: 0.375rem 0.625rem;
-    border-radius: var(--radius-sm);
-    background: hsl(var(--status-danger) / 0.1);
-    color: hsl(var(--status-danger));
-    font-size: 0.8125rem;
-    margin-bottom: 1rem;
-  }
-
-  .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-  }
-</style>
+    {#if error}
+      <div class="form-error" role="alert">{error}</div>
+    {/if}
+  {/if}
+</div>

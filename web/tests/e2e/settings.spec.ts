@@ -77,28 +77,26 @@ test('agent system_prompt field in form', async ({ page }) => {
 
   // Click Edit
   await page.getByRole('button', { name: 'Edit' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Edit Agent' });
-  await expect(dialog).toBeVisible();
+  await expect(page.locator('.form-panel-title')).toHaveText('Edit Agent', { timeout: 5000 });
 
   // Verify System Prompt field exists
-  const systemPromptField = dialog.getByLabel('System Prompt');
+  const systemPromptField = page.getByLabel('System Prompt');
   await expect(systemPromptField).toBeVisible();
 
   // Fill in a system prompt
   await systemPromptField.fill('You are a helpful test agent.');
 
   // Save
-  await dialog.getByRole('button', { name: 'Save' }).click();
-  await expect(dialog).not.toBeVisible({ timeout: 5000 });
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.locator('.form-panel-title')).not.toBeVisible({ timeout: 5000 });
 
   // Verify system_prompt is displayed in detail view
   await expect(page.getByText('You are a helpful test agent.')).toBeVisible({ timeout: 5000 });
 
   // Edit again and clear system prompt to clean up
   await page.getByRole('button', { name: 'Edit' }).click();
-  const editDialog = page.getByRole('dialog', { name: 'Edit Agent' });
-  await expect(editDialog).toBeVisible();
-  await editDialog.getByLabel('System Prompt').fill('');
-  await editDialog.getByRole('button', { name: 'Save' }).click();
-  await expect(editDialog).not.toBeVisible({ timeout: 5000 });
+  await expect(page.locator('.form-panel-title')).toHaveText('Edit Agent', { timeout: 5000 });
+  await page.getByLabel('System Prompt').fill('');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.locator('.form-panel-title')).not.toBeVisible({ timeout: 5000 });
 });

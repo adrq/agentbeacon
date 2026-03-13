@@ -5,7 +5,6 @@
   import { router } from '../router';
   import { typeLabels } from '../utils/agentUtils';
   import Button from './ui/button.svelte';
-  import AgentForm from './AgentForm.svelte';
   import ExecutionListItem from './ExecutionListItem.svelte';
 
   interface Props {
@@ -20,7 +19,6 @@
   const deleteMut = deleteAgentMutation();
 
   let agent = $derived(agentQuery.data ?? null);
-  let editing = $state(false);
   let showDeleteConfirm = $state(false);
   let deleteError: string | null = $state(null);
 
@@ -63,9 +61,6 @@
     }
   }
 
-  function handleEditComplete() {
-    editing = false;
-  }
 </script>
 
 {#if agentQuery.isLoading}
@@ -74,19 +69,11 @@
   <div class="detail-error">{agentQuery.error?.message ?? 'Not found'}</div>
 {:else if agent}
   <div class="agent-detail scroll-thin">
-    {#if editing}
-      <AgentForm
-        {agent}
-        onsubmit={handleEditComplete}
-        oncancel={() => editing = false}
-      />
-    {/if}
-
     <div class="detail-header">
       <div class="header-top">
         <h2 class="detail-title">{agent.name}</h2>
         <div class="header-actions">
-          <Button variant="ghost" size="sm" onclick={() => editing = true}>Edit</Button>
+          <Button variant="ghost" size="sm" onclick={() => router.navigate(`/agents/${agentId}/edit`)}>Edit</Button>
           <Button variant="ghost" size="sm" onclick={() => { deleteError = null; showDeleteConfirm = true; }}>Delete</Button>
         </div>
       </div>

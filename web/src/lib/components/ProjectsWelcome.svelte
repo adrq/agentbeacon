@@ -1,8 +1,6 @@
 <script lang="ts">
   import Button from './ui/button.svelte';
-  import ProjectForm from './ProjectForm.svelte';
-
-  let showCreateForm = $state(false);
+  import { router } from '../router';
 </script>
 
 <div class="projects-welcome scroll-thin">
@@ -15,18 +13,11 @@
     <h3 class="welcome-title">Projects</h3>
     <p class="welcome-description">Select a project to view details, recent executions, and default agent configuration.</p>
 
-    <Button variant="default" size="sm" onclick={() => showCreateForm = true}>
+    <Button variant="default" size="sm" onclick={() => router.navigate('/projects/new')}>
       Register Project
     </Button>
   </div>
 </div>
-
-{#if showCreateForm}
-  <ProjectForm
-    onsubmit={() => showCreateForm = false}
-    oncancel={() => showCreateForm = false}
-  />
-{/if}
 
 <style>
   .projects-welcome {

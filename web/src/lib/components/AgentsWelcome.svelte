@@ -1,40 +1,32 @@
 <script lang="ts">
   import { driversQuery, createDriverMutation } from '../queries/agents';
   import { agentTemplates, type AgentTemplate } from '../utils/agentUtils';
+  import { agentFormPrefill } from '../stores/appState';
+  import { router } from '../router';
   import Button from './ui/button.svelte';
-  import AgentForm from './AgentForm.svelte';
 
   const drivers = driversQuery();
   const createDriverMut = createDriverMutation();
 
-  let showCreateForm = $state(false);
-  let templateForCreate = $state<AgentTemplate | null>(null);
-  let resolvedDriverId = $state<string | null>(null);
-
   async function handleTemplateClick(template: AgentTemplate) {
     const existing = (drivers.data ?? []).find(d => d.platform === template.platform);
+    let resolvedId: string;
     if (existing) {
-      resolvedDriverId = existing.id;
+      resolvedId = existing.id;
     } else {
       try {
         const created = await createDriverMut.mutateAsync({
           name: template.platform,
           platform: template.platform,
         });
-        resolvedDriverId = created.id;
+        resolvedId = created.id;
       } catch (e) {
         console.error('Failed to create driver for template:', e);
         return;
       }
     }
-    templateForCreate = template;
-    showCreateForm = true;
-  }
-
-  function handleClose() {
-    showCreateForm = false;
-    templateForCreate = null;
-    resolvedDriverId = null;
+    agentFormPrefill.set({ template, driverId: resolvedId });
+    router.navigate('/agents/new');
   }
 </script>
 
@@ -63,20 +55,11 @@
       </div>
     </div>
 
-    <Button variant="default" size="sm" onclick={() => { templateForCreate = null; resolvedDriverId = null; showCreateForm = true; }}>
+    <Button variant="default" size="sm" onclick={() => router.navigate('/agents/new')}>
       Add Agent
     </Button>
   </div>
 </div>
-
-{#if showCreateForm}
-  <AgentForm
-    template={templateForCreate}
-    driverId={resolvedDriverId}
-    onsubmit={handleClose}
-    oncancel={handleClose}
-  />
-{/if}
 
 <style>
   .agents-welcome {

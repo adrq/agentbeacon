@@ -16,22 +16,14 @@
   import Button from './ui/button.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
   import { router } from '../router';
+  import { executionPrefill } from '../stores/appState';
   import type { EventFilter } from '../eventFilterGroups';
-
-  export interface ExecutionPrefill {
-    projectId?: string | null;
-    agentId?: string;
-    agentIds?: string[];
-    prompt?: string;
-    title?: string;
-  }
 
   interface Props {
     executionId: string;
-    onrerun?: (prefill: ExecutionPrefill) => void;
   }
 
-  let { executionId, onrerun }: Props = $props();
+  let { executionId }: Props = $props();
 
   const terminalStatuses = new Set(['completed', 'failed', 'canceled']);
   const cancellableStatuses = new Set(['working', 'input-required']);
@@ -333,16 +325,18 @@
 
   // Re-run execution
   function handleRerun() {
-    if (!detail || !onrerun) return;
+    if (!detail) return;
     const exec = detail.execution;
     const pool = poolQuery.data ?? [];
-    onrerun({
+    executionPrefill.set({
+      sourceExecutionId: executionId,
       projectId: exec.project_id,
       agentId: leadSession?.agent_id,
       agentIds: pool.map(a => a.agent_id),
       prompt: exec.input,
       title: exec.title ? `Re-run: ${exec.title}` : undefined,
     });
+    router.navigate('/executions/new');
   }
 
   // Completion summary helpers
@@ -393,8 +387,8 @@
             {recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}
           </Button>
         {/if}
-        {#if isTerminal && onrerun}
-          <Button variant={isRecoverable ? 'outline' : 'secondary'} size="sm" onclick={handleRerun}>
+        {#if isTerminal}
+          <Button variant={isRecoverable ? 'outline' : 'secondary'} size="sm" disabled={!poolQuery.data} onclick={handleRerun}>
             Re-run
           </Button>
         {/if}

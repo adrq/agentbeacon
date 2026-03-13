@@ -2,12 +2,10 @@
   import { selectedProjectId } from '../stores/appState';
   import { projectsQuery } from '../queries/projects';
   import { router } from '../router';
-  import ProjectForm from './ProjectForm.svelte';
 
   const projects = projectsQuery();
 
   let searchText = $state('');
-  let showCreateForm = $state(false);
 
   let filtered = $derived(
     searchText.trim()
@@ -45,7 +43,7 @@
       </div>
     </div>
     <div class="header-action">
-      <button class="add-btn" onclick={() => showCreateForm = true} aria-label="Register project">+ Register</button>
+      <button class="add-btn" onclick={() => router.navigate('/projects/new')} aria-label="Register project">+ Register</button>
     </div>
   </div>
 
@@ -73,13 +71,6 @@
     {/each}
   {/if}
 </div>
-
-{#if showCreateForm}
-  <ProjectForm
-    onsubmit={() => showCreateForm = false}
-    oncancel={() => showCreateForm = false}
-  />
-{/if}
 
 <style>
   .project-list {

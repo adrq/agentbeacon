@@ -19,28 +19,24 @@ test('execution creation with multi-agent pool', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '+ New' }).click();
 
-  const dialog = page.getByRole('dialog', { name: 'New Execution' });
-  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New Execution' })).toBeVisible({ timeout: 5000 });
 
-  // Expand pool, check both agents, then collapse so Start stays in viewport
-  await dialog.getByRole('button', { name: /Show Agent Pool/ }).click();
-  await dialog.getByRole('checkbox', { name: agent1.name }).check();
-  await dialog.getByRole('checkbox', { name: agent2.name }).check();
-  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+  // Check both agents in pool
+  await page.getByRole('checkbox', { name: agent1.name }).check();
+  await page.getByRole('checkbox', { name: agent2.name }).check();
 
   // Root Agent dropdown should contain both agents
-  const rootSelect = dialog.getByRole('combobox', { name: 'Root Agent' });
+  const rootSelect = page.getByRole('combobox', { name: 'Root Agent' });
   await rootSelect.selectOption({ label: agent1.name });
 
-  // Fill form — use cwd directly without Show Advanced to keep dialog shorter
-  await dialog.getByRole('textbox', { name: 'Task' }).fill('Multi-agent pool test');
-  await dialog.getByRole('textbox', { name: /title/i }).fill('Pool E2E');
+  // Fill form — advanced section is always visible
+  await page.getByRole('textbox', { name: 'Task' }).fill('Multi-agent pool test');
+  await page.getByRole('textbox', { name: /title/i }).fill('Pool E2E');
 
-  await dialog.getByText('Show Advanced').click();
-  await dialog.getByLabel('Working Directory').fill('/tmp');
+  await page.getByLabel('Working Directory').fill('/tmp');
 
-  await dialog.getByRole('button', { name: 'Start' }).click();
-  await expect(dialog).not.toBeVisible({ timeout: 5000 });
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByRole('heading', { name: 'New Execution' })).not.toBeVisible({ timeout: 5000 });
 
   // Verify navigated to execution detail
   await expect(page.getByRole('heading', { name: 'Pool E2E' })).toBeVisible({ timeout: 10000 });
@@ -100,22 +96,19 @@ test('re-run preserves agent pool', async ({ page }) => {
 
   await rerunBtn.click();
 
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText('Re-run Execution')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Re-run Execution' })).toBeVisible({ timeout: 5000 });
 
   // Verify task is pre-filled
-  const taskInput = dialog.getByRole('textbox', { name: 'Task' });
+  const taskInput = page.getByRole('textbox', { name: 'Task' });
   await expect(taskInput).toHaveValue('EXIT_1');
 
   // Verify title is pre-filled
-  const titleInput = dialog.getByRole('textbox', { name: /title/i });
+  const titleInput = page.getByRole('textbox', { name: /title/i });
   await expect(titleInput).toHaveValue('Re-run: Rerun Pool Test');
 
-  // Verify pool has at least 1 selected (from original execution)
-  const poolButton = dialog.getByRole('button', { name: /Agent Pool.*selected/ });
-  await expect(poolButton).toBeVisible();
+  // Verify pool section shows selected agents
+  await expect(page.getByText(/Agent Pool.*\d+ selected/)).toBeVisible();
 
-  // Dismiss modal
-  await page.keyboard.press('Escape');
+  // Navigate away from form
+  await page.locator('.form-panel').getByRole('button', { name: 'Cancel' }).click();
 });

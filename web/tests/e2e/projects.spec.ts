@@ -42,14 +42,13 @@ test('register a project via UI', async ({ page }) => {
   // Click Register Project in the welcome area (scope to avoid matching sidebar button)
   await page.locator('.projects-welcome').getByRole('button', { name: 'Register Project' }).click();
 
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Register Project' })).toBeVisible({ timeout: 5000 });
 
-  await dialog.getByLabel('Name').fill('E2E Test Project');
-  await dialog.getByLabel('Path').fill(uniquePath);
-  await dialog.getByRole('button', { name: 'Register' }).click();
+  await page.getByLabel('Name').fill('E2E Test Project');
+  await page.getByLabel('Path').fill(uniquePath);
+  await page.locator('.form-panel').getByRole('button', { name: 'Register' }).click();
 
-  await expect(dialog).not.toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'Register Project' })).not.toBeVisible({ timeout: 5000 });
   // Project should appear in the sidebar list
   await expect(page.locator('.project-list').getByText('E2E Test Project')).toBeVisible();
 });
@@ -75,14 +74,13 @@ test('edit project', async ({ page }) => {
 
   await page.locator('.main-content').getByRole('button', { name: 'Edit' }).click();
 
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
+  await expect(page.locator('.form-panel-title')).toHaveText('Edit Project', { timeout: 5000 });
 
-  await dialog.getByLabel('Name').clear();
-  await dialog.getByLabel('Name').fill('Edited Project');
-  await dialog.getByRole('button', { name: 'Save' }).click();
+  await page.getByLabel('Name').clear();
+  await page.getByLabel('Name').fill('Edited Project');
+  await page.getByRole('button', { name: 'Save' }).click();
 
-  await expect(dialog).not.toBeVisible({ timeout: 5000 });
+  await expect(page.locator('.form-panel-title')).not.toBeVisible({ timeout: 5000 });
   await expect(page.getByRole('heading', { name: 'Edited Project' })).toBeVisible();
 });
 

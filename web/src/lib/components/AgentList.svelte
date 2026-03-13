@@ -3,12 +3,10 @@
   import { agentsQuery } from '../queries/agents';
   import { router } from '../router';
   import { typeLabels } from '../utils/agentUtils';
-  import AgentForm from './AgentForm.svelte';
 
   const agents = agentsQuery();
 
   let searchText = $state('');
-  let showCreateForm = $state(false);
 
   let filtered = $derived(
     searchText.trim()
@@ -48,7 +46,7 @@
       </div>
     </div>
     <div class="header-action">
-      <button class="add-btn" onclick={() => showCreateForm = true} aria-label="Add agent">+ Add</button>
+      <button class="add-btn" onclick={() => router.navigate('/agents/new')} aria-label="Add agent">+ Add</button>
     </div>
   </div>
 
@@ -80,13 +78,6 @@
     {/each}
   {/if}
 </div>
-
-{#if showCreateForm}
-  <AgentForm
-    onsubmit={() => showCreateForm = false}
-    oncancel={() => showCreateForm = false}
-  />
-{/if}
 
 <style>
   .agent-list {

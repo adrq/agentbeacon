@@ -8,24 +8,22 @@ test('create execution with project selected', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '+ New' }).click();
 
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New Execution' })).toBeVisible({ timeout: 5000 });
 
-  await dialog.getByLabel('Project').selectOption(project.id);
+  const form = page.locator('.form-panel');
+  await form.getByLabel('Project').selectOption(project.id);
 
-  // Expand pool, check the agent, then collapse so Start stays in viewport
-  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
-  await dialog.getByRole('checkbox', { name: agent.name }).check();
-  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+  // Check the agent in pool
+  await page.getByRole('checkbox', { name: agent.name }).check();
 
-  await dialog.getByLabel('Root Agent').selectOption(agent.id);
+  await form.getByLabel('Root Agent').selectOption(agent.id);
 
-  await dialog.getByRole('textbox', { name: 'Task' }).fill('Test with project');
-  await dialog.getByRole('textbox', { name: /title/i }).fill('Project execution');
+  await page.getByRole('textbox', { name: 'Task' }).fill('Test with project');
+  await page.getByRole('textbox', { name: /title/i }).fill('Project execution');
 
-  await dialog.getByRole('button', { name: 'Start' }).click();
+  await form.getByRole('button', { name: 'Start' }).click();
 
-  await expect(dialog).not.toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'New Execution' })).not.toBeVisible({ timeout: 5000 });
   await expect(page.getByRole('heading', { name: 'Project execution' })).toBeVisible();
 });
 
@@ -35,23 +33,20 @@ test('create execution with cwd instead of project', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '+ New' }).click();
 
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New Execution' })).toBeVisible({ timeout: 5000 });
 
-  // Expand pool, check the agent, then collapse so Start stays in viewport
-  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
-  await dialog.getByRole('checkbox', { name: agent.name }).check();
-  await dialog.getByRole('button', { name: /Agent Pool/ }).click();
+  // Check the agent in pool
+  await page.getByRole('checkbox', { name: agent.name }).check();
 
-  await dialog.getByLabel('Root Agent').selectOption(agent.id);
-  await dialog.getByRole('textbox', { name: 'Task' }).fill('Test with cwd');
-  await dialog.getByRole('textbox', { name: /title/i }).fill('CWD execution');
+  await page.getByLabel('Root Agent').selectOption(agent.id);
+  await page.getByRole('textbox', { name: 'Task' }).fill('Test with cwd');
+  await page.getByRole('textbox', { name: /title/i }).fill('CWD execution');
 
-  await dialog.getByText('Show Advanced').click();
-  await dialog.getByLabel('Working Directory').fill('/tmp');
+  // Advanced section is always visible — fill Working Directory directly
+  await page.getByLabel('Working Directory').fill('/tmp');
 
-  await dialog.getByRole('button', { name: 'Start' }).click();
+  await page.getByRole('button', { name: 'Start' }).click();
 
-  await expect(dialog).not.toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'New Execution' })).not.toBeVisible({ timeout: 5000 });
   await expect(page.getByRole('heading', { name: 'CWD execution' })).toBeVisible();
 });

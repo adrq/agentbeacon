@@ -1,6 +1,6 @@
 <script lang="ts">
   import { get } from 'svelte/store';
-  import { activeSection, sidebarOpen, selectedExecutionId, selectedProjectId, selectedAgentId, actionPanelCollapsed, userExplicitlyCollapsed, homeFeedFilter } from '../stores/appState';
+  import { activeSection, sidebarOpen, selectedExecutionId, selectedProjectId, selectedAgentId, actionPanelCollapsed, userExplicitlyCollapsed, homeFeedFilter, routeMode } from '../stores/appState';
   import { decisionCount } from '../stores/questionState';
   import { executionsQuery } from '../queries/executions';
   import AppHeader from './AppHeader.svelte';
@@ -8,12 +8,13 @@
   import SplitPanel from './SplitPanel.svelte';
   import ExecutionList from './ExecutionList.svelte';
   import ExecutionDetail from './ExecutionDetail.svelte';
-  import type { ExecutionPrefill } from './ExecutionDetail.svelte';
   import EmptyState from './EmptyState.svelte';
   import ActivityFeed from './ActivityFeed.svelte';
   import OpsSummary from './OpsSummary.svelte';
   import ActionPanel from './ActionPanel.svelte';
-  import NewExecutionModal from './NewExecutionModal.svelte';
+  import NewExecutionForm from './NewExecutionForm.svelte';
+  import ProjectForm from './ProjectForm.svelte';
+  import AgentForm from './AgentForm.svelte';
   import ProjectList from './ProjectList.svelte';
   import ProjectDetail from './ProjectDetail.svelte';
   import AgentList from './AgentList.svelte';
@@ -23,9 +24,6 @@
   import WikiSection from './wiki/WikiSection.svelte';
   import SettingsPage from './SettingsPage.svelte';
   import QuestionStateProvider from './QuestionStateProvider.svelte';
-
-  let showNewModal = $state(false);
-  let rerunPrefill = $state<ExecutionPrefill | null>(null);
 
   // Track tablet breakpoint so we can force-collapse ActionPanel via state (not CSS)
   let isTablet = $state(false);
@@ -43,21 +41,6 @@
 
   const execsQuery = executionsQuery();
   let hasExecutions = $derived((execsQuery.data ?? []).length > 0);
-
-  function handleNewExecution() {
-    rerunPrefill = null;
-    showNewModal = true;
-  }
-
-  function handleRerun(prefill: ExecutionPrefill) {
-    rerunPrefill = prefill;
-    showNewModal = true;
-  }
-
-  function handleModalClose() {
-    showNewModal = false;
-    rerunPrefill = null;
-  }
 
   function toggleActionPanel() {
     if (isTablet || isHome) return;
@@ -111,7 +94,7 @@
   onclick={(e: MouseEvent) => { e.preventDefault(); document.getElementById('main-content')?.focus(); }}
 >Skip to main content</a>
 
-<AppHeader onnewexecution={handleNewExecution} />
+<AppHeader />
 
 <div class="shell-body">
   <NavRail onToggleDecisions={toggleActionPanel} panelOpen={!effectiveCollapsed} />
@@ -141,8 +124,10 @@
             <EmptyState />
           {/if}
         {:else if $activeSection === 'executions'}
-          {#if $selectedExecutionId}
-            <ExecutionDetail executionId={$selectedExecutionId} onrerun={handleRerun} />
+          {#if $routeMode === 'new'}
+            <NewExecutionForm />
+          {:else if $selectedExecutionId}
+            <ExecutionDetail executionId={$selectedExecutionId} />
           {:else if hasExecutions}
             <div class="home-view scroll-thin">
               <OpsSummary executions={execsQuery.data ?? []} />
@@ -152,13 +137,21 @@
             <EmptyState />
           {/if}
         {:else if $activeSection === 'projects'}
-          {#if $selectedProjectId}
+          {#if $routeMode === 'new'}
+            <ProjectForm />
+          {:else if $routeMode === 'edit' && $selectedProjectId}
+            {#key $selectedProjectId}<ProjectForm projectId={$selectedProjectId} />{/key}
+          {:else if $selectedProjectId}
             <ProjectDetail projectId={$selectedProjectId} />
           {:else}
             <ProjectsWelcome />
           {/if}
         {:else if $activeSection === 'agents'}
-          {#if $selectedAgentId}
+          {#if $routeMode === 'new'}
+            <AgentForm />
+          {:else if $routeMode === 'edit' && $selectedAgentId}
+            {#key $selectedAgentId}<AgentForm agentId={$selectedAgentId} />{/key}
+          {:else if $selectedAgentId}
             <AgentDetail agentId={$selectedAgentId} />
           {:else}
             <AgentsWelcome />
@@ -178,10 +171,6 @@
     wide={isHome}
   />
 </div>
-
-{#if showNewModal}
-  <NewExecutionModal onclose={handleModalClose} prefill={rerunPrefill} />
-{/if}
 
 <style>
   .shell-body {

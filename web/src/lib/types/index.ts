@@ -5,6 +5,7 @@ export type ExecutionStatus =
 export type SessionStatus = ExecutionStatus;
 export type EventType = 'message' | 'state_change' | 'platform';
 export type Theme = 'light' | 'dark';
+export type RouteMode = 'view' | 'new' | 'edit';
 export type NavSection = 'home' | 'executions' | 'projects' | 'agents' | 'wiki' | 'settings';
 export type AgentType = 'claude_sdk' | 'codex_sdk' | 'copilot_sdk' | 'opencode_sdk' | 'acp' | 'a2a';
 
@@ -217,6 +218,16 @@ export interface StateChangePayload {
   to: string;
   error?: string;
   stderr?: string;
+}
+
+// Prefill data for re-running or pre-filling execution form
+export interface ExecutionPrefill {
+  sourceExecutionId?: string;
+  projectId?: string | null;
+  agentId?: string;
+  agentIds?: string[];
+  prompt?: string;
+  title?: string;
 }
 
 // Response types
