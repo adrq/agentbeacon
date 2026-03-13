@@ -53,6 +53,7 @@ impl SdkKind {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 enum SdkCommand {
     #[serde(rename = "start", rename_all = "camelCase")]
     Start {
@@ -71,9 +72,15 @@ enum SdkCommand {
         max_turns: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         max_budget_usd: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thinking: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
         // Copilot-only
         #[serde(skip_serializing_if = "Option::is_none")]
         provider: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
     },
     #[serde(rename = "prompt", rename_all = "camelCase")]
     Prompt { text: String },
@@ -124,6 +131,8 @@ pub struct ClaudeConfig {
     pub max_turns: Option<u32>,
     pub max_budget_usd: Option<f64>,
     pub system_prompt: Option<String>,
+    pub thinking: Option<serde_json::Value>,
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +141,7 @@ pub struct CopilotConfig {
     pub system_prompt: Option<String>,
     pub provider: Option<serde_json::Value>,
     pub api_key_env: Option<String>,
+    pub reasoning_effort: Option<String>,
 }
 
 enum ParsedConfig {
@@ -334,7 +344,10 @@ fn build_start_command(
             resume_session_id,
             max_turns: cc.max_turns,
             max_budget_usd: cc.max_budget_usd,
+            thinking: cc.thinking.clone(),
+            effort: cc.effort.clone(),
             provider: None,
+            reasoning_effort: None,
         },
         ParsedConfig::Copilot(cc) => SdkCommand::Start {
             prompt,
@@ -345,7 +358,10 @@ fn build_start_command(
             resume_session_id,
             max_turns: None,
             max_budget_usd: None,
+            thinking: None,
+            effort: None,
             provider: sanitize_provider(cc.provider.clone()),
+            reasoning_effort: cc.reasoning_effort.clone(),
         },
     }
 }
@@ -412,9 +428,12 @@ async fn background_task(
                                     // partial fragments that should not overwrite the final complete message
                                     // and should not be persisted to the DB (ephemeral streaming only).
                                     let is_delta_only = content.as_array()
-                                        .map(|blocks| !blocks.is_empty() && blocks.iter().all(|b|
-                                            b.get("type").and_then(|t| t.as_str()) == Some("text_delta")
-                                        ))
+                                        .map(|blocks| !blocks.is_empty() && blocks.iter().all(|b| {
+                                            matches!(
+                                                b.get("type").and_then(|t| t.as_str()),
+                                                Some("text_delta" | "thinking_delta")
+                                            )
+                                        }))
                                         .unwrap_or(false);
                                     let _ = event_tx.send(AgentEvent::Message { output: structured.clone(), ephemeral: is_delta_only });
                                     if !is_delta_only {
@@ -882,6 +901,9 @@ mod tests {
             system_prompt: None,
             resume_session_id: None,
             provider: None,
+            thinking: None,
+            effort: None,
+            reasoning_effort: None,
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -911,6 +933,9 @@ mod tests {
             max_turns: None,
             max_budget_usd: None,
             provider: Some(json!({"type": "openai", "baseUrl": "https://api.openai.com/v1"})),
+            thinking: None,
+            effort: None,
+            reasoning_effort: None,
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -934,6 +959,8 @@ mod tests {
             max_turns: Some(10),
             max_budget_usd: None,
             system_prompt: None,
+            thinking: None,
+            effort: None,
         });
         let mcp = json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}});
         let cmd = build_start_command("hello".into(), "/workspace", &mcp, &config, None);
@@ -957,6 +984,9 @@ mod tests {
             system_prompt: None,
             resume_session_id: Some("sdk-session-abc".into()),
             provider: None,
+            thinking: None,
+            effort: None,
+            reasoning_effort: None,
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -976,6 +1006,9 @@ mod tests {
             system_prompt: None,
             resume_session_id: None,
             provider: None,
+            thinking: None,
+            effort: None,
+            reasoning_effort: None,
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -1136,5 +1169,135 @@ mod tests {
         assert_eq!(pw["command"], "npx");
         assert_eq!(pw["args"][0], "@playwright/mcp");
         assert_eq!(pw["env"]["DISPLAY"], ":1");
+    }
+
+    // --- Thinking/effort config and serialization ---
+
+    #[test]
+    fn test_claude_config_with_thinking() {
+        let json_val = json!({
+            "model": "claude-haiku-4-5-20251001",
+            "max_turns": 50,
+            "thinking": {"type": "adaptive"},
+            "effort": "high"
+        });
+        let config: ClaudeConfig = serde_json::from_value(json_val).unwrap();
+        assert_eq!(config.thinking.as_ref().unwrap()["type"], "adaptive");
+        assert_eq!(config.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn test_copilot_config_with_reasoning_effort() {
+        let json_val = json!({
+            "model": "gpt-5-mini",
+            "reasoning_effort": "medium"
+        });
+        let config: CopilotConfig = serde_json::from_value(json_val).unwrap();
+        assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn test_start_command_serializes_thinking() {
+        let cmd = SdkCommand::Start {
+            prompt: "Hello".into(),
+            cwd: "/workspace".into(),
+            mcp_servers: None,
+            model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            system_prompt: None,
+            resume_session_id: None,
+            provider: None,
+            thinking: Some(json!({"type": "adaptive"})),
+            effort: Some("high".into()),
+            reasoning_effort: None,
+        };
+        let json_str = serde_json::to_string(&cmd).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(value["thinking"]["type"], "adaptive");
+        assert_eq!(value["effort"], "high");
+        assert!(value.get("reasoningEffort").is_none());
+    }
+
+    #[test]
+    fn test_start_command_serializes_reasoning_effort() {
+        let cmd = SdkCommand::Start {
+            prompt: "Fix tests".into(),
+            cwd: "/workspace".into(),
+            mcp_servers: None,
+            model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            system_prompt: None,
+            resume_session_id: None,
+            provider: None,
+            thinking: None,
+            effort: None,
+            reasoning_effort: Some("medium".into()),
+        };
+        let json_str = serde_json::to_string(&cmd).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(value["reasoningEffort"], "medium");
+        assert!(value.get("thinking").is_none());
+        assert!(value.get("effort").is_none());
+    }
+
+    // --- Ephemeral detection: thinking_delta ---
+
+    #[test]
+    fn test_ephemeral_detection_thinking_delta() {
+        let content = json!([{"type": "thinking_delta", "thinking": "Let me analyze..."}]);
+        let is_delta_only = content
+            .as_array()
+            .map(|blocks| {
+                !blocks.is_empty()
+                    && blocks.iter().all(|b| {
+                        matches!(
+                            b.get("type").and_then(|t| t.as_str()),
+                            Some("text_delta" | "thinking_delta")
+                        )
+                    })
+            })
+            .unwrap_or(false);
+        assert!(is_delta_only);
+    }
+
+    #[test]
+    fn test_ephemeral_detection_mixed_deltas() {
+        let content = json!([
+            {"type": "text_delta", "text": "partial"},
+            {"type": "thinking_delta", "thinking": "reasoning chunk"}
+        ]);
+        let is_delta_only = content
+            .as_array()
+            .map(|blocks| {
+                !blocks.is_empty()
+                    && blocks.iter().all(|b| {
+                        matches!(
+                            b.get("type").and_then(|t| t.as_str()),
+                            Some("text_delta" | "thinking_delta")
+                        )
+                    })
+            })
+            .unwrap_or(false);
+        assert!(is_delta_only);
+    }
+
+    #[test]
+    fn test_ephemeral_detection_non_delta_not_ephemeral() {
+        let content = json!([{"type": "thinking", "thinking": "complete block"}]);
+        let is_delta_only = content
+            .as_array()
+            .map(|blocks| {
+                !blocks.is_empty()
+                    && blocks.iter().all(|b| {
+                        matches!(
+                            b.get("type").and_then(|t| t.as_str()),
+                            Some("text_delta" | "thinking_delta")
+                        )
+                    })
+            })
+            .unwrap_or(false);
+        assert!(!is_delta_only);
     }
 }

@@ -199,6 +199,8 @@ async function main(): Promise<void> {
             };
           }
           if (cmd.resumeSessionId) options.resume = cmd.resumeSessionId;
+          if (cmd.thinking) options.thinking = cmd.thinking;
+          if (cmd.effort) options.effort = cmd.effort;
           options.includePartialMessages = true;
 
           const q = query({
@@ -294,11 +296,25 @@ async function main(): Promise<void> {
                     role: "assistant",
                     content: [{ type: "text_delta", text: delta.text }],
                   });
+                } else if (
+                  delta.type === "thinking_delta" &&
+                  typeof delta.thinking === "string"
+                ) {
+                  emit({
+                    type: "message",
+                    role: "assistant",
+                    content: [
+                      { type: "thinking_delta", thinking: delta.thinking },
+                    ],
+                  });
                 }
               } else if (event) {
-                process.stderr.write(
-                  `[claude] ignoring non-text stream_event: ${JSON.stringify(event.type ?? "unknown")}\n`,
-                );
+                const eventType = event.type as string;
+                if (eventType !== "content_block_delta") {
+                  process.stderr.write(
+                    `[claude] ignoring stream_event: ${JSON.stringify(eventType ?? "unknown")}\n`,
+                  );
+                }
               }
             }
             // Silently skip: user replay, compact_boundary

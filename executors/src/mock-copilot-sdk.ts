@@ -24,6 +24,10 @@ type MockSessionEvent =
       data: { reasoningId?: string; content: string };
     }
   | {
+      type: "assistant.reasoning_delta";
+      data: { reasoningId?: string; deltaContent: string };
+    }
+  | {
       type: "session.error";
       data: { errorType: string; message: string };
     }
@@ -170,7 +174,15 @@ class MockCopilotSession {
   // Events dispatched before session.idle so executor's on() handlers
   // accumulate pendingBlocks and flush on assistant.message.
   private showcaseScenario(): void {
-    // --- Group 1: reasoning + tool ---
+    // --- Group 1: reasoning deltas + reasoning + tool ---
+    this.dispatch({
+      type: "assistant.reasoning_delta",
+      data: { deltaContent: "I need to understand" },
+    });
+    this.dispatch({
+      type: "assistant.reasoning_delta",
+      data: { deltaContent: " the test structure first." },
+    });
     this.dispatch({
       type: "assistant.reasoning",
       data: {
@@ -225,7 +237,15 @@ class MockCopilotSession {
       },
     });
 
-    // --- Group 2: reasoning + tool + final message ---
+    // --- Group 2: reasoning deltas + reasoning + tool + final message ---
+    this.dispatch({
+      type: "assistant.reasoning_delta",
+      data: { deltaContent: "The test_validate_port test" },
+    });
+    this.dispatch({
+      type: "assistant.reasoning_delta",
+      data: { deltaContent: " expects port validation." },
+    });
     this.dispatch({
       type: "assistant.reasoning",
       data: {
@@ -304,6 +324,23 @@ class MockCopilotSession {
       },
     });
 
+    // --- Group 2d: reasoning AFTER tools (exercises flush-before-reasoning) ---
+    // Simulates the model re-reasoning after observing tool results.
+    this.dispatch({
+      type: "assistant.reasoning_delta",
+      data: { deltaContent: "Now that I see the test output" },
+    });
+    this.dispatch({
+      type: "assistant.reasoning_delta",
+      data: { deltaContent: ", I can fix the assertion." },
+    });
+    this.dispatch({
+      type: "assistant.reasoning",
+      data: {
+        content: "Now that I see the test output, I can fix the assertion.",
+      },
+    });
+
     const finalContent = [
       "Fixed the failing test by implementing port validation.",
       "",
@@ -342,7 +379,7 @@ class MockCopilotSession {
     this._aborted = true;
   }
 
-  async destroy(): Promise<void> {
+  async disconnect(): Promise<void> {
     this._handlers.clear();
   }
 }

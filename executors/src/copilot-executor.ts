@@ -39,6 +39,17 @@ let currentSession: CopilotSession | null = null;
 let aborted = false;
 let pendingBlocks: Record<string, unknown>[] = [];
 
+function flushPendingBlocks(): void {
+  if (pendingBlocks.length > 0) {
+    emit({
+      type: "message",
+      role: "assistant",
+      content: [...pendingBlocks],
+    });
+    pendingBlocks = [];
+  }
+}
+
 const commandQueue: Command[] = [];
 let queueResolve: (() => void) | null = null;
 
@@ -180,15 +191,19 @@ async function runSession(startCmd: StartCommand): Promise<void> {
     if (startCmd.provider) sessionConfig.provider = startCmd.provider;
     if (startCmd.cwd) sessionConfig.workingDirectory = startCmd.cwd;
     if (mcpServers) sessionConfig.mcpServers = mcpServers;
+    if (startCmd.reasoningEffort)
+      sessionConfig.reasoningEffort = startCmd.reasoningEffort;
 
     let session: CopilotSession;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic config built at runtime
+    const typedConfig = sessionConfig as any;
     if (startCmd.resumeSessionId) {
       session = await client.resumeSession(
         startCmd.resumeSessionId,
-        sessionConfig,
+        typedConfig,
       );
     } else {
-      session = await client.createSession(sessionConfig);
+      session = await client.createSession(typedConfig);
     }
     currentSession = session;
 
@@ -197,24 +212,19 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       sessionId: session.sessionId,
     });
 
-    // Reset pending blocks for this session. Tool/reasoning blocks are
-    // buffered until the next assistant.message, then flushed together
-    // so each message event carries the structured parts that preceded it.
+    // Reset pending blocks for this session. Tool blocks are buffered
+    // until the next assistant.message, then flushed together so each
+    // message event carries the structured parts that preceded it.
+    // Reasoning blocks are emitted immediately (not buffered).
     pendingBlocks = [];
     let lastAssistantContent: string | undefined;
 
     session.on(
       "assistant.message",
       (event: SessionEventPayload<"assistant.message">) => {
-        // Flush any accumulated tool/reasoning blocks before the text message
         lastAssistantContent = event.data.content;
         pendingBlocks.push({ type: "text", text: event.data.content });
-        emit({
-          type: "message",
-          role: "assistant",
-          content: [...pendingBlocks],
-        });
-        pendingBlocks = [];
+        flushPendingBlocks();
       },
     );
 
@@ -265,10 +275,27 @@ async function runSession(startCmd: StartCommand): Promise<void> {
     session.on(
       "assistant.reasoning",
       (event: SessionEventPayload<"assistant.reasoning">) => {
-        pendingBlocks.push({
-          type: "thinking",
-          thinking: event.data.content,
+        flushPendingBlocks();
+        emit({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "thinking", thinking: event.data.content }],
         });
+      },
+    );
+
+    session.on(
+      "assistant.reasoning_delta",
+      (event: SessionEventPayload<"assistant.reasoning_delta">) => {
+        flushPendingBlocks();
+        const text = event.data.deltaContent;
+        if (typeof text === "string") {
+          emit({
+            type: "message",
+            role: "assistant",
+            content: [{ type: "thinking_delta", thinking: text }],
+          });
+        }
       },
     );
 
@@ -344,7 +371,7 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       }
     }
 
-    await session.destroy();
+    await session.disconnect();
   } finally {
     currentSession = null;
     await client.stop();
@@ -355,15 +382,7 @@ function emitTurnResult(
   lastAssistantContent: string | undefined,
   fatalError?: string,
 ): void {
-  // Flush any accumulated tool/reasoning blocks that weren't followed by an assistant.message
-  if (pendingBlocks.length > 0) {
-    emit({
-      type: "message",
-      role: "assistant",
-      content: [...pendingBlocks],
-    });
-    pendingBlocks = [];
-  }
+  flushPendingBlocks();
   if (aborted) {
     emit({
       type: "result",

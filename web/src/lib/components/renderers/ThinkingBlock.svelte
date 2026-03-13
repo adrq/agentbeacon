@@ -4,12 +4,24 @@
   interface Props {
     data: NormalizedThinking;
     compact?: boolean;
+    isStreaming?: boolean;
+    durationMs?: number;
   }
 
-  let { data, compact = false }: Props = $props();
+  let { data, compact = false, isStreaming = false, durationMs = 0 }: Props = $props();
 
   let text = $derived(data.text ?? '');
+
   let expanded = $state(false);
+  $effect.pre(() => {
+    if (isStreaming) expanded = true;
+  });
+
+  let durationText = $derived.by(() => {
+    if (isStreaming || durationMs < 1000) return '';
+    const secs = Math.round(durationMs / 1000);
+    return `Thought for ${secs}s`;
+  });
 </script>
 
 {#if compact}
@@ -18,10 +30,10 @@
     <span class="think-label">{text.length > 200 ? text.slice(0, 200) + '\u2026' : text}</span>
   </span>
 {:else}
-  <div class="thinking-block" class:expanded>
+  <div class="thinking-block" class:expanded class:streaming={isStreaming}>
     <button class="thinking-header" onclick={() => expanded = !expanded}>
       <span class="think-icon">{'\u22EF'}</span>
-      <span class="think-title">Thinking...</span>
+      <span class="think-title">{isStreaming ? 'Thinking...' : (durationText || 'Thinking...')}</span>
       <span class="think-toggle">{expanded ? '\u25B2' : '\u25BC'}</span>
     </button>
     <div class="thinking-body">
@@ -55,6 +67,17 @@
     background: hsl(var(--muted) / 0.1);
     max-width: 85%;
     overflow: hidden;
+  }
+
+  @keyframes thinking-shimmer {
+    0% { border-color: hsl(var(--border)); }
+    50% { border-color: hsl(var(--muted-foreground) / 0.4); }
+    100% { border-color: hsl(var(--border)); }
+  }
+
+  .thinking-block.streaming {
+    border-width: 2px;
+    animation: thinking-shimmer 2s ease-in-out infinite;
   }
 
   .thinking-header {

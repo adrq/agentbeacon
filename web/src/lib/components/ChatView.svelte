@@ -20,11 +20,13 @@
     sessions: SessionSummary[];
     sessionId: string | null;
     ephemeralText?: string;
+    ephemeralThinking?: { text: string; startedAt: string } | null;
+    settledThinkingDuration?: { durationMs: number; startedAt: string } | null;
     eventFilter?: EventFilter;
     onfilterchange?: (filter: EventFilter) => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', eventFilter = 'all', onfilterchange }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, eventFilter = 'all', onfilterchange }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
   let messageText = $state('');
@@ -97,6 +99,7 @@
   $effect(() => {
     const _len = events.length; // dependency: triggers on every new event
     const _eph = ephemeralText; // dependency: triggers on ephemeral streaming updates
+    const _ephThink = ephemeralThinking; // dependency: triggers on ephemeral thinking updates
     if (shouldAutoScroll && scrollContainer) {
       tick().then(() => {
         if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
@@ -131,7 +134,7 @@
     | { type: 'tool'; icon: string; text: string; time: string; key: string }
     | { type: 'tool_group'; group: ToolGroupEntry; key: string }
     | { type: 'tool_stream'; groups: ToolGroupEntry[]; live: boolean; key: string }
-    | { type: 'thinking'; data: NormalizedThinking; time: string; key: string }
+    | { type: 'thinking'; data: NormalizedThinking; time: string; key: string; isStreaming?: boolean; startedAt?: string; durationMs?: number }
     | { type: 'data_fallback'; data: Record<string, unknown>; time: string; key: string }
     | { type: 'error'; message: string; stderr?: string; time: string; key: string }
     | { type: 'fyi'; text: string; time: string; key: string }
@@ -281,9 +284,18 @@
                 entries.push({ type: 'tool_group', group, key: `${ev.id}-${seq++}` });
                 break;
               }
-              case 'thinking':
-                entries.push({ type: 'thinking', data: norm, time, key: `${ev.id}-${seq++}` });
+              case 'thinking': {
+                const prevEntry = entries.length > 0 ? entries[entries.length - 1] : null;
+                if (prevEntry && prevEntry.type === 'thinking') {
+                  (prevEntry as { data: NormalizedThinking }).data = {
+                    ...prevEntry.data,
+                    text: prevEntry.data.text + norm.text,
+                  };
+                } else {
+                  entries.push({ type: 'thinking', data: norm, time, key: `${ev.id}-${seq++}` });
+                }
                 break;
+              }
               case 'unknown': {
                 const rawType = norm.raw.type as string | undefined;
                 if (rawType === 'plan' && isPlanData(norm.raw as unknown as import('../types').DataPartPayload)) {
@@ -379,8 +391,22 @@
     }
   });
 
+
   let parsed = $derived.by(() => {
     const entries = groupToolStreams(parseEntries(events));
+
+    // Ephemeral thinking: show as streaming thinking entry
+    if (ephemeralThinking?.text) {
+      entries.push({
+        type: 'thinking',
+        data: { normalized: 'thinking', text: ephemeralThinking.text },
+        time: formatTime(ephemeralThinking.startedAt),
+        key: 'ephemeral-thinking',
+        isStreaming: true,
+        startedAt: ephemeralThinking.startedAt,
+      });
+    }
+
     if (ephemeralText) {
       const agentLabel = leadSession ? agentName(leadSession.agent_id) : 'Agent';
       entries.push({
@@ -391,7 +417,7 @@
         key: 'ephemeral-stream',
         isStreaming: true,
       });
-    } else if (sessionIsActive) {
+    } else if (sessionIsActive && !ephemeralThinking?.text) {
       for (let i = entries.length - 1; i >= 0; i--) {
         const entry = entries[i];
         if (entry.type === 'agent') {
@@ -400,6 +426,18 @@
         }
       }
     }
+
+    // Apply settled duration (computed by ExecutionDetail when ephemeral buffer clears)
+    if (settledThinkingDuration && settledThinkingDuration.durationMs > 0 && !ephemeralThinking?.text) {
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const e = entries[i];
+        if (e.type === 'thinking' && !e.isStreaming) {
+          entries[i] = { ...e, durationMs: settledThinkingDuration.durationMs, startedAt: settledThinkingDuration.startedAt };
+          break;
+        }
+      }
+    }
+
     return entries;
   });
 
@@ -485,7 +523,7 @@
           </div>
         {:else if entry.type === 'thinking'}
           <div class="chat-row tool-row">
-            <ThinkingBlock data={entry.data} />
+            <ThinkingBlock data={entry.data} isStreaming={entry.isStreaming ?? false} durationMs={entry.durationMs ?? 0} />
           </div>
         {:else if entry.type === 'data_fallback'}
           <div class="chat-row tool-row">

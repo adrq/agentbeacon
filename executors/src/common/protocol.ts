@@ -13,6 +13,9 @@ export interface StartCommand {
   systemPrompt?: string;
   provider?: ProviderConfig;
   resumeSessionId?: string;
+  thinking?: { type: string; budgetTokens?: number };
+  effort?: string;
+  reasoningEffort?: string;
 }
 
 // Intentionally loose type — Rust sends opaque JSON, SDK consumes it

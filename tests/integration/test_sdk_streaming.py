@@ -129,3 +129,106 @@ def test_copilot_mock_emits_text_deltas():
     finally:
         proc.terminate()
         proc.wait(timeout=5)
+
+
+def test_claude_mock_emits_thinking_deltas():
+    """Claude mock SDK thinking_delta stream events reach stdout."""
+    proc = _start_executor("claude-executor.js")
+    try:
+        _send_command(
+            proc, {"type": "start", "prompt": "Fix tests", "cwd": os.getcwd()}
+        )
+        events = _collect_events(proc, timeout=30)
+        _send_command(proc, {"type": "stop"})
+
+        thinking_delta_messages = [
+            e
+            for e in events
+            if e.get("type") == "message"
+            and any(
+                block.get("type") == "thinking_delta"
+                for block in (e.get("content") or [])
+            )
+        ]
+        assert len(thinking_delta_messages) >= 1, (
+            f"Expected at least 1 thinking_delta message, got types: "
+            f"{[(e.get('type'), [b.get('type') for b in (e.get('content') or [])]) for e in events if e.get('type') == 'message']}"
+        )
+
+        thinking_messages = [
+            e
+            for e in events
+            if e.get("type") == "message"
+            and any(
+                block.get("type") == "thinking" for block in (e.get("content") or [])
+            )
+        ]
+        assert len(thinking_messages) >= 1, (
+            "Expected at least 1 complete thinking message"
+        )
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_copilot_mock_thinking_before_text():
+    """Copilot mock: reasoning events appear before text_delta events in output."""
+    proc = _start_executor("copilot-executor.js")
+    try:
+        _send_command(
+            proc, {"type": "start", "prompt": "Fix tests", "cwd": os.getcwd()}
+        )
+        events = _collect_events(proc, timeout=30)
+        _send_command(proc, {"type": "stop"})
+
+        messages = [e for e in events if e.get("type") == "message"]
+        first_thinking_idx = None
+        first_text_delta_idx = None
+        for i, msg in enumerate(messages):
+            for block in msg.get("content") or []:
+                if (
+                    block.get("type") in ("thinking", "thinking_delta")
+                    and first_thinking_idx is None
+                ):
+                    first_thinking_idx = i
+                if block.get("type") == "text_delta" and first_text_delta_idx is None:
+                    first_text_delta_idx = i
+
+        assert first_thinking_idx is not None, "Expected at least 1 thinking message"
+        assert first_text_delta_idx is not None, (
+            "Expected at least 1 text_delta message"
+        )
+        assert first_thinking_idx < first_text_delta_idx, (
+            f"Thinking (index {first_thinking_idx}) must appear before "
+            f"text_delta (index {first_text_delta_idx})"
+        )
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_copilot_mock_emits_reasoning_deltas():
+    """Copilot mock reasoning_delta events reach stdout as thinking_delta."""
+    proc = _start_executor("copilot-executor.js")
+    try:
+        _send_command(
+            proc, {"type": "start", "prompt": "Fix tests", "cwd": os.getcwd()}
+        )
+        events = _collect_events(proc, timeout=30)
+        _send_command(proc, {"type": "stop"})
+
+        thinking_delta_messages = [
+            e
+            for e in events
+            if e.get("type") == "message"
+            and any(
+                block.get("type") == "thinking_delta"
+                for block in (e.get("content") or [])
+            )
+        ]
+        assert len(thinking_delta_messages) >= 1, (
+            "Expected at least 1 thinking_delta message from reasoning_delta events"
+        )
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)

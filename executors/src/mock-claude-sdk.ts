@@ -39,7 +39,7 @@ type MockSDKMessage =
       event: {
         type: string;
         index?: number;
-        delta?: { type: string; text?: string };
+        delta?: { type: string; text?: string; thinking?: string };
       };
     };
 
@@ -104,7 +104,29 @@ async function* showcaseTurn(
   signal: AbortSignal | undefined,
 ): AsyncGenerator<MockSDKMessage, void> {
   process.stderr.write(`[mock-claude-sdk] showcaseTurn starting\n`);
-  // 1. Thinking block
+  // 1a. Streaming thinking deltas (before complete thinking block)
+  checkAbort(signal);
+  await delay(30);
+  yield {
+    type: "stream_event",
+    event: {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "thinking_delta", thinking: "Let me analyze" },
+    },
+  };
+  checkAbort(signal);
+  await delay(30);
+  yield {
+    type: "stream_event",
+    event: {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "thinking_delta", thinking: " the codebase..." },
+    },
+  };
+
+  // 1b. Complete thinking block
   checkAbort(signal);
   await delay(80);
   yield {

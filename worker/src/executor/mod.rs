@@ -363,6 +363,19 @@ mod tests {
         assert!(content_block_to_part(&block).is_none());
     }
 
+    #[test]
+    fn test_thinking_delta_passes_through_raw() {
+        let block = serde_json::json!({
+            "type": "thinking_delta",
+            "thinking": "Let me reason about this..."
+        });
+        let part = content_block_to_part(&block).unwrap();
+        assert_eq!(part["kind"], "data");
+        let data = &part["data"];
+        assert_eq!(data["type"], "thinking_delta");
+        assert_eq!(data["thinking"], "Let me reason about this...");
+    }
+
     // --- extract_prompt_text tests ---
 
     #[test]

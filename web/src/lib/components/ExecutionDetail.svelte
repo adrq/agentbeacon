@@ -46,6 +46,8 @@
 
   // Ephemeral streaming state (not in TanStack cache — transient)
   let ephemeralBuffers = $state<Map<string, { text: string; lastSeq: number }>>(new Map());
+  let ephemeralThinkingBuffers = $state<Map<string, { text: string; lastSeq: number; startedAt: string }>>(new Map());
+  let settledThinkingDurations = $state<Map<string, { durationMs: number; startedAt: string }>>(new Map());
   let lastPersistedSeq = new Map<string, number>();
 
   // Event filter state (shared between Chat and Log views, resets on exec change)
@@ -67,6 +69,7 @@
       if (hashView) viewMode = hashView;
       lastPersistedSeq.clear();
       ephemeralBuffers = new Map();
+      ephemeralThinkingBuffers = new Map();
       sseReconnecting = false;
       sseConnection = null;
     }
@@ -169,6 +172,26 @@
               ephemeralBuffers = new Map(ephemeralBuffers);
             }
           }
+          // Clear ephemeral thinking buffer only when the persisted message
+          // contains a complete thinking block. Clearing on any message would
+          // drop in-flight reasoning if text/tool output is persisted first.
+          const thinkBuf = ephemeralThinkingBuffers.get(event.session_id);
+          if (thinkBuf && (event.msg_seq ?? 0) >= thinkBuf.lastSeq) {
+            const hasPersistedThinking = payload.parts?.some(
+              (p: { kind: string; data?: unknown }) =>
+                p.kind === 'data' &&
+                (p.data as Record<string, unknown>)?.type === 'thinking'
+            );
+            if (hasPersistedThinking) {
+              settledThinkingDurations.set(event.session_id, {
+                durationMs: Date.now() - new Date(thinkBuf.startedAt).getTime(),
+                startedAt: thinkBuf.startedAt,
+              });
+              settledThinkingDurations = new Map(settledThinkingDurations);
+              ephemeralThinkingBuffers.delete(event.session_id);
+              ephemeralThinkingBuffers = new Map(ephemeralThinkingBuffers);
+            }
+          }
         }
 
         // Status-driving UI (StatusBadge, cancel button, completion summary)
@@ -181,13 +204,21 @@
           if (event.session_id) {
             const p = event.payload as { to?: string };
             if (p.to === 'working') {
-              // New turn starting — reset stale-delta guard
+              // New turn starting — reset stale-delta guard, stale duration, and stale thinking buffer
               lastPersistedSeq.delete(event.session_id);
+              settledThinkingDurations.delete(event.session_id);
+              settledThinkingDurations = new Map(settledThinkingDurations);
+              ephemeralThinkingBuffers.delete(event.session_id);
+              ephemeralThinkingBuffers = new Map(ephemeralThinkingBuffers);
             } else {
               // Turn ended — clear buffer and poison guard against late retried POSTs
               if (ephemeralBuffers.has(event.session_id)) {
                 ephemeralBuffers.delete(event.session_id);
                 ephemeralBuffers = new Map(ephemeralBuffers);
+              }
+              if (ephemeralThinkingBuffers.has(event.session_id)) {
+                ephemeralThinkingBuffers.delete(event.session_id);
+                ephemeralThinkingBuffers = new Map(ephemeralThinkingBuffers);
               }
               lastPersistedSeq.set(event.session_id, Number.MAX_SAFE_INTEGER);
             }
@@ -204,15 +235,38 @@
           ?.filter((p: { kind: string }) => p.kind === 'text')
           .map((p: { kind: string; text?: string }) => p.text ?? '')
           .join('') ?? '';
-        if (!text) return;
+        if (text) {
+          const existing = ephemeralBuffers.get(eph.session_id);
+          if (!existing || eph.msg_seq > existing.lastSeq) {
+            ephemeralBuffers.set(eph.session_id, {
+              text: (existing?.text ?? '') + text,
+              lastSeq: eph.msg_seq,
+            });
+            ephemeralBuffers = new Map(ephemeralBuffers);
+          }
+        }
 
-        const existing = ephemeralBuffers.get(eph.session_id);
-        if (existing && eph.msg_seq <= existing.lastSeq) return;
-        ephemeralBuffers.set(eph.session_id, {
-          text: (existing?.text ?? '') + text,
-          lastSeq: eph.msg_seq,
-        });
-        ephemeralBuffers = new Map(ephemeralBuffers);
+        // Accumulate thinking deltas from data parts
+        const thinkingTexts = eph.payload.parts
+          ?.filter((p: { kind: string; data?: unknown }) =>
+            p.kind === 'data' &&
+            (p.data as Record<string, unknown>)?.type === 'thinking_delta'
+          )
+          .map((p: { kind: string; data?: unknown }) =>
+            ((p.data as Record<string, unknown>)?.thinking as string) ?? ''
+          ) ?? [];
+        const thinkingText = thinkingTexts.join('');
+        if (thinkingText) {
+          const existing = ephemeralThinkingBuffers.get(eph.session_id);
+          if (!existing || eph.msg_seq > existing.lastSeq) {
+            ephemeralThinkingBuffers.set(eph.session_id, {
+              text: (existing?.text ?? '') + thinkingText,
+              lastSeq: eph.msg_seq,
+              startedAt: existing?.startedAt ?? new Date().toISOString(),
+            });
+            ephemeralThinkingBuffers = new Map(ephemeralThinkingBuffers);
+          }
+        }
       },
       () => { sseActive = true; sseReconnecting = false; },
       () => {
@@ -504,7 +558,7 @@
     {#if viewMode === 'log'}
       <EventsTimeline {events} {agents} sessions={detail.sessions} {eventFilter} onfilterchange={(f) => eventFilter = f} />
     {:else if viewMode === 'chat'}
-      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} {eventFilter} onfilterchange={(f) => eventFilter = f} />
+      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} {eventFilter} onfilterchange={(f) => eventFilter = f} />
     {:else if viewMode === 'diff'}
       <DiffPanel sessionId={activeSessionId} {isTerminal} />
     {/if}

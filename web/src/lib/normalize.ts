@@ -64,6 +64,7 @@ function normalizeSdkPart(raw: Record<string, unknown>): NormalizedData {
         isError: raw.is_error as boolean | undefined,
       };
     case 'thinking':
+    case 'thinking_delta':
       return {
         normalized: 'thinking',
         text: (raw.thinking as string) ?? '',

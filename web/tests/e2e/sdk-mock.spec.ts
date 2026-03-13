@@ -41,6 +41,10 @@ test('claude mock: full showcase renders all SDK content types', async ({ page }
   await expect(thinkingBlock).toBeVisible({ timeout: 10000 });
   await expect(thinkingBlock).toContainText('Thinking...');
 
+  // Post-completion: ThinkingBlock should NOT be streaming or expanded
+  await expect(thinkingBlock).not.toHaveClass(/streaming/);
+  await expect(thinkingBlock).not.toHaveClass(/expanded/);
+
   const toolCard = page.locator('.tool-group').first();
   await expect(toolCard).toBeVisible();
 
@@ -76,6 +80,18 @@ test('copilot mock: full showcase renders all SDK content types', async ({ page 
   const thinkingBlock = page.locator('.thinking-block').first();
   await expect(thinkingBlock).toBeVisible({ timeout: 10000 });
   await expect(thinkingBlock).toContainText('Thinking...');
+
+  // Post-completion: ThinkingBlock should NOT be streaming or expanded
+  await expect(thinkingBlock).not.toHaveClass(/streaming/);
+  await expect(thinkingBlock).not.toHaveClass(/expanded/);
+
+  // Ordering: ThinkingBlock must appear BEFORE the first ToolGroup in the DOM
+  const thinkingTop = await thinkingBlock.boundingBox();
+  const firstTool = page.locator('.tool-group').first();
+  const toolTop = await firstTool.boundingBox();
+  expect(thinkingTop).toBeTruthy();
+  expect(toolTop).toBeTruthy();
+  expect(thinkingTop!.y).toBeLessThan(toolTop!.y);
 
   // First Bash tool renders as standalone ToolGroup (before the streak of 3)
   const bashCard = page.locator('.tool-group').filter({ hasText: 'Bash' });
