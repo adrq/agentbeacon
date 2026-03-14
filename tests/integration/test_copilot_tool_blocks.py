@@ -88,7 +88,7 @@ def _run_showcase_scenario():
             proc,
             {
                 "type": "start",
-                "prompt": "Fix the tests",
+                "parts": [{"kind": "text", "text": "Fix the tests"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -320,7 +320,7 @@ def test_copilot_fatal_session_error_fails_turn():
             proc,
             {
                 "type": "start",
-                "prompt": "__fatal_session_error__",
+                "parts": [{"kind": "text", "text": "__fatal_session_error__"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -355,7 +355,7 @@ def test_copilot_empty_turn_is_error():
             proc,
             {
                 "type": "start",
-                "prompt": "__empty_turn__",
+                "parts": [{"kind": "text", "text": "__empty_turn__"}],
                 "cwd": os.getcwd(),
             },
         )

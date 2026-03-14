@@ -134,7 +134,7 @@ export interface MessagePayload {
 export type MessagePart =
   | { kind: 'text'; text: string }
   | { kind: 'data'; data: DataPartPayload }
-  | { kind: 'file'; file: { name: string }; mimeType?: string }
+  | { kind: 'file'; file: { name?: string; mimeType?: string; bytes?: string } }
   | { kind: string; [key: string]: unknown };
 
 export interface SenderData {

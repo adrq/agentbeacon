@@ -99,7 +99,7 @@ def test_claude_mock_emits_text_deltas():
             proc,
             {
                 "type": "start",
-                "prompt": "Fix the tests",
+                "parts": [{"kind": "text", "text": "Fix the tests"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -119,7 +119,7 @@ def test_copilot_mock_emits_text_deltas():
             proc,
             {
                 "type": "start",
-                "prompt": "Fix the tests",
+                "parts": [{"kind": "text", "text": "Fix the tests"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -136,7 +136,12 @@ def test_claude_mock_emits_thinking_deltas():
     proc = _start_executor("claude-executor.js")
     try:
         _send_command(
-            proc, {"type": "start", "prompt": "Fix tests", "cwd": os.getcwd()}
+            proc,
+            {
+                "type": "start",
+                "parts": [{"kind": "text", "text": "Fix tests"}],
+                "cwd": os.getcwd(),
+            },
         )
         events = _collect_events(proc, timeout=30)
         _send_command(proc, {"type": "stop"})
@@ -176,7 +181,12 @@ def test_copilot_mock_thinking_before_text():
     proc = _start_executor("copilot-executor.js")
     try:
         _send_command(
-            proc, {"type": "start", "prompt": "Fix tests", "cwd": os.getcwd()}
+            proc,
+            {
+                "type": "start",
+                "parts": [{"kind": "text", "text": "Fix tests"}],
+                "cwd": os.getcwd(),
+            },
         )
         events = _collect_events(proc, timeout=30)
         _send_command(proc, {"type": "stop"})
@@ -212,7 +222,12 @@ def test_copilot_mock_emits_reasoning_deltas():
     proc = _start_executor("copilot-executor.js")
     try:
         _send_command(
-            proc, {"type": "start", "prompt": "Fix tests", "cwd": os.getcwd()}
+            proc,
+            {
+                "type": "start",
+                "parts": [{"kind": "text", "text": "Fix tests"}],
+                "cwd": os.getcwd(),
+            },
         )
         events = _collect_events(proc, timeout=30)
         _send_command(proc, {"type": "stop"})

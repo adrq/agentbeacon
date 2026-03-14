@@ -43,7 +43,7 @@ def _create_execution_with_limits(
     payload = {
         "root_agent_id": agent_id,
         "agent_ids": [agent_id],
-        "prompt": prompt,
+        "parts": [{"kind": "text", "text": prompt}],
         "title": prompt,
         "cwd": tempfile.gettempdir(),
     }
@@ -428,7 +428,7 @@ def test_execution_creation_rejects_invalid_max_depth(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": cwd,
                 "max_depth": 0,
             },
@@ -442,7 +442,7 @@ def test_execution_creation_rejects_invalid_max_depth(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": cwd,
                 "max_depth": 11,
             },
@@ -464,7 +464,7 @@ def test_execution_creation_rejects_invalid_max_width(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": cwd,
                 "max_width": 0,
             },
@@ -478,7 +478,7 @@ def test_execution_creation_rejects_invalid_max_width(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": cwd,
                 "max_width": 51,
             },

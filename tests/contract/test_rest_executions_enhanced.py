@@ -28,7 +28,7 @@ def test_create_execution_requires_project_id_or_cwd(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
             },
             timeout=5,
         )
@@ -45,7 +45,7 @@ def test_create_execution_branch_and_cwd_mutually_exclusive(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": tempfile.gettempdir(),
                 "branch": "feature/test",
             },
@@ -64,7 +64,7 @@ def test_create_execution_branch_requires_project_id(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "branch": "feature/test",
             },
             timeout=5,
@@ -82,7 +82,7 @@ def test_create_execution_invalid_cwd_relative_path(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": "relative/path",
             },
             timeout=5,
@@ -100,7 +100,7 @@ def test_create_execution_invalid_cwd_nonexistent(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": "/nonexistent/path/abc123",
             },
             timeout=5,
@@ -157,7 +157,7 @@ def test_create_execution_nonexistent_project_returns_400(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "project_id": "nonexistent-project-id",
             },
             timeout=5,
@@ -182,7 +182,7 @@ def test_create_execution_branch_requires_git_project(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "project_id": project["id"],
                 "branch": "feature/test",
             },
@@ -308,7 +308,7 @@ def test_create_execution_with_context_id(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test context",
+                "parts": [{"kind": "text", "text": "test context"}],
                 "cwd": tempfile.gettempdir(),
                 "context_id": "my-custom-context",
             },
@@ -364,7 +364,7 @@ def test_create_execution_response_shape(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "shape test",
+                "parts": [{"kind": "text", "text": "shape test"}],
                 "cwd": tempfile.gettempdir(),
             },
             timeout=5,
@@ -491,7 +491,7 @@ def test_create_execution_concurrent_warning(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "first",
+                "parts": [{"kind": "text", "text": "first"}],
                 "project_id": project["id"],
             },
             timeout=5,
@@ -506,7 +506,7 @@ def test_create_execution_concurrent_warning(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "second",
+                "parts": [{"kind": "text", "text": "second"}],
                 "project_id": project["id"],
             },
             timeout=5,
@@ -531,7 +531,7 @@ def test_create_execution_empty_prompt_returns_400(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "   ",
+                "parts": [{"kind": "text", "text": "   "}],
                 "cwd": tempfile.gettempdir(),
             },
             timeout=5,
@@ -574,7 +574,7 @@ def test_execution_with_agent_ids_populates_junction(test_database):
             json={
                 "root_agent_id": agent1,
                 "agent_ids": [agent1, agent2],
-                "prompt": "multi-agent test",
+                "parts": [{"kind": "text", "text": "multi-agent test"}],
                 "cwd": "/tmp",
             },
             timeout=5,
@@ -607,7 +607,7 @@ def test_execution_agents_returns_config_pool(test_database):
             json={
                 "root_agent_id": agent1,
                 "agent_ids": [agent1, agent2],
-                "prompt": "discovery test",
+                "parts": [{"kind": "text", "text": "discovery test"}],
                 "cwd": "/tmp",
             },
             timeout=5,
@@ -643,7 +643,7 @@ def test_execution_sessions_returns_session_discovery(test_database):
             json={
                 "root_agent_id": agent1,
                 "agent_ids": [agent1],
-                "prompt": "discovery test",
+                "parts": [{"kind": "text", "text": "discovery test"}],
                 "cwd": "/tmp",
             },
             timeout=5,
@@ -674,7 +674,7 @@ def test_execution_requires_root_agent_id_and_agent_ids(test_database):
         # Missing both root_agent_id and agent_ids → 422 (deserialization)
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"prompt": "no agent", "cwd": "/tmp"},
+            json={"parts": [{"kind": "text", "text": "no agent"}], "cwd": "/tmp"},
             timeout=5,
         )
         assert resp.status_code == 422
@@ -682,7 +682,11 @@ def test_execution_requires_root_agent_id_and_agent_ids(test_database):
         # Missing agent_ids → 422
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"root_agent_id": agent_id, "prompt": "no pool", "cwd": "/tmp"},
+            json={
+                "root_agent_id": agent_id,
+                "parts": [{"kind": "text", "text": "no pool"}],
+                "cwd": "/tmp",
+            },
             timeout=5,
         )
         assert resp.status_code == 422
@@ -690,7 +694,11 @@ def test_execution_requires_root_agent_id_and_agent_ids(test_database):
         # Missing root_agent_id → 422
         resp = httpx.post(
             f"{ctx['url']}/api/executions",
-            json={"agent_ids": [agent_id], "prompt": "no root", "cwd": "/tmp"},
+            json={
+                "agent_ids": [agent_id],
+                "parts": [{"kind": "text", "text": "no root"}],
+                "cwd": "/tmp",
+            },
             timeout=5,
         )
         assert resp.status_code == 422
@@ -707,7 +715,7 @@ def test_execution_rejects_root_agent_not_in_pool(test_database):
             json={
                 "root_agent_id": agent1,
                 "agent_ids": [agent2],
-                "prompt": "root not in pool",
+                "parts": [{"kind": "text", "text": "root not in pool"}],
                 "cwd": "/tmp",
             },
             timeout=5,

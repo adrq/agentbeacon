@@ -246,7 +246,7 @@ def test_message_does_not_resurrect_canceled_execution(test_database):
 
         _ = httpx.post(
             f"{ctx['url']}/api/sessions/{lead_sid}/message",
-            json={"message": "hello"},
+            json={"parts": [{"kind": "text", "text": "hello"}]},
             timeout=10,
         )
         # Message delivery may succeed or fail — either way, execution stays canceled

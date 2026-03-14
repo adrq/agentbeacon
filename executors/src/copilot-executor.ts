@@ -6,9 +6,14 @@ console.warn = (...args: unknown[]) => console.error(...args);
 console.debug = (...args: unknown[]) => console.error(...args);
 
 import * as readline from "node:readline";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import * as crypto from "node:crypto";
 import type {
   Command,
   StartCommand,
+  Part,
   McpServerConfig,
 } from "./common/protocol.js";
 import type {
@@ -151,6 +156,65 @@ function waitForIdle(session: CopilotSession): {
   }
 
   return { promise, cancel };
+}
+
+// --- Parts → Copilot send options ---
+
+function mimeToExt(mimeType: string): string {
+  const map: Record<string, string> = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+  };
+  return map[mimeType] ?? ".bin";
+}
+
+function partsToSendOptions(parts: Part[]): {
+  prompt: string;
+  attachments?: { type: "file"; path: string; displayName?: string }[];
+  _tempFiles?: string[];
+} {
+  const textParts = parts.filter(
+    (p): p is Part & { kind: "text" } => p.kind === "text",
+  );
+  let prompt = textParts
+    .map((p) => (p as { kind: "text"; text: string }).text)
+    .join("\n");
+  const fileParts = parts.filter(
+    (p) =>
+      p.kind === "file" &&
+      (p as { kind: "file"; file: { bytes?: string } }).file?.bytes,
+  );
+  if (!prompt.trim() && fileParts.length > 0) prompt = "[see attached]";
+  if (fileParts.length === 0) return { prompt };
+
+  const tempFiles: string[] = [];
+  const attachments = fileParts.map((p) => {
+    const fp = (
+      p as {
+        kind: "file";
+        file: { name?: string; mimeType?: string; bytes: string };
+      }
+    ).file;
+    const ext = mimeToExt(fp.mimeType ?? "application/octet-stream");
+    const tmpPath = path.join(os.tmpdir(), `ab-${crypto.randomUUID()}${ext}`);
+    fs.writeFileSync(tmpPath, Buffer.from(fp.bytes, "base64"));
+    tempFiles.push(tmpPath);
+    return { type: "file" as const, path: tmpPath, displayName: fp.name };
+  });
+  return { prompt, attachments, _tempFiles: tempFiles };
+}
+
+function cleanupTempFiles(paths?: string[]): void {
+  if (!paths) return;
+  for (const p of paths) {
+    try {
+      fs.unlinkSync(p);
+    } catch {
+      /* best effort */
+    }
+  }
 }
 
 async function runSession(startCmd: StartCommand): Promise<void> {
@@ -330,14 +394,19 @@ async function runSession(startCmd: StartCommand): Promise<void> {
     {
       let fatalError: string | undefined;
       const idle = waitForIdle(session);
+      const sendOpts = partsToSendOptions(startCmd.parts);
       try {
-        await session.send({ prompt: startCmd.prompt });
+        await session.send({
+          prompt: sendOpts.prompt,
+          attachments: sendOpts.attachments,
+        });
         await idle.promise;
       } catch (e: unknown) {
         fatalError = String(e);
         process.stderr.write(`[copilot] fatal during turn: ${fatalError}\n`);
       } finally {
         idle.cancel();
+        cleanupTempFiles(sendOpts._tempFiles);
       }
       emitTurnResult(lastAssistantContent, fatalError);
     }
@@ -358,14 +427,19 @@ async function runSession(startCmd: StartCommand): Promise<void> {
         lastAssistantContent = undefined;
         let fatalError: string | undefined;
         const idle = waitForIdle(session);
+        const sendOpts = partsToSendOptions(cmd.parts);
         try {
-          await session.send({ prompt: cmd.text });
+          await session.send({
+            prompt: sendOpts.prompt,
+            attachments: sendOpts.attachments,
+          });
           await idle.promise;
         } catch (e: unknown) {
           fatalError = String(e);
           process.stderr.write(`[copilot] fatal during turn: ${fatalError}\n`);
         } finally {
           idle.cancel();
+          cleanupTempFiles(sendOpts._tempFiles);
         }
         emitTurnResult(lastAssistantContent, fatalError);
       }

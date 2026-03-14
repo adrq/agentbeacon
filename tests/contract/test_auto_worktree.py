@@ -140,7 +140,7 @@ def test_explicit_branch_still_works(test_database):
                 json={
                     "root_agent_id": agent_id,
                     "agent_ids": [agent_id],
-                    "prompt": "test",
+                    "parts": [{"kind": "text", "text": "test"}],
                     "project_id": project["id"],
                     "branch": "test-feature",
                 },
@@ -231,7 +231,7 @@ def test_no_orphaned_worktree_on_early_validation_failure(test_database):
                 json={
                     "root_agent_id": "nonexistent-agent",
                     "agent_ids": ["nonexistent-agent"],
-                    "prompt": "test",
+                    "parts": [{"kind": "text", "text": "test"}],
                     "project_id": project["id"],
                 },
                 timeout=5,

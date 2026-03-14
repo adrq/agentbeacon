@@ -65,7 +65,9 @@ def test_claude_executor_starts_and_completes():
             proc,
             {
                 "type": "start",
-                "prompt": "What is 2+2? Reply with just the number.",
+                "parts": [
+                    {"kind": "text", "text": "What is 2+2? Reply with just the number."}
+                ],
                 "cwd": os.getcwd(),
             },
         )
@@ -93,7 +95,12 @@ def test_claude_executor_mcp_tools_visible():
             proc,
             {
                 "type": "start",
-                "prompt": "What tools do you have available? Just list them briefly.",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": "What tools do you have available? Just list them briefly.",
+                    }
+                ],
                 "cwd": os.getcwd(),
                 "mcpServers": {
                     "test-beacon": {
@@ -124,7 +131,12 @@ def test_claude_executor_multi_turn():
             proc,
             {
                 "type": "start",
-                "prompt": "Remember the number 42. Reply with just 'ok'.",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": "Remember the number 42. Reply with just 'ok'.",
+                    }
+                ],
                 "cwd": os.getcwd(),
             },
         )
@@ -136,7 +148,12 @@ def test_claude_executor_multi_turn():
             proc,
             {
                 "type": "prompt",
-                "text": "What number did I ask you to remember? Reply with just the number.",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": "What number did I ask you to remember? Reply with just the number.",
+                    }
+                ],
             },
         )
         events2 = read_events(proc, timeout=120, until_type="result")
@@ -159,11 +176,16 @@ def test_claude_executor_error_mapping():
             proc,
             {
                 "type": "start",
-                "prompt": (
-                    "Run these bash commands one at a time, each in a separate tool call: "
-                    "echo aaa, echo bbb, echo ccc, echo ddd, echo eee. "
-                    "You must run each one separately."
-                ),
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": (
+                            "Run these bash commands one at a time, each in a separate tool call: "
+                            "echo aaa, echo bbb, echo ccc, echo ddd, echo eee. "
+                            "You must run each one separately."
+                        ),
+                    }
+                ],
                 "cwd": os.getcwd(),
                 "maxTurns": 1,
             },

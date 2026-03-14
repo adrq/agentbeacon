@@ -26,7 +26,7 @@ pub struct ListSessionsQuery {
 /// Request body for posting a user message
 #[derive(Debug, Deserialize)]
 pub struct PostMessageRequest {
-    pub message: String,
+    pub parts: Vec<serde_json::Value>,
 }
 
 /// Query parameters for diff endpoint
@@ -103,6 +103,18 @@ async fn post_message(
     Path(id): Path<String>,
     Json(req): Json<PostMessageRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
+    if req.parts.is_empty() {
+        return Err(SchedulerError::ValidationFailed(
+            "parts must be non-empty".to_string(),
+        ));
+    }
+    if !crate::services::messaging::has_deliverable_content(&req.parts) {
+        return Err(SchedulerError::ValidationFailed(
+            "parts must contain at least one non-empty text part or file part with bytes"
+                .to_string(),
+        ));
+    }
+
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
     // Status guard is inside deliver_message() — identical for user and agent (D17)
@@ -111,7 +123,7 @@ async fn post_message(
         &state.task_queue,
         &state.event_broadcast,
         &session,
-        &req.message,
+        &req.parts,
         None, // None = user message
     )
     .await?;

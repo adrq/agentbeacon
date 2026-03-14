@@ -114,7 +114,7 @@ def test_empty_prompt_rejected(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "",
+                "parts": [{"kind": "text", "text": ""}],
                 "cwd": "/tmp",
             },
             timeout=5,

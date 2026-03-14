@@ -96,7 +96,7 @@ export function createExecutionMutation() {
     mutationFn: (req: {
       root_agent_id: string;
       agent_ids: string[];
-      prompt: string;
+      parts: import('../types').MessagePart[];
       title?: string;
       project_id?: string;
       context_id?: string;

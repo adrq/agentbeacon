@@ -15,7 +15,7 @@ You can message any agent whose hierarchical name you know — use Agent Discove
 ### Send message
 `POST /api/messages`
 ```json
-{"to": "HIERARCHICAL_NAME", "body": "message text"}
+{"to": "HIERARCHICAL_NAME", "parts": [{"kind": "text", "text": "message text"}]}
 ```
 
 ### Read received messages
@@ -99,7 +99,7 @@ curl $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/sessions \
 curl -X POST $AGENTBEACON_API_BASE/api/messages \
   -H "Authorization: Bearer $AGENTBEACON_SESSION_ID" \
   -H "Content-Type: application/json" \
-  -d '{"to":"swift-falcon/bold-eagle","body":"auth module ready for review"}'
+  -d '{"to":"swift-falcon/bold-eagle","parts":[{"kind":"text","text":"auth module ready for review"}]}'
 
 # Read a wiki page
 curl $AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/architecture \

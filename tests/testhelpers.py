@@ -1470,6 +1470,7 @@ def create_execution_via_api(
     context_id: str = None,
     root_agent_id: str = None,
     agent_ids: list = None,
+    parts: list = None,
 ) -> tuple:
     """POST /api/executions, return (execution_id, session_id).
 
@@ -1496,7 +1497,12 @@ def create_execution_via_api(
     if cwd is None and project_id is None:
         cwd = tempfile.gettempdir()
 
-    payload = {"root_agent_id": root_agent_id, "agent_ids": agent_ids, "prompt": prompt}
+    payload_parts = parts if parts is not None else [{"kind": "text", "text": prompt}]
+    payload = {
+        "root_agent_id": root_agent_id,
+        "agent_ids": agent_ids,
+        "parts": payload_parts,
+    }
     if title is not None:
         payload["title"] = title
     if cwd is not None:

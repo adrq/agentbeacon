@@ -6,7 +6,7 @@ console.warn = (...args: unknown[]) => console.error(...args);
 console.debug = (...args: unknown[]) => console.error(...args);
 
 import * as readline from "node:readline";
-import type { Command, StartCommand, Event } from "./common/protocol.js";
+import type { Command, StartCommand, Part, Event } from "./common/protocol.js";
 
 const { query } =
   process.env.AGENTBEACON_MOCK_SDK === "1"
@@ -100,6 +100,47 @@ async function nextCommand(): Promise<Command> {
   return commandQueue.shift()!;
 }
 
+// --- Parts → Claude SDK content blocks ---
+
+type ContentBlock =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      source: { type: "base64"; media_type: string; data: string };
+    };
+
+function partsToContent(parts: Part[]): ContentBlock[] {
+  return parts.flatMap((part): ContentBlock[] => {
+    if (part.kind === "text")
+      return [
+        { type: "text", text: (part as { kind: "text"; text: string }).text },
+      ];
+    if (part.kind === "file") {
+      const fp = (
+        part as {
+          kind: "file";
+          file: { name?: string; mimeType?: string; bytes: string };
+        }
+      ).file;
+      if (fp?.bytes && fp?.mimeType?.startsWith("image/")) {
+        return [
+          {
+            type: "image",
+            source: { type: "base64", media_type: fp.mimeType, data: fp.bytes },
+          },
+        ];
+      }
+      // Non-image file: represent as text so the model knows an attachment exists
+      if (fp) {
+        const name = fp.name ?? "attachment";
+        const mime = fp.mimeType ?? "application/octet-stream";
+        return [{ type: "text", text: `[File: ${name} (${mime})]` }];
+      }
+    }
+    return [];
+  });
+}
+
 // --- Async generator feeding prompts into query() ---
 
 async function* promptStream(
@@ -108,13 +149,13 @@ async function* promptStream(
 ): AsyncGenerator<{
   type: "user";
   session_id: string;
-  message: { role: "user"; content: string };
+  message: { role: "user"; content: ContentBlock[] };
   parent_tool_use_id: null;
 }> {
   yield {
     type: "user",
     session_id: "",
-    message: { role: "user", content: startCmd.prompt },
+    message: { role: "user", content: partsToContent(startCmd.parts) },
     parent_tool_use_id: null,
   };
 
@@ -133,7 +174,7 @@ async function* promptStream(
       yield {
         type: "user",
         session_id: "",
-        message: { role: "user", content: cmd.text },
+        message: { role: "user", content: partsToContent(cmd.parts) },
         parent_tool_use_id: null,
       };
     }

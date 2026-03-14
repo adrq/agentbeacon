@@ -5,7 +5,7 @@
 interface UserMessage {
   type: "user";
   session_id: string;
-  message: { role: "user"; content: string };
+  message: { role: "user"; content: string | ContentBlock[] };
   parent_tool_use_id: string | null;
 }
 
@@ -509,10 +509,14 @@ export async function* query(params: {
   } else {
     let turnIndex = 0;
     for await (const userMsg of abortAwareIterable(params.prompt, signal)) {
+      const content = userMsg.message.content;
       const promptText =
-        typeof userMsg.message.content === "string"
-          ? userMsg.message.content
-          : JSON.stringify(userMsg.message.content);
+        typeof content === "string"
+          ? content
+          : (content as ContentBlock[])
+              .filter((b) => b.type === "text")
+              .map((b) => b.text as string)
+              .join(" ");
 
       if (turnIndex === 0) {
         yield* showcaseTurn(sessionId, signal);

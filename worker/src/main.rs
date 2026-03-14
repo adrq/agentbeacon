@@ -17,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::cli::Args;
 use crate::executor::{
-    AgentCommand, AgentEvent, ExecutorHandle, SessionConfig, extract_prompt_text, start_executor,
+    AgentCommand, AgentEvent, ExecutorHandle, SessionConfig, extract_parts, start_executor,
 };
 use crate::sync::{
     RetryConfig, SyncRequest, SyncResponse, TurnMessage, WorkerMessageEvent, perform_sync,
@@ -517,10 +517,10 @@ async fn run_session(
                         .await
                         {
                             Ok(SyncResponse::PromptDelivery { task, .. }) => {
-                                match extract_prompt_text(&task.task_payload) {
-                                    Ok(text) => {
+                                match extract_parts(&task.task_payload) {
+                                    Ok(parts) => {
                                         turns_in_flight += 1;
-                                        let _ = cmd_tx.send(AgentCommand::Prompt(text));
+                                        let _ = cmd_tx.send(AgentCommand::Prompt(parts));
                                     }
                                     Err(e) => {
                                         tracing::error!(error = %e, "bad task payload from fetch_task");

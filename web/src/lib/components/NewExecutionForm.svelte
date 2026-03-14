@@ -210,14 +210,14 @@
     if (!canSubmit) return;
     error = null;
 
-    const prompt = task.trim();
+    const taskText = task.trim();
     const parsedDepth = maxDepth !== '' ? parseInt(String(maxDepth), 10) : undefined;
     const parsedWidth = maxWidth !== '' ? parseInt(String(maxWidth), 10) : undefined;
     const req = {
       root_agent_id: selectedRootAgentId,
       agent_ids: [...selectedAgentIds],
-      prompt,
-      title: title.trim() || generateTitle(prompt),
+      parts: [{ kind: 'text' as const, text: taskText }],
+      title: title.trim() || generateTitle(taskText),
       ...(selectedProjectId && { project_id: selectedProjectId }),
       ...(branch.trim() && { branch: branch.trim() }),
       ...(cwd.trim() && { cwd: cwd.trim() }),

@@ -65,7 +65,9 @@ def test_copilot_executor_starts_and_completes():
             proc,
             {
                 "type": "start",
-                "prompt": "What is 2+2? Reply with just the number.",
+                "parts": [
+                    {"kind": "text", "text": "What is 2+2? Reply with just the number."}
+                ],
                 "cwd": os.getcwd(),
             },
         )
@@ -93,7 +95,12 @@ def test_copilot_executor_mcp_tools_visible():
             proc,
             {
                 "type": "start",
-                "prompt": "What tools do you have available? Just list them briefly.",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": "What tools do you have available? Just list them briefly.",
+                    }
+                ],
                 "cwd": os.getcwd(),
                 "mcpServers": {
                     "test-beacon": {
@@ -124,7 +131,12 @@ def test_copilot_executor_multi_turn():
             proc,
             {
                 "type": "start",
-                "prompt": "Remember the number 42. Reply with just 'ok'.",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": "Remember the number 42. Reply with just 'ok'.",
+                    }
+                ],
                 "cwd": os.getcwd(),
             },
         )
@@ -136,7 +148,12 @@ def test_copilot_executor_multi_turn():
             proc,
             {
                 "type": "prompt",
-                "text": "What number did I ask you to remember? Reply with just the number.",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": "What number did I ask you to remember? Reply with just the number.",
+                    }
+                ],
             },
         )
         events2 = read_events(proc, timeout=120, until_type="result")
@@ -159,7 +176,12 @@ def test_copilot_executor_cancel():
             proc,
             {
                 "type": "start",
-                "prompt": "Write a very long essay about the history of mathematics. Make it at least 5000 words.",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": "Write a very long essay about the history of mathematics. Make it at least 5000 words.",
+                    }
+                ],
                 "cwd": os.getcwd(),
             },
         )

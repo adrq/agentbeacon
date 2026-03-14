@@ -10,6 +10,26 @@ use crate::db::sessions::Session;
 use crate::error::SchedulerError;
 use crate::queue::{TaskAssignment, TaskQueue};
 
+/// Check if parts contain at least one deliverable content item:
+/// a non-empty text part OR a file part with bytes.
+pub fn has_deliverable_content(parts: &[serde_json::Value]) -> bool {
+    parts.iter().any(|p| {
+        let kind = p.get("kind").and_then(|k| k.as_str());
+        match kind {
+            Some("text") => p
+                .get("text")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| !t.trim().is_empty()),
+            Some("file") => p
+                .get("file")
+                .and_then(|f| f.get("bytes"))
+                .and_then(|b| b.as_str())
+                .is_some_and(|b| !b.is_empty()),
+            _ => false,
+        }
+    })
+}
+
 pub struct MessageDeliveryResult {
     pub event_id: i64,
     pub session_status: String,
@@ -118,7 +138,7 @@ pub async fn deliver_message(
     task_queue: &TaskQueue,
     event_broadcast: &broadcast::Sender<EventNotification>,
     session: &Session,
-    message_text: &str,
+    parts: &[serde_json::Value],
     sender: Option<&SenderInfo>,
 ) -> Result<MessageDeliveryResult, SchedulerError> {
     // Status guard — identical for user and agent callers (D17)
@@ -131,9 +151,9 @@ pub async fn deliver_message(
 
     // Build event payload: strict A2A message for persistence/queries.
     // Sender metadata is encoded as an A2A `data` part (not a top-level field).
-    let mut parts = vec![json!({"kind": "text", "text": message_text})];
+    let mut event_parts: Vec<serde_json::Value> = parts.to_vec();
     if let Some(s) = sender {
-        parts.push(json!({"kind": "data", "data": {
+        event_parts.push(json!({"kind": "data", "data": {
             "type": "sender",
             "name": s.name,
             "session_id": s.session_id,
@@ -141,7 +161,7 @@ pub async fn deliver_message(
     }
     let msg_payload = json!({
         "role": "user",
-        "parts": parts
+        "parts": event_parts
     });
 
     // Record message event on recipient session
@@ -158,19 +178,32 @@ pub async fn deliver_message(
         event_id,
     ));
 
-    // Build delivery payload: pure A2A with text header (per IF decision).
-    let formatted_text = if let Some(s) = sender {
-        format!(
-            "[message from {} \u{00b7} session {}]\n\n{}",
-            s.name, s.session_id, message_text
-        )
+    // Build delivery payload: prepend sender header to first text part.
+    // If no text parts exist (image-only message), add a new text part for the header.
+    // File parts pass through unchanged.
+    let delivery_parts = if let Some(s) = sender {
+        let header = format!(
+            "[message from {} \u{00b7} session {}]\n\n",
+            s.name, s.session_id
+        );
+        let mut dp: Vec<serde_json::Value> = parts.to_vec();
+        if let Some(pos) = dp
+            .iter()
+            .position(|p| p.get("kind").and_then(|k| k.as_str()) == Some("text"))
+        {
+            let existing = dp[pos]["text"].as_str().unwrap_or("");
+            dp[pos] = json!({"kind": "text", "text": format!("{header}{existing}")});
+        } else {
+            dp.insert(0, json!({"kind": "text", "text": header.trim_end()}));
+        }
+        dp
     } else {
-        message_text.to_string()
+        parts.to_vec()
     };
     let delivery_payload = json!({
         "message": {
             "role": "user",
-            "parts": [{"kind": "text", "text": formatted_text}]
+            "parts": delivery_parts
         }
     });
     // Transition state via shared helper BEFORE push.

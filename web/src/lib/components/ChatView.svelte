@@ -34,6 +34,48 @@
   let sendError: string | null = $state(null);
   let textareaEl: HTMLTextAreaElement;
   let plusMenuOpen = $state(false);
+  let attachments = $state<{ file: File; preview: string }[]>([]);
+  let fileInputEl: HTMLInputElement;
+  const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+  const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        resolve(dataUrl.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function addFiles(files: FileList | File[]) {
+    for (const file of files) {
+      if (!ACCEPTED_TYPES.includes(file.type)) {
+        sendError = `Unsupported format: ${file.type}. Use JPEG, PNG, WebP, or GIF.`;
+        continue;
+      }
+      if (file.size > MAX_IMAGE_SIZE) {
+        sendError = `${file.name} exceeds 5MB limit.`;
+        continue;
+      }
+      attachments = [...attachments, { file, preview: URL.createObjectURL(file) }];
+    }
+  }
+
+  function removeAttachment(index: number) {
+    URL.revokeObjectURL(attachments[index].preview);
+    attachments = attachments.filter((_, i) => i !== index);
+  }
+
+  // Cleanup ObjectURLs on component unmount
+  $effect(() => {
+    return () => {
+      for (const a of attachments) URL.revokeObjectURL(a.preview);
+    };
+  });
 
   function autoResize() {
     if (!textareaEl) return;
@@ -47,15 +89,26 @@
   let inputEnabled = $derived(
     viewedSession?.status === 'input-required' || viewedSession?.status === 'working'
   );
-  let canSend = $derived(inputEnabled && messageText.trim().length > 0 && !sending);
+  let canSend = $derived(inputEnabled && (messageText.trim().length > 0 || attachments.length > 0) && !sending);
 
   async function handleSend() {
     if (!sessionId || !canSend) return;
     sending = true;
     sendError = null;
     try {
-      await api.postMessage(sessionId, messageText.trim());
+      const parts: import('../types').MessagePart[] = [];
+      const text = messageText.trim();
+      if (text) {
+        parts.push({ kind: 'text', text });
+      }
+      for (const att of attachments) {
+        const bytes = await fileToBase64(att.file);
+        parts.push({ kind: 'file', file: { name: att.file.name, mimeType: att.file.type, bytes } });
+      }
+      await api.postMessage(sessionId, parts);
       messageText = '';
+      for (const a of attachments) URL.revokeObjectURL(a.preview);
+      attachments = [];
     } catch (e) {
       sendError = e instanceof Error ? e.message : 'Failed to send';
     } finally {
@@ -67,6 +120,38 @@
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  }
+
+  function handlePaste(e: ClipboardEvent) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) addFiles([file]);
+        return;
+      }
+    }
+  }
+
+  let dragOver = $state(false);
+
+  function handleDragOver(e: DragEvent) {
+    e.preventDefault();
+    dragOver = true;
+  }
+
+  function handleDragLeave() {
+    dragOver = false;
+  }
+
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    dragOver = false;
+    if (e.dataTransfer?.files) {
+      addFiles(e.dataTransfer.files);
     }
   }
 
@@ -139,7 +224,9 @@
     | { type: 'error'; message: string; stderr?: string; time: string; key: string }
     | { type: 'fyi'; text: string; time: string; key: string }
     | { type: 'child_response'; agentLabel: string; text: string; time: string; key: string }
-    | { type: 'todo_write'; todos: TodoItem[]; time: string; key: string };
+    | { type: 'todo_write'; todos: TodoItem[]; time: string; key: string }
+    | { type: 'user_image'; mimeType: string; bytes: string; name?: string; time: string; key: string }
+    | { type: 'lateral_image'; senderName: string; mimeType: string; bytes: string; name?: string; time: string; key: string };
 
   function resolveAgentType(sessionId: string | null): AgentType {
     const session = sessions.find(s => s.id === sessionId);
@@ -312,9 +399,15 @@
               }
             }
           } else if (part.kind === 'file') {
-            const name = 'file' in part && typeof part.file === 'object' && part.file && 'name' in part.file
-              ? (part.file as { name: string }).name : 'file';
-            entries.push({ type: 'tool', icon: '\u25A1', text: `[file] ${name}`, time, key: `${ev.id}-${seq++}` });
+            const fp = (part as { kind: 'file'; file: { name?: string; mimeType?: string; bytes?: string } }).file;
+            if (fp?.bytes && fp?.mimeType?.startsWith('image/') && senderName) {
+              entries.push({ type: 'lateral_image', senderName, mimeType: fp.mimeType, bytes: fp.bytes, name: fp.name, time, key: `${ev.id}-${seq++}` });
+            } else if (msg.role === 'user' && fp?.bytes && fp?.mimeType?.startsWith('image/')) {
+              entries.push({ type: 'user_image', mimeType: fp.mimeType, bytes: fp.bytes, name: fp.name, time, key: `${ev.id}-${seq++}` });
+            } else {
+              const name = fp?.name ?? 'file';
+              entries.push({ type: 'tool', icon: '\u25A1', text: `[file] ${name}`, time, key: `${ev.id}-${seq++}` });
+            }
           } else if (part.kind === 'text') {
             const text = part.text as string;
             if (senderName) {
@@ -489,11 +582,28 @@
               <div class="bubble-time">{entry.time}</div>
             </div>
           </div>
+        {:else if entry.type === 'user_image'}
+          <div class="chat-row user-row">
+            <div class="bubble user-bubble user-image-bubble">
+              <img src="data:{entry.mimeType};base64,{entry.bytes}" alt={entry.name ?? 'Attached image'} class="user-image" />
+              <div class="bubble-time">{entry.time}</div>
+            </div>
+          </div>
         {:else if entry.type === 'lateral'}
           <div class="chat-row lateral-row">
             <div class="lateral-message">
               <div class="lateral-header">From {entry.senderName}</div>
               <div class="lateral-body"><Markdown text={entry.text} /></div>
+              <div class="lateral-time">{entry.time}</div>
+            </div>
+          </div>
+        {:else if entry.type === 'lateral_image'}
+          <div class="chat-row lateral-row">
+            <div class="lateral-message">
+              <div class="lateral-header">From {entry.senderName}</div>
+              <div class="lateral-body">
+                <img src="data:{entry.mimeType};base64,{entry.bytes}" alt={entry.name ?? 'Attached image'} class="user-image" />
+              </div>
               <div class="lateral-time">{entry.time}</div>
             </div>
           </div>
@@ -578,7 +688,7 @@
   {/if}
   {#if plusMenuOpen}
     <div class="plus-menu" role="menu">
-      <button class="plus-menu-item" role="menuitem" disabled title="Coming soon">
+      <button class="plus-menu-item" class:enabled={true} role="menuitem" onclick={() => { fileInputEl.click(); plusMenuOpen = false; }}>
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M14 10l-3.5-3.5L7 10M14 13H2V3h12v10z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
           <circle cx="5" cy="6" r="1.25" stroke="currentColor" stroke-width="1.3"/>
@@ -594,7 +704,7 @@
       </button>
     </div>
   {/if}
-  <div class="chat-input-card">
+  <div class="chat-input-card" class:drag-over={dragOver} ondragover={handleDragOver} ondragleave={handleDragLeave} ondrop={handleDrop}>
     <textarea
       class="chat-input"
       aria-label="Message to agent"
@@ -603,9 +713,20 @@
       bind:value={messageText}
       bind:this={textareaEl}
       onkeydown={handleKeydown}
+      onpaste={handlePaste}
       oninput={autoResize}
       rows="3"
     ></textarea>
+    {#if attachments.length > 0}
+      <div class="attachment-strip">
+        {#each attachments as att, i}
+          <div class="attachment-thumb">
+            <img src={att.preview} alt={att.file.name} />
+            <button class="attachment-remove" onclick={() => removeAttachment(i)} aria-label="Remove attachment">×</button>
+          </div>
+        {/each}
+      </div>
+    {/if}
     <div class="chat-input-toolbar">
       <div class="toolbar-left">
         <button
@@ -636,6 +757,18 @@
     </div>
   </div>
 </div>
+  <input
+    type="file"
+    accept="image/jpeg,image/png,image/webp,image/gif"
+    multiple
+    class="sr-only"
+    bind:this={fileInputEl}
+    onchange={(e) => {
+      const target = e.currentTarget as HTMLInputElement;
+      if (target.files) addFiles(target.files);
+      target.value = '';
+    }}
+  />
 </div>
 
 <style>
@@ -1069,5 +1202,88 @@
   .sending-dots {
     font-size: 0.75rem;
     letter-spacing: 0.05em;
+  }
+
+  .attachment-strip {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.375rem 0.75rem;
+    overflow-x: auto;
+  }
+
+  .attachment-thumb {
+    position: relative;
+    flex-shrink: 0;
+    width: 3.5rem;
+    height: 3.5rem;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid hsl(var(--border));
+  }
+
+  .attachment-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .attachment-remove {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 1.125rem;
+    height: 1.125rem;
+    border-radius: 0 0 0 var(--radius-sm);
+    border: none;
+    background: hsl(var(--foreground) / 0.7);
+    color: hsl(var(--background));
+    font-size: 0.75rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .attachment-remove:hover {
+    background: hsl(var(--status-danger));
+  }
+
+  .drag-over {
+    border-color: hsl(var(--primary)) !important;
+    background: hsl(var(--primary) / 0.05) !important;
+  }
+
+  .plus-menu-item.enabled {
+    opacity: 1;
+    cursor: pointer;
+    color: hsl(var(--foreground));
+  }
+
+  .plus-menu-item.enabled:hover {
+    background: hsl(var(--muted) / 0.5);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  .user-image-bubble {
+    padding: 0.25rem;
+  }
+
+  .user-image {
+    max-width: 20rem;
+    max-height: 15rem;
+    border-radius: calc(var(--radius-lg) - 2px);
+    display: block;
   }
 </style>

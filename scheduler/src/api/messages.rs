@@ -16,7 +16,7 @@ use crate::services::messaging::SenderInfo;
 #[derive(Deserialize)]
 struct SendMessageRequest {
     to: String,
-    body: String,
+    parts: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -30,6 +30,7 @@ struct MessageResponse {
     id: i64,
     sender: Option<SenderResponse>,
     body: String,
+    parts: Vec<serde_json::Value>,
     created_at: String,
 }
 
@@ -42,12 +43,24 @@ struct SenderResponse {
 /// POST /api/messages — agent sends message to another agent
 ///
 /// Auth: Bearer session_id (McpSession extractor)
-/// Body: { "to": "hierarchical/agent/name", "body": "message text" }
+/// Body: { "to": "hierarchical/agent/name", "parts": [{"kind": "text", "text": "..."}] }
 async fn send_message(
     auth: McpSession,
     State(state): State<AppState>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
+    if req.parts.is_empty() {
+        return Err(SchedulerError::ValidationFailed(
+            "parts must be non-empty".to_string(),
+        ));
+    }
+    if !crate::services::messaging::has_deliverable_content(&req.parts) {
+        return Err(SchedulerError::ValidationFailed(
+            "parts must contain at least one non-empty text part or file part with bytes"
+                .to_string(),
+        ));
+    }
+
     let (recipient, sender_name) = crate::services::messaging::resolve_recipient_and_sender(
         &state.db_pool,
         &auth.execution_id,
@@ -65,7 +78,7 @@ async fn send_message(
         &state.task_queue,
         &state.event_broadcast,
         &recipient,
-        &req.body,
+        &req.parts,
         Some(&sender_info),
     )
     .await?;
@@ -97,10 +110,12 @@ async fn list_messages(
             let payload: serde_json::Value = serde_json::from_str(&e.payload).unwrap_or_default();
             let sender = extract_sender_from_parts(&payload);
             let body = extract_text_from_parts(&payload);
+            let parts = extract_content_parts(&payload);
             MessageResponse {
                 id: e.id,
                 sender,
                 body,
+                parts,
                 created_at: e.created_at.to_rfc3339(),
             }
         })
@@ -128,6 +143,30 @@ fn extract_sender_from_parts(payload: &serde_json::Value) -> Option<SenderRespon
             name: d["name"].as_str().unwrap_or("").to_string(),
             session_id: d["session_id"].as_str().unwrap_or("").to_string(),
         })
+}
+
+/// Extract content parts, filtering out only the injected sender metadata data part.
+/// Other data parts (if any) are preserved for round-trip fidelity.
+fn extract_content_parts(payload: &serde_json::Value) -> Vec<serde_json::Value> {
+    payload
+        .get("parts")
+        .and_then(|p| p.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|p| {
+                    // Only strip the specific sender metadata part we inject
+                    let is_sender_data = p.get("kind").and_then(|k| k.as_str()) == Some("data")
+                        && p.get("data")
+                            .and_then(|d| d.get("type"))
+                            .and_then(|t| t.as_str())
+                            == Some("sender");
+                    !is_sender_data
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Extract text from A2A parts (skip data parts)

@@ -20,7 +20,7 @@ pub async fn create_execution(
     task_queue: &TaskQueue,
     agent_id: &str,
     agent_ids: &[&str],
-    prompt: &str,
+    parts: &[serde_json::Value],
     project_id: Option<&str>,
     title: Option<&str>,
     cwd: Option<&str>,
@@ -29,10 +29,10 @@ pub async fn create_execution(
     max_depth: Option<i64>,
     max_width: Option<i64>,
 ) -> Result<CreateExecutionResult, SchedulerError> {
-    // Validate prompt non-empty
-    if prompt.trim().is_empty() {
+    // Validate parts non-empty
+    if parts.is_empty() {
         return Err(SchedulerError::ValidationFailed(
-            "prompt is required".to_string(),
+            "parts is required".to_string(),
         ));
     }
 
@@ -226,12 +226,26 @@ pub async fn create_execution(
 
     // Persist to DB and enqueue. If a worktree was created, clean it up on failure
     // so retries don't fail with "branch already exists".
+    // Extract text for DB storage (input column) and title generation
+    let prompt_text: String = parts
+        .iter()
+        .filter_map(|p| {
+            if p.get("kind").and_then(|k| k.as_str()) == Some("text") {
+                p.get("text").and_then(|t| t.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     let result = persist_and_enqueue(
         db_pool,
         task_queue,
         &execution_id,
         &effective_context_id,
-        prompt,
+        &prompt_text,
+        parts,
         project_id,
         title,
         worktree_path.as_deref(),
@@ -261,7 +275,8 @@ async fn persist_and_enqueue(
     task_queue: &TaskQueue,
     execution_id: &str,
     context_id: &str,
-    prompt: &str,
+    prompt_text: &str,
+    parts: &[serde_json::Value],
     project_id: Option<&str>,
     title: Option<&str>,
     worktree_path: Option<&str>,
@@ -273,12 +288,12 @@ async fn persist_and_enqueue(
     max_depth: i64,
     max_width: i64,
 ) -> Result<CreateExecutionResult, SchedulerError> {
-    // Store input as plain prompt string
+    // Store input as plain prompt text (extracted from text parts)
     db::executions::create(
         db_pool,
         execution_id,
         context_id,
-        prompt,
+        prompt_text,
         project_id,
         None, // parent_execution_id
         title,
@@ -330,7 +345,7 @@ async fn persist_and_enqueue(
     // Record the initial prompt as the session's first message event.
     let prompt_payload = serde_json::to_string(&json!({
         "role": "user",
-        "parts": [{"kind": "text", "text": prompt}]
+        "parts": parts
     }))
     .unwrap();
     db::events::insert(
@@ -377,10 +392,10 @@ async fn persist_and_enqueue(
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(JsonValue::Null);
 
-    // Wrap prompt in A2A message format for task_payload only
+    // Wrap parts in A2A message format for task_payload
     let a2a_message = json!({
         "role": "user",
-        "parts": [{"kind": "text", "text": prompt}]
+        "parts": parts
     });
 
     let mut task_payload = json!({

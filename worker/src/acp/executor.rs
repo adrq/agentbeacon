@@ -287,22 +287,59 @@ pub(crate) fn translate_a2a_parts_to_acp_content(parts: &[Value]) -> Result<Vec<
                     Ok(serde_json::json!(null))
                 }
                 "file" => {
-                    let mime_type = part
-                        .get("mimeType")
+                    let file_obj = part.get("file");
+                    let mime_type = file_obj
+                        .and_then(|f| f.get("mimeType"))
                         .and_then(|m| m.as_str())
                         .unwrap_or("application/octet-stream");
+                    let bytes = file_obj
+                        .and_then(|f| f.get("bytes"))
+                        .and_then(|b| b.as_str());
+
+                    if let Some(data) = bytes {
+                        if mime_type.starts_with("image/") {
+                            // ACP ContentBlock::Image
+                            Ok(serde_json::json!({
+                                "type": "image",
+                                "mimeType": mime_type,
+                                "data": data
+                            }))
+                        } else {
+                            // ACP EmbeddedResource with blob
+                            let name = file_obj
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("attachment");
+                            Ok(serde_json::json!({
+                                "type": "resource",
+                                "resource": {
+                                    "uri": format!("attachment://{name}"),
+                                    "mimeType": mime_type,
+                                    "blob": data
+                                }
+                            }))
+                        }
+                    } else {
+                        // No bytes — fallback to text note
+                        tracing::warn!(
+                            event = "file_part_no_bytes",
+                            mime_type = %mime_type,
+                            "A2A file part has no bytes — converting to text note"
+                        );
+                        Ok(serde_json::json!({
+                            "type": "text",
+                            "text": format!("[File attachment: {}]", mime_type)
+                        }))
+                    }
+                }
+                _ => {
                     tracing::warn!(
                         event = "unsupported_part_type",
-                        part_kind = "file",
-                        mime_type = %mime_type,
-                        "A2A file part not fully supported in ACP - converting to text note"
+                        part_kind = %kind,
+                        "Skipping unknown A2A part kind in ACP prompt"
                     );
-                    Ok(serde_json::json!({
-                        "type": "text",
-                        "text": format!("[File attachment: {}]", mime_type)
-                    }))
+                    Ok(serde_json::json!(null))
                 }
-                _ => Err(anyhow::anyhow!("Unsupported A2A part kind: {kind}")),
             }
         })
         .filter_map(|result| match result {

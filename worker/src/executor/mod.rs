@@ -120,7 +120,7 @@ pub enum AgentCommand {
     /// Initial prompt with full config (task_payload JSON)
     Start(serde_json::Value),
     /// Follow-up prompt (user message, turn-complete result, etc.)
-    Prompt(String),
+    Prompt(Vec<serde_json::Value>),
     /// Cancel current turn
     Cancel,
     /// Graceful shutdown
@@ -164,10 +164,9 @@ pub fn build_output_message(content_blocks: &serde_json::Value) -> Option<serde_
     Some(serde_json::json!({"role": "agent", "parts": parts}))
 }
 
-/// Extract prompt text from task_payload — shared by stdio-bridge executors (Claude, Copilot).
+/// Extract full parts array from task_payload — used by stdio-bridge executors.
 /// All payloads use A2A format: `{message: {role, parts}}`.
-/// Text headers (e.g. "[turn complete from ...]") are baked into parts by the producer.
-pub(crate) fn extract_prompt_text(task_payload: &serde_json::Value) -> Result<String> {
+pub(crate) fn extract_parts(task_payload: &serde_json::Value) -> Result<Vec<serde_json::Value>> {
     let message = task_payload
         .get("message")
         .ok_or_else(|| anyhow::anyhow!("task_payload missing message field"))?;
@@ -175,6 +174,14 @@ pub(crate) fn extract_prompt_text(task_payload: &serde_json::Value) -> Result<St
         .get("parts")
         .and_then(|p| p.as_array())
         .ok_or_else(|| anyhow::anyhow!("message missing parts array"))?;
+    Ok(parts.clone())
+}
+
+/// Extract prompt text from task_payload (text parts only, joined with newlines).
+/// Text headers (e.g. "[turn complete from ...]") are baked into parts by the producer.
+#[allow(dead_code)]
+pub(crate) fn extract_prompt_text(task_payload: &serde_json::Value) -> Result<String> {
+    let parts = extract_parts(task_payload)?;
     let texts: Vec<&str> = parts
         .iter()
         .filter_map(|p| {
@@ -417,5 +424,49 @@ mod tests {
         });
         let result = extract_prompt_text(&payload).unwrap();
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_extract_parts_returns_all_parts() {
+        let payload = serde_json::json!({
+            "message": {
+                "role": "user",
+                "parts": [
+                    {"kind": "text", "text": "hello"},
+                    {"kind": "file", "file": {"name": "test.png", "mimeType": "image/png", "bytes": "base64data"}}
+                ]
+            }
+        });
+        let parts = extract_parts(&payload).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["kind"], "text");
+        assert_eq!(parts[0]["text"], "hello");
+        assert_eq!(parts[1]["kind"], "file");
+        assert_eq!(parts[1]["file"]["name"], "test.png");
+        assert_eq!(parts[1]["file"]["mimeType"], "image/png");
+        assert_eq!(parts[1]["file"]["bytes"], "base64data");
+    }
+
+    #[test]
+    fn test_extract_parts_file_only_message() {
+        let payload = serde_json::json!({
+            "message": {
+                "role": "user",
+                "parts": [
+                    {"kind": "file", "file": {"name": "doc.pdf", "mimeType": "application/pdf", "bytes": "cGRmZGF0YQ=="}},
+                    {"kind": "file", "file": {"name": "photo.jpg", "mimeType": "image/jpeg", "bytes": "anBnZGF0YQ=="}}
+                ]
+            }
+        });
+        let parts = extract_parts(&payload).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["kind"], "file");
+        assert_eq!(parts[0]["file"]["name"], "doc.pdf");
+        assert_eq!(parts[1]["kind"], "file");
+        assert_eq!(parts[1]["file"]["name"], "photo.jpg");
+
+        // extract_prompt_text should return empty string since there are no text parts
+        let text = extract_prompt_text(&payload).unwrap();
+        assert_eq!(text, "");
     }
 }

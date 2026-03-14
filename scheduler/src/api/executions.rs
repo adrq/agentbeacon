@@ -36,7 +36,7 @@ pub struct ExecutionDetailResponse {
 pub struct CreateExecutionRequest {
     pub root_agent_id: String,
     pub agent_ids: Vec<String>,
-    pub prompt: String,
+    pub parts: Vec<serde_json::Value>,
     pub project_id: Option<String>,
     pub title: Option<String>,
     pub cwd: Option<String>,
@@ -116,6 +116,19 @@ async fn create_execution_handler(
         ));
     }
 
+    // Validate parts non-empty and at least one text part with non-empty text
+    if req.parts.is_empty() {
+        return Err(SchedulerError::ValidationFailed(
+            "parts must be non-empty".to_string(),
+        ));
+    }
+    if !crate::services::messaging::has_deliverable_content(&req.parts) {
+        return Err(SchedulerError::ValidationFailed(
+            "parts must contain at least one non-empty text part or file part with bytes"
+                .to_string(),
+        ));
+    }
+
     // Deduplicate
     let mut seen = std::collections::HashSet::new();
     let all_agent_ids: Vec<String> = req
@@ -149,7 +162,7 @@ async fn create_execution_handler(
         &state.task_queue,
         &lead_agent_id,
         &agent_id_refs,
-        &req.prompt,
+        &req.parts,
         req.project_id.as_deref(),
         req.title.as_deref(),
         req.cwd.as_deref(),

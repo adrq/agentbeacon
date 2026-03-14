@@ -290,7 +290,7 @@ async fn background_task(
     inactivity_timeout: std::time::Duration,
 ) {
     let mut phase = PromptPhase::Idle;
-    let mut pending_prompts: VecDeque<String> = VecDeque::new();
+    let mut pending_prompts: VecDeque<Vec<serde_json::Value>> = VecDeque::new();
     let mut last_activity = Instant::now();
 
     loop {
@@ -310,8 +310,20 @@ async fn background_task(
 
                         // Drain pending prompt queue (skip if cancelling — session ending)
                         if !was_cancelling {
-                            if let Some(text) = pending_prompts.pop_front() {
-                                let parts = vec![serde_json::json!({"type": "text", "text": text})];
+                            if let Some(a2a_parts) = pending_prompts.pop_front() {
+                                let parts = match translate_a2a_parts_to_acp_content(&a2a_parts) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                            agent_session_id: Some(session_id.clone()),
+                                            error: Some(format!("failed to translate queued parts: {e}")),
+                                            error_kind: Some(ErrorKind::ExecutorFailed),
+                                            output: None,
+                                            stderr: snapshot_stderr(&stderr_buf),
+                                        }));
+                                        continue;
+                                    }
+                                };
                                 match send_prompt(&mut client, &session_id, parts).await {
                                     Ok(request_id) => {
                                         last_activity = Instant::now();
@@ -463,13 +475,25 @@ async fn background_task(
                             }
                         }
                     }
-                    Some(AgentCommand::Prompt(text)) => {
+                    Some(AgentCommand::Prompt(a2a_parts)) => {
                         if !phase.is_idle() {
                             tracing::debug!("Prompt received while busy, queuing");
-                            pending_prompts.push_back(text);
+                            pending_prompts.push_back(a2a_parts);
                             continue;
                         }
-                        let prompt_parts = vec![serde_json::json!({"type": "text", "text": text})];
+                        let prompt_parts = match translate_a2a_parts_to_acp_content(&a2a_parts) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                    agent_session_id: Some(session_id.clone()),
+                                    error: Some(format!("failed to translate parts: {e}")),
+                                    error_kind: Some(ErrorKind::ExecutorFailed),
+                                    output: None,
+                                    stderr: None,
+                                }));
+                                continue;
+                            }
+                        };
                         match send_prompt(&mut client, &session_id, prompt_parts).await {
                             Ok(request_id) => {
                                 last_activity = Instant::now();

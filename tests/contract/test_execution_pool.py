@@ -28,7 +28,7 @@ def test_create_execution_with_root_and_pool(test_database):
             json={
                 "root_agent_id": lead,
                 "agent_ids": [lead, helper],
-                "prompt": "test task",
+                "parts": [{"kind": "text", "text": "test task"}],
                 "cwd": tempfile.gettempdir(),
             },
             timeout=5,
@@ -62,7 +62,7 @@ def test_create_execution_root_not_in_pool(test_database):
             json={
                 "root_agent_id": lead,
                 "agent_ids": [other],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": tempfile.gettempdir(),
             },
             timeout=5,
@@ -80,7 +80,7 @@ def test_create_execution_rejects_legacy_agent_id(test_database):
             f"{ctx['url']}/api/executions",
             json={
                 "agent_id": agent,
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": tempfile.gettempdir(),
             },
             timeout=5,
@@ -99,7 +99,7 @@ def test_create_execution_rejects_empty_agent_ids(test_database):
             json={
                 "root_agent_id": agent,
                 "agent_ids": [],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": tempfile.gettempdir(),
             },
             timeout=5,

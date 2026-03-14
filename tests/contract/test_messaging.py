@@ -48,7 +48,7 @@ def _send_lateral(ctx, sender_session_id, to, body):
     """POST /api/messages with Bearer auth."""
     return httpx.post(
         f"{ctx['url']}/api/messages",
-        json={"to": to, "body": body},
+        json={"to": to, "parts": [{"kind": "text", "text": body}]},
         headers={"Authorization": f"Bearer {sender_session_id}"},
         timeout=5,
     )
@@ -107,7 +107,7 @@ def test_user_message_still_works(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "JWT"},
+            json={"parts": [{"kind": "text", "text": "JWT"}]},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -129,7 +129,7 @@ def test_user_message_to_working_session(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "follow up"},
+            json={"parts": [{"kind": "text", "text": "follow up"}]},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -147,7 +147,7 @@ def test_user_message_to_terminal_session_rejected(test_database):
             _set_session_status(ctx["db_url"], session_id, status)
             resp = httpx.post(
                 f"{ctx['url']}/api/sessions/{session_id}/message",
-                json={"message": "hello"},
+                json={"parts": [{"kind": "text", "text": "hello"}]},
                 timeout=5,
             )
             assert resp.status_code == 409, f"expected 409 for status={status}"
@@ -276,7 +276,7 @@ def test_send_lateral_message_no_auth_rejected(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
             f"{ctx['url']}/api/messages",
-            json={"to": "some-name", "body": "hello"},
+            json={"to": "some-name", "parts": [{"kind": "text", "text": "hello"}]},
             timeout=5,
         )
         assert resp.status_code == 401
@@ -493,7 +493,7 @@ def test_get_messages_returns_history(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "answer"},
+            json={"parts": [{"kind": "text", "text": "answer"}]},
             timeout=5,
         )
 
@@ -521,7 +521,7 @@ def test_get_messages_since_id_filter(test_database):
         # Send first message
         resp1 = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "first"},
+            json={"parts": [{"kind": "text", "text": "first"}]},
             timeout=5,
         )
         first_event_id = resp1.json()["event_id"]
@@ -530,7 +530,7 @@ def test_get_messages_since_id_filter(test_database):
         _set_session_status(ctx["db_url"], session_id, "input-required")
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "second"},
+            json={"parts": [{"kind": "text", "text": "second"}]},
             timeout=5,
         )
 
@@ -591,7 +591,7 @@ def test_get_messages_user_messages_no_sender(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "user answer"},
+            json={"parts": [{"kind": "text", "text": "user answer"}]},
             timeout=5,
         )
 

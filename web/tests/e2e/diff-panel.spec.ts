@@ -22,7 +22,7 @@ async function createExecutionWithDiff(agentId: string) {
   const exec = await apiPost('/api/executions', {
     root_agent_id: agentId,
     agent_ids: [agentId],
-    prompt: 'STREAM_CHUNKS',
+    parts: [{ kind: 'text', text: 'STREAM_CHUNKS' }],
     title: 'Diff Panel Test',
     project_id: project.id,
   });
@@ -72,7 +72,7 @@ test('diff tab appears in execution detail toggle', async ({ page }) => {
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    prompt: 'STREAM_CHUNKS',
+    parts: [{ kind: 'text', text: 'STREAM_CHUNKS' }],
     title: 'Diff Tab Visible',
     cwd: '/tmp',
   });
@@ -98,7 +98,7 @@ test('diff tab shows empty state for non-git cwd execution', async ({ page }) =>
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    prompt: 'STREAM_CHUNKS',
+    parts: [{ kind: 'text', text: 'STREAM_CHUNKS' }],
     title: 'No WT Diff',
     cwd: '/tmp',
   });
@@ -119,7 +119,7 @@ test('diff tab selection persists in localStorage', async ({ page }) => {
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    prompt: 'STREAM_CHUNKS',
+    parts: [{ kind: 'text', text: 'STREAM_CHUNKS' }],
     title: 'Diff Persist',
     cwd: '/tmp',
   });
@@ -245,7 +245,7 @@ test('no-changes state when worktree has no modifications', async ({ page }) => 
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    prompt: 'STREAM_CHUNKS',
+    parts: [{ kind: 'text', text: 'STREAM_CHUNKS' }],
     title: 'No Changes Diff',
     project_id: project.id,
   });

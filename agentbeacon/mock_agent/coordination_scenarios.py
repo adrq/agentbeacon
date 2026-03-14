@@ -325,7 +325,12 @@ class EndTurnMessageScenario(_BaseScenario):
                                 f"{api_base}/api/messages",
                                 json={
                                     "to": my_entry["parent_name"],
-                                    "body": f"Status update: completed task '{prompt_text}'",
+                                    "parts": [
+                                        {
+                                            "kind": "text",
+                                            "text": f"Status update: completed task '{prompt_text}'",
+                                        }
+                                    ],
                                 },
                                 headers={
                                     "Authorization": f"Bearer {session_id}",

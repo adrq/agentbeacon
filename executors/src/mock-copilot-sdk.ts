@@ -101,7 +101,15 @@ class MockCopilotSession {
     if (catchAll) for (const h of catchAll) h(event);
   }
 
-  async send(options: { prompt: string }): Promise<string> {
+  async send(options: {
+    prompt: string;
+    attachments?: { type: string; path: string }[];
+  }): Promise<string> {
+    if (options.attachments?.length) {
+      process.stderr.write(
+        `[mock-copilot-sdk] attachments=${JSON.stringify(options.attachments.map((a) => a.path))}\n`,
+      );
+    }
     process.stderr.write(`[mock-copilot-sdk] send turn=${this._turnIndex}\n`);
     if (this._aborted) {
       this._aborted = false;

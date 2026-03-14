@@ -134,7 +134,7 @@ def test_e2e_delegate_release(test_database):
             # 4. Send message to lead to trigger release phase
             resp = httpx.post(
                 f"{ctx['url']}/api/sessions/{lead_sid}/message",
-                json={"message": "Release the child now"},
+                json={"parts": [{"kind": "text", "text": "Release the child now"}]},
                 timeout=10,
             )
             assert resp.status_code == 200

@@ -74,5 +74,5 @@ export function composeAnswer(questions: QuestionState[]): string {
 }
 
 export async function submitAnswer(sessionId: string, answer: string): Promise<void> {
-  await api.postMessage(sessionId, answer);
+  await api.postMessage(sessionId, [{ kind: 'text' as const, text: answer }]);
 }

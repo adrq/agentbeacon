@@ -23,14 +23,14 @@ test('filter execution list by project', async ({ page }) => {
   const execA = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    prompt: 'Task for A',
+    parts: [{ kind: 'text', text: 'Task for A' }],
     title: 'Exec A',
     project_id: projectA.id,
   });
   const execB = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    prompt: 'Task for B',
+    parts: [{ kind: 'text', text: 'Task for B' }],
     title: 'Exec B',
     project_id: projectB.id,
   });

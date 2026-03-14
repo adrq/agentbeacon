@@ -37,7 +37,7 @@ def test_create_execution_status_is_submitted(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test task",
+                "parts": [{"kind": "text", "text": "test task"}],
                 "cwd": tempfile.gettempdir(),
             },
             timeout=5,
@@ -56,7 +56,7 @@ def test_create_execution_nonexistent_agent_returns_400(test_database):
             json={
                 "root_agent_id": "nonexistent-id",
                 "agent_ids": ["nonexistent-id"],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": tempfile.gettempdir(),
             },
             timeout=5,
@@ -74,7 +74,7 @@ def test_create_execution_disabled_agent_returns_400(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "prompt": "test",
+                "parts": [{"kind": "text", "text": "test"}],
                 "cwd": tempfile.gettempdir(),
             },
             timeout=5,

@@ -74,7 +74,7 @@ def test_retry_succeeds_after_transient_failure():
             proc,
             {
                 "type": "start",
-                "prompt": "hello",
+                "parts": [{"kind": "text", "text": "hello"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -100,7 +100,7 @@ def test_retry_succeeds_after_two_transient_failures():
             proc,
             {
                 "type": "start",
-                "prompt": "hello",
+                "parts": [{"kind": "text", "text": "hello"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -123,7 +123,7 @@ def test_retries_exhausted_emits_error():
             proc,
             {
                 "type": "start",
-                "prompt": "hello",
+                "parts": [{"kind": "text", "text": "hello"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -151,7 +151,7 @@ def test_no_retry_without_transient_failures():
             proc,
             {
                 "type": "start",
-                "prompt": "hello",
+                "parts": [{"kind": "text", "text": "hello"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -178,7 +178,7 @@ def test_no_retry_on_resume_session():
             proc,
             {
                 "type": "start",
-                "prompt": "hello",
+                "parts": [{"kind": "text", "text": "hello"}],
                 "cwd": os.getcwd(),
                 "resumeSessionId": "sdk-session-previous-123",
             },
@@ -213,7 +213,7 @@ def test_cancel_during_retry_delay():
             proc,
             {
                 "type": "start",
-                "prompt": "hello",
+                "parts": [{"kind": "text", "text": "hello"}],
                 "cwd": os.getcwd(),
             },
         )

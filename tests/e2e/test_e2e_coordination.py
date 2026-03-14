@@ -274,7 +274,7 @@ def test_e2e_escalate_round_trip(test_database):
             # 3. Submit answer
             resp = httpx.post(
                 f"{ctx['url']}/api/sessions/{lead_sid}/message",
-                json={"message": "Yes, approved"},
+                json={"parts": [{"kind": "text", "text": "Yes, approved"}]},
                 timeout=10,
             )
             assert resp.status_code == 200, f"Answer submission failed: {resp.text}"

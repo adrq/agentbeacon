@@ -192,7 +192,7 @@ def test_worker_sync_long_poll_wakes(test_database):
         # Push task via scheduler API — this triggers notify_waiters()
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "wake up"},
+            json={"parts": [{"kind": "text", "text": "wake up"}]},
             timeout=5,
         )
         assert resp.status_code == 200

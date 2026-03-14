@@ -72,7 +72,7 @@ def test_user_message_is_a2a(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "JWT"},
+            json={"parts": [{"kind": "text", "text": "JWT"}]},
             timeout=5,
         )
 

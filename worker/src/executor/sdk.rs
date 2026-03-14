@@ -57,7 +57,7 @@ impl SdkKind {
 enum SdkCommand {
     #[serde(rename = "start", rename_all = "camelCase")]
     Start {
-        prompt: String,
+        parts: Vec<serde_json::Value>,
         cwd: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         mcp_servers: Option<serde_json::Value>,
@@ -83,7 +83,7 @@ enum SdkCommand {
         reasoning_effort: Option<String>,
     },
     #[serde(rename = "prompt", rename_all = "camelCase")]
-    Prompt { text: String },
+    Prompt { parts: Vec<serde_json::Value> },
     #[serde(rename = "cancel")]
     Cancel,
     #[serde(rename = "stop")]
@@ -328,7 +328,7 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
 // --- Build start command ---
 
 fn build_start_command(
-    prompt: String,
+    parts: Vec<serde_json::Value>,
     cwd: &str,
     mcp_servers: &serde_json::Value,
     parsed_config: &ParsedConfig,
@@ -336,7 +336,7 @@ fn build_start_command(
 ) -> SdkCommand {
     match parsed_config {
         ParsedConfig::Claude(cc) => SdkCommand::Start {
-            prompt,
+            parts,
             cwd: cwd.to_string(),
             mcp_servers: Some(mcp_servers.clone()),
             model: cc.model.clone(),
@@ -350,7 +350,7 @@ fn build_start_command(
             reasoning_effort: None,
         },
         ParsedConfig::Copilot(cc) => SdkCommand::Start {
-            prompt,
+            parts,
             cwd: cwd.to_string(),
             mcp_servers: Some(mcp_servers.clone()),
             model: cc.model.clone(),
@@ -386,7 +386,7 @@ async fn background_task(
     let mut agent_session_id: Option<String> = None;
     let mut last_content: Option<serde_json::Value> = None;
     let mut started = false;
-    let mut pending_prompts: Vec<String> = Vec::new();
+    let mut pending_prompts: Vec<Vec<serde_json::Value>> = Vec::new();
     let mut turn_active = true; // starts active — processing initial prompt
     let mut last_activity = tokio::time::Instant::now();
 
@@ -409,8 +409,8 @@ async fn background_task(
                                     let _ = event_tx.send(AgentEvent::Init { session_id: init.session_id });
 
                                     // Flush any prompts that arrived before init
-                                    for text in pending_prompts.drain(..) {
-                                        let cmd = SdkCommand::Prompt { text };
+                                    for parts in pending_prompts.drain(..) {
+                                        let cmd = SdkCommand::Prompt { parts };
                                         if let Err(e) = write_command(&mut stdin, &cmd).await {
                                             tracing::warn!(error = %e, "failed to write buffered prompt");
                                         }
@@ -520,14 +520,14 @@ async fn background_task(
                     Some(AgentCommand::Start(task_payload)) => {
                         turn_active = true;
                         last_activity = tokio::time::Instant::now();
-                        match super::extract_prompt_text(&task_payload) {
-                            Ok(prompt_text) => {
+                        match super::extract_parts(&task_payload) {
+                            Ok(parts) => {
                                 let resume_session_id = task_payload
                                     .get("resumeSessionId")
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string());
                                 let cmd = build_start_command(
-                                    prompt_text,
+                                    parts,
                                     &cwd,
                                     &mcp_servers,
                                     &parsed_config,
@@ -553,15 +553,15 @@ async fn background_task(
                             }
                         }
                     }
-                    Some(AgentCommand::Prompt(text)) => {
+                    Some(AgentCommand::Prompt(parts)) => {
                         turn_active = true;
                         last_activity = tokio::time::Instant::now();
                         last_content = None;
                         if !started {
                             // Buffer until agent is initialized
-                            pending_prompts.push(text);
+                            pending_prompts.push(parts);
                         } else {
-                            let cmd = SdkCommand::Prompt { text };
+                            let cmd = SdkCommand::Prompt { parts };
                             if let Err(e) = write_command(&mut stdin, &cmd).await {
                                 tracing::warn!(error = %e, "failed to write prompt command");
                             }
@@ -890,7 +890,7 @@ mod tests {
     #[test]
     fn test_claude_start_command() {
         let cmd = SdkCommand::Start {
-            prompt: "Hello".into(),
+            parts: vec![json!({"kind": "text", "text": "Hello"})],
             cwd: "/workspace".into(),
             mcp_servers: Some(
                 json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}}),
@@ -908,7 +908,7 @@ mod tests {
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(value["type"], "start");
-        assert_eq!(value["prompt"], "Hello");
+        assert_eq!(value["parts"][0]["text"], "Hello");
         assert_eq!(value["cwd"], "/workspace");
         assert_eq!(value["maxTurns"], 50);
         assert_eq!(value["maxBudgetUsd"], 5.0);
@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn test_copilot_start_command() {
         let cmd = SdkCommand::Start {
-            prompt: "Fix the tests".into(),
+            parts: vec![json!({"kind": "text", "text": "Fix the tests"})],
             cwd: "/workspace".into(),
             mcp_servers: Some(
                 json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}}),
@@ -940,7 +940,7 @@ mod tests {
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(value["type"], "start");
-        assert_eq!(value["prompt"], "Fix the tests");
+        assert_eq!(value["parts"][0]["text"], "Fix the tests");
         assert_eq!(value["cwd"], "/workspace");
         assert_eq!(value["model"], "gpt-5");
         assert!(value.get("mcpServers").is_some());
@@ -963,7 +963,13 @@ mod tests {
             effort: None,
         });
         let mcp = json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}});
-        let cmd = build_start_command("hello".into(), "/workspace", &mcp, &config, None);
+        let cmd = build_start_command(
+            vec![json!({"kind": "text", "text": "hello"})],
+            "/workspace",
+            &mcp,
+            &config,
+            None,
+        );
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert!(value.get("provider").is_none());
@@ -975,7 +981,7 @@ mod tests {
     #[test]
     fn test_start_command_resume() {
         let cmd = SdkCommand::Start {
-            prompt: "Resume task".into(),
+            parts: vec![json!({"kind": "text", "text": "Resume task"})],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -997,7 +1003,7 @@ mod tests {
     #[test]
     fn test_start_command_no_resume() {
         let cmd = SdkCommand::Start {
-            prompt: "Hello".into(),
+            parts: vec![json!({"kind": "text", "text": "Hello"})],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -1020,12 +1026,12 @@ mod tests {
     #[test]
     fn test_prompt_command() {
         let cmd = SdkCommand::Prompt {
-            text: "continue with JWT".into(),
+            parts: vec![json!({"kind": "text", "text": "continue with JWT"})],
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(value["type"], "prompt");
-        assert_eq!(value["text"], "continue with JWT");
+        assert_eq!(value["parts"][0]["text"], "continue with JWT");
     }
 
     // --- Config parsing ---
@@ -1199,7 +1205,7 @@ mod tests {
     #[test]
     fn test_start_command_serializes_thinking() {
         let cmd = SdkCommand::Start {
-            prompt: "Hello".into(),
+            parts: vec![json!({"kind": "text", "text": "Hello"})],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -1222,7 +1228,7 @@ mod tests {
     #[test]
     fn test_start_command_serializes_reasoning_effort() {
         let cmd = SdkCommand::Start {
-            prompt: "Fix tests".into(),
+            parts: vec![json!({"kind": "text", "text": "Fix tests"})],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -1299,5 +1305,88 @@ mod tests {
             })
             .unwrap_or(false);
         assert!(!is_delta_only);
+    }
+
+    // --- Parts-based command serialization ---
+
+    #[test]
+    fn test_start_command_serializes_parts() {
+        let cmd = SdkCommand::Start {
+            parts: vec![json!({"kind": "text", "text": "hello world"})],
+            cwd: "/workspace".into(),
+            mcp_servers: None,
+            model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            system_prompt: None,
+            resume_session_id: None,
+            provider: None,
+            thinking: None,
+            effort: None,
+            reasoning_effort: None,
+        };
+        let json_str = serde_json::to_string(&cmd).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(value["type"], "start");
+        assert!(value.get("parts").is_some());
+        assert!(value.get("prompt").is_none());
+        let parts = value["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["kind"], "text");
+        assert_eq!(parts[0]["text"], "hello world");
+    }
+
+    #[test]
+    fn test_prompt_command_serializes_parts() {
+        let cmd = SdkCommand::Prompt {
+            parts: vec![json!({"kind": "text", "text": "continue with JWT"})],
+        };
+        let json_str = serde_json::to_string(&cmd).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(value["type"], "prompt");
+        assert!(value.get("parts").is_some());
+        assert!(value.get("text").is_none());
+        let parts = value["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["text"], "continue with JWT");
+    }
+
+    #[test]
+    fn test_start_command_with_file_part() {
+        let file_part = json!({
+            "kind": "file",
+            "file": {
+                "name": "test.png",
+                "mimeType": "image/png",
+                "bytes": "iVBORw0KGgo="
+            }
+        });
+        let cmd = SdkCommand::Start {
+            parts: vec![
+                json!({"kind": "text", "text": "analyze this image"}),
+                file_part,
+            ],
+            cwd: "/workspace".into(),
+            mcp_servers: None,
+            model: None,
+            max_turns: None,
+            max_budget_usd: None,
+            system_prompt: None,
+            resume_session_id: None,
+            provider: None,
+            thinking: None,
+            effort: None,
+            reasoning_effort: None,
+        };
+        let json_str = serde_json::to_string(&cmd).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(value["type"], "start");
+        let parts = value["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["kind"], "text");
+        assert_eq!(parts[1]["kind"], "file");
+        assert_eq!(parts[1]["file"]["name"], "test.png");
+        assert_eq!(parts[1]["file"]["mimeType"], "image/png");
+        assert_eq!(parts[1]["file"]["bytes"], "iVBORw0KGgo=");
     }
 }

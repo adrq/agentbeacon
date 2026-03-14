@@ -216,7 +216,7 @@ def test_task_available_then_fetch_task_round_trip(test_database):
         # Push via API (triggers notify_waiters)
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "round trip"},
+            json={"parts": [{"kind": "text", "text": "round trip"}]},
             timeout=5,
         )
         assert resp.status_code == 200

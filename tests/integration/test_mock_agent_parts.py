@@ -279,7 +279,10 @@ def test_end_turn_message_scenario_sends_message(mock_scheduler):
         messages = requests.get(f"{url}/test/messages", timeout=5).json()
         assert len(messages) == 1, f"Expected 1 captured message, got: {messages}"
         assert messages[0]["to"] == "lead/main"
-        assert "do the task" in messages[0]["body"]
+        text_parts = [
+            p["text"] for p in messages[0]["parts"] if p.get("kind") == "text"
+        ]
+        assert any("do the task" in t for t in text_parts)
 
         # Worker events should contain END_TURN_MSG_SENT marker
         events = get_events(url)

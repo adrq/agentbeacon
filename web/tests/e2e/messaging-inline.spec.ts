@@ -91,7 +91,7 @@ test('human user messages still render as user bubbles', async ({ page }) => {
   await waitForTurnEnd(execId);
 
   // Send a follow-up user message to create a user event (initial prompt is not stored as an event)
-  await apiPost(`/api/sessions/${sessionId}/message`, { message: 'Follow up message' });
+  await apiPost(`/api/sessions/${sessionId}/message`, { parts: [{ kind: 'text', text: 'Follow up message' }] });
   await waitForTurnEnd(execId);
 
   await page.goto(`/#/execution/${execId}`);

@@ -282,7 +282,7 @@ export class AgentBeaconAPI {
   async createExecution(req: {
     root_agent_id: string;
     agent_ids: string[];
-    prompt: string;
+    parts: import('./types').MessagePart[];
     title?: string;
     project_id?: string;
     context_id?: string;
@@ -357,11 +357,11 @@ export class AgentBeaconAPI {
 
   async postMessage(
     sessionId: string,
-    message: string
+    parts: import('./types').MessagePart[]
   ): Promise<PostMessageResponse> {
     return this.fetchJSON(`/sessions/${sessionId}/message`, {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ parts }),
     });
   }
 

@@ -1,10 +1,17 @@
 // JSON Lines protocol types between Rust worker and Node.js executor wrappers.
 
+// --- A2A-compatible Part type ---
+
+export type Part =
+  | { kind: "text"; text: string }
+  | { kind: "file"; file: { name?: string; mimeType?: string; bytes: string } }
+  | { kind: string; [key: string]: unknown };
+
 // --- Commands (Rust → Node, on stdin) ---
 
 export interface StartCommand {
   type: "start";
-  prompt: string;
+  parts: Part[];
   cwd: string;
   mcpServers?: Record<string, McpServerConfig>;
   model?: string;
@@ -41,7 +48,7 @@ export interface McpServerConfig {
 
 export interface PromptCommand {
   type: "prompt";
-  text: string;
+  parts: Part[];
 }
 
 export interface CancelCommand {

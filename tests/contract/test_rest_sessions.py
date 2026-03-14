@@ -146,7 +146,7 @@ def test_answer_input_required_session_returns_200(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "JWT"},
+            json={"parts": [{"kind": "text", "text": "JWT"}]},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -167,7 +167,7 @@ def test_answer_transitions_session_to_working(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "option A"},
+            json={"parts": [{"kind": "text", "text": "option A"}]},
             timeout=5,
         )
 
@@ -193,7 +193,7 @@ def test_answer_transitions_execution_to_working(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "option A"},
+            json={"parts": [{"kind": "text", "text": "option A"}]},
             timeout=5,
         )
 
@@ -212,7 +212,7 @@ def test_answer_non_input_required_returns_409(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "answer"},
+            json={"parts": [{"kind": "text", "text": "answer"}]},
             timeout=5,
         )
         assert resp.status_code == 409
@@ -272,7 +272,7 @@ def test_full_ask_answer_round_trip(test_database):
         # 3. Answer the question
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "JWT"},
+            json={"parts": [{"kind": "text", "text": "JWT"}]},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -325,7 +325,7 @@ def test_message_pushes_a2a_task(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"message": "JWT"},
+            json={"parts": [{"kind": "text", "text": "JWT"}]},
             timeout=5,
         )
 

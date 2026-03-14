@@ -150,7 +150,7 @@ def test_worker_multi_turn_acp_session(test_database):
             # Push follow-up via scheduler API
             resp = httpx.post(
                 f"{ctx['url']}/api/sessions/{session_id}/message",
-                json={"message": "second turn prompt"},
+                json={"parts": [{"kind": "text", "text": "second turn prompt"}]},
                 timeout=10,
             )
             assert resp.status_code == 200, f"message push failed: {resp.text}"
