@@ -18,7 +18,13 @@ type MockSDKMessage =
       session_id: string;
       mcp_servers: { name: string; status: string }[];
     }
-  | { type: "assistant"; message: { content: ContentBlock[] } }
+  | {
+      type: "assistant";
+      message: {
+        content: ContentBlock[];
+        usage?: { input_tokens: number; output_tokens: number };
+      };
+    }
   | {
       type: "user";
       message: { content: ContentBlock[] };
@@ -33,6 +39,8 @@ type MockSDKMessage =
       total_cost_usd?: number;
       num_turns?: number;
       duration_ms?: number;
+      model_usage?: Record<string, { contextWindow: number }>;
+      usage?: { input_tokens: number; output_tokens: number };
     }
   | {
       type: "stream_event";
@@ -41,6 +49,11 @@ type MockSDKMessage =
         index?: number;
         delta?: { type: string; text?: string; thinking?: string };
       };
+    }
+  | {
+      type: "system";
+      subtype: "compact_boundary";
+      compact_metadata?: { trigger: string; pre_tokens?: number };
     };
 
 // Transient failure simulation — counter persists for executor lifetime (cumulative
@@ -157,6 +170,7 @@ async function* showcaseTurn(
           input: { file_path: "/workspace/src/config.rs" },
         },
       ],
+      usage: { input_tokens: 12500, output_tokens: 350 },
     },
   };
 
@@ -195,7 +209,17 @@ async function* showcaseTurn(
           input: { pattern: "TODO|FIXME", path: "/workspace/src" },
         },
       ],
+      usage: { input_tokens: 25000, output_tokens: 420 },
     },
+  };
+
+  // 4b. compact_boundary event (simulating context compaction)
+  checkAbort(signal);
+  await delay(50);
+  yield {
+    type: "system",
+    subtype: "compact_boundary",
+    compact_metadata: { trigger: "auto" },
   };
 
   // 5. tool_result for Grep
@@ -422,6 +446,7 @@ async function* showcaseTurn(
           ].join("\n"),
         },
       ],
+      usage: { input_tokens: 38000, output_tokens: 850 },
     },
   };
 
@@ -434,6 +459,8 @@ async function* showcaseTurn(
     total_cost_usd: 0.042,
     num_turns: 1,
     duration_ms: 4500,
+    model_usage: { "claude-sonnet-4-5-20250929": { contextWindow: 200000 } },
+    usage: { input_tokens: 45000, output_tokens: 2100 },
   };
 }
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { SessionSummary, Agent } from '../types';
+  import type { SessionSummary, Agent, UsageState } from '../types';
+  import { formatTokens } from '../format';
   import { api } from '../api';
   import { toasts } from '../stores/toasts';
 
@@ -9,11 +10,12 @@
     agents: Agent[];
     selectedSessionId?: string | null;
     isTerminal?: boolean;
+    usageBySession?: Map<string, UsageState>;
     onselectsession?: (sessionId: string | null) => void;
     onstatuschange?: () => void;
   }
 
-  let { sessions, agents, selectedSessionId = null, isTerminal = false, onselectsession, onstatuschange }: Props = $props();
+  let { sessions, agents, selectedSessionId = null, isTerminal = false, usageBySession, onselectsession, onstatuschange }: Props = $props();
 
   const TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
 
@@ -210,6 +212,28 @@
     <span class="node-icon">{statusIcon(s.status)}</span>
     <span class="node-label">{depth === 0 ? `Lead (${agentName(s.agent_id)})` : agentName(s.agent_id)}</span>
     <span class="node-status">{s.status}</span>
+    {#if usageBySession?.get(s.id)}
+      {@const usage = usageBySession.get(s.id)!}
+      {#if usage.available && usage.contextWindow > 0}
+        {@const pct = Math.max(0, Math.min(100, Math.round(100 * usage.inputTokens / usage.contextWindow)))}
+        {@const level = pct >= 90 ? 'danger' : pct >= 70 ? 'warning' : 'ok'}
+        <span
+          class="context-bar"
+          role="meter"
+          aria-label="Context window usage: {pct}%"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          title="{formatTokens(usage.inputTokens)} / {formatTokens(usage.contextWindow)} ({pct}%)"
+        >
+          <span class="context-fill {level}" style="width: {pct}%"></span>
+        </span>
+      {:else if !usage.available}
+        <span class="context-bar unavailable" title="Context tracking unavailable for this SDK">
+          <span class="context-dash">&mdash;</span>
+        </span>
+      {/if}
+    {/if}
     {#if isNonTerminal(s.status)}
       <button class="action-btn cancel-btn" title="Cancel session" onclick={(e) => handleCancel(e, s.id)}>
         &#x2717;
@@ -464,5 +488,36 @@
   .recover-btn:hover {
     color: hsl(var(--status-working));
     background: hsl(var(--status-working) / 0.1);
+  }
+
+  .context-bar {
+    display: inline-flex;
+    align-items: center;
+    width: 2.5rem;
+    height: 0.375rem;
+    background: hsl(var(--muted) / 0.4);
+    border-radius: 2px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .context-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+
+  .context-fill.ok { background: hsl(var(--status-success)); }
+  .context-fill.warning { background: hsl(var(--status-attention)); }
+  .context-fill.danger { background: hsl(var(--status-danger)); }
+
+  .context-bar.unavailable {
+    background: transparent;
+    justify-content: center;
+  }
+
+  .context-dash {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.625rem;
   }
 </style>

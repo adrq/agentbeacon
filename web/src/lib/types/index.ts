@@ -152,6 +152,9 @@ export type DataPartPayload =
   | ThinkingData
   | PlanData
   | SenderData
+  | UsageUpdateData
+  | UsageSnapshotData
+  | CompactionData
   | { type: string; [key: string]: unknown };
 
 export interface EscalateData {
@@ -211,6 +214,38 @@ export interface PlanData {
 export interface TodoItem {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
+}
+
+export interface UsageUpdateData {
+  type: 'usage_update';
+  input_tokens: number;
+  output_tokens: number;
+}
+
+/**
+ * Final usage snapshot emitted before result event.
+ * At least one of context_window or input_tokens should be present.
+ * All fields are optional to handle incomplete SDK implementations.
+ */
+export interface UsageSnapshotData {
+  type: 'usage_snapshot';
+  context_window?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+export interface CompactionData {
+  type: 'compaction';
+  trigger: string;
+}
+
+// UsageState — tracked per session in ExecutionDetail
+export interface UsageState {
+  inputTokens: number;
+  outputTokens: number;
+  contextWindow: number;
+  compactions: number;
+  available: boolean;   // false for copilot/acp sessions
 }
 
 export interface StateChangePayload {
@@ -282,6 +317,18 @@ export function isPlanData(d: DataPartPayload): d is PlanData {
 
 export function isSenderData(d: DataPartPayload): d is SenderData {
   return d.type === 'sender';
+}
+
+export function isUsageUpdateData(d: DataPartPayload): d is UsageUpdateData {
+  return d.type === 'usage_update';
+}
+
+export function isUsageSnapshotData(d: DataPartPayload): d is UsageSnapshotData {
+  return d.type === 'usage_snapshot';
+}
+
+export function isCompactionData(d: DataPartPayload): d is CompactionData {
+  return d.type === 'compaction';
 }
 
 // Wiki types

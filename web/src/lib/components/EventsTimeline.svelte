@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
   import { normalizeDataPart } from '../normalize';
   import { EVENT_FILTER_GROUPS, EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
 
@@ -117,6 +117,24 @@
           if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
             const tc = d as unknown as import('../types').TurnCompleteData;
             entries.push({ key, time, icon: '\u21A9', iconClass: 'turn-complete', text: `Child reported: "${truncate(tc.message, 80)}"`, entryType: 'child_response' });
+            continue;
+          }
+
+          // Skip usage metadata — don't show in log view
+          // Place BEFORE normalizeDataPart() to prevent data_fallback rendering
+          if (isUsageUpdateData(d as unknown as import('../types').DataPartPayload) ||
+              isUsageSnapshotData(d as unknown as import('../types').DataPartPayload)) {
+            continue;
+          }
+
+          if (isCompactionData(d as unknown as import('../types').DataPartPayload)) {
+            entries.push({
+              key, time,
+              icon: '\u21BB',  // ↻
+              iconClass: 'state-change',
+              text: 'Context compacted',
+              entryType: 'state',
+            });
             continue;
           }
 

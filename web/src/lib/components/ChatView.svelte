@@ -1,7 +1,8 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Event, Agent, SessionSummary, AgentType, TodoItem } from '../types';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData } from '../types';
+  import type { Event, Agent, SessionSummary, AgentType, TodoItem, UsageState } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
+  import { formatTokens } from '../format';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
   import Markdown from './Markdown.svelte';
@@ -22,11 +23,12 @@
     ephemeralText?: string;
     ephemeralThinking?: { text: string; startedAt: string } | null;
     settledThinkingDuration?: { durationMs: number; startedAt: string } | null;
+    usageBySession?: Map<string, UsageState>;
     eventFilter?: EventFilter;
     onfilterchange?: (filter: EventFilter) => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, eventFilter = 'all', onfilterchange }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, eventFilter = 'all', onfilterchange }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
   let messageText = $state('');
@@ -90,6 +92,12 @@
     viewedSession?.status === 'input-required' || viewedSession?.status === 'working'
   );
   let canSend = $derived(inputEnabled && (messageText.trim().length > 0 || attachments.length > 0) && !sending);
+  let showUsagePopover = $state(false);
+
+  // Current usage for toolbar indicator
+  let currentUsage = $derived(
+    viewedSession ? usageBySession?.get(viewedSession.id) ?? null : null
+  );
 
   async function handleSend() {
     if (!sessionId || !canSend) return;
@@ -170,6 +178,17 @@
     }
   });
 
+  // Close usage popover on click-outside
+  $effect(() => {
+    if (!showUsagePopover) return;
+    function handleClickOutside(e: MouseEvent) {
+      const wrapper = (e.target as Element)?.closest('.context-indicator-wrapper');
+      if (!wrapper) showUsagePopover = false;
+    }
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  });
+
   $effect(() => {
     messageText; // track dependency
     autoResize();
@@ -238,7 +257,8 @@
     | { type: 'child_response'; agentLabel: string; text: string; time: string; key: string }
     | { type: 'todo_write'; todos: TodoItem[]; time: string; key: string }
     | { type: 'user_image'; mimeType: string; bytes: string; name?: string; time: string; key: string }
-    | { type: 'lateral_image'; senderName: string; mimeType: string; bytes: string; name?: string; time: string; key: string };
+    | { type: 'lateral_image'; senderName: string; mimeType: string; bytes: string; name?: string; time: string; key: string }
+    | { type: 'compaction'; time: string; key: string };
 
   function resolveAgentType(sessionId: string | null): AgentType {
     const session = sessions.find(s => s.id === sessionId);
@@ -294,6 +314,22 @@
 
             // Skip sender metadata part — handled via pre-scan above
             if (d.type === 'sender') continue;
+
+            // Skip usage metadata — don't render in chat
+            if (isUsageUpdateData(d as unknown as import('../types').DataPartPayload) ||
+                isUsageSnapshotData(d as unknown as import('../types').DataPartPayload)) {
+              continue;
+            }
+
+            // Compaction divider
+            if (isCompactionData(d as unknown as import('../types').DataPartPayload)) {
+              entries.push({
+                type: 'compaction' as const,
+                key: `${ev.id}-compact-${seq++}`,
+                time,
+              });
+              continue;
+            }
 
             // Platform events: route to existing renderers
             if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
@@ -676,6 +712,12 @@
               <span class="fyi-text">{entry.text}</span>
             </div>
           </div>
+        {:else if entry.type === 'compaction'}
+          <div class="chat-row compaction-row" role="separator" aria-label="Context was compacted">
+            <div class="compaction-divider">
+              <span class="compaction-label">context compacted</span>
+            </div>
+          </div>
         {/if}
       {/each}
     </div>
@@ -758,6 +800,38 @@
           </svg>
         </button>
       </div>
+
+      {#if currentUsage?.available && currentUsage.contextWindow > 0}
+        {@const pct = Math.max(0, Math.min(100, Math.round(100 * currentUsage.inputTokens / currentUsage.contextWindow)))}
+        {@const level = pct >= 90 ? 'danger' : pct >= 70 ? 'warning' : 'ok'}
+        <div class="context-indicator-wrapper" style="position: relative;">
+          <button
+            class="context-indicator"
+            aria-label="Context window: {pct}% used ({formatTokens(currentUsage.inputTokens)} of {formatTokens(currentUsage.contextWindow)})"
+            aria-expanded={showUsagePopover}
+            onclick={() => showUsagePopover = !showUsagePopover}
+          >
+            <span class="ctx-bar-inline" role="meter" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+              <span class="ctx-fill-inline {level}" style="width: {pct}%"></span>
+            </span>
+            <span class="ctx-label {level}">{formatTokens(currentUsage.inputTokens)}/{formatTokens(currentUsage.contextWindow)}</span>
+          </button>
+          {#if showUsagePopover}
+            <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+            <div class="usage-popover" role="tooltip">
+              <div class="usage-row"><span>Context</span><span>{formatTokens(currentUsage.inputTokens)} / {formatTokens(currentUsage.contextWindow)} ({pct}%)</span></div>
+              {#if currentUsage.compactions > 0}
+                <div class="usage-row"><span>Compactions</span><span>{currentUsage.compactions}</span></div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {:else if currentUsage && !currentUsage.available}
+        <span class="context-indicator unavailable" title="Context tracking unavailable for this SDK">
+          <span class="ctx-label muted">&mdash;</span>
+        </span>
+      {/if}
+
       <button
         class="send-btn"
         disabled={!canSend}
@@ -1305,5 +1379,107 @@
     max-height: 15rem;
     border-radius: calc(var(--radius-lg) - 2px);
     display: block;
+  }
+
+  .context-indicator-wrapper {
+    display: inline-flex;
+  }
+
+  .context-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.125rem 0.5rem;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: background 0.1s;
+  }
+
+  .context-indicator:hover {
+    background: hsl(var(--muted) / 0.5);
+  }
+
+  .ctx-bar-inline {
+    width: 2rem;
+    height: 0.25rem;
+    background: hsl(var(--muted) / 0.4);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .ctx-fill-inline {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+
+  .ctx-fill-inline.ok { background: hsl(var(--status-success)); }
+  .ctx-fill-inline.warning { background: hsl(var(--status-attention)); }
+  .ctx-fill-inline.danger { background: hsl(var(--status-danger)); }
+
+  .ctx-label {
+    font-size: 0.6875rem;
+    font-variant-numeric: tabular-nums;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .ctx-label.ok { color: hsl(var(--status-success)); }
+  .ctx-label.warning { color: hsl(var(--status-attention)); }
+  .ctx-label.danger { color: hsl(var(--status-danger)); }
+  .ctx-label.muted { color: hsl(var(--muted-foreground)); opacity: 0.5; }
+
+  .usage-popover {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-bottom: 0.5rem;
+    background: hsl(var(--popover));
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    min-width: 12rem;
+    box-shadow: 0 4px 12px hsl(0 0% 0% / 0.15);
+    z-index: 50;
+  }
+
+  .usage-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.125rem 0;
+    color: hsl(var(--foreground));
+  }
+
+  .usage-row span:first-child {
+    color: hsl(var(--muted-foreground));
+  }
+
+  .compaction-row {
+    padding: 0.75rem 1rem;
+  }
+
+  .compaction-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+  }
+
+  .compaction-divider::before,
+  .compaction-divider::after {
+    content: '';
+    flex: 1;
+    border-top: 1px dotted hsl(var(--muted-foreground) / 0.4);
+  }
+
+  .compaction-label {
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+    white-space: nowrap;
+    text-transform: lowercase;
   }
 </style>

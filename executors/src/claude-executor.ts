@@ -266,16 +266,38 @@ async function main(): Promise<void> {
                 mcpServers,
               });
             } else if (msg.type === "assistant") {
-              const content =
+              const inner =
                 "message" in msg &&
                 msg.message &&
                 typeof msg.message === "object"
-                  ? (msg.message as Record<string, unknown>).content
+                  ? (msg.message as Record<string, unknown>)
                   : undefined;
+              const rawContent = inner?.content;
+              const content: unknown[] = Array.isArray(rawContent)
+                ? [...rawContent]
+                : [];
+
+              // Append usage as a content block — flows through worker's
+              // content_block_to_part catch-all → { kind: "data", data: {...} }
+              // Claude SDK provides cumulative input/output tokens per assistant message.
+              // The frontend overwrites (not accumulates) these values from usage_update blocks.
+              // The usage_snapshot from the result event provides the authoritative final value.
+              const usage = inner?.usage as Record<string, unknown> | undefined;
+              if (usage && typeof usage.input_tokens === "number") {
+                content.push({
+                  type: "usage_update",
+                  input_tokens: usage.input_tokens,
+                  output_tokens:
+                    typeof usage.output_tokens === "number"
+                      ? usage.output_tokens
+                      : 0,
+                });
+              }
+
               emit({
                 type: "message",
                 role: "assistant",
-                content: Array.isArray(content) ? content : [],
+                content,
               });
             } else if (msg.type === "user") {
               const content =
@@ -298,6 +320,59 @@ async function main(): Promise<void> {
               }
             } else if (msg.type === "result") {
               const m = msg as unknown as Record<string, unknown>;
+
+              // Emit usage_snapshot as a standalone message — contextWindow comes from
+              // the result event which doesn't flow through the message pipeline
+              const modelUsage = (m.model_usage ?? m.modelUsage) as
+                | Record<string, Record<string, unknown>>
+                | undefined;
+              let maxContextWindow = 0;
+              if (modelUsage && typeof modelUsage === "object") {
+                // Skip models without contextWindow field (e.g., old SDK versions).
+                for (const modelInfo of Object.values(modelUsage)) {
+                  if (
+                    modelInfo &&
+                    typeof modelInfo === "object" &&
+                    typeof modelInfo.contextWindow === "number" &&
+                    modelInfo.contextWindow > maxContextWindow
+                  ) {
+                    maxContextWindow = modelInfo.contextWindow;
+                  }
+                }
+              }
+
+              const resultUsage = m.usage as
+                | Record<string, unknown>
+                | undefined;
+              if (
+                maxContextWindow > 0 ||
+                (resultUsage && typeof resultUsage.input_tokens === "number")
+              ) {
+                const snapshotBlock: Record<string, unknown> = {
+                  type: "usage_snapshot",
+                };
+                if (maxContextWindow > 0) {
+                  snapshotBlock.context_window = maxContextWindow;
+                }
+                if (
+                  resultUsage &&
+                  typeof resultUsage.input_tokens === "number"
+                ) {
+                  snapshotBlock.input_tokens = resultUsage.input_tokens;
+                  snapshotBlock.output_tokens =
+                    typeof resultUsage.output_tokens === "number"
+                      ? resultUsage.output_tokens
+                      : 0;
+                }
+                // N.B. This message will overwrite last_content in the worker, but
+                // result.result takes precedence for success subtypes.
+                emit({
+                  type: "message",
+                  role: "assistant",
+                  content: [snapshotBlock],
+                });
+              }
+
               const resultEvent: Record<string, unknown> = {
                 type: "result",
                 subtype: (m.subtype as string) ?? "success",
@@ -357,8 +432,27 @@ async function main(): Promise<void> {
                   );
                 }
               }
+            } else if (
+              msg.type === "system" &&
+              "subtype" in msg &&
+              msg.subtype === "compact_boundary"
+            ) {
+              const meta = (msg as Record<string, unknown>).compact_metadata as
+                | Record<string, unknown>
+                | undefined;
+              emit({
+                type: "message",
+                role: "assistant",
+                content: [
+                  {
+                    type: "compaction",
+                    trigger:
+                      typeof meta?.trigger === "string" ? meta.trigger : "auto",
+                  },
+                ],
+              });
             }
-            // Silently skip: user replay, compact_boundary
+            // Silently skip: user replay
           }
           break; // success — exit retry loop
         } catch (e: unknown) {

@@ -218,10 +218,15 @@ def test_sdk_agent_no_delta_events_in_db(test_database):
                             f"msg_seq {text_parts[j][0]}"
                         )
 
-            # Total message events should be reasonable (not inflated by deltas)
+            # Total events should be reasonable (not inflated by deltas).
+            # Exact breakdown: 2 state_change (submitted→working, working→input-required)
+            # + 13 messages (thinking, text+tool_use+usage×3, tool_result×4,
+            #   thinking#2, TodoWrite+result, compaction, final text+usage, usage_snapshot)
+            # + 1 platform event = 16 total.
             total_events = _all_events_count(ctx["db_url"], session_id)
-            assert total_events <= 15, (
-                f"Too many events ({total_events}), deltas may be leaking to DB"
+            assert total_events == 16, (
+                f"Expected exactly 16 events, got {total_events} — "
+                f"deltas may be leaking to DB or events are missing"
             )
         finally:
             cleanup_processes([worker])

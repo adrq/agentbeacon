@@ -1,6 +1,7 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
-  import type { Execution, Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
+  import type { Execution, Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload, UsageState } from '../types';
+  import { isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
   import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation, executionAgentsQuery, recoverSessionMutation } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
@@ -50,6 +51,9 @@
   let settledThinkingDurations = $state<Map<string, { durationMs: number; startedAt: string }>>(new Map());
   let lastPersistedSeq = new Map<string, number>();
 
+  // Usage tracking state (populated from SSE events)
+  let usageBySession = $state<Map<string, UsageState>>(new Map());
+
   // Event filter state (shared between Chat and Log views, resets on exec change)
   let eventFilter = $state<EventFilter>('all');
 
@@ -70,6 +74,7 @@
       lastPersistedSeq.clear();
       ephemeralBuffers = new Map();
       ephemeralThinkingBuffers = new Map();
+      usageBySession = new Map();
       sseReconnecting = false;
       sseConnection = null;
     }
@@ -133,6 +138,14 @@
     detail?.execution.status === 'failed' && leadSession?.status === 'failed' && leadSession?.agent_session_id != null
   );
 
+  // Helper: get or lazily create a usage entry for a session
+  function getOrCreateUsage(sessionId: string): UsageState {
+    return usageBySession.get(sessionId) ?? {
+      inputTokens: 0, outputTokens: 0, contextWindow: 0,
+      compactions: 0, available: true,
+    };
+  }
+
   // SSE connection lifecycle
   $effect(() => {
     const execId = executionId;
@@ -190,6 +203,45 @@
               settledThinkingDurations = new Map(settledThinkingDurations);
               ephemeralThinkingBuffers.delete(event.session_id);
               ephemeralThinkingBuffers = new Map(ephemeralThinkingBuffers);
+            }
+          }
+
+          // Extract usage data from message parts
+          for (const part of payload.parts ?? []) {
+            if (part.kind !== 'data') continue;
+            const d = (part as { kind: 'data'; data: unknown }).data;
+            if (typeof d !== 'object' || d === null) continue;
+            const dataObj = d as { type?: string; [key: string]: unknown };
+            if (!dataObj.type) continue;
+            const typed = dataObj as { type: string; [key: string]: unknown };
+
+            if (isUsageUpdateData(typed)) {
+              const current = getOrCreateUsage(event.session_id);
+              const next = new Map(usageBySession);
+              next.set(event.session_id, {
+                ...current,
+                inputTokens: typed.input_tokens,
+                outputTokens: typed.output_tokens,
+              });
+              usageBySession = next;
+            } else if (isUsageSnapshotData(typed)) {
+              const current = getOrCreateUsage(event.session_id);
+              const next = new Map(usageBySession);
+              next.set(event.session_id, {
+                ...current,
+                contextWindow: typed.context_window ?? current.contextWindow,
+                inputTokens: typed.input_tokens ?? current.inputTokens,
+                outputTokens: typed.output_tokens ?? current.outputTokens,
+              });
+              usageBySession = next;
+            } else if (isCompactionData(typed)) {
+              const current = getOrCreateUsage(event.session_id);
+              const next = new Map(usageBySession);
+              next.set(event.session_id, {
+                ...current,
+                compactions: current.compactions + 1,
+              });
+              usageBySession = next;
             }
           }
         }
@@ -268,7 +320,15 @@
           }
         }
       },
-      () => { sseActive = true; sseReconnecting = false; },
+      () => {
+        sseActive = true;
+        sseReconnecting = false;
+        // Reset usage state on connect/reconnect. Must use onConnected (not onReconnecting)
+        // because onReconnecting doesn't fire on successful auto-reconnect paths.
+        // Persisted events will backfill via the onEvent handler; for new sessions
+        // without prior events, bars remain empty until the first message arrives.
+        usageBySession = new Map();
+      },
       () => {
         sseActive = false;
         sseReconnecting = false;
@@ -283,6 +343,35 @@
       sseReconnecting = false;
       sseConnection = null;
     };
+  });
+
+  // Seed `available` flag from session/agent data
+  $effect(() => {
+    const sessions = detail?.sessions;
+    if (!sessions) return;
+
+    let changed = false;
+    const next = new Map(usageBySession);
+    for (const s of sessions) {
+      const agent = agents.find(a => a.id === s.agent_id);
+      const available = agent?.agent_type === 'claude_sdk';
+      const existing = next.get(s.id);
+      if (!existing) {
+        // New session — create entry
+        next.set(s.id, {
+          inputTokens: 0, outputTokens: 0, contextWindow: 0,
+          compactions: 0, available,
+        });
+        changed = true;
+      } else if (existing.available !== available) {
+        // Existing entry (created lazily by SSE handler before agent data
+        // resolved) — correct the `available` flag. This prevents non-Claude
+        // sessions from incorrectly showing a context bar.
+        next.set(s.id, { ...existing, available });
+        changed = true;
+      }
+    }
+    if (changed) usageBySession = next;
   });
 
   // Events for the currently viewed session
@@ -506,6 +595,7 @@
         {agents}
         {selectedSessionId}
         {isTerminal}
+        {usageBySession}
         onselectsession={handleSessionSelect}
         onstatuschange={() => {
           queryClient.invalidateQueries({ queryKey: ['execution', executionId] });
@@ -558,7 +648,7 @@
     {#if viewMode === 'log'}
       <EventsTimeline {events} {agents} sessions={detail.sessions} {eventFilter} onfilterchange={(f) => eventFilter = f} />
     {:else if viewMode === 'chat'}
-      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} {eventFilter} onfilterchange={(f) => eventFilter = f} />
+      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} {usageBySession} {eventFilter} onfilterchange={(f) => eventFilter = f} />
     {:else if viewMode === 'diff'}
       <DiffPanel sessionId={activeSessionId} {isTerminal} />
     {/if}
