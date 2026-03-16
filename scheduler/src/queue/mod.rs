@@ -59,6 +59,11 @@ impl TaskQueue {
         crate::db::task_queue::has_task_for_session(&self.db_pool, session_id).await
     }
 
+    /// Delete all queued tasks for a session. Returns the count of flushed tasks.
+    pub async fn flush_session(&self, session_id: &str) -> Result<i64, SchedulerError> {
+        crate::db::task_queue::delete_by_session(&self.db_pool, session_id).await
+    }
+
     /// Returns a future that completes when the next push occurs.
     /// Callers should call this before checking the queue to avoid race conditions.
     pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {

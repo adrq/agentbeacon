@@ -59,6 +59,7 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
 // --- Command queue (single stdin listener, cancel as side-effect) ---
 
 let currentAc: AbortController | null = null;
+let stoppedByUser = false;
 let sessionGeneration = 0;
 
 const commandQueue: Command[] = [];
@@ -74,6 +75,9 @@ rl.on("line", (line) => {
     return;
   }
   if (cmd.type === "cancel" && currentAc) {
+    currentAc.abort();
+  } else if (cmd.type === "stop_turn" && currentAc) {
+    stoppedByUser = true;
     currentAc.abort();
   } else {
     commandQueue.push(cmd);
@@ -493,9 +497,10 @@ async function main(): Promise<void> {
         if (lastError instanceof Error && lastError.name === "AbortError") {
           emit({
             type: "result",
-            subtype: "cancelled",
+            subtype: stoppedByUser ? "stopped_by_user" : "cancelled",
             sessionId: currentSessionId,
           });
+          stoppedByUser = false;
         } else {
           emit({ type: "error", message: String(lastError) });
         }

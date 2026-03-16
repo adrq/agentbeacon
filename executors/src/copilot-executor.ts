@@ -42,6 +42,7 @@ const EXCLUDED_ORCHESTRATION_TOOLS: string[] = [
 
 let currentSession: CopilotSession | null = null;
 let aborted = false;
+let stoppedByUser = false;
 let pendingBlocks: Record<string, unknown>[] = [];
 
 function flushPendingBlocks(): void {
@@ -68,6 +69,10 @@ rl.on("line", (line) => {
     return;
   }
   if (cmd.type === "cancel" && currentSession) {
+    aborted = true;
+    currentSession.abort();
+  } else if (cmd.type === "stop_turn" && currentSession) {
+    stoppedByUser = true;
     aborted = true;
     currentSession.abort();
   } else {
@@ -457,7 +462,14 @@ function emitTurnResult(
   fatalError?: string,
 ): void {
   flushPendingBlocks();
-  if (aborted) {
+  if (stoppedByUser) {
+    emit({
+      type: "result",
+      subtype: "stopped_by_user",
+    });
+    stoppedByUser = false;
+    aborted = false;
+  } else if (aborted) {
     emit({
       type: "result",
       subtype: "cancelled",

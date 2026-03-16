@@ -86,6 +86,8 @@ enum SdkCommand {
     Prompt { parts: Vec<serde_json::Value> },
     #[serde(rename = "cancel")]
     Cancel,
+    #[serde(rename = "stop_turn")]
+    StopTurn,
     #[serde(rename = "stop")]
     Stop,
 }
@@ -570,6 +572,9 @@ async fn background_task(
                     Some(AgentCommand::Cancel) => {
                         let _ = write_command(&mut stdin, &SdkCommand::Cancel).await;
                     }
+                    Some(AgentCommand::StopTurn) => {
+                        let _ = write_command(&mut stdin, &SdkCommand::StopTurn).await;
+                    }
                     Some(AgentCommand::Stop) => {
                         let _ = write_command(&mut stdin, &SdkCommand::Stop).await;
                         // Close stdin to signal EOF
@@ -657,6 +662,10 @@ fn map_result_to_turn(
     let (error, error_kind) = match result.subtype.as_str() {
         "success" => (None, None),
         "cancelled" => (Some("session cancelled".into()), Some(ErrorKind::Cancelled)),
+        "stopped_by_user" => (
+            Some("stopped by user".into()),
+            Some(ErrorKind::StoppedByUser),
+        ),
         "error_max_turns" if kind == SdkKind::Claude => (
             Some(
                 result

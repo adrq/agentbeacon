@@ -326,6 +326,10 @@ export class AgentBeaconAPI {
     return this.fetchJSON(`/sessions/${sessionId}/cancel`, { method: 'POST' });
   }
 
+  async stopSession(sessionId: string): Promise<{ stopped: boolean; tasks_flushed: number }> {
+    return this.fetchJSON(`/sessions/${sessionId}/stop`, { method: 'POST' });
+  }
+
   async completeSession(sessionId: string): Promise<{ completed: boolean; sessions_terminated: number }> {
     return this.fetchJSON(`/sessions/${sessionId}/complete`, { method: 'POST' });
   }

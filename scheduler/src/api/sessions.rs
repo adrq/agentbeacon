@@ -138,6 +138,12 @@ async fn post_message(
     ))
 }
 
+#[derive(Debug, Serialize)]
+pub struct StopTurnResponse {
+    pub stopped: bool,
+    pub tasks_flushed: i64,
+}
+
 /// Cancel a session and its subtree (POST /api/sessions/{id}/cancel)
 async fn cancel_session(
     State(state): State<AppState>,
@@ -163,6 +169,12 @@ async fn cancel_session(
         &state.task_queue,
     )
     .await?;
+
+    // Clean up any pending stop_turn command (prevents unbounded HashMap growth)
+    {
+        let mut commands = state.session_commands.write().unwrap();
+        commands.remove(&id);
+    }
 
     // Notify parent that this session was canceled
     notify_parent_of_termination(&state, &session, "canceled").await?;
@@ -210,6 +222,113 @@ async fn cancel_session(
         "canceled": true,
         "sessions_terminated": result.sessions_terminated
     })))
+}
+
+/// Stop the current turn for a session (POST /api/sessions/{id}/stop)
+///
+/// This is a user-initiated stop that:
+/// 1. Validates the session is in a non-terminal state
+/// 2. Flushes any queued tasks for the session (prevents re-triggering)
+/// 3. Writes a "stop_turn" command to the per-session command slot
+/// 4. Wakes long-polling workers so they discover the command immediately
+///
+/// Unlike cancel, stop-turn does NOT transition the session to a terminal state.
+/// The session remains working until the executor acknowledges the stop and
+/// reports back with error_kind "stopped_by_user", at which point the scheduler
+/// transitions it to "input-required".
+async fn stop_turn_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<StopTurnResponse>, SchedulerError> {
+    let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
+
+    // Reject if session is already terminal
+    if matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
+        return Err(SchedulerError::Conflict(format!(
+            "session is already in terminal state: {}",
+            session.status
+        )));
+    }
+
+    // 1. Flush queued tasks FIRST — prevents a new task from being inserted
+    //    between the command write and the flush.
+    let tasks_flushed = state.task_queue.flush_session(&id).await?;
+    if tasks_flushed > 0 {
+        tracing::info!(
+            session_id = %id,
+            tasks_flushed,
+            "Flushed queued tasks on stop-turn"
+        );
+    }
+
+    // If session is submitted (no worker yet), transition directly to input-required
+    if session.status == "submitted" {
+        db::sessions::update_status(&state.db_pool, &id, "input-required").await?;
+        let event_payload = json!({"from": "submitted", "to": "input-required"});
+        if let Ok(event_id) = db::events::insert(
+            &state.db_pool,
+            &session.execution_id,
+            Some(&id),
+            "state_change",
+            &serde_json::to_string(&event_payload).unwrap(),
+        )
+        .await
+        {
+            let _ = state.event_broadcast.send(EventNotification::persisted(
+                session.execution_id.clone(),
+                event_id,
+            ));
+        }
+        // Also transition execution if lead session
+        if session.parent_session_id.is_none() {
+            use db::executions::CasResult;
+            if let Ok(CasResult::Applied) = db::executions::update_status_cas(
+                &state.db_pool,
+                &session.execution_id,
+                "input-required",
+                &["submitted", "working"],
+            )
+            .await
+            {
+                let exec_event = json!({"from": "submitted", "to": "input-required"});
+                if let Ok(event_id) = db::events::insert(
+                    &state.db_pool,
+                    &session.execution_id,
+                    None,
+                    "state_change",
+                    &serde_json::to_string(&exec_event).unwrap(),
+                )
+                .await
+                {
+                    let _ = state.event_broadcast.send(EventNotification::persisted(
+                        session.execution_id.clone(),
+                        event_id,
+                    ));
+                }
+            }
+        }
+        // No command slot needed — no worker to notify
+        return Ok(Json(StopTurnResponse {
+            stopped: true,
+            tasks_flushed,
+        }));
+    }
+
+    // 2. THEN write command to per-session slot (overwrites any previous command)
+    {
+        let mut commands = state.session_commands.write().unwrap();
+        commands.insert(id.clone(), "stop_turn".to_string());
+    }
+
+    // 3. Wake long-polling workers so they discover the command
+    state.task_queue.wake_waiters();
+
+    tracing::info!(session_id = %id, "Stop-turn command issued");
+
+    Ok(Json(StopTurnResponse {
+        stopped: true,
+        tasks_flushed,
+    }))
 }
 
 /// Complete a session and its subtree (POST /api/sessions/{id}/complete)
@@ -700,6 +819,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/sessions/{id}/cancel",
             axum::routing::post(cancel_session),
+        )
+        .route(
+            "/api/sessions/{id}/stop",
+            axum::routing::post(stop_turn_handler),
         )
         .route(
             "/api/sessions/{id}/complete",

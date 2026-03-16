@@ -55,6 +55,10 @@ export interface CancelCommand {
   type: "cancel";
 }
 
+export interface StopTurnCommand {
+  type: "stop_turn";
+}
+
 export interface StopCommand {
   type: "stop";
 }
@@ -68,6 +72,7 @@ export type Command =
   | StartCommand
   | PromptCommand
   | CancelCommand
+  | StopTurnCommand
   | StopCommand
   | EofCommand;
 

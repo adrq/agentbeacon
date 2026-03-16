@@ -529,6 +529,22 @@ async fn background_task(
                         }
                         // Idle or already Cancelling → no-op
                     }
+                    Some(AgentCommand::StopTurn) => {
+                        if let PromptPhase::AwaitingResponse { .. } = &phase {
+                            tracing::info!(session_id = %session_id, "Sending session/cancel (stop-turn)");
+                            let cancel_params = serde_json::json!({
+                                "sessionId": session_id
+                            });
+                            if let Err(e) = client
+                                .send_notification("session/cancel", cancel_params)
+                                .await
+                            {
+                                tracing::warn!(error = %e, "failed to send session/cancel for stop-turn");
+                            }
+                            phase = phase.begin_cancel();
+                        }
+                        // Idle or already Cancelling → no-op
+                    }
                     Some(AgentCommand::Stop) | None => {
                         terminate_subprocess(&mut child).await;
                         reader_handle.abort();

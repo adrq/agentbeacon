@@ -47,6 +47,7 @@ pub fn push_stderr_line(buf: &StderrBuffer, line: String) {
 pub enum ErrorKind {
     ExecutorFailed,
     Cancelled,
+    StoppedByUser,
     BudgetExceeded,
     MaxTurns,
 }
@@ -56,6 +57,7 @@ impl ErrorKind {
         match self {
             ErrorKind::ExecutorFailed => "executor_failed",
             ErrorKind::Cancelled => "cancelled",
+            ErrorKind::StoppedByUser => "stopped_by_user",
             ErrorKind::BudgetExceeded => "budget_exceeded",
             ErrorKind::MaxTurns => "max_turns",
         }
@@ -123,6 +125,8 @@ pub enum AgentCommand {
     Prompt(Vec<serde_json::Value>),
     /// Cancel current turn
     Cancel,
+    /// Stop current turn (user-initiated)
+    StopTurn,
     /// Graceful shutdown
     Stop,
 }

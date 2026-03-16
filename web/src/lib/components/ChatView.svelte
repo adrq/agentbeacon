@@ -33,6 +33,7 @@
   let shouldAutoScroll = $state(true);
   let messageText = $state('');
   let sending = $state(false);
+  let stopping = $state(false);
   let sendError: string | null = $state(null);
   let textareaEl: HTMLTextAreaElement;
   let plusMenuOpen = $state(false);
@@ -123,6 +124,25 @@
       sending = false;
     }
   }
+
+  async function handleStop() {
+    if (!sessionId || stopping) return;
+    stopping = true;
+    sendError = null;
+    try {
+      await api.stopSession(sessionId);
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : 'Failed to stop';
+    } finally {
+      stopping = false;
+    }
+  }
+
+  $effect(() => {
+    if (!sessionIsActive) {
+      stopping = false;
+    }
+  });
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -832,20 +852,37 @@
         </span>
       {/if}
 
-      <button
-        class="send-btn"
-        disabled={!canSend}
-        onclick={handleSend}
-        aria-label="Send message"
-      >
-        {#if sending}
-          <span class="sending-dots">...</span>
-        {:else}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M14 2L7 9M14 2l-4 12-3-5-5-3 12-4z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        {/if}
-      </button>
+      {#if sessionIsActive}
+        <button
+          class="stop-btn"
+          disabled={stopping}
+          onclick={handleStop}
+          aria-label="Stop current turn"
+        >
+          {#if stopping}
+            <span class="sending-dots">...</span>
+          {:else}
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/>
+            </svg>
+          {/if}
+        </button>
+      {:else}
+        <button
+          class="send-btn"
+          disabled={!canSend}
+          onclick={handleSend}
+          aria-label="Send message"
+        >
+          {#if sending}
+            <span class="sending-dots">...</span>
+          {:else}
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M14 2L7 9M14 2l-4 12-3-5-5-3 12-4z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          {/if}
+        </button>
+      {/if}
     </div>
   </div>
 </div>
@@ -1289,6 +1326,30 @@
   }
 
   .send-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .stop-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 1.75rem;
+    border-radius: var(--radius-sm);
+    border: none;
+    background: hsl(var(--status-danger));
+    color: hsl(var(--primary-foreground));
+    cursor: pointer;
+    transition: opacity 0.15s, filter 0.15s;
+    flex-shrink: 0;
+  }
+
+  .stop-btn:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+
+  .stop-btn:disabled {
     opacity: 0.3;
     cursor: not-allowed;
   }

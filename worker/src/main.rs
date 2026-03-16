@@ -361,6 +361,7 @@ async fn run_session(
     let mut turns_in_flight: usize = 1; // starts at 1 — processing initial prompt
     let mut cancelling = false;
     let mut completing = false;
+    let mut stopping = false; // user-initiated stop in progress
     let mut msg_seq: i64 = 0;
     let mut turn_messages: Vec<TurnMessage> = Vec::new();
 
@@ -379,6 +380,11 @@ async fn run_session(
                         let is_cancelled = cancelling
                             || result.error_kind.as_ref()
                                 .is_some_and(|ek| ek.as_str() == "cancelled");
+
+                        // If we initiated a stop-turn, remap cancelled → stopped_by_user
+                        let is_stopped = stopping
+                            || result.error_kind.as_ref()
+                                .is_some_and(|ek| ek.as_str() == "stopped_by_user");
 
                         let mut messages_for_sync = std::mem::take(&mut turn_messages);
 
@@ -401,7 +407,11 @@ async fn run_session(
                             &SyncRequest::with_result(session_id,
                                 agent_session_id.clone(),
                                 messages_for_sync, result.error,
-                                result.error_kind.map(|ek| ek.as_str().to_string()),
+                                if is_stopped {
+                                    Some("stopped_by_user".to_string())
+                                } else {
+                                    result.error_kind.map(|ek| ek.as_str().to_string())
+                                },
                                 result.stderr,
                                 turns_in_flight > 0,
                             ), true, retry_config,
@@ -417,6 +427,12 @@ async fn run_session(
                         if is_cancelled || completing {
                             let _ = cmd_tx.send(AgentCommand::Stop);
                             break SessionExit::Done;
+                        }
+
+                        // Reset stopping flag — stop-turn is complete, session continues
+                        if is_stopped {
+                            stopping = false;
+                            // Fall through to normal response handling (restart long-poll etc.)
                         }
 
                         match response {
@@ -435,6 +451,14 @@ async fn run_session(
                             SyncResponse::Command { command } if command == "cancel" => {
                                 let _ = cmd_tx.send(AgentCommand::Cancel);
                                 break SessionExit::Done;
+                            }
+                            SyncResponse::Command { command } if command == "stop_turn" => {
+                                if turns_in_flight > 0 {
+                                    let _ = cmd_tx.send(AgentCommand::StopTurn);
+                                    stopping = true;
+                                    // Don't restart long-poll — wait for TurnComplete
+                                }
+                                // No turn in flight — ignore, proceed normally
                             }
                             SyncResponse::Command { command } if command == "shutdown" => {
                                 let _ = cmd_tx.send(AgentCommand::Stop);
@@ -550,6 +574,14 @@ async fn run_session(
                                 cancelling = true;
                                 continue;
                             }
+                            Ok(SyncResponse::Command { command }) if command == "stop_turn" => {
+                                if turns_in_flight > 0 {
+                                    let _ = cmd_tx.send(AgentCommand::StopTurn);
+                                    stopping = true;
+                                    continue;
+                                }
+                                // No turn in flight — ignore stop_turn, fall through to restart long-poll
+                            }
                             Ok(SyncResponse::Command { command }) if command == "shutdown" => {
                                 let _ = cmd_tx.send(AgentCommand::Stop);
                                 break SessionExit::ShutdownRequested;
@@ -572,6 +604,15 @@ async fn run_session(
                         cancelling = true;
                         // Don't restart the long-poll — only listen for TurnComplete/ProcessDied
                         continue;
+                    }
+                    Ok(SyncResponse::Command { command }) if command == "stop_turn" => {
+                        if turns_in_flight > 0 {
+                            let _ = cmd_tx.send(AgentCommand::StopTurn);
+                            stopping = true;
+                            // Don't restart the long-poll — wait for TurnComplete from executor
+                            continue;
+                        }
+                        // No turn in flight — ignore stop_turn, fall through to restart long-poll
                     }
                     Ok(SyncResponse::Command { command }) if command == "shutdown" => {
                         let _ = cmd_tx.send(AgentCommand::Stop);
