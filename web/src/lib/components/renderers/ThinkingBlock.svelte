@@ -70,14 +70,14 @@
   }
 
   @keyframes thinking-shimmer {
-    0% { border-color: hsl(var(--border)); }
-    50% { border-color: hsl(var(--muted-foreground) / 0.4); }
-    100% { border-color: hsl(var(--border)); }
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
   }
 
   .thinking-block.streaming {
     border-width: 2px;
     animation: thinking-shimmer 2s ease-in-out infinite;
+    will-change: opacity;
   }
 
   .thinking-header {

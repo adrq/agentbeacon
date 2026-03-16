@@ -33,11 +33,11 @@
     if (streaming) {
       untrack(() => {
         const gen = ++renderGen;
-        renderMarkdown(latestText, true).then(r => { if (gen === renderGen) html = r; }).catch(() => {});
+        renderMarkdown(latestText, true, true).then(r => { if (gen === renderGen) html = r; }).catch(() => {});
       });
       const interval = setInterval(() => {
         const gen = ++renderGen;
-        renderMarkdown(latestText, true).then(r => { if (gen === renderGen) html = r; }).catch(() => {});
+        renderMarkdown(latestText, true, true).then(r => { if (gen === renderGen) html = r; }).catch(() => {});
       }, 300);
       return () => clearInterval(interval);
     }
@@ -53,6 +53,19 @@
     }
   });
 
+  // Fade in Shiki blocks after HTML is injected (runs when html changes and not streaming)
+  $effect(() => {
+    if (!streaming && html && containerEl) {
+      tick().then(() => {
+        if (containerEl) {
+          containerEl.querySelectorAll<HTMLPreElement>('pre.shiki').forEach(el => {
+            el.classList.add('shiki-visible');
+          });
+        }
+      });
+    }
+  });
+
   // Render mermaid diagrams after HTML is injected into the DOM.
   // Lazy-imports mermaid only when a diagram is present to avoid loading
   // the ~800KB library when no diagrams exist.
@@ -60,6 +73,7 @@
   $effect(() => {
     const _theme = currentTheme; // reactive dependency on theme
     if (!html || !containerEl) return;
+    if (streaming) return; // Skip mermaid rendering during streaming
     const gen = ++mermaidGen;
 
     tick().then(async () => {
@@ -96,3 +110,14 @@
 {:else}
   <div class="markdown-body markdown-plain">{text}</div>
 {/if}
+
+<style>
+  /* Fade-in transition for Shiki-highlighted code blocks when settling */
+  :global(.markdown-body pre.shiki) {
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+  :global(.markdown-body pre.shiki.shiki-visible) {
+    opacity: 1;
+  }
+</style>

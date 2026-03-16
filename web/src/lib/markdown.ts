@@ -80,6 +80,7 @@ function rehypeRestoreClasses() {
 }
 
 let processorPromise: ReturnType<typeof createProcessor> | null = null;
+let streamingProcessorPromise: ReturnType<typeof createStreamingProcessor> | null = null;
 
 async function createProcessor() {
   return unified()
@@ -97,6 +98,16 @@ async function createProcessor() {
     .use(rehypeStringify);
 }
 
+async function createStreamingProcessor() {
+  return unified()
+    .use(remarkParse)
+    .use(remarkGfm)
+    .use(remarkRehype)
+    .use(rehypeSanitize, sanitizeSchema)
+    .use(rehypeRestoreClasses)
+    .use(rehypeStringify);
+}
+
 function getProcessor() {
   if (!processorPromise) {
     processorPromise = createProcessor().catch((err) => {
@@ -107,22 +118,32 @@ function getProcessor() {
   return processorPromise;
 }
 
+function getStreamingProcessor() {
+  if (!streamingProcessorPromise) {
+    streamingProcessorPromise = createStreamingProcessor().catch((err) => {
+      streamingProcessorPromise = null;
+      throw err;
+    });
+  }
+  return streamingProcessorPromise;
+}
+
 // Cache rendered HTML to avoid re-running the unified pipeline for the same text.
 // Agent messages are immutable (append-only events), so cache entries are never
 // invalidated. Bounded to 500 entries as a safety net against unbounded growth.
 const renderCache = new Map<string, string>();
 const CACHE_MAX = 500;
 
-export async function renderMarkdown(text: string, skipCache = false): Promise<string> {
-  if (!skipCache) {
+export async function renderMarkdown(text: string, skipCache = false, streaming = false): Promise<string> {
+  if (!skipCache && !streaming) {
     const cached = renderCache.get(text);
     if (cached !== undefined) return cached;
   }
 
-  const processor = await getProcessor();
+  const processor = streaming ? await getStreamingProcessor() : await getProcessor();
   const result = String(await processor.process(text));
 
-  if (!skipCache) {
+  if (!skipCache && !streaming) {
     if (renderCache.size >= CACHE_MAX) {
       const firstKey = renderCache.keys().next().value!;
       renderCache.delete(firstKey);

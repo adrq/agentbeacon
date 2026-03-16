@@ -181,15 +181,27 @@
     shouldAutoScroll = scrollHeight - scrollTop - clientHeight < 40;
   }
 
+  let scrollRafId = 0;
+
   $effect(() => {
     const _len = events.length; // dependency: triggers on every new event
     const _eph = ephemeralText; // dependency: triggers on ephemeral streaming updates
     const _ephThink = ephemeralThinking; // dependency: triggers on ephemeral thinking updates
     if (shouldAutoScroll && scrollContainer) {
-      tick().then(() => {
-        if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      if (scrollRafId) cancelAnimationFrame(scrollRafId);
+      scrollRafId = requestAnimationFrame(() => {
+        if (scrollContainer && shouldAutoScroll) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        }
+        scrollRafId = 0;
       });
     }
+  });
+
+  $effect(() => {
+    return () => {
+      if (scrollRafId) cancelAnimationFrame(scrollRafId);
+    };
   });
 
   function formatTime(iso: string): string {
@@ -485,8 +497,14 @@
   });
 
 
+  // Stage 1: Only re-parses when events array changes (not on ephemeral text)
+  let baseEntries = $derived(groupToolStreams(parseEntries(events)));
+
+  // Stage 2: Cheap derived that appends ephemeral entries to baseEntries
   let parsed = $derived.by(() => {
-    const entries = groupToolStreams(parseEntries(events));
+    // Shallow copy: entries array is copied, but entry objects are shared.
+    // Never mutate entry objects directly — use spread operator to create new objects.
+    const entries = baseEntries.slice();
 
     // Ephemeral thinking: show as streaming thinking entry
     if (ephemeralThinking?.text) {
@@ -571,7 +589,7 @@
           <div class="chat-row agent-row">
             <div class="agent-prose">
               <div class="agent-prose-header">{entry.agentLabel}</div>
-              <div class="agent-prose-body"><Markdown text={entry.text} streaming={entry.isStreaming} /></div>
+              <div class="agent-prose-body"><Markdown text={entry.text} streaming={entry.key === 'ephemeral-stream'} /></div>
               <div class="agent-prose-time">{entry.time}</div>
             </div>
           </div>
@@ -812,6 +830,7 @@
     flex: 1;
     overflow-y: auto;
     padding: 0.5rem 1rem 1rem;
+    overflow-anchor: auto;
   }
 
   .chat-empty {
@@ -828,6 +847,7 @@
 
   .chat-row {
     display: flex;
+    contain: layout style;
   }
 
   .agent-row {
