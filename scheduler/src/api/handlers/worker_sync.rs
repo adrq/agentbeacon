@@ -248,31 +248,13 @@ pub async fn handle_worker_sync(
         }
     }
 
-    // Step 1b: After processing a successful result, check for queued tasks
-    // before falling through to session_state handling. This allows queued
-    // mid-turn messages to be returned in the same sync response.
+    // Step 1b: After processing a successful result, handle turn completion
+    // BEFORE checking for queued tasks. This ensures deliver_to_parent runs
+    // even when tasks are queued.
     if let Some(ref result) = request.session_result {
         let has_error = result.error_kind.is_some() || result.error.is_some();
 
         if !has_error {
-            // Check if a user message was queued during the turn (always check,
-            // even when worker has pending turns — a concurrent user message may
-            // have arrived). Non-destructive peek: task stays in queue until the
-            // worker explicitly fetches it via fetch_task.
-            if state
-                .task_queue
-                .has_task_for_session(&result.session_id)
-                .await
-                .map_err(|e| {
-                    tracing::error!("post-result has_task_for_session failed: {e}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?
-            {
-                return Ok(Json(WorkerSyncResponse::TaskAvailable {
-                    session_id: result.session_id.clone(),
-                }));
-            }
-
             // Only transition to input-required if the worker has no pending
             // turns locally. When has_pending_turn is true, the worker already
             // has the next prompt queued and will start processing it
@@ -280,144 +262,191 @@ pub async fn handle_worker_sync(
             if !result.has_pending_turn
                 && let Ok(session) =
                     db::sessions::get_by_id(&state.db_pool, &result.session_id).await
-                && session.status == "working"
+                && matches!(session.status.as_str(), "working" | "input-required")
             {
-                if let Err(e) = db::sessions::update_status(
-                    &state.db_pool,
-                    &result.session_id,
-                    "input-required",
-                )
-                .await
-                {
-                    tracing::error!(
-                        session_id = %result.session_id,
-                        error = %e,
-                        "failed to transition session to input-required"
-                    );
-                } else {
-                    let event_payload = json!({
-                        "from": "working",
-                        "to": "input-required",
-                    });
-                    match db::events::insert(
+                // Only transition session if currently working (not already input-required)
+                if session.status == "working" {
+                    if let Err(e) = db::sessions::update_status(
                         &state.db_pool,
-                        &session.execution_id,
-                        Some(&result.session_id),
-                        "state_change",
-                        &serde_json::to_string(&event_payload).unwrap(),
+                        &result.session_id,
+                        "input-required",
                     )
                     .await
-                    {
-                        Ok(event_id) => {
-                            let _ = state.event_broadcast.send(EventNotification::persisted(
-                                session.execution_id.clone(),
-                                event_id,
-                            ));
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                session_id = %result.session_id,
-                                error = %e,
-                                "failed to insert input-required state_change event"
-                            );
-                        }
-                    }
-
-                    // Turn-complete auto-notification — deliver to parent
-                    if session.parent_session_id.is_some()
-                        && let Some(output_text) =
-                            crate::services::notification::extract_turn_output(
-                                &result.turn_messages,
-                            )
-                        && let Err(e) = crate::services::notification::deliver_to_parent(
-                            &state.db_pool,
-                            &state.task_queue,
-                            &state.event_broadcast,
-                            &result.session_id,
-                            &output_text,
-                        )
-                        .await
                     {
                         tracing::error!(
                             session_id = %result.session_id,
                             error = %e,
-                            "failed to deliver turn-complete to parent"
+                            "failed to transition session to input-required"
                         );
-                    }
-
-                    // Child sessions: worker stays attached and enters long-poll,
-                    // waiting for the parent (or lateral message) to send more work.
-                    // The subprocess stays alive, preserving in-process state.
-                    if session.parent_session_id.is_some() {
-                        return Ok(Json(WorkerSyncResponse::NoAction));
-                    }
-
-                    // Propagate to execution for lead sessions
-                    if session.parent_session_id.is_none() {
-                        use db::executions::CasResult;
-                        match db::executions::update_status_cas(
+                    } else {
+                        let event_payload = json!({
+                            "from": "working",
+                            "to": "input-required",
+                        });
+                        match db::events::insert(
                             &state.db_pool,
                             &session.execution_id,
-                            "input-required",
-                            &["working"],
+                            Some(&result.session_id),
+                            "state_change",
+                            &serde_json::to_string(&event_payload).unwrap(),
                         )
                         .await
                         {
-                            Ok(CasResult::Applied) => {
-                                let exec_event = json!({
-                                    "from": "working",
-                                    "to": "input-required",
-                                });
-                                match db::events::insert(
-                                    &state.db_pool,
-                                    &session.execution_id,
-                                    None,
-                                    "state_change",
-                                    &serde_json::to_string(&exec_event).unwrap(),
-                                )
-                                .await
-                                {
-                                    Ok(event_id) => {
-                                        let _ = state.event_broadcast.send(
-                                            EventNotification::persisted(
-                                                session.execution_id.clone(),
-                                                event_id,
-                                            ),
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            execution_id = %session.execution_id,
-                                            error = %e,
-                                            "failed to insert execution input-required state_change event"
-                                        );
-                                    }
-                                }
-                            }
-                            Ok(CasResult::Conflict) => {
-                                tracing::warn!(
-                                    execution_id = %session.execution_id,
-                                    "execution no longer working — skipping input-required transition"
-                                );
-                            }
-                            Ok(CasResult::NotFound) => {
-                                tracing::error!(
-                                    execution_id = %session.execution_id,
-                                    "execution row missing — data integrity issue"
-                                );
-                                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                            Ok(event_id) => {
+                                let _ = state.event_broadcast.send(EventNotification::persisted(
+                                    session.execution_id.clone(),
+                                    event_id,
+                                ));
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    execution_id = %session.execution_id,
+                                tracing::warn!(
+                                    session_id = %result.session_id,
                                     error = %e,
-                                    "failed to transition execution to input-required"
+                                    "failed to insert input-required state_change event"
                                 );
-                                return Err(StatusCode::INTERNAL_SERVER_ERROR);
                             }
                         }
                     }
                 }
+
+                // Turn-complete auto-notification — deliver to parent (runs regardless of session status)
+                if session.parent_session_id.is_some()
+                    && let Some(output_text) =
+                        crate::services::notification::extract_turn_output(&result.turn_messages)
+                    && let Err(e) = crate::services::notification::deliver_to_parent(
+                        &state.db_pool,
+                        &state.task_queue,
+                        &state.event_broadcast,
+                        &result.session_id,
+                        &output_text,
+                    )
+                    .await
+                {
+                    tracing::error!(
+                        session_id = %result.session_id,
+                        error = %e,
+                        "failed to deliver turn-complete to parent"
+                    );
+                }
+
+                // Child sessions: check queue and return TaskAvailable or NoAction
+                // (don't skip the queue check like we did before — the parent may have queued work)
+                if session.parent_session_id.is_some() {
+                    if state
+                        .task_queue
+                        .has_task_for_session(&result.session_id)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("post-turn has_task_for_session failed: {e}");
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        })?
+                    {
+                        return Ok(Json(WorkerSyncResponse::TaskAvailable {
+                            session_id: result.session_id.clone(),
+                        }));
+                    } else {
+                        return Ok(Json(WorkerSyncResponse::NoAction));
+                    }
+                }
+
+                // Propagate to execution for lead sessions (runs regardless of session status)
+                if session.parent_session_id.is_none() {
+                    use db::executions::CasResult;
+                    match db::executions::update_status_cas(
+                        &state.db_pool,
+                        &session.execution_id,
+                        "input-required",
+                        &["working"],
+                    )
+                    .await
+                    {
+                        Ok(CasResult::Applied) => {
+                            let exec_event = json!({
+                                "from": "working",
+                                "to": "input-required",
+                            });
+                            match db::events::insert(
+                                &state.db_pool,
+                                &session.execution_id,
+                                None,
+                                "state_change",
+                                &serde_json::to_string(&exec_event).unwrap(),
+                            )
+                            .await
+                            {
+                                Ok(event_id) => {
+                                    let _ =
+                                        state.event_broadcast.send(EventNotification::persisted(
+                                            session.execution_id.clone(),
+                                            event_id,
+                                        ));
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        execution_id = %session.execution_id,
+                                        error = %e,
+                                        "failed to insert execution input-required state_change event"
+                                    );
+                                }
+                            }
+                        }
+                        Ok(CasResult::Conflict) => {
+                            // Expected when widened guard runs for session already in input-required
+                            // (execution was already transitioned by a prior path)
+                            tracing::debug!(
+                                execution_id = %session.execution_id,
+                                "execution already transitioned from working — CAS conflict (expected)"
+                            );
+                        }
+                        Ok(CasResult::NotFound) => {
+                            tracing::error!(
+                                execution_id = %session.execution_id,
+                                "execution row missing — data integrity issue"
+                            );
+                            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                execution_id = %session.execution_id,
+                                error = %e,
+                                "failed to transition execution to input-required"
+                            );
+                            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                        }
+                    }
+
+                    // Check queue for root lead sessions too
+                    if state
+                        .task_queue
+                        .has_task_for_session(&result.session_id)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("post-turn has_task_for_session failed: {e}");
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        })?
+                    {
+                        return Ok(Json(WorkerSyncResponse::TaskAvailable {
+                            session_id: result.session_id.clone(),
+                        }));
+                    }
+                }
+            }
+
+            // Fallback queue check: if the turn-completion block didn't run
+            // (because has_pending_turn=true), still check for queued tasks
+            if result.has_pending_turn
+                && state
+                    .task_queue
+                    .has_task_for_session(&result.session_id)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("post-result has_task_for_session failed: {e}");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?
+            {
+                return Ok(Json(WorkerSyncResponse::TaskAvailable {
+                    session_id: result.session_id.clone(),
+                }));
             }
         }
     }
@@ -525,7 +554,7 @@ async fn fetch_task(
             tracing::error!("fetch_task get_by_id failed: {e}");
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
-        Ok(_) => {}
+        Ok(_) => {} // Session exists and is non-terminal; proceed to pop
     }
 
     // Destructive pop — no biased-select race (worker actively awaits within
@@ -540,6 +569,48 @@ async fn fetch_task(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
     {
+        // Re-fetch session to avoid stale snapshot (concurrent cancel could have
+        // changed status between initial fetch and pop_by_session).
+        // On re-fetch failure, skip the transition entirely — don't use stale data
+        // that could resurrect a canceled session. The widened guard in the
+        // turn-completion block (Change 1) handles cleanup on the next sync.
+        if let Ok(fresh_session) = db::sessions::get_by_id(&state.db_pool, session_id).await {
+            if matches!(
+                fresh_session.status.as_str(),
+                "completed" | "failed" | "canceled"
+            ) {
+                // Session became terminal after pop — task is already consumed,
+                // tell worker the session is done instead of delivering stale work.
+                tracing::warn!(
+                    session_id = %session_id,
+                    status = %fresh_session.status,
+                    "fetch_task: session became terminal after pop, discarding task"
+                );
+                return Ok(Json(WorkerSyncResponse::SessionComplete {
+                    session_id: session_id.to_string(),
+                }));
+            }
+            if fresh_session.status == "input-required"
+                && let Err(e) = crate::services::messaging::transition_to_working(
+                    &state.db_pool,
+                    &state.event_broadcast,
+                    &fresh_session,
+                )
+                .await
+            {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %e,
+                    "fetch_task: transition_to_working failed (non-fatal)"
+                );
+            }
+        } else {
+            tracing::warn!(
+                session_id = %session_id,
+                "fetch_task: re-fetch failed, skipping transition (non-fatal)"
+            );
+        }
+
         Ok(Json(WorkerSyncResponse::PromptDelivery {
             session_id: session_id.to_string(),
             task,

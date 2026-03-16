@@ -19,6 +19,7 @@ pub struct LivenessScanStats {
     pub failed: usize,
     pub skipped: usize,
     pub non_resumable_failed: usize,
+    pub reconciled: usize,
 }
 
 /// Scan for orphaned sessions and resubmit them for recovery.
@@ -209,7 +210,126 @@ pub async fn recover_orphaned_sessions(
     stats
 }
 
-/// Run a full liveness scan: recover resumable sessions + fail non-resumable ones.
+/// Reconcile execution statuses that are stuck in 'working' when all sessions
+/// are 'input-required' (the race condition this fix targets).
+///
+/// This is a belt-and-suspenders safety net that should never fire once
+/// Changes 1-3 are in place, but will self-heal within 90s if an edge case
+/// was missed.
+///
+/// ONLY transitions working → input-required. Does NOT handle the all-terminal
+/// case (that's a different bug/different fix).
+async fn reconcile_execution_statuses(
+    pool: &DbPool,
+    event_broadcast: &broadcast::Sender<EventNotification>,
+) -> usize {
+    // Find executions in 'working' where NO session is 'working' or 'submitted'
+    // AND at least one session is 'input-required' (the actual stuck scenario).
+    // The input-required guard prevents matching all-terminal cases, which need
+    // a different target status (completed/failed) — that's a separate fix.
+    let query = pool.prepare_query(
+        "SELECT e.id \
+         FROM executions e \
+         WHERE e.status = 'working' \
+         AND EXISTS ( \
+             SELECT 1 FROM sessions s \
+             WHERE s.execution_id = e.id \
+             AND s.status = 'input-required' \
+         ) \
+         AND NOT EXISTS ( \
+             SELECT 1 FROM sessions s \
+             WHERE s.execution_id = e.id \
+             AND s.status IN ('working', 'submitted') \
+         )",
+    );
+
+    let rows = match sqlx::query_scalar::<_, String>(&query)
+        .fetch_all(pool.as_ref())
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "reconcile: query for stuck executions failed");
+            return 0;
+        }
+    };
+
+    if rows.is_empty() {
+        return 0;
+    }
+
+    tracing::info!(
+        count = rows.len(),
+        "reconcile: found executions stuck in working state"
+    );
+
+    let mut count = 0usize;
+    for execution_id in &rows {
+        // CAS transition: working → input-required
+        use db::executions::CasResult;
+        match db::executions::update_status_cas(pool, execution_id, "input-required", &["working"])
+            .await
+        {
+            Ok(CasResult::Applied) => {
+                let event_payload = json!({
+                    "from": "working",
+                    "to": "input-required",
+                    "reconciled": true,
+                });
+                match db::events::insert(
+                    pool,
+                    execution_id,
+                    None,
+                    "state_change",
+                    &serde_json::to_string(&event_payload).unwrap(),
+                )
+                .await
+                {
+                    Ok(event_id) => {
+                        let _ = event_broadcast
+                            .send(EventNotification::persisted(execution_id.clone(), event_id));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            execution_id = %execution_id,
+                            error = %e,
+                            "reconcile: failed to insert state_change event"
+                        );
+                    }
+                }
+                tracing::warn!(
+                    execution_id = %execution_id,
+                    "reconciled stuck execution: working → input-required"
+                );
+                count += 1;
+            }
+            Ok(CasResult::Conflict) => {
+                // Execution status changed between query and CAS (concurrent transition won)
+                tracing::debug!(
+                    execution_id = %execution_id,
+                    "reconcile: execution status changed concurrently, skipping"
+                );
+            }
+            Ok(CasResult::NotFound) => {
+                tracing::error!(
+                    execution_id = %execution_id,
+                    "reconcile: execution row missing — data integrity issue"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    execution_id = %execution_id,
+                    error = %e,
+                    "reconcile: CAS transition failed"
+                );
+            }
+        }
+    }
+
+    count
+}
+
+/// Run a full liveness scan: recover resumable sessions + fail non-resumable ones + reconcile executions.
 pub async fn run_liveness_scan(
     pool: &DbPool,
     task_queue: &TaskQueue,
@@ -231,11 +351,15 @@ pub async fn run_liveness_scan(
     let non_resumable_failed =
         fail_stale_non_resumable(pool, task_queue, event_broadcast, updated_before).await;
 
+    // Reconcile execution statuses (belt-and-suspenders safety net)
+    let reconciled = reconcile_execution_statuses(pool, event_broadcast).await;
+
     LivenessScanStats {
         recovered: recovery.recovered,
         failed: recovery.failed,
         skipped: recovery.skipped,
         non_resumable_failed,
+        reconciled,
     }
 }
 
