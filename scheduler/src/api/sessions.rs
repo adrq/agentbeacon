@@ -52,6 +52,14 @@ struct DiffSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct DiffCommitEntry {
+    sha: String,
+    message: String,
+    author: String,
+    date: String,
+}
+
+#[derive(Debug, Serialize)]
 struct DiffResponse {
     files: Vec<DiffFileEntry>,
     summary: DiffSummary,
@@ -59,6 +67,8 @@ struct DiffResponse {
     patch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    commits: Vec<DiffCommitEntry>,
 }
 
 /// Get a single session by ID (GET /api/sessions/{id})
@@ -622,6 +632,22 @@ async fn session_diff(
         deletions: total_deletions,
     };
 
+    // Collect commits between the stored base and HEAD (best-effort, empty on error).
+    // Always use base_commit_sha (not the possibly-overridden `base`) so the commit
+    // list is stable regardless of the ?base= query param the frontend sends.
+    let commit_base = session.base_commit_sha.as_deref().unwrap_or("HEAD");
+    let commits = run_git_command(
+        diff_dir,
+        &[
+            "log",
+            "--format=%H%x00%s%x00%an%x00%aI",
+            &format!("{commit_base}..HEAD"),
+        ],
+    )
+    .await
+    .map(|output| parse_commit_log(&output))
+    .unwrap_or_default();
+
     let (patch, truncated) = if query.stat.unwrap_or(false) {
         (None, None)
     } else {
@@ -637,6 +663,7 @@ async fn session_diff(
                 summary,
                 patch: None,
                 truncated: Some(true),
+                commits,
             };
             return Ok((StatusCode::PAYLOAD_TOO_LARGE, Json(response)).into_response());
         }
@@ -648,6 +675,7 @@ async fn session_diff(
         summary,
         patch,
         truncated,
+        commits,
     })
     .into_response())
 }
@@ -714,6 +742,28 @@ fn parse_name_status(output: &str) -> std::collections::HashMap<String, String> 
             // Status is the first char (M, A, D, R, etc.)
             let status = parts[0].chars().next().unwrap_or('M').to_string();
             Some((parts[1].to_string(), status))
+        })
+        .collect()
+}
+
+/// Parse `git log --format=%H%x00%s%x00%an%x00%aI` output into commit entries.
+/// Fields are NUL-separated within each line to avoid ambiguity with pipes
+/// or other characters that may appear in commit messages.
+fn parse_commit_log(output: &str) -> Vec<DiffCommitEntry> {
+    output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(4, '\0').collect();
+            if parts.len() < 4 {
+                return None;
+            }
+            Some(DiffCommitEntry {
+                sha: parts[0].to_string(),
+                message: parts[1].to_string(),
+                author: parts[2].to_string(),
+                date: parts[3].to_string(),
+            })
         })
         .collect()
 }

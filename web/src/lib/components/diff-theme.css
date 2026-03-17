@@ -1,5 +1,29 @@
 @import 'diff2html/bundles/css/diff2html.min.css';
 
+/* Override diff2html's own CSS custom properties so any selector we don't
+   explicitly cover still picks up theme-aware values instead of the
+   hardcoded light-mode defaults (#fff, #f1f1f1, etc.). */
+.diff-panel {
+  --d2h-bg-color: transparent;
+  --d2h-border-color: hsl(var(--border));
+  --d2h-dim-color: hsl(var(--muted-foreground) / 0.6);
+  --d2h-line-border-color: hsl(var(--border));
+  --d2h-file-header-bg-color: hsl(var(--muted) / 0.3);
+  --d2h-file-header-border-color: hsl(var(--border));
+  --d2h-empty-placeholder-bg-color: hsl(var(--muted) / 0.1);
+  --d2h-empty-placeholder-border-color: hsl(var(--border));
+  --d2h-del-bg-color: hsl(var(--status-danger) / 0.1);
+  --d2h-del-border-color: hsl(var(--status-danger) / 0.15);
+  --d2h-del-highlight-bg-color: hsl(var(--status-danger) / 0.25);
+  --d2h-ins-bg-color: hsl(var(--status-success) / 0.1);
+  --d2h-ins-border-color: hsl(var(--status-success) / 0.15);
+  --d2h-ins-highlight-bg-color: hsl(var(--status-success) / 0.25);
+  --d2h-info-bg-color: hsl(var(--muted) / 0.2);
+  --d2h-info-border-color: hsl(var(--border));
+  --d2h-change-del-color: hsl(var(--status-danger) / 0.1);
+  --d2h-change-ins-color: hsl(var(--status-success) / 0.1);
+}
+
 /* Reset diff2html wrapper backgrounds */
 .diff-panel .d2h-wrapper {
   background: transparent;
@@ -130,6 +154,13 @@
   text-decoration: none;
 }
 
+/* Row-level change highlights — override diff2html's .d2h-file-diff .d2h-ins.d2h-change
+   (specificity 0,3,0) which would otherwise show a different green. */
+.diff-panel .d2h-file-diff .d2h-ins.d2h-change {
+  background: hsl(var(--status-success) / 0.1);
+  border-color: hsl(var(--status-success) / 0.15);
+}
+
 /* Deletion lines */
 .diff-panel .d2h-del {
   background: hsl(var(--status-danger) / 0.1);
@@ -152,6 +183,13 @@
 .diff-panel del.d2h-change {
   background: hsl(var(--status-danger) / 0.25);
   text-decoration: none;
+}
+
+/* Row-level change highlights — override diff2html's .d2h-file-diff .d2h-del.d2h-change
+   (specificity 0,3,0) which defaults to yellow (#fdf2d0). */
+.diff-panel .d2h-file-diff .d2h-del.d2h-change {
+  background: hsl(var(--status-danger) / 0.1);
+  border-color: hsl(var(--status-danger) / 0.15);
 }
 
 /* Hunk headers (@@ ... @@) */

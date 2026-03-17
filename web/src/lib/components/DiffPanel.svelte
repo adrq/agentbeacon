@@ -2,6 +2,7 @@
   import './diff-theme.css';
   import DiffSummaryBar from './DiffSummaryBar.svelte';
   import DiffFileList from './DiffFileList.svelte';
+  import DiffCommitList from './DiffCommitList.svelte';
   import { sessionDiffQuery } from '../queries/executions';
 
   interface Props {
@@ -23,7 +24,14 @@
 
   $effect(() => { if (!Diff2HtmlUI) loadDiff2Html(); });
 
-  const diffQuery = sessionDiffQuery(() => sessionId, () => isTerminal);
+  // Base ref selector — undefined means use server default (base_commit_sha)
+  let selectedBase = $state<string | undefined>(undefined);
+
+  const diffQuery = sessionDiffQuery(
+    () => sessionId,
+    () => isTerminal,
+    () => selectedBase,
+  );
 
   let diffData = $derived(diffQuery.data ?? null);
   let loading = $derived(diffQuery.isLoading);
@@ -39,6 +47,33 @@
   let hasError = $derived(diffQuery.isError && !isNoWorktree && !isNotGit);
   let noChanges = $derived(diffData !== null && diffData.files.length === 0);
   let truncated = $derived(diffData?.truncated === true);
+  let hasCommits = $derived((diffData?.commits?.length ?? 0) > 0);
+
+  // Build base options from commits. The backend always returns the full
+  // commit list (using stored base_commit_sha) regardless of ?base= param,
+  // so this list is stable across base selections.
+  let baseOptions = $derived.by(() => {
+    const opts: { label: string; value: string | undefined }[] = [
+      { label: 'All changes', value: undefined },
+    ];
+    if (diffData?.commits?.length) {
+      for (const c of diffData.commits) {
+        opts.push({ label: `${c.sha.slice(0, 7)} ${c.message}`, value: c.sha });
+      }
+    }
+    opts.push({ label: 'HEAD (uncommitted)', value: 'HEAD' });
+    return opts;
+  });
+
+  function handleSelectBase(sha: string) {
+    selectedBase = sha;
+  }
+
+  // Reset base when switching sessions
+  $effect(() => {
+    sessionId;
+    selectedBase = undefined;
+  });
 
   // DOM ref for diff2html rendering
   let diffContainer: HTMLDivElement | undefined = $state();
@@ -60,6 +95,26 @@
 </script>
 
 <div class="diff-panel scroll-thin">
+  {#if hasCommits || selectedBase !== undefined}
+    <div class="diff-toolbar">
+      <label class="base-label">
+        Base:
+        <select
+          class="base-select"
+          value={selectedBase ?? ''}
+          onchange={(e) => {
+            const v = (e.target as HTMLSelectElement).value;
+            selectedBase = v === '' ? undefined : v;
+          }}
+        >
+          {#each baseOptions as opt}
+            <option value={opt.value ?? ''}>{opt.label}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
+  {/if}
+
   {#if loadError}
     <div class="diff-empty diff-error">
       Failed to load diff viewer
@@ -77,6 +132,9 @@
     <div class="diff-empty">No changes detected</div>
   {:else if truncated && diffData}
     <div class="diff-truncated">
+      {#if hasCommits}
+        <DiffCommitList commits={diffData.commits!} onSelectBase={handleSelectBase} />
+      {/if}
       <DiffSummaryBar data={diffData} />
       <p class="truncated-msg">
         Diff too large to display ({diffData.summary.files_changed} file{diffData.summary.files_changed !== 1 ? 's' : ''},
@@ -84,6 +142,9 @@
       </p>
     </div>
   {:else if diffData && diffData.files.length > 0}
+    {#if hasCommits}
+      <DiffCommitList commits={diffData.commits!} onSelectBase={handleSelectBase} />
+    {/if}
     <DiffSummaryBar data={diffData} />
     <DiffFileList files={diffData.files} />
     <div class="diff-content" bind:this={diffContainer}></div>
@@ -128,6 +189,40 @@
 
   .retry-btn:hover {
     background: hsl(var(--muted) / 0.3);
+  }
+
+  .diff-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .base-label {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .base-select {
+    padding: 0.2rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    max-width: 20rem;
+    cursor: pointer;
+  }
+
+  .base-select:focus {
+    outline: none;
+    border-color: hsl(var(--primary));
+    box-shadow: 0 0 0 2px hsl(var(--primary) / 0.15);
   }
 
   .diff-truncated {

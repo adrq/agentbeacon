@@ -98,11 +98,19 @@ export interface DiffSummary {
   deletions: number;
 }
 
+export interface DiffCommitEntry {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
 export interface DiffResponse {
   files: DiffFileEntry[];
   summary: DiffSummary;
   patch?: string;       // omitted when stat=true
   truncated?: boolean;  // true on 413 responses (patch > 1MB)
+  commits?: DiffCommitEntry[];  // commits between base and HEAD
 }
 
 // Platform events use the same shape as message events (role + parts with data payloads)

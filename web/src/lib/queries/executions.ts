@@ -57,10 +57,11 @@ export function executionEventsQuery(executionId: () => string | null | undefine
 export function sessionDiffQuery(
   sessionId: () => string | null | undefined,
   isTerminal?: () => boolean,
+  base?: () => string | undefined,
 ) {
   return createQuery(() => ({
-    queryKey: ['session-diff', sessionId()],
-    queryFn: () => api.getSessionDiff(sessionId()!),
+    queryKey: ['session-diff', sessionId(), base?.()],
+    queryFn: () => api.getSessionDiff(sessionId()!, { base: base?.() }),
     enabled: !!sessionId(),
     staleTime: 5_000,
     refetchInterval: () => {
