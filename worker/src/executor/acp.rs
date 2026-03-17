@@ -6,6 +6,7 @@
 //! ensures Cancel can be received even during an active prompt turn.
 
 use anyhow::{Context, Result};
+use common::a2a::role;
 use common::Message;
 use serde::Deserialize;
 use std::collections::{HashMap, VecDeque};
@@ -714,14 +715,14 @@ fn build_turn_result(
     // Consolidate agent-role messages into output
     let agent_parts: Vec<serde_json::Value> = update_history
         .iter()
-        .filter(|m| m.role == "agent")
+        .filter(|m| m.role == role::AGENT)
         .flat_map(|m| m.parts.iter().filter_map(|p| serde_json::to_value(p).ok()))
         .collect();
 
     let output = if agent_parts.is_empty() {
         None
     } else {
-        Some(serde_json::json!({"role": "agent", "parts": agent_parts}))
+        Some(serde_json::json!({"role": role::AGENT, "parts": agent_parts}))
     };
 
     let stderr = if error.is_some() {

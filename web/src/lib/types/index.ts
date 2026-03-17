@@ -49,7 +49,6 @@ export interface Execution {
   context_id: string;
   status: ExecutionStatus;
   title: string | null;
-  input: string;
   metadata: Record<string, unknown>;
   max_depth: number;
   max_width: number;
@@ -135,15 +134,27 @@ export interface EphemeralEvent {
 }
 
 export interface MessagePayload {
-  role: 'user' | 'agent';
+  role: 'ROLE_USER' | 'ROLE_AGENT';
   parts: MessagePart[];
 }
 
 export type MessagePart =
-  | { kind: 'text'; text: string }
-  | { kind: 'data'; data: DataPartPayload }
-  | { kind: 'file'; file: { name?: string; mimeType?: string; bytes?: string } }
-  | { kind: string; [key: string]: unknown };
+  | { text: string; mediaType?: string; filename?: string; metadata?: Record<string, unknown> }
+  | { data: DataPartPayload; mediaType?: string; filename?: string; metadata?: Record<string, unknown> }
+  | { url: string; mediaType?: string; filename?: string; metadata?: Record<string, unknown> }
+  | { raw: string; mediaType?: string; filename?: string; metadata?: Record<string, unknown> };
+
+export function isTextPart(p: MessagePart): p is { text: string } & MessagePart {
+  return 'text' in p;
+}
+
+export function isDataPart(p: MessagePart): p is { data: DataPartPayload } & MessagePart {
+  return 'data' in p;
+}
+
+export function isFilePart(p: MessagePart): p is ({ url: string } | { raw: string }) & MessagePart {
+  return 'url' in p || 'raw' in p;
+}
 
 export interface SenderData {
   type: 'sender';

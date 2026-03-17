@@ -3,6 +3,7 @@
 //! Core protocol functions used by executor::acp::AcpAgentHandle.
 
 use anyhow::{Context, Result};
+use common::a2a::role;
 use common::{Message, Part};
 use serde::Deserialize;
 use serde_json::Value;
@@ -351,9 +352,9 @@ pub(crate) fn translate_a2a_parts_to_acp_content(parts: &[Value]) -> Result<Vec<
 
 /// Handle session/update notification and convert to A2A Message.
 ///
-/// Raw passthrough: non-chunk variants pass through as Part::Data with only
+/// Raw passthrough: non-chunk variants pass through as data parts with only
 /// `sessionUpdate` renamed to `type`. Chunk variants unwrap the ContentBlock
-/// wrapper — message chunks become Part::Text, thought chunks become Part::Data
+/// wrapper — message chunks become text parts, thought chunks become data parts
 /// with extracted text.
 pub(crate) fn handle_session_update(
     params: &Value,
@@ -369,7 +370,7 @@ pub(crate) fn handle_session_update(
         .ok_or_else(|| anyhow::anyhow!("session/update missing sessionUpdate discriminator"))?;
 
     let (role, parts) = match variant {
-        // Text chunks: extract from ContentBlock wrapper → Part::Text
+        // Text chunks: extract from ContentBlock wrapper → text part
         "agent_message_chunk" | "user_message_chunk" => {
             let text = update
                 .get("content")
@@ -378,11 +379,11 @@ pub(crate) fn handle_session_update(
                 .unwrap_or("")
                 .to_string();
             let role = if variant == "user_message_chunk" {
-                "user"
+                role::USER
             } else {
-                "agent"
+                role::AGENT
             };
-            (role, vec![Part::Text { text }])
+            (role, vec![Part::text(text)])
         }
         // Thought chunks: extract text, keep as Data with spec discriminator
         "agent_thought_chunk" => {
@@ -393,13 +394,11 @@ pub(crate) fn handle_session_update(
                 .unwrap_or("")
                 .to_string();
             (
-                "agent",
-                vec![Part::Data {
-                    data: serde_json::json!({
-                        "type": "agent_thought_chunk",
-                        "text": text
-                    }),
-                }],
+                role::AGENT,
+                vec![Part::data(serde_json::json!({
+                    "type": "agent_thought_chunk",
+                    "text": text
+                }))],
             )
         }
         // Everything else: raw passthrough, rename sessionUpdate → type
@@ -410,15 +409,15 @@ pub(crate) fn handle_session_update(
             {
                 obj.insert("type".to_string(), val);
             }
-            ("agent", vec![Part::Data { data }])
+            (role::AGENT, vec![Part::data(data)])
         }
     };
 
     update_history.push(Message {
         message_id: Uuid::new_v4().to_string(),
-        kind: "message".to_string(),
         role: role.to_string(),
         parts,
+        ..Default::default()
     });
     Ok(())
 }

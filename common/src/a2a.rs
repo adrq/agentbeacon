@@ -1,5 +1,33 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// A2A v1.0 task state enum values (wire format).
+///
+/// Convention: status values use SCREAMING_SNAKE_CASE at the A2A protocol boundary.
+/// Internal DB/Rust code uses lowercase short form ("submitted", "completed", etc.).
+/// Translation happens at the A2A response serialization boundary only.
+pub mod task_state {
+    pub const UNSPECIFIED: &str = "TASK_STATE_UNSPECIFIED";
+    pub const SUBMITTED: &str = "TASK_STATE_SUBMITTED";
+    pub const WORKING: &str = "TASK_STATE_WORKING";
+    pub const COMPLETED: &str = "TASK_STATE_COMPLETED";
+    pub const FAILED: &str = "TASK_STATE_FAILED";
+    pub const CANCELED: &str = "TASK_STATE_CANCELED";
+    pub const REJECTED: &str = "TASK_STATE_REJECTED";
+    pub const INPUT_REQUIRED: &str = "TASK_STATE_INPUT_REQUIRED";
+    pub const AUTH_REQUIRED: &str = "TASK_STATE_AUTH_REQUIRED";
+}
+
+/// A2A v1.0 role enum values.
+///
+/// Convention: role values use A2A wire format (ROLE_USER, ROLE_AGENT) everywhere,
+/// including stored event payloads. Unlike status values, roles have no internal
+/// short form — the A2A format is canonical.
+pub mod role {
+    pub const UNSPECIFIED: &str = "ROLE_UNSPECIFIED";
+    pub const USER: &str = "ROLE_USER";
+    pub const AGENT: &str = "ROLE_AGENT";
+}
+
 /// Validate timestamp field is valid RFC3339 format per A2A spec §6.2
 fn validate_timestamp<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
@@ -13,124 +41,148 @@ where
     Ok(s)
 }
 
-/// A2A Protocol-compliant task status structure per A2A spec §6.2
+/// A2A v1.0 Protocol-compliant task status structure
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct A2ATaskStatus {
-    /// Current state of the task's lifecycle
     pub state: String,
-    /// Optional human-readable message providing status details
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<Message>,
-    /// ISO 8601 datetime when status was recorded (validated on deserialization)
     #[serde(
+        default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "validate_timestamp"
     )]
     pub timestamp: Option<String>,
 }
 
-/// A2A Protocol-compliant artifact structure for rich outputs per A2A spec §6.6
+/// A2A v1.0 Protocol-compliant artifact structure
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct A2AArtifact {
-    /// Unique identifier for the artifact
     pub artifact_id: String,
-    /// Human-readable name
     pub name: String,
-    /// Optional description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Content parts comprising the artifact
     pub parts: Vec<Part>,
 }
 
-/// A2A Protocol message structure per A2A spec §6.4
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// A2A v1.0 Protocol message structure
+///
+/// Removed from v0.3: `kind` field (was always "message").
+/// Role values: "ROLE_USER" | "ROLE_AGENT" (v1.0 enum format).
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
-    /// Unique identifier for the message
     pub message_id: String,
-    /// Type discriminator (always "message")
-    pub kind: String,
-    /// Sender role: "user" or "agent"
     pub role: String,
-    /// Message content parts
     pub parts: Vec<Part>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_task_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Vec<String>>,
 }
 
-/// A2A Protocol part union type per A2A spec §6.5
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "kind")]
-pub enum Part {
-    #[serde(rename = "text")]
-    Text { text: String },
+/// A2A v1.0 Protocol part — unified struct with member-presence polymorphism.
+///
+/// Exactly one of text/url/raw/data should be set (A2A 1.0 protobuf oneof).
+/// This struct does not enforce the invariant at the type level — use the
+/// constructors (Part::text(), Part::data()) for internal construction.
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Part {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Inline binary content (base64-encoded in JSON)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
 
-    #[serde(rename = "file")]
-    File {
-        /// File URI or base64-encoded bytes
-        data: String,
-        /// MIME type
-        #[serde(rename = "mimeType")]
-        mime_type: String,
-    },
+impl Part {
+    pub fn text(s: impl Into<String>) -> Self {
+        Self {
+            text: Some(s.into()),
+            ..Default::default()
+        }
+    }
 
-    #[serde(rename = "data")]
-    Data {
-        /// Structured data as JSON
-        data: serde_json::Value,
-    },
+    pub fn data(v: serde_json::Value) -> Self {
+        Self {
+            data: Some(v),
+            ..Default::default()
+        }
+    }
 }
 
 impl A2ATaskStatus {
-    /// Create a completed task status
     pub fn completed() -> Self {
         Self {
-            state: "completed".to_string(),
+            state: task_state::COMPLETED.to_string(),
             message: None,
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            timestamp: Some(
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
         }
     }
 
-    /// Create a failed task status with error message
     pub fn failed(error_text: String) -> Self {
         Self {
-            state: "failed".to_string(),
+            state: task_state::FAILED.to_string(),
             message: Some(Message {
                 message_id: uuid::Uuid::new_v4().to_string(),
-                kind: "message".to_string(),
-                role: "agent".to_string(),
-                parts: vec![Part::Text { text: error_text }],
+                role: role::AGENT.to_string(),
+                parts: vec![Part::text(error_text)],
+                ..Default::default()
             }),
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            timestamp: Some(
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
         }
     }
 
-    /// Create a completed status with output message
     pub fn completed_with_output(output_text: String) -> Self {
         Self {
-            state: "completed".to_string(),
+            state: task_state::COMPLETED.to_string(),
             message: Some(Message {
                 message_id: uuid::Uuid::new_v4().to_string(),
-                kind: "message".to_string(),
-                role: "agent".to_string(),
-                parts: vec![Part::Text { text: output_text }],
+                role: role::AGENT.to_string(),
+                parts: vec![Part::text(output_text)],
+                ..Default::default()
             }),
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            timestamp: Some(
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
         }
     }
 
-    /// Create a canceled task status with optional reason
     pub fn canceled(reason: String) -> Self {
         Self {
-            state: "canceled".to_string(),
+            state: task_state::CANCELED.to_string(),
             message: Some(Message {
                 message_id: uuid::Uuid::new_v4().to_string(),
-                kind: "message".to_string(),
-                role: "agent".to_string(),
-                parts: vec![Part::Text { text: reason }],
+                role: role::AGENT.to_string(),
+                parts: vec![Part::text(reason)],
+                ..Default::default()
             }),
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            timestamp: Some(
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
         }
     }
 }

@@ -3,9 +3,10 @@
 // --- A2A-compatible Part type ---
 
 export type Part =
-  | { kind: "text"; text: string }
-  | { kind: "file"; file: { name?: string; mimeType?: string; bytes: string } }
-  | { kind: string; [key: string]: unknown };
+  | { text: string; mediaType?: string; filename?: string }
+  | { raw: string; mediaType?: string; filename?: string }
+  | { url: string; mediaType?: string; filename?: string }
+  | { data: unknown; mediaType?: string; filename?: string };
 
 // --- Commands (Rust → Node, on stdin) ---
 
