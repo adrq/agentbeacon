@@ -762,3 +762,169 @@ def test_delegate_task_payload_includes_mcp_servers(test_database):
         assert "playwright" in payload["mcp_servers"]
         assert payload["mcp_servers"]["playwright"]["type"] == "stdio"
         assert payload["mcp_servers"]["playwright"]["command"] == "npx"
+
+
+# --- New UI JSON Format Tests ---
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_create_stdio_server_with_multiple_args(test_database):
+    """Verify that stdio server with multiple args is correctly stored.
+    This matches what the new JSON textarea UI would produce."""
+    with scheduler_context(db_url=test_database) as ctx:
+        data = create_mcp_server_via_api(
+            ctx["url"],
+            "playwright-headless",
+            transport_type="stdio",
+            config={
+                "command": "npx",
+                "args": [
+                    "@playwright/mcp@latest",
+                    "--headless",
+                    "--browser",
+                    "firefox",
+                ],
+            },
+        )
+
+        assert data["name"] == "playwright-headless"
+        assert data["transport_type"] == "stdio"
+        assert data["config"]["command"] == "npx"
+        assert data["config"]["args"] == [
+            "@playwright/mcp@latest",
+            "--headless",
+            "--browser",
+            "firefox",
+        ]
+
+        # Verify retrieval returns the same args
+        resp = httpx.get(f"{ctx['url']}/api/mcp-servers/{data['id']}", timeout=5)
+        assert resp.status_code == 200
+        retrieved = resp.json()
+        assert retrieved["config"]["args"] == [
+            "@playwright/mcp@latest",
+            "--headless",
+            "--browser",
+            "firefox",
+        ]
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_create_http_server_with_auth_headers(test_database):
+    """Verify that HTTP server with authentication headers is correctly stored.
+    This matches what the new JSON textarea UI would produce."""
+    with scheduler_context(db_url=test_database) as ctx:
+        data = create_mcp_server_via_api(
+            ctx["url"],
+            "custom-api",
+            transport_type="http",
+            config={
+                "url": "https://api.example.com/mcp",
+                "headers": {
+                    "Authorization": "Bearer sk-test-token-12345",
+                    "X-API-Version": "v1",
+                },
+            },
+        )
+
+        assert data["name"] == "custom-api"
+        assert data["transport_type"] == "http"
+        assert data["config"]["url"] == "https://api.example.com/mcp"
+        assert (
+            data["config"]["headers"]["Authorization"] == "Bearer sk-test-token-12345"
+        )
+        assert data["config"]["headers"]["X-API-Version"] == "v1"
+
+        # Verify retrieval returns the same headers
+        resp = httpx.get(f"{ctx['url']}/api/mcp-servers/{data['id']}", timeout=5)
+        assert resp.status_code == 200
+        retrieved = resp.json()
+        assert (
+            retrieved["config"]["headers"]["Authorization"]
+            == "Bearer sk-test-token-12345"
+        )
+        assert retrieved["config"]["headers"]["X-API-Version"] == "v1"
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_create_stdio_server_minimal_config(test_database):
+    """Verify that minimal stdio config (command only) works.
+    This is a valid config that the new UI would accept."""
+    with scheduler_context(db_url=test_database) as ctx:
+        data = create_mcp_server_via_api(
+            ctx["url"],
+            "simple-server",
+            transport_type="stdio",
+            config={"command": "python", "args": ["-m", "my_mcp_server"]},
+        )
+
+        assert data["name"] == "simple-server"
+        assert data["transport_type"] == "stdio"
+        assert data["config"]["command"] == "python"
+        assert data["config"]["args"] == ["-m", "my_mcp_server"]
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_task_payload_with_complex_mcp_configs(test_database):
+    """Verify that task payloads correctly include complex MCP server configs
+    with multiple args and headers as the new UI would create them."""
+    with scheduler_context(db_url=test_database) as ctx:
+        project = create_project_via_api(ctx["url"], "test-project")
+
+        stdio_server = create_mcp_server_via_api(
+            ctx["url"],
+            "playwright",
+            transport_type="stdio",
+            config={
+                "command": "npx",
+                "args": ["@playwright/mcp@latest", "--headless"],
+                "env": {"DISPLAY": ":0"},
+            },
+        )
+
+        http_server = create_mcp_server_via_api(
+            ctx["url"],
+            "api-server",
+            transport_type="http",
+            config={
+                "url": "https://api.example.com/mcp",
+                "headers": {"Authorization": "Bearer token123"},
+            },
+        )
+
+        agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
+
+        httpx.post(
+            f"{ctx['url']}/api/projects/{project['id']}/mcp-servers",
+            json={"mcp_server_id": stdio_server["id"]},
+            timeout=5,
+        )
+        httpx.post(
+            f"{ctx['url']}/api/projects/{project['id']}/mcp-servers",
+            json={"mcp_server_id": http_server["id"]},
+            timeout=5,
+        )
+
+        exec_id, session_id = create_execution_via_api(
+            ctx["url"], agent_id, "test task", project_id=project["id"]
+        )
+
+        with db_conn(ctx["db_url"]) as conn:
+            row = conn.execute(
+                "SELECT task_payload FROM task_queue WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+
+        payload = json.loads(row[0])
+        mcp = payload["mcp_servers"]
+
+        # Verify stdio server config
+        assert mcp["playwright"]["type"] == "stdio"
+        assert mcp["playwright"]["command"] == "npx"
+        assert mcp["playwright"]["args"] == ["@playwright/mcp@latest", "--headless"]
+        assert mcp["playwright"]["env"] == {"DISPLAY": ":0"}
+
+        # Verify HTTP server config
+        assert mcp["api-server"]["type"] == "http"
+        assert mcp["api-server"]["url"] == "https://api.example.com/mcp"
+        assert mcp["api-server"]["headers"] == {"Authorization": "Bearer token123"}

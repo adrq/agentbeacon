@@ -14,13 +14,7 @@
   // Form state
   let showForm = $state(false);
   let editingServer: McpServer | null = $state(null);
-  let formName = $state('');
-  let formTransportType = $state<'stdio' | 'http'>('stdio');
-  let formCommand = $state('');
-  let formArgs = $state('');
-  let formEnv = $state('');
-  let formUrl = $state('');
-  let formHeaders = $state('');
+  let formJson = $state('');
   let formError: string | null = $state(null);
 
   // Delete state
@@ -30,39 +24,65 @@
 
   let submitting = $derived(createMut.isPending || updateMut.isPending);
 
+  function serverToJson(server: McpServer): string {
+    const config: Record<string, unknown> = { type: server.transport_type, ...server.config };
+    return JSON.stringify({ [server.name]: config }, null, 2);
+  }
+
+  function parseServerJson(text: string): { name: string; transport_type: 'stdio' | 'http'; config: Record<string, unknown> } {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text.trim());
+    } catch {
+      throw new Error('Invalid JSON');
+    }
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('Config must be a JSON object');
+    }
+
+    const keys = Object.keys(parsed);
+    if (keys.length === 0) {
+      throw new Error('Config must have exactly one server entry');
+    }
+    if (keys.length > 1) {
+      throw new Error('Config must have exactly one server entry (multiple servers found)');
+    }
+
+    const name = keys[0];
+    if (name === 'agentbeacon') {
+      throw new Error('Server name "agentbeacon" is reserved');
+    }
+
+    const serverConfig = (parsed as Record<string, unknown>)[name];
+    if (typeof serverConfig !== 'object' || serverConfig === null || Array.isArray(serverConfig)) {
+      throw new Error('Server config must be an object');
+    }
+
+    const typeField = (serverConfig as Record<string, unknown>).type;
+    if (typeof typeField !== 'string') {
+      throw new Error('Server config must have a "type" field');
+    }
+    if (typeField !== 'stdio' && typeField !== 'http') {
+      throw new Error('Server type must be "stdio" or "http"');
+    }
+
+    const transport_type = typeField as 'stdio' | 'http';
+    const { type: _, ...config } = serverConfig as Record<string, unknown>;
+
+    return { name, transport_type, config };
+  }
+
   function openAddForm() {
     editingServer = null;
-    formName = '';
-    formTransportType = 'stdio';
-    formCommand = '';
-    formArgs = '';
-    formEnv = '';
-    formUrl = '';
-    formHeaders = '';
+    formJson = '';
     formError = null;
     showForm = true;
   }
 
   function openEditForm(server: McpServer) {
     editingServer = server;
-    formName = server.name;
-    formTransportType = server.transport_type;
-    if (server.transport_type === 'stdio') {
-      formCommand = (server.config.command as string) ?? '';
-      const args = server.config.args;
-      formArgs = Array.isArray(args) ? args.join(', ') : '';
-      const env = server.config.env;
-      formEnv = env && typeof env === 'object' ? JSON.stringify(env, null, 2) : '';
-      formUrl = '';
-      formHeaders = '';
-    } else {
-      formUrl = (server.config.url as string) ?? '';
-      const headers = server.config.headers;
-      formHeaders = headers && typeof headers === 'object' ? JSON.stringify(headers, null, 2) : '';
-      formCommand = '';
-      formArgs = '';
-      formEnv = '';
-    }
+    formJson = serverToJson(server);
     formError = null;
     showForm = true;
   }
@@ -73,53 +93,19 @@
     formError = null;
   }
 
-  function buildConfig(): Record<string, unknown> {
-    if (formTransportType === 'stdio') {
-      const config: Record<string, unknown> = { command: formCommand.trim() };
-      if (formArgs.trim()) {
-        config.args = formArgs.split(',').map(a => a.trim()).filter(Boolean);
-      }
-      if (formEnv.trim()) {
-        try {
-          config.env = JSON.parse(formEnv.trim());
-        } catch {
-          throw new Error('Env must be valid JSON');
-        }
-      }
-      return config;
-    } else {
-      const config: Record<string, unknown> = { url: formUrl.trim() };
-      if (formHeaders.trim()) {
-        try {
-          config.headers = JSON.parse(formHeaders.trim());
-        } catch {
-          throw new Error('Headers must be valid JSON');
-        }
-      }
-      return config;
-    }
-  }
-
   async function handleSubmit() {
     formError = null;
+    let name: string;
+    let transport_type: 'stdio' | 'http';
     let config: Record<string, unknown>;
+
     try {
-      config = buildConfig();
+      const parsed = parseServerJson(formJson);
+      name = parsed.name;
+      transport_type = parsed.transport_type;
+      config = parsed.config;
     } catch (e) {
       formError = e instanceof Error ? e.message : 'Invalid config';
-      return;
-    }
-
-    if (!formName.trim()) {
-      formError = 'Name is required';
-      return;
-    }
-    if (formTransportType === 'stdio' && !formCommand.trim()) {
-      formError = 'Command is required for stdio transport';
-      return;
-    }
-    if (formTransportType === 'http' && !formUrl.trim()) {
-      formError = 'URL is required for HTTP transport';
       return;
     }
 
@@ -128,15 +114,15 @@
         await updateMut.mutateAsync({
           id: editingServer.id,
           req: {
-            name: formName.trim(),
-            transport_type: formTransportType,
+            name,
+            transport_type,
             config,
           },
         });
       } else {
         await createMut.mutateAsync({
-          name: formName.trim(),
-          transport_type: formTransportType,
+          name,
+          transport_type,
           config,
         });
       }
@@ -217,41 +203,22 @@
 
       <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
         <div class="form-group">
-          <label class="form-label" for="mcp-name">Name</label>
-          <input id="mcp-name" class="form-input" type="text" bind:value={formName} placeholder="e.g. playwright" />
+          <label class="form-label" for="mcp-config">Server Configuration (Claude SDK JSON format)</label>
+          <textarea
+            id="mcp-config"
+            class="form-textarea"
+            rows="12"
+            bind:value={formJson}
+            placeholder={`{
+  "my-server": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["@playwright/mcp@latest", "--headless"]
+  }
+}`}
+          ></textarea>
+          <p class="form-help">Paste a single server entry from your claude_desktop_config.json mcpServers section.</p>
         </div>
-
-        <div class="form-group">
-          <label class="form-label" for="mcp-transport">Transport</label>
-          <select id="mcp-transport" class="form-input" bind:value={formTransportType}>
-            <option value="stdio">stdio</option>
-            <option value="http">HTTP</option>
-          </select>
-        </div>
-
-        {#if formTransportType === 'stdio'}
-          <div class="form-group">
-            <label class="form-label" for="mcp-command">Command</label>
-            <input id="mcp-command" class="form-input" type="text" bind:value={formCommand} placeholder="e.g. npx" />
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="mcp-args">Args (comma separated)</label>
-            <input id="mcp-args" class="form-input" type="text" bind:value={formArgs} placeholder="e.g. @playwright/mcp" />
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="mcp-env">Env (JSON, optional)</label>
-            <textarea id="mcp-env" class="form-textarea" rows="3" bind:value={formEnv} placeholder={'{"DISPLAY": ":1"}'}></textarea>
-          </div>
-        {:else}
-          <div class="form-group">
-            <label class="form-label" for="mcp-url">URL</label>
-            <input id="mcp-url" class="form-input" type="text" bind:value={formUrl} placeholder="https://example.com/mcp" />
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="mcp-headers">Headers (JSON, optional)</label>
-            <textarea id="mcp-headers" class="form-textarea" rows="3" bind:value={formHeaders} placeholder={'{"Authorization": "Bearer ..."}'}></textarea>
-          </div>
-        {/if}
 
         {#if formError}
           <div class="form-error" role="alert">{formError}</div>
@@ -413,6 +380,13 @@
     font-weight: 500;
     color: hsl(var(--foreground));
     margin-bottom: 0.25rem;
+  }
+
+  .form-help {
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+    margin-top: 0.375rem;
+    line-height: 1.4;
   }
 
   .form-input {
