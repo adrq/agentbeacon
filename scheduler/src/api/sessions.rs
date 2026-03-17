@@ -815,8 +815,8 @@ async fn notify_parent_of_termination(
         );
         let notification = json!({
             "message": {
-                "role": "user",
-                "parts": [{"kind": "text", "text": formatted_text}]
+                "role": "ROLE_USER",
+                "parts": [{"text": formatted_text}]
             },
         });
         state

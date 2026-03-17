@@ -700,7 +700,7 @@ fn map_result_to_turn(
     let output = if error.is_none() {
         result
             .result
-            .map(|text| serde_json::json!({"role": "agent", "parts": [{"kind": "text", "text": text}]}))
+            .map(|text| serde_json::json!({"role": "ROLE_AGENT", "parts": [{"text": text}]}))
             .or(last_content)
     } else {
         None
@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn test_claude_start_command() {
         let cmd = SdkCommand::Start {
-            parts: vec![json!({"kind": "text", "text": "Hello"})],
+            parts: vec![json!({"text": "Hello"})],
             cwd: "/workspace".into(),
             mcp_servers: Some(
                 json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}}),
@@ -931,7 +931,7 @@ mod tests {
     #[test]
     fn test_copilot_start_command() {
         let cmd = SdkCommand::Start {
-            parts: vec![json!({"kind": "text", "text": "Fix the tests"})],
+            parts: vec![json!({"text": "Fix the tests"})],
             cwd: "/workspace".into(),
             mcp_servers: Some(
                 json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}}),
@@ -973,7 +973,7 @@ mod tests {
         });
         let mcp = json!({"agentbeacon": {"type": "http", "url": "http://localhost:9456/mcp"}});
         let cmd = build_start_command(
-            vec![json!({"kind": "text", "text": "hello"})],
+            vec![json!({"text": "hello"})],
             "/workspace",
             &mcp,
             &config,
@@ -990,7 +990,7 @@ mod tests {
     #[test]
     fn test_start_command_resume() {
         let cmd = SdkCommand::Start {
-            parts: vec![json!({"kind": "text", "text": "Resume task"})],
+            parts: vec![json!({"text": "Resume task"})],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -1012,7 +1012,7 @@ mod tests {
     #[test]
     fn test_start_command_no_resume() {
         let cmd = SdkCommand::Start {
-            parts: vec![json!({"kind": "text", "text": "Hello"})],
+            parts: vec![json!({"text": "Hello"})],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -1035,7 +1035,7 @@ mod tests {
     #[test]
     fn test_prompt_command() {
         let cmd = SdkCommand::Prompt {
-            parts: vec![json!({"kind": "text", "text": "continue with JWT"})],
+            parts: vec![json!({"text": "continue with JWT"})],
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -1214,7 +1214,7 @@ mod tests {
     #[test]
     fn test_start_command_serializes_thinking() {
         let cmd = SdkCommand::Start {
-            parts: vec![json!({"kind": "text", "text": "Hello"})],
+            parts: vec![json!({"text": "Hello"})],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -1237,7 +1237,7 @@ mod tests {
     #[test]
     fn test_start_command_serializes_reasoning_effort() {
         let cmd = SdkCommand::Start {
-            parts: vec![json!({"kind": "text", "text": "Fix tests"})],
+            parts: vec![json!({"text": "Fix tests"})],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -1321,7 +1321,7 @@ mod tests {
     #[test]
     fn test_start_command_serializes_parts() {
         let cmd = SdkCommand::Start {
-            parts: vec![json!({"kind": "text", "text": "hello world"})],
+            parts: vec![json!({"text": "hello world"})],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -1341,14 +1341,14 @@ mod tests {
         assert!(value.get("prompt").is_none());
         let parts = value["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 1);
-        assert_eq!(parts[0]["kind"], "text");
+        assert!(parts[0].get("kind").is_none());
         assert_eq!(parts[0]["text"], "hello world");
     }
 
     #[test]
     fn test_prompt_command_serializes_parts() {
         let cmd = SdkCommand::Prompt {
-            parts: vec![json!({"kind": "text", "text": "continue with JWT"})],
+            parts: vec![json!({"text": "continue with JWT"})],
         };
         let json_str = serde_json::to_string(&cmd).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -1363,18 +1363,12 @@ mod tests {
     #[test]
     fn test_start_command_with_file_part() {
         let file_part = json!({
-            "kind": "file",
-            "file": {
-                "name": "test.png",
-                "mimeType": "image/png",
-                "bytes": "iVBORw0KGgo="
-            }
+            "raw": "iVBORw0KGgo=",
+            "mediaType": "image/png",
+            "filename": "test.png"
         });
         let cmd = SdkCommand::Start {
-            parts: vec![
-                json!({"kind": "text", "text": "analyze this image"}),
-                file_part,
-            ],
+            parts: vec![json!({"text": "analyze this image"}), file_part],
             cwd: "/workspace".into(),
             mcp_servers: None,
             model: None,
@@ -1392,10 +1386,9 @@ mod tests {
         assert_eq!(value["type"], "start");
         let parts = value["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0]["kind"], "text");
-        assert_eq!(parts[1]["kind"], "file");
-        assert_eq!(parts[1]["file"]["name"], "test.png");
-        assert_eq!(parts[1]["file"]["mimeType"], "image/png");
-        assert_eq!(parts[1]["file"]["bytes"], "iVBORw0KGgo=");
+        assert!(parts[0].get("text").is_some());
+        assert_eq!(parts[1]["raw"], "iVBORw0KGgo=");
+        assert_eq!(parts[1]["mediaType"], "image/png");
+        assert_eq!(parts[1]["filename"], "test.png");
     }
 }

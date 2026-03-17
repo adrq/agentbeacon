@@ -6,8 +6,8 @@
 //! ensures Cancel can be received even during an active prompt turn.
 
 use anyhow::{Context, Result};
-use common::a2a::role;
 use common::Message;
+use common::a2a::role;
 use serde::Deserialize;
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;

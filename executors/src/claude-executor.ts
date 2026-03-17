@@ -152,31 +152,30 @@ type ContentBlock =
 
 function partsToContent(parts: Part[]): ContentBlock[] {
   return parts.flatMap((part): ContentBlock[] => {
-    if (part.kind === "text")
-      return [
-        { type: "text", text: (part as { kind: "text"; text: string }).text },
-      ];
-    if (part.kind === "file") {
-      const fp = (
-        part as {
-          kind: "file";
-          file: { name?: string; mimeType?: string; bytes: string };
-        }
-      ).file;
-      if (fp?.bytes && fp?.mimeType?.startsWith("image/")) {
+    if ("text" in part)
+      return [{ type: "text", text: (part as { text: string }).text }];
+    if ("raw" in part) {
+      const raw = part as {
+        raw: string;
+        mediaType?: string;
+        filename?: string;
+      };
+      if (raw.raw && raw.mediaType?.startsWith("image/")) {
         return [
           {
             type: "image",
-            source: { type: "base64", media_type: fp.mimeType, data: fp.bytes },
+            source: {
+              type: "base64",
+              media_type: raw.mediaType,
+              data: raw.raw,
+            },
           },
         ];
       }
       // Non-image file: represent as text so the model knows an attachment exists
-      if (fp) {
-        const name = fp.name ?? "attachment";
-        const mime = fp.mimeType ?? "application/octet-stream";
-        return [{ type: "text", text: `[File: ${name} (${mime})]` }];
-      }
+      const name = raw.filename ?? "attachment";
+      const mime = raw.mediaType ?? "application/octet-stream";
+      return [{ type: "text", text: `[File: ${name} (${mime})]` }];
     }
     return [];
   });
@@ -373,7 +372,7 @@ async function main(): Promise<void> {
                 : [];
 
               // Append usage as a content block — flows through worker's
-              // content_block_to_part catch-all → { kind: "data", data: {...} }
+              // content_block_to_part catch-all → { data: {...} }
               // Claude SDK provides cumulative input/output tokens per assistant message.
               // The frontend overwrites (not accumulates) these values from usage_update blocks.
               // The usage_snapshot from the result event provides the authoritative final value.

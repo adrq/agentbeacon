@@ -125,14 +125,12 @@ mod tests {
         .await
         .expect("Failed to create agent");
 
-        sqlx::query(
-            "INSERT INTO executions (id, context_id, status, input) VALUES (?, ?, 'submitted', '{}')"
-        )
-        .bind(execution_id)
-        .bind(execution_id)
-        .execute(pool.as_ref())
-        .await
-        .expect("Failed to create execution");
+        sqlx::query("INSERT INTO executions (id, context_id, status) VALUES (?, ?, 'submitted')")
+            .bind(execution_id)
+            .bind(execution_id)
+            .execute(pool.as_ref())
+            .await
+            .expect("Failed to create execution");
 
         sqlx::query(
             "INSERT INTO sessions (id, execution_id, agent_id, status) VALUES (?, ?, 'agent-1', 'submitted')"
@@ -151,7 +149,7 @@ mod tests {
             task_payload: serde_json::json!({
                 "agent_id": "agent-1",
                 "driver": {"platform": "acp", "config": {}},
-                "message": {"role": "user", "parts": [{"kind": "text", "text": "Test task"}]}
+                "message": {"role": "ROLE_USER", "parts": [{"text": "Test task"}]}
             }),
         }
     }

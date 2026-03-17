@@ -226,25 +226,11 @@ pub async fn create_execution(
 
     // Persist to DB and enqueue. If a worktree was created, clean it up on failure
     // so retries don't fail with "branch already exists".
-    // Extract text for DB storage (input column) and title generation
-    let prompt_text: String = parts
-        .iter()
-        .filter_map(|p| {
-            if p.get("kind").and_then(|k| k.as_str()) == Some("text") {
-                p.get("text").and_then(|t| t.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
     let result = persist_and_enqueue(
         db_pool,
         task_queue,
         &execution_id,
         &effective_context_id,
-        &prompt_text,
         parts,
         project_id,
         title,
@@ -275,7 +261,6 @@ async fn persist_and_enqueue(
     task_queue: &TaskQueue,
     execution_id: &str,
     context_id: &str,
-    prompt_text: &str,
     parts: &[serde_json::Value],
     project_id: Option<&str>,
     title: Option<&str>,
@@ -288,12 +273,10 @@ async fn persist_and_enqueue(
     max_depth: i64,
     max_width: i64,
 ) -> Result<CreateExecutionResult, SchedulerError> {
-    // Store input as plain prompt text (extracted from text parts)
     db::executions::create(
         db_pool,
         execution_id,
         context_id,
-        prompt_text,
         project_id,
         None, // parent_execution_id
         title,
@@ -343,10 +326,10 @@ async fn persist_and_enqueue(
     }
 
     // Record the initial prompt as the session's first message event.
-    let prompt_payload = serde_json::to_string(&json!({
-        "role": "user",
-        "parts": parts
-    }))
+    let prompt_payload = serde_json::to_string(&common::a2a::message_payload(
+        common::a2a::role::USER,
+        parts.to_vec(),
+    ))
     .unwrap();
     db::events::insert(
         db_pool,
@@ -393,10 +376,7 @@ async fn persist_and_enqueue(
         .unwrap_or(JsonValue::Null);
 
     // Wrap parts in A2A message format for task_payload
-    let a2a_message = json!({
-        "role": "user",
-        "parts": parts
-    });
+    let a2a_message = common::a2a::message_payload(common::a2a::role::USER, parts.to_vec());
 
     let mut task_payload = json!({
         "agent_id": agent.id,

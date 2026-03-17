@@ -12,21 +12,17 @@ use crate::error::SchedulerError;
 use crate::queue::{TaskAssignment, TaskQueue};
 
 /// Check if parts contain at least one deliverable content item:
-/// a non-empty text part OR a file part with bytes.
+/// a non-empty text part, a raw (inline binary) part, or a url part.
 pub fn has_deliverable_content(parts: &[serde_json::Value]) -> bool {
     parts.iter().any(|p| {
-        let kind = p.get("kind").and_then(|k| k.as_str());
-        match kind {
-            Some("text") => p
-                .get("text")
-                .and_then(|t| t.as_str())
-                .is_some_and(|t| !t.trim().is_empty()),
-            Some("file") => p
-                .get("file")
-                .and_then(|f| f.get("bytes"))
-                .and_then(|b| b.as_str())
-                .is_some_and(|b| !b.is_empty()),
-            _ => false,
+        if let Some(text) = p.get("text").and_then(|t| t.as_str()) {
+            !text.trim().is_empty()
+        } else if let Some(raw) = p.get("raw").and_then(|r| r.as_str()) {
+            !raw.is_empty()
+        } else {
+            p.get("url")
+                .and_then(|u| u.as_str())
+                .is_some_and(|u| !u.is_empty())
         }
     })
 }
@@ -161,16 +157,13 @@ pub async fn deliver_message(
     // Sender metadata is encoded as an A2A `data` part (not a top-level field).
     let mut event_parts: Vec<serde_json::Value> = parts.to_vec();
     if let Some(s) = sender {
-        event_parts.push(json!({"kind": "data", "data": {
+        event_parts.push(common::a2a::data_part(json!({
             "type": "sender",
             "name": s.name,
             "session_id": s.session_id,
-        }}));
+        })));
     }
-    let msg_payload = json!({
-        "role": "user",
-        "parts": event_parts
-    });
+    let msg_payload = common::a2a::message_payload(common::a2a::role::USER, event_parts);
 
     // Record message event on recipient session
     let event_id = db::events::insert(
@@ -195,24 +188,18 @@ pub async fn deliver_message(
             s.name, s.session_id
         );
         let mut dp: Vec<serde_json::Value> = parts.to_vec();
-        if let Some(pos) = dp
-            .iter()
-            .position(|p| p.get("kind").and_then(|k| k.as_str()) == Some("text"))
-        {
+        if let Some(pos) = dp.iter().position(|p| p.get("text").is_some()) {
             let existing = dp[pos]["text"].as_str().unwrap_or("");
-            dp[pos] = json!({"kind": "text", "text": format!("{header}{existing}")});
+            dp[pos] = common::a2a::text_part(format!("{header}{existing}"));
         } else {
-            dp.insert(0, json!({"kind": "text", "text": header.trim_end()}));
+            dp.insert(0, common::a2a::text_part(header.trim_end()));
         }
         dp
     } else {
         parts.to_vec()
     };
     let delivery_payload = json!({
-        "message": {
-            "role": "user",
-            "parts": delivery_parts
-        }
+        "message": common::a2a::message_payload(common::a2a::role::USER, delivery_parts)
     });
     // Transition state via shared helper BEFORE push.
     // Must happen first: push() calls notify_waiters(), which wakes the worker.

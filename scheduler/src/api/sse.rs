@@ -226,7 +226,7 @@ mod tests {
     fn test_has_terminal_event_message_type_not_terminal() {
         let events = vec![make_event(
             "message",
-            r#"{"role":"agent","parts":[{"kind":"text","text":"hi"}]}"#,
+            r#"{"role":"ROLE_AGENT","parts":[{"text":"hi"}]}"#,
         )];
         assert!(!has_terminal_event(&events));
     }

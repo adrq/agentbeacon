@@ -43,7 +43,7 @@ struct SenderResponse {
 /// POST /api/messages — agent sends message to another agent
 ///
 /// Auth: Bearer session_id (McpSession extractor)
-/// Body: { "to": "hierarchical/agent/name", "parts": [{"kind": "text", "text": "..."}] }
+/// Body: { "to": "hierarchical/agent/name", "parts": [{"text": "..."}] }
 async fn send_message(
     auth: McpSession,
     State(state): State<AppState>,
@@ -125,18 +125,17 @@ async fn list_messages(
     Ok(Json(messages))
 }
 
-/// Extract sender metadata from A2A data part: {kind: "data", data: {type: "sender", ...}}
+/// Extract sender metadata from A2A data part: {data: {type: "sender", ...}}
 fn extract_sender_from_parts(payload: &serde_json::Value) -> Option<SenderResponse> {
     payload
         .get("parts")
         .and_then(|p| p.as_array())
         .and_then(|parts| {
             parts.iter().find(|p| {
-                p.get("kind").and_then(|k| k.as_str()) == Some("data")
-                    && p.get("data")
-                        .and_then(|d| d.get("type"))
-                        .and_then(|t| t.as_str())
-                        == Some("sender")
+                p.get("data")
+                    .and_then(|d| d.get("type"))
+                    .and_then(|t| t.as_str())
+                    == Some("sender")
             })
         })
         .and_then(|p| p.get("data"))
@@ -157,11 +156,11 @@ fn extract_content_parts(payload: &serde_json::Value) -> Vec<serde_json::Value> 
                 .iter()
                 .filter(|p| {
                     // Only strip the specific sender metadata part we inject
-                    let is_sender_data = p.get("kind").and_then(|k| k.as_str()) == Some("data")
-                        && p.get("data")
-                            .and_then(|d| d.get("type"))
-                            .and_then(|t| t.as_str())
-                            == Some("sender");
+                    let is_sender_data = p
+                        .get("data")
+                        .and_then(|d| d.get("type"))
+                        .and_then(|t| t.as_str())
+                        == Some("sender");
                     !is_sender_data
                 })
                 .cloned()
@@ -178,13 +177,7 @@ fn extract_text_from_parts(payload: &serde_json::Value) -> String {
         .map(|parts| {
             parts
                 .iter()
-                .filter_map(|p| {
-                    if p.get("kind").and_then(|k| k.as_str()) == Some("text") {
-                        p.get("text").and_then(|t| t.as_str())
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                 .collect::<Vec<_>>()
                 .join("\n")
         })

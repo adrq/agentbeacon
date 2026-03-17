@@ -58,7 +58,7 @@
     searchText.trim()
       ? statusFiltered.filter(e => {
           const q = searchText.toLowerCase();
-          return (e.title?.toLowerCase().includes(q)) || e.input.toLowerCase().includes(q);
+          return (e.title?.toLowerCase().includes(q));
         })
       : statusFiltered
   );

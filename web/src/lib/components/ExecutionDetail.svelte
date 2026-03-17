@@ -1,7 +1,8 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
   import type { Execution, Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload, UsageState } from '../types';
-  import { isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
+  import { isMessagePayload, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
+  import { api } from '../api';
   import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation, executionAgentsQuery, recoverSessionMutation } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
@@ -177,7 +178,7 @@
           ));
           // Clear ephemeral buffer only on persisted text (non-text mid-turn would cause flickering)
           const payload = event.payload as MessagePayload;
-          const hasText = payload.parts?.some((p: { kind: string }) => p.kind === 'text');
+          const hasText = payload.parts?.some((p: Record<string, unknown>) => 'text' in p);
           if (hasText) {
             const buf = ephemeralBuffers.get(event.session_id);
             if (buf && (event.msg_seq ?? 0) >= buf.lastSeq) {
@@ -191,8 +192,8 @@
           const thinkBuf = ephemeralThinkingBuffers.get(event.session_id);
           if (thinkBuf && (event.msg_seq ?? 0) >= thinkBuf.lastSeq) {
             const hasPersistedThinking = payload.parts?.some(
-              (p: { kind: string; data?: unknown }) =>
-                p.kind === 'data' &&
+              (p: Record<string, unknown>) =>
+                'data' in p &&
                 (p.data as Record<string, unknown>)?.type === 'thinking'
             );
             if (hasPersistedThinking) {
@@ -208,8 +209,8 @@
 
           // Extract usage data from message parts
           for (const part of payload.parts ?? []) {
-            if (part.kind !== 'data') continue;
-            const d = (part as { kind: 'data'; data: unknown }).data;
+            if (!('data' in part)) continue;
+            const d = (part as { data: unknown }).data;
             if (typeof d !== 'object' || d === null) continue;
             const dataObj = d as { type?: string; [key: string]: unknown };
             if (!dataObj.type) continue;
@@ -284,8 +285,8 @@
 
         // Accumulate text from ephemeral delta
         const text = eph.payload.parts
-          ?.filter((p: { kind: string }) => p.kind === 'text')
-          .map((p: { kind: string; text?: string }) => p.text ?? '')
+          ?.filter((p: Record<string, unknown>) => 'text' in p)
+          .map((p: Record<string, unknown>) => (p.text as string) ?? '')
           .join('') ?? '';
         if (text) {
           const existing = ephemeralBuffers.get(eph.session_id);
@@ -300,11 +301,11 @@
 
         // Accumulate thinking deltas from data parts
         const thinkingTexts = eph.payload.parts
-          ?.filter((p: { kind: string; data?: unknown }) =>
-            p.kind === 'data' &&
+          ?.filter((p: Record<string, unknown>) =>
+            'data' in p &&
             (p.data as Record<string, unknown>)?.type === 'thinking_delta'
           )
-          .map((p: { kind: string; data?: unknown }) =>
+          .map((p: Record<string, unknown>) =>
             ((p.data as Record<string, unknown>)?.thinking as string) ?? ''
           ) ?? [];
         const thinkingText = thinkingTexts.join('');
@@ -466,17 +467,38 @@
     }
   }
 
-  // Re-run execution
-  function handleRerun() {
+  // Re-run execution — extract prompt text from root session's first message event
+  async function handleRerun() {
     if (!detail) return;
     const exec = detail.execution;
     const pool = poolQuery.data ?? [];
+
+    // Try to extract the original prompt from the first user message
+    let promptText = '';
+    const rootSession = detail.sessions.find(s => !s.parent_session_id);
+    if (rootSession) {
+      try {
+        const sessionEvents = await api.getSessionEvents(rootSession.id);
+        const firstMsg = sessionEvents.find(e =>
+          e.event_type === 'message' && isMessagePayload(e.payload) && e.payload.role === 'ROLE_USER'
+        );
+        if (firstMsg && isMessagePayload(firstMsg.payload)) {
+          const textParts = firstMsg.payload.parts
+            ?.filter((p: import('../types').MessagePart) => 'text' in p)
+            ?.map((p: any) => p.text) ?? [];
+          promptText = textParts.join('\n');
+        }
+      } catch {
+        // Cannot recover original prompt
+      }
+    }
+
     executionPrefill.set({
       sourceExecutionId: executionId,
       projectId: exec.project_id,
       agentId: leadSession?.agent_id,
       agentIds: pool.map(a => a.agent_id),
-      prompt: exec.input,
+      prompt: promptText,
       title: exec.title ? `Re-run: ${exec.title}` : undefined,
     });
     router.navigate('/executions/new');

@@ -327,7 +327,6 @@ class EndTurnMessageScenario(_BaseScenario):
                                     "to": my_entry["parent_name"],
                                     "parts": [
                                         {
-                                            "kind": "text",
                                             "text": f"Status update: completed task '{prompt_text}'",
                                         }
                                     ],

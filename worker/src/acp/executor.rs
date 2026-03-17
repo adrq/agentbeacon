@@ -261,87 +261,82 @@ pub(crate) async fn send_session_new(
     ))
 }
 
-/// Translate A2A Message parts to ACP ContentBlock array
+/// Translate A2A v1.0 Message parts to ACP ContentBlock array.
+///
+/// A2A v1.0 parts are discriminated by member presence (no `kind` field):
+/// - `{"text": "..."}` → text part
+/// - `{"raw": "...", "mediaType": "..."}` → file/image part
+/// - `{"url": "..."}` → URL reference (not yet supported, KI-106)
+/// - `{"data": ...}` → opaque data (not translatable to ACP)
 pub(crate) fn translate_a2a_parts_to_acp_content(parts: &[Value]) -> Result<Vec<Value>> {
     parts
         .iter()
         .map(|part| {
-            let kind = part
-                .get("kind")
-                .and_then(|k| k.as_str())
-                .ok_or_else(|| anyhow::anyhow!("A2A part missing kind field"))?;
+            // Text part: has "text" field
+            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                return Ok(serde_json::json!({
+                    "type": "text",
+                    "text": text
+                }));
+            }
 
-            match kind {
-                "text" => {
-                    let text = part.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                    Ok(serde_json::json!({
-                        "type": "text",
-                        "text": text
-                    }))
-                }
-                "data" => {
-                    tracing::warn!(
-                        event = "unsupported_part_type",
-                        part_kind = "data",
-                        "Skipping A2A data part in ACP prompt (not supported)"
-                    );
-                    Ok(serde_json::json!(null))
-                }
-                "file" => {
-                    let file_obj = part.get("file");
-                    let mime_type = file_obj
-                        .and_then(|f| f.get("mimeType"))
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("application/octet-stream");
-                    let bytes = file_obj
-                        .and_then(|f| f.get("bytes"))
-                        .and_then(|b| b.as_str());
+            // File/image part: has "raw" field (base64 data)
+            if let Some(raw) = part.get("raw").and_then(|r| r.as_str()) {
+                let mime_type = part
+                    .get("mediaType")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("application/octet-stream");
 
-                    if let Some(data) = bytes {
-                        if mime_type.starts_with("image/") {
-                            // ACP ContentBlock::Image
-                            Ok(serde_json::json!({
-                                "type": "image",
-                                "mimeType": mime_type,
-                                "data": data
-                            }))
-                        } else {
-                            // ACP EmbeddedResource with blob
-                            let name = file_obj
-                                .and_then(|f| f.get("name"))
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("attachment");
-                            Ok(serde_json::json!({
-                                "type": "resource",
-                                "resource": {
-                                    "uri": format!("attachment://{name}"),
-                                    "mimeType": mime_type,
-                                    "blob": data
-                                }
-                            }))
+                if mime_type.starts_with("image/") {
+                    // ACP ContentBlock::Image
+                    return Ok(serde_json::json!({
+                        "type": "image",
+                        "mimeType": mime_type,
+                        "data": raw
+                    }));
+                } else {
+                    // ACP EmbeddedResource with blob
+                    let name = part
+                        .get("filename")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("attachment");
+                    return Ok(serde_json::json!({
+                        "type": "resource",
+                        "resource": {
+                            "uri": format!("attachment://{name}"),
+                            "mimeType": mime_type,
+                            "blob": raw
                         }
-                    } else {
-                        // No bytes — fallback to text note
-                        tracing::warn!(
-                            event = "file_part_no_bytes",
-                            mime_type = %mime_type,
-                            "A2A file part has no bytes — converting to text note"
-                        );
-                        Ok(serde_json::json!({
-                            "type": "text",
-                            "text": format!("[File attachment: {}]", mime_type)
-                        }))
-                    }
-                }
-                _ => {
-                    tracing::warn!(
-                        event = "unsupported_part_type",
-                        part_kind = %kind,
-                        "Skipping unknown A2A part kind in ACP prompt"
-                    );
-                    Ok(serde_json::json!(null))
+                    }));
                 }
             }
+
+            // URL reference part: has "url" field (KI-106: not yet supported)
+            if part.get("url").is_some() {
+                tracing::warn!(
+                    event = "unsupported_part_type",
+                    part_type = "url",
+                    "Skipping A2A url part in ACP prompt (KI-106: not yet supported)"
+                );
+                return Ok(serde_json::json!(null));
+            }
+
+            // Data part: has "data" field (opaque passthrough, not translatable)
+            if part.get("data").is_some() {
+                tracing::warn!(
+                    event = "unsupported_part_type",
+                    part_type = "data",
+                    "Skipping A2A data part in ACP prompt (not supported)"
+                );
+                return Ok(serde_json::json!(null));
+            }
+
+            // Unknown part shape
+            tracing::warn!(
+                event = "unsupported_part_type",
+                "Skipping unrecognized A2A part in ACP prompt"
+            );
+            Ok(serde_json::json!(null))
         })
         .filter_map(|result| match result {
             Ok(Value::Null) => None,

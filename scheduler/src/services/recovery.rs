@@ -536,10 +536,10 @@ async fn build_recovery_task_payload(
             "config": sandbox_config,
         },
         "agent_config": agent_config,
-        "message": {
-            "role": "user",
-            "parts": [{"kind": "text", "text": recovery_message}]
-        },
+        "message": common::a2a::message_payload(
+            common::a2a::role::USER,
+            vec![common::a2a::text_part(recovery_message)],
+        ),
         "cwd": cwd,
         "resumeSessionId": session.agent_session_id,
     });

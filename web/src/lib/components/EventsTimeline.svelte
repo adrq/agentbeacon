@@ -79,17 +79,17 @@
 
       // Pre-scan for sender metadata (inter-agent message)
       const senderPart = msg.parts.find(
-        p => p.kind === 'data' && (p.data as Record<string, unknown>)?.type === 'sender'
+        p => 'data' in p && (p.data as Record<string, unknown>)?.type === 'sender'
       );
       const senderName = senderPart
-        ? ((senderPart as { kind: 'data'; data: Record<string, unknown> }).data.name as string) || 'unknown'
+        ? ((senderPart as { data: Record<string, unknown> }).data.name as string) || 'unknown'
         : null;
 
       for (let i = 0; i < msg.parts.length; i++) {
         const part = msg.parts[i];
         const key = `${ev.id}-${i}`;
 
-        if (part.kind === 'data') {
+        if ('data' in part) {
           const d = part.data as Record<string, unknown>;
 
           // Skip sender metadata part — handled via pre-scan above
@@ -175,27 +175,25 @@
               break;
             }
           }
-        } else if (part.kind === 'file') {
-          const name = 'file' in part && typeof part.file === 'object' && part.file && 'name' in part.file
-            ? (part.file as { name: string }).name : 'file';
+        } else if ('url' in part || 'raw' in part) {
+          const name = part.filename ?? 'file';
           entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[file] ${name}`, entryType: 'tool' });
-        } else if (part.kind === 'text') {
-          const text = part.text as string;
+        } else if ('text' in part) {
+          const text = (part as { text: string }).text;
           if (senderName) {
             entries.push({ key, time, icon: '\u2709', iconClass: 'lateral', text: `${senderName}: "${truncate(text, 80)}"`, entryType: 'lateral' });
-          } else if (msg.role === 'user') {
+          } else if (msg.role === 'ROLE_USER') {
             entries.push({ key, time, icon: '\u25B6', iconClass: 'user', text: `User: ${truncate(text, 100)}`, entryType: 'user' });
           } else {
             entries.push({ key, time, icon: '\u25CF', iconClass: 'agent', text: truncate(text, 120), entryType: 'agent' });
           }
         } else {
-          // Fallback for unknown part kinds (tool-use, thinking, cost, etc.)
-          const label = part.kind;
-          const detail = 'text' in part && typeof part.text === 'string'
-            ? truncate(part.text, 80)
-            : 'name' in part && typeof part.name === 'string'
-              ? part.name
-              : '';
+          // Fallback for unknown part shapes
+          const label = 'unknown';
+          const p = part as Record<string, unknown>;
+          const detail = 'text' in p && typeof p.text === 'string'
+            ? truncate(p.text, 80)
+            : (p.filename as string) ?? '';
           entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: detail ? `[${label}] ${detail}` : `[${label}]`, entryType: 'tool' });
         }
       }

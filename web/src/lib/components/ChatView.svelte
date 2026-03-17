@@ -108,11 +108,11 @@
       const parts: import('../types').MessagePart[] = [];
       const text = messageText.trim();
       if (text) {
-        parts.push({ kind: 'text', text });
+        parts.push({ text });
       }
       for (const att of attachments) {
         const bytes = await fileToBase64(att.file);
-        parts.push({ kind: 'file', file: { name: att.file.name, mimeType: att.file.type, bytes } });
+        parts.push({ raw: bytes, mediaType: att.file.type, filename: att.file.name });
       }
       await api.postMessage(sessionId, parts);
       messageText = '';
@@ -322,14 +322,14 @@
 
         // Pre-scan for sender metadata (inter-agent message)
         const senderPart = msg.parts.find(
-          p => p.kind === 'data' && (p.data as Record<string, unknown>)?.type === 'sender'
+          p => 'data' in p && (p.data as Record<string, unknown>)?.type === 'sender'
         );
         const senderName = senderPart
-          ? ((senderPart as { kind: 'data'; data: Record<string, unknown> }).data.name as string) || 'unknown'
+          ? ((senderPart as { data: Record<string, unknown> }).data.name as string) || 'unknown'
           : null;
 
         for (const part of msg.parts) {
-          if (part.kind === 'data') {
+          if ('data' in part) {
             const d = part.data as Record<string, unknown>;
 
             // Skip sender metadata part — handled via pre-scan above
@@ -466,21 +466,22 @@
                 break;
               }
             }
-          } else if (part.kind === 'file') {
-            const fp = (part as { kind: 'file'; file: { name?: string; mimeType?: string; bytes?: string } }).file;
-            if (fp?.bytes && fp?.mimeType?.startsWith('image/') && senderName) {
-              entries.push({ type: 'lateral_image', senderName, mimeType: fp.mimeType, bytes: fp.bytes, name: fp.name, time, key: `${ev.id}-${seq++}` });
-            } else if (msg.role === 'user' && fp?.bytes && fp?.mimeType?.startsWith('image/')) {
-              entries.push({ type: 'user_image', mimeType: fp.mimeType, bytes: fp.bytes, name: fp.name, time, key: `${ev.id}-${seq++}` });
+          } else if ('url' in part || 'raw' in part) {
+            const raw = 'raw' in part ? (part as { raw: string }).raw : undefined;
+            const mimeType = part.mediaType;
+            const name = part.filename;
+            if (raw && mimeType?.startsWith('image/') && senderName) {
+              entries.push({ type: 'lateral_image', senderName, mimeType, bytes: raw, name, time, key: `${ev.id}-${seq++}` });
+            } else if (msg.role === 'ROLE_USER' && raw && mimeType?.startsWith('image/')) {
+              entries.push({ type: 'user_image', mimeType, bytes: raw, name, time, key: `${ev.id}-${seq++}` });
             } else {
-              const name = fp?.name ?? 'file';
-              entries.push({ type: 'tool', icon: '\u25A1', text: `[file] ${name}`, time, key: `${ev.id}-${seq++}` });
+              entries.push({ type: 'tool', icon: '\u25A1', text: `[file] ${name ?? 'file'}`, time, key: `${ev.id}-${seq++}` });
             }
-          } else if (part.kind === 'text') {
-            const text = part.text as string;
+          } else if ('text' in part) {
+            const text = (part as { text: string }).text;
             if (senderName) {
               entries.push({ type: 'lateral', senderName, text, time, key: `${ev.id}-${seq++}` });
-            } else if (msg.role === 'user') {
+            } else if (msg.role === 'ROLE_USER') {
               entries.push({ type: 'user', text, time, key: `${ev.id}-${seq++}` });
             } else {
               const prevEntry = entries.length > 0 ? entries[entries.length - 1] : null;
@@ -492,12 +493,11 @@
               }
             }
           } else {
-            const label = part.kind;
-            const detail = 'text' in part && typeof part.text === 'string'
-              ? part.text
-              : 'name' in part && typeof part.name === 'string'
-                ? part.name
-                : '';
+            const label = 'unknown';
+            const p = part as Record<string, unknown>;
+            const detail = 'text' in p && typeof p.text === 'string'
+              ? p.text
+              : (p.filename as string) ?? '';
             entries.push({ type: 'tool', icon: '\u25A1', text: detail ? `[${label}] ${detail}` : `[${label}]`, time, key: `${ev.id}-${seq++}` });
           }
         }

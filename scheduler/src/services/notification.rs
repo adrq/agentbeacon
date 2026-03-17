@@ -56,14 +56,14 @@ pub async fn deliver_to_parent(
     // Insert failure is non-fatal: delivery to task_queue is more important
     // than the audit trail. The parent agent must receive the child's output
     // even if the event store is temporarily unavailable.
-    let parent_event = json!({
-        "role": "agent",
-        "parts": [{"kind": "data", "data": {
+    let parent_event = common::a2a::message_payload(
+        common::a2a::role::AGENT,
+        vec![common::a2a::data_part(json!({
             "type": "turn_complete",
             "child_session_id": child_session_id,
             "message": turn_output,
-        }}]
-    });
+        }))],
+    );
     match db::events::insert(
         db_pool,
         &child_session.execution_id,
@@ -107,10 +107,10 @@ pub async fn deliver_to_parent(
         agent_name, child_session_id, turn_output
     );
     let delivery_payload = json!({
-        "message": {
-            "role": "user",
-            "parts": [{"kind": "text", "text": formatted_text}]
-        },
+        "message": common::a2a::message_payload(
+            common::a2a::role::USER,
+            vec![common::a2a::text_part(&formatted_text)],
+        ),
     });
     task_queue
         .push(TaskAssignment {
@@ -126,7 +126,7 @@ pub async fn deliver_to_parent(
 /// Extract human-readable text from turn messages, scanning from most recent.
 ///
 /// Handles two formats:
-/// 1. A2A: `{parts: [{kind: "text", text: "..."}]}`
+/// 1. A2A v1.0: `{parts: [{"text": "..."}]}`
 /// 2. Claude API: `{content: [{type: "text", text: "..."}]}`
 ///
 /// Returns None if no text could be extracted from any message.
@@ -140,17 +140,11 @@ pub fn extract_turn_output(turn_messages: &[TurnMessagePayload]) -> Option<Strin
 }
 
 fn extract_text_from_payload(payload: &serde_json::Value) -> Option<String> {
-    // Try A2A format: {parts: [{kind: "text", text: "..."}]}
+    // Try A2A v1.0 format: {parts: [{"text": "..."}]}
     if let Some(parts) = payload.get("parts").and_then(|p| p.as_array()) {
         let texts: Vec<&str> = parts
             .iter()
-            .filter_map(|p| {
-                if p.get("kind").and_then(|k| k.as_str()) == Some("text") {
-                    p.get("text").and_then(|t| t.as_str())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
             .collect();
         if !texts.is_empty() {
             return Some(texts.join("\n"));

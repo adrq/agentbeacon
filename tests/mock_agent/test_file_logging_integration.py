@@ -10,6 +10,9 @@ def test_automatic_log_file_creation_with_pytest_current_test():
     """Test automatic log file creation using PYTEST_CURRENT_TEST."""
     test_name = "test_automatic_creation"
 
+    expected_log_file = Path("logs/tests_test_file__test_automatic_creation.log")
+    expected_log_file.unlink(missing_ok=True)
+
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}
     ):
@@ -36,6 +39,8 @@ def test_automatic_log_file_creation_with_pytest_current_test():
 def test_log_entry_format_with_actual_timestamps():
     """Test log entry format includes actual ISO timestamps."""
     test_name = "test_timestamp_format"
+
+    Path("logs/tests_test_file__test_timestamp_format.log").unlink(missing_ok=True)
 
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}
@@ -65,6 +70,8 @@ def test_log_entry_format_with_actual_timestamps():
 def test_file_locking_with_concurrent_access_simulation():
     """Test file locking mechanism with simulated concurrent access."""
     test_name = "test_concurrent_access"
+
+    Path("logs/tests_test_file__test_concurrent_access.log").unlink(missing_ok=True)
 
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}
@@ -145,6 +152,10 @@ def test_no_exceptions_raised_on_logging_failures():
 def test_backward_compatibility_plain_text():
     """Test backward compatibility with plain text prompts."""
     test_name = "test_backward_compatibility"
+
+    Path("logs/tests_test_file__test_backward_compatibility.log").unlink(
+        missing_ok=True
+    )
 
     with patch.dict(
         os.environ, {"PYTEST_CURRENT_TEST": f"tests/test_file::{test_name}"}

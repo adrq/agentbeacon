@@ -3,75 +3,62 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 
-/// A2A Protocol v0.3.0 Capabilities
+/// A2A v1.0 Agent Interface
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Capabilities {
-    pub streaming: bool,
-    #[serde(rename = "pushNotifications")]
-    pub push_notifications: bool,
-    pub methods: Vec<String>,
-    pub features: Vec<String>,
+#[serde(rename_all = "camelCase")]
+pub struct AgentInterface {
+    pub url: String,
+    pub protocol_binding: String,
+    pub protocol_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
 }
 
-/// A2A Protocol v0.3.0 Skill
+/// A2A v1.0 Capabilities
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Capabilities {
+    pub streaming: bool,
+    pub push_notifications: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extended_agent_card: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Vec<serde_json::Value>>,
+}
+
+/// A2A v1.0 Skill
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Skill {
     pub id: String,
     pub name: String,
     pub description: String,
-    #[serde(rename = "inputModes")]
     pub input_modes: Vec<String>,
-    #[serde(rename = "outputModes")]
     pub output_modes: Vec<String>,
 }
 
-/// A2A Protocol v0.3.0 Additional Interface
+/// A2A v1.0 Agent Card
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdditionalInterface {
-    pub url: String,
-    pub transport: String,
-}
-
-/// A2A Protocol v0.3.0 Agent Card (Entity 6)
-///
-/// All 10 required fields per A2A v0.3.0 specification:
-/// - name, version, protocolVersion, url, description
-/// - preferredTransport, defaultInputModes, defaultOutputModes
-/// - capabilities, skills
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentCard {
     pub name: String,
     pub version: String,
-    #[serde(rename = "protocolVersion")]
-    pub protocol_version: String,
-    pub url: String,
     pub description: String,
-    #[serde(rename = "preferredTransport")]
-    pub preferred_transport: String,
-    #[serde(rename = "defaultInputModes")]
     pub default_input_modes: Vec<String>,
-    #[serde(rename = "defaultOutputModes")]
     pub default_output_modes: Vec<String>,
     pub capabilities: Capabilities,
     pub skills: Vec<Skill>,
-    #[serde(
-        rename = "additionalInterfaces",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub additional_interfaces: Option<Vec<AdditionalInterface>>,
+    pub supported_interfaces: Vec<AgentInterface>,
 }
 
 impl AgentCard {
-    /// Create A2A v0.3.0 compliant agent card for scheduler
+    /// Create A2A v1.0 compliant agent card for scheduler
     pub fn new(base_url: &str) -> Self {
         let rpc_url = format!("{}/rpc", base_url.trim_end_matches('/'));
         Self {
             name: "AgentBeacon Scheduler".to_string(),
             version: "1.0.0".to_string(),
-            protocol_version: "0.3.0".to_string(),
-            url: rpc_url.clone(),
             description: "Multi-agent orchestrator".to_string(),
-            preferred_transport: "JSONRPC".to_string(),
             default_input_modes: vec![
                 "application/json".to_string(),
                 "text/plain".to_string(),
@@ -80,12 +67,8 @@ impl AgentCard {
             capabilities: Capabilities {
                 streaming: false,
                 push_notifications: false,
-                methods: vec!["message/send".to_string(), "tasks/get".to_string()],
-                features: vec![
-                    "agent-coordination".to_string(),
-                    "session-management".to_string(),
-                    "task-queue".to_string(),
-                ],
+                extended_agent_card: None,
+                extensions: None,
             },
             skills: vec![Skill {
                 id: "agent-coordination".to_string(),
@@ -97,10 +80,12 @@ impl AgentCard {
                 ],
                 output_modes: vec!["application/json".to_string()],
             }],
-            additional_interfaces: Some(vec![AdditionalInterface {
+            supported_interfaces: vec![AgentInterface {
                 url: rpc_url,
-                transport: "JSONRPC".to_string(),
-            }]),
+                protocol_binding: "JSONRPC".to_string(),
+                protocol_version: "1.0".to_string(),
+                tenant: None,
+            }],
         }
     }
 }
@@ -111,9 +96,9 @@ impl Default for AgentCard {
     }
 }
 
-/// Agent card endpoint handler (FR-001)
+/// Agent card endpoint handler
 ///
-/// Returns A2A v0.3.0 compliant agent card with all required fields.
+/// Returns A2A v1.0 compliant agent card.
 /// Endpoint: GET /.well-known/agent-card.json
 ///
 /// URL priority: PUBLIC_URL env → X-Forwarded-Host header → localhost:port
@@ -139,29 +124,24 @@ mod tests {
     fn test_agent_card_has_all_required_fields() {
         let card = AgentCard::new("http://localhost:9456");
 
-        // Verify all 10 A2A v0.3.0 required fields
         assert_eq!(card.name, "AgentBeacon Scheduler");
         assert_eq!(card.version, "1.0.0");
-        assert_eq!(card.protocol_version, "0.3.0");
-        assert_eq!(card.url, "http://localhost:9456/rpc");
         assert!(!card.description.is_empty());
-        assert_eq!(card.preferred_transport, "JSONRPC");
         assert!(!card.default_input_modes.is_empty());
         assert!(!card.default_output_modes.is_empty());
-        assert!(!card.capabilities.methods.is_empty());
         assert!(!card.skills.is_empty());
+        assert!(!card.supported_interfaces.is_empty());
     }
 
     #[test]
-    fn test_agent_card_declares_required_methods() {
+    fn test_agent_card_supported_interfaces() {
         let card = AgentCard::new("http://localhost:9456");
 
-        assert!(
-            card.capabilities
-                .methods
-                .contains(&"message/send".to_string())
-        );
-        assert!(card.capabilities.methods.contains(&"tasks/get".to_string()));
+        let iface = &card.supported_interfaces[0];
+        assert_eq!(iface.url, "http://localhost:9456/rpc");
+        assert_eq!(iface.protocol_binding, "JSONRPC");
+        assert_eq!(iface.protocol_version, "1.0");
+        assert!(iface.tenant.is_none());
     }
 
     #[test]
@@ -169,12 +149,15 @@ mod tests {
         let card = AgentCard::new("http://localhost:9456");
         let json = serde_json::to_value(&card).expect("Failed to serialize");
 
-        // Check camelCase field names
         assert!(json.get("name").is_some());
-        assert!(json.get("protocolVersion").is_some());
-        assert!(json.get("preferredTransport").is_some());
+        assert!(json.get("supportedInterfaces").is_some());
         assert!(json.get("defaultInputModes").is_some());
         assert!(json.get("defaultOutputModes").is_some());
+        // v0.3 fields should NOT be present
+        assert!(json.get("protocolVersion").is_none());
+        assert!(json.get("url").is_none());
+        assert!(json.get("preferredTransport").is_none());
+        assert!(json.get("additionalInterfaces").is_none());
     }
 
     #[test]
@@ -182,19 +165,15 @@ mod tests {
         let card = AgentCard::new("http://localhost:9456");
         let json = serde_json::to_value(&card).expect("Failed to serialize");
 
-        // Verify structure matches contract specification
-        assert!(json.get("capabilities").is_some());
-        assert!(json.get("skills").is_some());
-
         let capabilities = json.get("capabilities").unwrap();
         assert!(capabilities.get("streaming").is_some());
         assert!(capabilities.get("pushNotifications").is_some());
-        assert!(capabilities.get("methods").is_some());
-        assert!(capabilities.get("features").is_some());
+        // v0.3 fields should NOT be present
+        assert!(capabilities.get("methods").is_none());
+        assert!(capabilities.get("features").is_none());
 
         let skills = json.get("skills").unwrap().as_array().unwrap();
         assert!(!skills.is_empty());
-
         let skill = &skills[0];
         assert!(skill.get("id").is_some());
         assert!(skill.get("name").is_some());
@@ -205,33 +184,28 @@ mod tests {
 
     #[test]
     fn test_agent_card_uses_dynamic_base_url() {
-        // Test with different base URLs
         let card1 = AgentCard::new("http://localhost:9456");
-        assert_eq!(card1.url, "http://localhost:9456/rpc");
         assert_eq!(
-            card1.additional_interfaces.as_ref().unwrap()[0].url,
+            card1.supported_interfaces[0].url,
             "http://localhost:9456/rpc"
         );
 
         let card2 = AgentCard::new("http://localhost:19456");
-        assert_eq!(card2.url, "http://localhost:19456/rpc");
         assert_eq!(
-            card2.additional_interfaces.as_ref().unwrap()[0].url,
+            card2.supported_interfaces[0].url,
             "http://localhost:19456/rpc"
         );
 
         let card3 = AgentCard::new("https://example.com:8080");
-        assert_eq!(card3.url, "https://example.com:8080/rpc");
         assert_eq!(
-            card3.additional_interfaces.as_ref().unwrap()[0].url,
+            card3.supported_interfaces[0].url,
             "https://example.com:8080/rpc"
         );
 
         // Test with trailing slash
         let card4 = AgentCard::new("http://localhost:9456/");
-        assert_eq!(card4.url, "http://localhost:9456/rpc");
         assert_eq!(
-            card4.additional_interfaces.as_ref().unwrap()[0].url,
+            card4.supported_interfaces[0].url,
             "http://localhost:9456/rpc"
         );
     }

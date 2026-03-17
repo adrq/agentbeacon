@@ -143,16 +143,24 @@ async fn handle_jsonrpc(
     let params = request.params.unwrap_or_else(|| json!({}));
 
     match request.method.as_str() {
-        "message/send" => {
+        "SendMessage" => {
             let response =
                 crate::api::handlers::handle_message_send(&_state, params, request.id.clone())
                     .await;
             Ok(response)
         }
-        "tasks/get" => {
+        "GetTask" => {
             let response =
                 crate::api::handlers::handle_tasks_get(&_state, params, request.id.clone()).await;
             Ok(response)
+        }
+        "CancelTask" => {
+            // Stub — returns "not implemented" like SendMessage/GetTask.
+            // Real implementation deferred to Phase 6 (fill A2A stubs).
+            Ok(JsonRpcResponse::error(
+                request.id,
+                JsonRpcError::internal_error("CancelTask not yet implemented"),
+            ))
         }
         _ => Err(JsonRpcResponse::error(
             request.id,

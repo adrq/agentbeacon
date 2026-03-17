@@ -1,34 +1,38 @@
-"""Agent card factory using A2A SDK for mock agent identification."""
+"""Agent card factory for mock agent identification (A2A v1.0 format).
 
-from a2a.types import AgentCard, AgentCapabilities
-
-
-def create_agent_card(base_url: str, port: int = 8080) -> AgentCard:
-    """Create A2A-compliant agent card for mock agent."""
-    from a2a.types import AgentSkill
-
-    return AgentCard(
-        protocol_version="0.3.0",
-        name="Mock A2A Agent",
-        preferred_transport="JSONRPC",
-        url=f"{base_url}/rpc",
-        version="1.0.0",
-        description="Mock agent for testing AgentBeacon workflows",
-        capabilities=AgentCapabilities(streaming=False, push_notifications=False),
-        default_input_modes=["application/json", "text/plain"],
-        default_output_modes=["application/json", "text/plain"],
-        skills=[
-            AgentSkill(
-                id="mock-testing",
-                name="Mock Testing",
-                description="Provides mock responses for testing AgentBeacon workflows",
-                tags=["testing", "mock", "development"],
-            )
-        ],
-    )
+The v1.0 agent card uses ``supportedInterfaces`` instead of top-level
+``url`` / ``protocolVersion`` / ``preferredTransport``.  Because the
+a2a-sdk's ``AgentCard`` pydantic model still reflects v0.3.0, we build
+the card as a plain dict.
+"""
 
 
 def create_agent_card_dict(base_url: str, port: int = 8080) -> dict:
-    """Create agent card as dictionary for JSON serialization."""
-    card = create_agent_card(base_url, port)
-    return card.model_dump(exclude_none=True)
+    """Create A2A v1.0 agent card as a dictionary for JSON serialization."""
+    return {
+        "name": "Mock A2A Agent",
+        "version": "1.0.0",
+        "description": "Mock agent for testing AgentBeacon workflows",
+        "supportedInterfaces": [
+            {
+                "url": f"{base_url}/rpc",
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": "1.0",
+            }
+        ],
+        "capabilities": {
+            "streaming": False,
+            "pushNotifications": False,
+        },
+        "defaultInputModes": ["application/json", "text/plain"],
+        "defaultOutputModes": ["application/json", "text/plain"],
+        "skills": [
+            {
+                "id": "mock-testing",
+                "name": "Mock Testing",
+                "description": "Provides mock responses for testing AgentBeacon workflows",
+                "inputModes": ["application/json", "text/plain"],
+                "outputModes": ["application/json", "text/plain"],
+            }
+        ],
+    }

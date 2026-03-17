@@ -216,7 +216,7 @@
     const req = {
       root_agent_id: selectedRootAgentId,
       agent_ids: [...selectedAgentIds],
-      parts: [{ kind: 'text' as const, text: taskText }],
+      parts: [{ text: taskText }],
       title: title.trim() || generateTitle(taskText),
       ...(selectedProjectId && { project_id: selectedProjectId }),
       ...(branch.trim() && { branch: branch.trim() }),

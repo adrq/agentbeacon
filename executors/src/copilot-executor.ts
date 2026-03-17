@@ -209,32 +209,24 @@ function partsToSendOptions(parts: Part[]): {
   _tempFiles?: string[];
 } {
   const textParts = parts.filter(
-    (p): p is Part & { kind: "text" } => p.kind === "text",
+    (p): p is Part & { text: string } => "text" in p,
   );
-  let prompt = textParts
-    .map((p) => (p as { kind: "text"; text: string }).text)
-    .join("\n");
+  let prompt = textParts.map((p) => (p as { text: string }).text).join("\n");
   const fileParts = parts.filter(
-    (p) =>
-      p.kind === "file" &&
-      (p as { kind: "file"; file: { bytes?: string } }).file?.bytes,
+    (p): p is Part & { raw: string } =>
+      "raw" in p && !!(p as { raw: string }).raw,
   );
   if (!prompt.trim() && fileParts.length > 0) prompt = "[see attached]";
   if (fileParts.length === 0) return { prompt };
 
   const tempFiles: string[] = [];
   const attachments = fileParts.map((p) => {
-    const fp = (
-      p as {
-        kind: "file";
-        file: { name?: string; mimeType?: string; bytes: string };
-      }
-    ).file;
-    const ext = mimeToExt(fp.mimeType ?? "application/octet-stream");
+    const raw = p as { raw: string; mediaType?: string; filename?: string };
+    const ext = mimeToExt(raw.mediaType ?? "application/octet-stream");
     const tmpPath = path.join(os.tmpdir(), `ab-${crypto.randomUUID()}${ext}`);
-    fs.writeFileSync(tmpPath, Buffer.from(fp.bytes, "base64"));
+    fs.writeFileSync(tmpPath, Buffer.from(raw.raw, "base64"));
     tempFiles.push(tmpPath);
-    return { type: "file" as const, path: tmpPath, displayName: fp.name };
+    return { type: "file" as const, path: tmpPath, displayName: raw.filename };
   });
   return { prompt, attachments, _tempFiles: tempFiles };
 }

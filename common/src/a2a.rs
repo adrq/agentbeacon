@@ -130,6 +130,25 @@ impl Part {
     }
 }
 
+/// Construct a JSON text part: `{"text": "..."}`.
+pub fn text_part(text: impl AsRef<str>) -> serde_json::Value {
+    serde_json::json!({"text": text.as_ref()})
+}
+
+/// Construct a JSON data part: `{"data": ...}`.
+pub fn data_part(data: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"data": data})
+}
+
+/// Construct an internal message payload with role and parts.
+/// Use `role::USER` / `role::AGENT` constants for the role parameter.
+///
+/// NOTE: This produces a lightweight internal payload, NOT a full A2A Message.
+/// It intentionally omits `messageId` — internal event payloads don't need it.
+pub fn message_payload(role: &str, parts: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({"role": role, "parts": parts})
+}
+
 impl A2ATaskStatus {
     pub fn completed() -> Self {
         Self {

@@ -15,7 +15,7 @@ export function extractQuestions(events: Event[]): { batchId: string; questions:
   for (const ev of events) {
     if (isMessagePayload(ev.payload)) {
       for (const part of ev.payload.parts) {
-        if (part.kind === 'data' && isEscalateData(part.data as DataPartPayload) && (part.data as EscalateData).importance === 'blocking') {
+        if ('data' in part && isEscalateData(part.data as DataPartPayload) && (part.data as EscalateData).importance === 'blocking') {
           escalateEvents.push({ data: part.data as EscalateData, event: ev });
         }
       }
@@ -46,9 +46,9 @@ export function extractQuestions(events: Event[]): { batchId: string; questions:
   // Exclude inter-agent messages (distinguished by a sender data part).
   const hasAnswer = events.some(ev => {
     if (ev.id <= latestMaxId) return false;
-    if (!isMessagePayload(ev.payload) || ev.payload.role !== 'user') return false;
+    if (!isMessagePayload(ev.payload) || ev.payload.role !== 'ROLE_USER') return false;
     const hasSender = ev.payload.parts.some(
-      p => p.kind === 'data' && (p.data as Record<string, unknown>)?.type === 'sender'
+      p => 'data' in p && (p.data as Record<string, unknown>)?.type === 'sender'
     );
     return !hasSender;
   });
@@ -74,5 +74,5 @@ export function composeAnswer(questions: QuestionState[]): string {
 }
 
 export async function submitAnswer(sessionId: string, answer: string): Promise<void> {
-  await api.postMessage(sessionId, [{ kind: 'text' as const, text: answer }]);
+  await api.postMessage(sessionId, [{ text: answer }]);
 }

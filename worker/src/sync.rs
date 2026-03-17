@@ -372,11 +372,11 @@ mod tests {
         let msgs = vec![
             TurnMessage {
                 msg_seq: 1,
-                payload: json!({"role": "agent", "parts": [{"kind": "text", "text": "hello"}]}),
+                payload: json!({"role": "ROLE_AGENT", "parts": [{"text": "hello"}]}),
             },
             TurnMessage {
                 msg_seq: 2,
-                payload: json!({"role": "agent", "parts": [{"kind": "text", "text": "world"}]}),
+                payload: json!({"role": "ROLE_AGENT", "parts": [{"text": "world"}]}),
             },
         ];
         let request = SyncRequest::with_result(
@@ -529,7 +529,7 @@ mod tests {
                     "agent_id": "agent-1",
                     "driver": {"platform": "acp", "config": {}},
                     "agent_config": {"command": "uv", "args": ["run", "agent"]},
-                    "message": {"role": "user", "parts": [{"kind": "text", "text": "hello"}]}
+                    "message": {"role": "ROLE_USER", "parts": [{"text": "hello"}]}
                 }
             }
         });
@@ -555,8 +555,8 @@ mod tests {
                 "sessionId": "sess-1",
                 "taskPayload": {
                     "message": {
-                        "role": "user",
-                        "parts": [{"kind": "text", "text": "yes, use JWT"}]
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "yes, use JWT"}]
                     }
                 }
             }

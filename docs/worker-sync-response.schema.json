@@ -125,10 +125,14 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "required": ["kind"],
+                        "$comment": "A2A v1.0 part: exactly one of text/raw/url/data should be set (member-presence polymorphism). A proper oneOf constraint is deferred to KI-107 (Rust JSON Schema validator upgrade).",
                         "properties": {
-                          "kind": { "type": "string" },
-                          "text": { "type": "string" }
+                          "text": { "type": "string" },
+                          "raw": { "type": "string" },
+                          "url": { "type": "string" },
+                          "data": {},
+                          "mediaType": { "type": "string" },
+                          "filename": { "type": "string" }
                         }
                       }
                     }
@@ -166,8 +170,8 @@
             "agent_config": {},
             "sandbox_config": null,
             "message": {
-              "role": "user",
-              "parts": [{ "kind": "text", "text": "Implement auth" }]
+              "role": "ROLE_USER",
+              "parts": [{ "text": "Implement auth" }]
             }
           }
         }

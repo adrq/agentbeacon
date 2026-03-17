@@ -166,10 +166,10 @@ async fn notify_parent_of_crash(
     if let Some(s) = stderr {
         crash_data["stderr"] = json!(s);
     }
-    let parent_event = json!({
-        "role": "agent",
-        "parts": [{"kind": "data", "data": crash_data}]
-    });
+    let parent_event = common::a2a::message_payload(
+        common::a2a::role::AGENT,
+        vec![common::a2a::data_part(crash_data)],
+    );
     match db::events::insert(
         pool,
         &child_session.execution_id,
@@ -216,10 +216,10 @@ async fn notify_parent_of_crash(
     }
 
     let notification = json!({
-        "message": {
-            "role": "user",
-            "parts": [{"kind": "text", "text": formatted_text}]
-        },
+        "message": common::a2a::message_payload(
+            common::a2a::role::USER,
+            vec![common::a2a::text_part(&formatted_text)],
+        ),
     });
     if let Err(e) = task_queue
         .push(TaskAssignment {

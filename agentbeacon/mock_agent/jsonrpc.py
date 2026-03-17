@@ -3,14 +3,9 @@
 import asyncio
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 
-from pydantic import ValidationError
-
-from a2a.types import Message, TextPart, FilePart, DataPart, Part, Role, Task
-from a2a.utils import new_text_artifact
-
-from .task_store import TaskStore
+from .task_store import TaskStore, new_text_artifact
 from .special_commands import SpecialCommands
 from .file_logger import log_task_completion
 from .mcp_client import McpClient
@@ -37,41 +32,78 @@ class JSONRPCDispatcher:
         self.captured_session_new_calls: list = []
         self.mcp_client: Optional[McpClient] = None
 
-    def _serialize_task(
-        self, task: Task, history_length: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """Serialize task with proper enum handling and optional history limiting.
+    def _coerce_history_length(
+        self, value: Any, field_path: str, request_id: Any
+    ) -> tuple[Optional[int], Optional[Dict[str, Any]]]:
+        """Validate and coerce a historyLength value (int or numeric string per A2A v1.0 schema).
 
-        Args:
-            task: The task to serialize
-            history_length: Limit history to most recent N messages
-
-        Returns serialized task dict with enums as strings.
+        Returns (parsed_int, None) on success, or (None, error_response) on failure.
         """
-        serialized = task.model_dump(mode="json", exclude_none=True)
+        if value is None:
+            return None, None
+        if isinstance(value, bool):
+            return None, self._error_response(
+                request_id,
+                -32602,
+                f"Invalid params: '{field_path}' must be a non-negative integer",
+            )
+        if isinstance(value, str):
+            if not value.lstrip("-").isdigit():
+                return None, self._error_response(
+                    request_id,
+                    -32602,
+                    f"Invalid params: '{field_path}' must be a non-negative integer",
+                )
+            value = int(value)
+        if not isinstance(value, int) or value < 0:
+            return None, self._error_response(
+                request_id,
+                -32602,
+                f"Invalid params: '{field_path}' must be a non-negative integer",
+            )
+        return value, None
 
-        if history_length is not None and "history" in serialized:
-            history = serialized["history"]
-            if len(history) > history_length:
-                serialized["history"] = history[-history_length:]
+    def _parse_history_length(
+        self, params: Dict[str, Any], request_id: Any
+    ) -> tuple[Optional[int], Optional[Dict[str, Any]]]:
+        """Extract and validate historyLength from configuration (SendMessage)."""
+        config = params.get("configuration")
+        if config is None:
+            return None, None
+        if not isinstance(config, dict):
+            return None, self._error_response(
+                request_id, -32602, "Invalid params: 'configuration' must be an object"
+            )
+        return self._coerce_history_length(
+            config.get("historyLength"), "configuration.historyLength", request_id
+        )
 
-        return serialized
+    def _serialize_task(
+        self, task: Dict[str, Any], history_length: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Serialize task dict with optional history limiting."""
+        result = dict(task)
+        if history_length is not None and "history" in result:
+            if history_length == 0:
+                result["history"] = []
+            elif len(result["history"]) > history_length:
+                result["history"] = result["history"][-history_length:]
+        return result
 
     def _validate_and_parse_message(
         self, msg_data: Any, request_id: Any
-    ) -> tuple[Optional[Message], Optional[Dict[str, Any]]]:
-        """Validate and parse message data, returning (message, error_response).
+    ) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """Validate and parse message data, returning (message_dict, error_response).
 
-        Returns (Message, None) on success, or (None, error_response_dict) on failure.
+        Returns (message_dict, None) on success, or (None, error_response) on failure.
+        The returned message_dict is in v1.0 format (flat parts, ROLE_* roles).
         """
         try:
-            # Validate message is a dict
             if not isinstance(msg_data, dict):
                 return None, self._error_response(
                     request_id, -32602, "Invalid params: 'message' must be an object"
                 )
 
-            # Validate required fields exist
             if "role" not in msg_data:
                 return None, self._error_response(
                     request_id, -32602, "Invalid params: 'message.role' is required"
@@ -82,14 +114,13 @@ class JSONRPCDispatcher:
                 )
 
             role_str = msg_data["role"]
-            if role_str not in ("user", "agent"):
+            if role_str not in ("ROLE_USER", "ROLE_AGENT"):
                 return None, self._error_response(
                     request_id,
                     -32602,
-                    f"Invalid params: message.role must be 'user' or 'agent', got '{role_str}'",
+                    f"Invalid params: message.role must be 'ROLE_USER' or 'ROLE_AGENT', got '{role_str}'",
                 )
 
-            parts: List[Part] = []
             parts_data = msg_data.get("parts", [])
             if not isinstance(parts_data, list) or len(parts_data) == 0:
                 return None, self._error_response(
@@ -98,6 +129,7 @@ class JSONRPCDispatcher:
                     "Invalid params: 'message.parts' must be a non-empty array",
                 )
 
+            # Validate each part has a recognized content field with correct type
             for i, part_data in enumerate(parts_data):
                 if not isinstance(part_data, dict):
                     return None, self._error_response(
@@ -105,56 +137,41 @@ class JSONRPCDispatcher:
                         -32602,
                         f"Invalid params: message.parts[{i}] must be an object",
                     )
-
-                part_kind = part_data.get("kind")
-                if not part_kind:
+                # Reject v0.3 kind-tagged parts — clean break
+                if "kind" in part_data:
                     return None, self._error_response(
                         request_id,
                         -32602,
-                        f"Invalid params: message.parts[{i}].kind is required",
+                        f"Invalid params: message.parts[{i}] contains legacy 'kind' field; use v1.0 flat format",
                     )
-
-                if part_kind == "text":
-                    if "text" not in part_data:
+                if "text" in part_data:
+                    if not isinstance(part_data["text"], str):
                         return None, self._error_response(
                             request_id,
                             -32602,
-                            f"Invalid params: message.parts[{i}].text is required for text parts",
+                            f"Invalid params: message.parts[{i}].text must be a string",
                         )
-                    parts.append(
-                        TextPart(
-                            text=part_data["text"], metadata=part_data.get("metadata")
-                        )
-                    )
-                elif part_kind == "file":
-                    if "file" not in part_data:
+                elif "raw" in part_data:
+                    if not isinstance(part_data["raw"], str):
                         return None, self._error_response(
                             request_id,
                             -32602,
-                            f"Invalid params: message.parts[{i}].file is required for file parts",
+                            f"Invalid params: message.parts[{i}].raw must be a string",
                         )
-                    parts.append(
-                        FilePart(
-                            file=part_data["file"], metadata=part_data.get("metadata")
-                        )
-                    )
-                elif part_kind == "data":
-                    if "data" not in part_data:
+                elif "url" in part_data:
+                    if not isinstance(part_data["url"], str):
                         return None, self._error_response(
                             request_id,
                             -32602,
-                            f"Invalid params: message.parts[{i}].data is required for data parts",
+                            f"Invalid params: message.parts[{i}].url must be a string",
                         )
-                    parts.append(
-                        DataPart(
-                            data=part_data["data"], metadata=part_data.get("metadata")
-                        )
-                    )
+                elif "data" in part_data:
+                    pass  # data can be any JSON value
                 else:
                     return None, self._error_response(
                         request_id,
                         -32602,
-                        f"Invalid params: message.parts[{i}].kind must be 'text', 'file', or 'data', got '{part_kind}'",
+                        f"Invalid params: message.parts[{i}] must contain 'text', 'raw', 'url', or 'data'",
                     )
 
             if "messageId" not in msg_data:
@@ -171,27 +188,39 @@ class JSONRPCDispatcher:
                     "Invalid params: 'message.messageId' must be a non-empty string",
                 )
 
-            # Per A2A protocol: contextId is optional on incoming messages but required in Task.
-            # Generate a UUID if client omits it to maintain spec compliance in the task store.
             context_id = msg_data.get("contextId", str(uuid.uuid4()))
+            if not isinstance(context_id, str):
+                return None, self._error_response(
+                    request_id,
+                    -32602,
+                    "Invalid params: 'message.contextId' must be a string",
+                )
 
-            message = Message(
-                messageId=message_id,
-                role=Role(role_str),
-                parts=parts,
-                contextId=context_id,
-                taskId=msg_data.get("taskId"),
-                metadata=msg_data.get("metadata"),
-                extensions=msg_data.get("extensions"),
-                referenceTaskIds=msg_data.get("referenceTaskIds"),
-            )
+            if "taskId" in msg_data and not isinstance(msg_data["taskId"], str):
+                return None, self._error_response(
+                    request_id,
+                    -32602,
+                    "Invalid params: 'message.taskId' must be a string",
+                )
+
+            # Build v1.0 message dict — pass through parts as-is (already validated)
+            message = {
+                "messageId": message_id,
+                "role": role_str,
+                "parts": parts_data,
+                "contextId": context_id,
+            }
+            if "taskId" in msg_data:
+                message["taskId"] = msg_data["taskId"]
+            if "metadata" in msg_data:
+                message["metadata"] = msg_data["metadata"]
+            if "extensions" in msg_data:
+                message["extensions"] = msg_data["extensions"]
+            if "referenceTaskIds" in msg_data:
+                message["referenceTaskIds"] = msg_data["referenceTaskIds"]
 
             return message, None
 
-        except ValidationError as e:
-            return None, self._error_response(
-                request_id, -32602, f"Invalid params: {str(e)}"
-            )
         except (KeyError, TypeError) as e:
             return None, self._error_response(
                 request_id, -32602, f"Invalid params: {str(e)}"
@@ -208,19 +237,17 @@ class JSONRPCDispatcher:
             if not is_notification and not self._is_valid_jsonrpc(request):
                 return self._error_response(request_id, -32600, "Invalid Request")
 
-            if method == "message/send":
+            if method == "SendMessage":
                 return self._handle_message_send_sync(request_id, params)
-            elif method == "tasks/get":
+            elif method == "GetTask":
                 return self._handle_tasks_get(request_id, params)
-            elif method == "tasks/cancel":
+            elif method == "CancelTask":
                 return self._handle_tasks_cancel(request_id, params)
             elif method == "initialize":
                 return self._handle_acp_initialize(request_id, params)
             elif method == "session/new":
                 return self._handle_acp_session_new(request_id, params)
             elif method == "session/prompt":
-                # In async ACP mode, session/prompt is handled by _handle_prompt in acp_mode.py
-                # Return None to let the async handler take care of it
                 return None
             elif method == "session/cancel":
                 return None
@@ -244,11 +271,11 @@ class JSONRPCDispatcher:
             params = request.get("params", {})
             request_id = request["id"]
 
-            if method == "message/send":
+            if method == "SendMessage":
                 return await self._handle_message_send_async(request_id, params)
-            elif method == "tasks/get":
+            elif method == "GetTask":
                 return self._handle_tasks_get(request_id, params)
-            elif method == "tasks/cancel":
+            elif method == "CancelTask":
                 return self._handle_tasks_cancel(request_id, params)
             else:
                 return self._error_response(request_id, -32601, "Method not found")
@@ -259,7 +286,6 @@ class JSONRPCDispatcher:
             )
 
     def _is_valid_jsonrpc(self, request: Dict[str, Any]) -> bool:
-        """Validate basic JSON-RPC 2.0 structure."""
         return (
             isinstance(request, dict)
             and request.get("jsonrpc") == "2.0"
@@ -270,7 +296,7 @@ class JSONRPCDispatcher:
     def _handle_message_send_sync(
         self, request_id: Any, params: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Handle A2A message/send request."""
+        """Handle A2A SendMessage request."""
         try:
             if not isinstance(params, dict):
                 return self._error_response(
@@ -288,78 +314,79 @@ class JSONRPCDispatcher:
             if error_response:
                 return error_response
 
-            request_config = params.get("configuration", {})
-            _ = params.get("metadata")
-            history_length = (
-                request_config.get("historyLength") if request_config else None
+            history_length, config_error = self._parse_history_length(
+                params, request_id
             )
+            if config_error:
+                return config_error
 
-            if message.task_id:
-                task = self.task_store.append_message_to_task(message.task_id, message)
+            task_id = message.get("taskId")
+            if task_id:
+                task = self.task_store.append_message_to_task(task_id, message)
                 if not task:
-                    existing_task = self.task_store.get_task(message.task_id)
+                    existing_task = self.task_store.get_task(task_id)
                     if existing_task:
                         return self._error_response(
                             request_id,
                             -32004,
-                            f"Task cannot be continued: task is in terminal state '{existing_task.status.state.value}'",
+                            f"Task cannot be continued: task is in terminal state '{existing_task['status']['state']}'",
                         )
                     else:
                         return self._error_response(
-                            request_id, -32001, f"Task not found: {message.task_id}"
+                            request_id, -32001, f"Task not found: {task_id}"
                         )
             else:
                 task = self.task_store.create_task_from_message(message)
 
-            first_text = self._extract_first_text([message])
+            first_text = self._extract_first_text_from_message(message)
+            tid = task["id"]
+
             if first_text:
                 if first_text in self.custom_responses:
                     custom_response = self.custom_responses[first_text]
-                    self.task_store.set_task_working(task.id)
+                    self.task_store.set_task_working(tid)
 
                     if custom_response == "HANG":
-                        updated_task = self.task_store.get_task(task.id)
+                        updated_task = self.task_store.get_task(tid)
                         return self._success_response(
-                            request_id, self._serialize_task(updated_task)
+                            request_id, {"task": self._serialize_task(updated_task)}
                         )
                     else:
-                        artifact = new_text_artifact("agent-output", custom_response)
-                        self.task_store.add_task_artifact(task.id, artifact)
+                        artifact = new_text_artifact(custom_response)
+                        self.task_store.add_task_artifact(tid, artifact)
                         log_task_completion(first_text)
-                        self.task_store.complete_task(task.id)
+                        self.task_store.complete_task(tid)
                 elif self.special_commands.is_special_command(first_text):
                     if first_text.strip().upper() == "HANG":
-                        self.task_store.set_task_working(task.id)
-                        updated_task = self.task_store.get_task(task.id)
+                        self.task_store.set_task_working(tid)
+                        updated_task = self.task_store.get_task(tid)
                         return self._success_response(
-                            request_id, self._serialize_task(updated_task)
+                            request_id, {"task": self._serialize_task(updated_task)}
                         )
                     else:
-                        self.task_store.set_task_working(task.id)
+                        self.task_store.set_task_working(tid)
                         result = self.special_commands.handle_command(first_text)
                         if result:
-                            artifact = new_text_artifact("agent-output", result)
-                            self.task_store.add_task_artifact(task.id, artifact)
+                            artifact = new_text_artifact(result)
+                            self.task_store.add_task_artifact(tid, artifact)
                             log_task_completion(first_text)
-                            self.task_store.complete_task(task.id)
+                            self.task_store.complete_task(tid)
                 else:
-                    self.task_store.set_task_working(task.id)
+                    self.task_store.set_task_working(tid)
                     default_response = f"Mock agent received: {first_text}"
-                    artifact = new_text_artifact("agent-output", default_response)
-                    self.task_store.add_task_artifact(task.id, artifact)
+                    artifact = new_text_artifact(default_response)
+                    self.task_store.add_task_artifact(tid, artifact)
                     log_task_completion(first_text)
-                    self.task_store.complete_task(task.id)
+                    self.task_store.complete_task(tid)
             else:
-                self.task_store.set_task_working(task.id)
-                artifact = new_text_artifact(
-                    "agent-output", "Mock agent processed request"
-                )
-                self.task_store.add_task_artifact(task.id, artifact)
-                self.task_store.complete_task(task.id)
+                self.task_store.set_task_working(tid)
+                artifact = new_text_artifact("Mock agent processed request")
+                self.task_store.add_task_artifact(tid, artifact)
+                self.task_store.complete_task(tid)
 
-            updated_task = self.task_store.get_task(task.id)
+            updated_task = self.task_store.get_task(tid)
             serialized_task = self._serialize_task(updated_task, history_length)
-            return self._success_response(request_id, serialized_task)
+            return self._success_response(request_id, {"task": serialized_task})
 
         except Exception as e:
             return self._error_response(request_id, -32603, f"Internal error: {str(e)}")
@@ -367,7 +394,7 @@ class JSONRPCDispatcher:
     async def _handle_message_send_async(
         self, request_id: Any, params: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Handle A2A message/send request asynchronously."""
+        """Handle A2A SendMessage request asynchronously."""
         try:
             if not isinstance(params, dict):
                 return self._error_response(
@@ -385,110 +412,96 @@ class JSONRPCDispatcher:
             if error_response:
                 return error_response
 
-            request_config = params.get("configuration", {})
-            _ = params.get("metadata")
-            history_length = (
-                request_config.get("historyLength") if request_config else None
+            history_length, config_error = self._parse_history_length(
+                params, request_id
             )
+            if config_error:
+                return config_error
 
-            if message.task_id:
-                task = self.task_store.append_message_to_task(message.task_id, message)
+            task_id = message.get("taskId")
+            if task_id:
+                task = self.task_store.append_message_to_task(task_id, message)
                 if not task:
-                    existing_task = self.task_store.get_task(message.task_id)
+                    existing_task = self.task_store.get_task(task_id)
                     if existing_task:
                         return self._error_response(
                             request_id,
                             -32004,
-                            f"Task cannot be continued: task is in terminal state '{existing_task.status.state.value}'",
+                            f"Task cannot be continued: task is in terminal state '{existing_task['status']['state']}'",
                         )
                     else:
                         return self._error_response(
-                            request_id, -32001, f"Task not found: {message.task_id}"
+                            request_id, -32001, f"Task not found: {task_id}"
                         )
             else:
                 task = self.task_store.create_task_from_message(message)
 
-            first_text = self._extract_first_text([message])
+            first_text = self._extract_first_text_from_message(message)
+            tid = task["id"]
 
             if first_text:
                 if first_text in self.custom_responses:
                     custom_response = self.custom_responses[first_text]
-                    self.task_store.set_task_working(task.id)
+                    self.task_store.set_task_working(tid)
 
                     if custom_response == "HANG":
-                        updated_task = self.task_store.get_task(task.id)
+                        updated_task = self.task_store.get_task(tid)
                         return self._success_response(
-                            request_id, self._serialize_task(updated_task)
+                            request_id, {"task": self._serialize_task(updated_task)}
                         )
                     else:
-                        artifact = new_text_artifact("agent-output", custom_response)
-                        self.task_store.add_task_artifact(task.id, artifact)
+                        artifact = new_text_artifact(custom_response)
+                        self.task_store.add_task_artifact(tid, artifact)
                         log_task_completion(first_text)
-                        self.task_store.complete_task(task.id)
-                        updated_task = self.task_store.get_task(task.id)
+                        self.task_store.complete_task(tid)
+                        updated_task = self.task_store.get_task(tid)
                         return self._success_response(
-                            request_id, self._serialize_task(updated_task)
+                            request_id, {"task": self._serialize_task(updated_task)}
                         )
                 elif self.special_commands.is_special_command(first_text):
                     if first_text.strip().upper() == "HANG":
-                        self.task_store.set_task_working(task.id)
-                        updated_task = self.task_store.get_task(task.id)
+                        self.task_store.set_task_working(tid)
+                        updated_task = self.task_store.get_task(tid)
                         return self._success_response(
-                            request_id, self._serialize_task(updated_task)
+                            request_id, {"task": self._serialize_task(updated_task)}
                         )
                     elif first_text.strip().upper() == "FAIL_NODE":
-                        self.task_store.fail_task(task.id)
-
-                        failure_message = Message(
-                            messageId=f"{task.id}-fail-response",
-                            kind="message",
-                            role="agent",
-                            parts=[
-                                TextPart(
-                                    kind="text",
-                                    text=f"Mock agent failure: {first_text}",
-                                )
-                            ],
-                        )
-
-                        updated_task = self.task_store.get_task(task.id)
-                        updated_task.status.message = failure_message
-
+                        self.task_store.fail_task(tid)
+                        updated_task = self.task_store.get_task(tid)
+                        # Add failure message to status
+                        updated_task["status"]["message"] = {
+                            "messageId": f"{tid}-fail-response",
+                            "role": "ROLE_AGENT",
+                            "parts": [{"text": f"Mock agent failure: {first_text}"}],
+                        }
                         return self._success_response(
-                            request_id, self._serialize_task(updated_task)
+                            request_id, {"task": self._serialize_task(updated_task)}
                         )
                     else:
-                        self.task_store.set_task_working(task.id)
-
-                        # Launch background task WITHOUT awaiting to return immediately with task status "working".
-                        # The A2A protocol requires immediate response while the agent processes asynchronously.
-                        # Task completion will update the task store when handle_command_async finishes.
+                        self.task_store.set_task_working(tid)
                         asyncio.create_task(
-                            self._process_special_command_async(task.id, first_text)
+                            self._process_special_command_async(tid, first_text)
                         )
-
-                        updated_task = self.task_store.get_task(task.id)
+                        updated_task = self.task_store.get_task(tid)
                         return self._success_response(
-                            request_id, self._serialize_task(updated_task)
+                            request_id, {"task": self._serialize_task(updated_task)}
                         )
                 else:
-                    self.task_store.set_task_working(task.id)
+                    self.task_store.set_task_working(tid)
                     default_response = f"Mock agent received: {first_text}"
-                    artifact = new_text_artifact("agent-output", default_response)
-                    self.task_store.add_task_artifact(task.id, artifact)
+                    artifact = new_text_artifact(default_response)
+                    self.task_store.add_task_artifact(tid, artifact)
                     log_task_completion(first_text)
-                    self.task_store.complete_task(task.id)
+                    self.task_store.complete_task(tid)
             else:
-                self.task_store.set_task_working(task.id)
-                artifact = new_text_artifact(
-                    "agent-output", "Mock agent processed request"
-                )
-                self.task_store.add_task_artifact(task.id, artifact)
-                self.task_store.complete_task(task.id)
+                self.task_store.set_task_working(tid)
+                artifact = new_text_artifact("Mock agent processed request")
+                self.task_store.add_task_artifact(tid, artifact)
+                self.task_store.complete_task(tid)
 
-            updated_task = self.task_store.get_task(task.id)
+            updated_task = self.task_store.get_task(tid)
             serialized_task = self._serialize_task(updated_task, history_length)
-            return self._success_response(request_id, serialized_task)
+            return self._success_response(request_id, {"task": serialized_task})
 
         except Exception as e:
             return self._error_response(request_id, -32603, f"Internal error: {str(e)}")
@@ -498,7 +511,7 @@ class JSONRPCDispatcher:
         try:
             result = await self.special_commands.handle_command_async(command_text)
             if result:
-                artifact = new_text_artifact("agent-output", result)
+                artifact = new_text_artifact(result)
                 self.task_store.add_task_artifact(task_id, artifact)
                 log_task_completion(command_text)
                 self.task_store.complete_task(task_id)
@@ -508,7 +521,7 @@ class JSONRPCDispatcher:
     def _handle_tasks_get(
         self, request_id: Any, params: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Handle A2A tasks/get request."""
+        """Handle A2A GetTask request."""
         if not isinstance(params, dict):
             return self._error_response(
                 request_id, -32602, "Invalid params: params must be an object"
@@ -524,7 +537,11 @@ class JSONRPCDispatcher:
         if not task:
             return self._error_response(request_id, -32001, "Task not found")
 
-        history_length = params.get("historyLength")
+        history_length, hl_error = self._coerce_history_length(
+            params.get("historyLength"), "historyLength", request_id
+        )
+        if hl_error:
+            return hl_error
         return self._success_response(
             request_id, self._serialize_task(task, history_length)
         )
@@ -532,7 +549,7 @@ class JSONRPCDispatcher:
     def _handle_tasks_cancel(
         self, request_id: Any, params: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Handle A2A tasks/cancel request."""
+        """Handle A2A CancelTask request."""
         if not isinstance(params, dict):
             return self._error_response(
                 request_id, -32602, "Invalid params: params must be an object"
@@ -561,7 +578,7 @@ class JSONRPCDispatcher:
         )
 
         if self.hang_initialize:
-            time.sleep(3600)  # Sleep for 1 hour (will be killed by timeout)
+            time.sleep(3600)
 
         protocol_version = params.get("protocolVersion")
         if protocol_version != 1:
@@ -600,7 +617,6 @@ class JSONRPCDispatcher:
             "created": datetime.utcnow().isoformat(),
         }
 
-        # Extract MCP server config if provided
         for server in params.get("mcpServers", []):
             if server.get("type") == "http":
                 url = server.get("url", "")
@@ -647,12 +663,13 @@ class JSONRPCDispatcher:
 
         return self._success_response(request_id, {"stopReason": "end_turn"})
 
-    def _extract_first_text(self, messages: list[Message]) -> Optional[str]:
-        """Extract first text content from messages."""
-        for message in messages:
-            for part in message.parts:
-                if hasattr(part, "root") and hasattr(part.root, "text"):
-                    return part.root.text
+    def _extract_first_text_from_message(
+        self, message: Dict[str, Any]
+    ) -> Optional[str]:
+        """Extract first text content from a message dict."""
+        for part in message.get("parts", []):
+            if "text" in part and isinstance(part["text"], str):
+                return part["text"]
         return None
 
     def _success_response(self, request_id: Any, result: Any) -> Dict[str, Any]:

@@ -141,9 +141,9 @@ pub struct ExecutorHandle {
     pub task_handle: tokio::task::JoinHandle<()>,
 }
 
-/// Map a single SDK content block to an A2A-compatible message part.
-/// Text blocks become `kind: "text"`. Everything else passes through raw as
-/// `kind: "data"` — the frontend normalizer handles executor-specific fields.
+/// Map a single SDK content block to an A2A v1.0 message part.
+/// Text blocks become `{"text": ...}`. Everything else passes through raw as
+/// `{"data": ...}` — the frontend normalizer handles executor-specific fields.
 pub fn content_block_to_part(item: &serde_json::Value) -> Option<serde_json::Value> {
     let block_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("text");
     match block_type {
@@ -152,9 +152,9 @@ pub fn content_block_to_part(item: &serde_json::Value) -> Option<serde_json::Val
             if text.is_empty() {
                 return None;
             }
-            Some(serde_json::json!({"kind": "text", "text": text}))
+            Some(serde_json::json!({"text": text}))
         }
-        _ => Some(serde_json::json!({"kind": "data", "data": item})),
+        _ => Some(serde_json::json!({"data": item})),
     }
 }
 
@@ -165,7 +165,7 @@ pub fn build_output_message(content_blocks: &serde_json::Value) -> Option<serde_
     if parts.is_empty() {
         return None;
     }
-    Some(serde_json::json!({"role": "agent", "parts": parts}))
+    Some(serde_json::json!({"role": "ROLE_AGENT", "parts": parts}))
 }
 
 /// Extract full parts array from task_payload — used by stdio-bridge executors.
@@ -188,13 +188,7 @@ pub(crate) fn extract_prompt_text(task_payload: &serde_json::Value) -> Result<St
     let parts = extract_parts(task_payload)?;
     let texts: Vec<&str> = parts
         .iter()
-        .filter_map(|p| {
-            if p.get("kind").and_then(|k| k.as_str()) == Some("text") {
-                p.get("text").and_then(|t| t.as_str())
-            } else {
-                None
-            }
-        })
+        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
         .collect();
     Ok(texts.join("\n"))
 }
@@ -265,11 +259,11 @@ mod tests {
     // --- content_block_to_part passthrough tests ---
 
     #[test]
-    fn test_text_block_becomes_kind_text() {
+    fn test_text_block_becomes_text_part() {
         let block = serde_json::json!({"type": "text", "text": "hello world"});
         let part = content_block_to_part(&block).unwrap();
-        assert_eq!(part["kind"], "text");
         assert_eq!(part["text"], "hello world");
+        assert!(part.get("kind").is_none());
         assert!(part.get("data").is_none());
     }
 
@@ -288,7 +282,7 @@ mod tests {
             "input": {"file_path": "/tmp/test.txt"}
         });
         let part = content_block_to_part(&block).unwrap();
-        assert_eq!(part["kind"], "data");
+        assert!(part.get("kind").is_none());
         let data = &part["data"];
         assert_eq!(data["type"], "tool_use");
         assert_eq!(data["id"], "toolu_abc123");
@@ -305,7 +299,7 @@ mod tests {
             "is_error": false
         });
         let part = content_block_to_part(&block).unwrap();
-        assert_eq!(part["kind"], "data");
+        assert!(part.get("kind").is_none());
         let data = &part["data"];
         assert_eq!(data["type"], "tool_result");
         assert_eq!(data["tool_use_id"], "toolu_abc123");
@@ -320,7 +314,7 @@ mod tests {
             "thinking": "Let me analyze this..."
         });
         let part = content_block_to_part(&block).unwrap();
-        assert_eq!(part["kind"], "data");
+        assert!(part.get("kind").is_none());
         let data = &part["data"];
         assert_eq!(data["type"], "thinking");
         assert_eq!(data["thinking"], "Let me analyze this...");
@@ -333,7 +327,7 @@ mod tests {
             "some_field": "some_value"
         });
         let part = content_block_to_part(&block).unwrap();
-        assert_eq!(part["kind"], "data");
+        assert!(part.get("kind").is_none());
         assert_eq!(part["data"]["type"], "future_block");
         assert_eq!(part["data"]["some_field"], "some_value");
     }
@@ -345,11 +339,11 @@ mod tests {
             {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}
         ]);
         let msg = build_output_message(&blocks).unwrap();
-        assert_eq!(msg["role"], "agent");
+        assert_eq!(msg["role"], "ROLE_AGENT");
         let parts = msg["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0]["kind"], "text");
-        assert_eq!(parts[1]["kind"], "data");
+        assert!(parts[0].get("text").is_some());
+        assert!(parts[1].get("data").is_some());
     }
 
     #[test]
@@ -361,10 +355,10 @@ mod tests {
     }
 
     #[test]
-    fn test_text_delta_block_becomes_kind_text() {
+    fn test_text_delta_block_becomes_text_part() {
         let block = serde_json::json!({"type": "text_delta", "text": "partial chunk"});
         let part = content_block_to_part(&block).unwrap();
-        assert_eq!(part["kind"], "text");
+        assert!(part.get("kind").is_none());
         assert_eq!(part["text"], "partial chunk");
     }
 
@@ -381,7 +375,7 @@ mod tests {
             "thinking": "Let me reason about this..."
         });
         let part = content_block_to_part(&block).unwrap();
-        assert_eq!(part["kind"], "data");
+        assert!(part.get("kind").is_none());
         let data = &part["data"];
         assert_eq!(data["type"], "thinking_delta");
         assert_eq!(data["thinking"], "Let me reason about this...");
@@ -392,7 +386,7 @@ mod tests {
     #[test]
     fn test_extract_prompt_text_a2a() {
         let payload = serde_json::json!({
-            "message": {"role": "user", "parts": [{"kind": "text", "text": "hello"}]},
+            "message": {"role": "ROLE_USER", "parts": [{"text": "hello"}]},
         });
         assert_eq!(extract_prompt_text(&payload).unwrap(), "hello");
     }
@@ -400,8 +394,8 @@ mod tests {
     #[test]
     fn test_extract_prompt_text_with_baked_header() {
         let payload = serde_json::json!({
-            "message": {"role": "user", "parts": [
-                {"kind": "text", "text": "[turn complete from child \u{00b7} session s1]\n\ndone"}
+            "message": {"role": "ROLE_USER", "parts": [
+                {"text": "[turn complete from child \u{00b7} session s1]\n\ndone"}
             ]},
         });
         let text = extract_prompt_text(&payload).unwrap();
@@ -417,14 +411,14 @@ mod tests {
 
     #[test]
     fn test_extract_prompt_text_missing_parts_errors() {
-        let payload = serde_json::json!({"message": {"role": "user"}});
+        let payload = serde_json::json!({"message": {"role": "ROLE_USER"}});
         assert!(extract_prompt_text(&payload).is_err());
     }
 
     #[test]
     fn test_extract_prompt_text_no_text_parts_returns_empty() {
         let payload = serde_json::json!({
-            "message": {"role": "user", "parts": [{"kind": "image", "data": "base64..."}]},
+            "message": {"role": "ROLE_USER", "parts": [{"data": "base64..."}]},
         });
         let result = extract_prompt_text(&payload).unwrap();
         assert_eq!(result, "");
@@ -434,40 +428,36 @@ mod tests {
     fn test_extract_parts_returns_all_parts() {
         let payload = serde_json::json!({
             "message": {
-                "role": "user",
+                "role": "ROLE_USER",
                 "parts": [
-                    {"kind": "text", "text": "hello"},
-                    {"kind": "file", "file": {"name": "test.png", "mimeType": "image/png", "bytes": "base64data"}}
+                    {"text": "hello"},
+                    {"raw": "base64data", "mediaType": "image/png", "filename": "test.png"}
                 ]
             }
         });
         let parts = extract_parts(&payload).unwrap();
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0]["kind"], "text");
         assert_eq!(parts[0]["text"], "hello");
-        assert_eq!(parts[1]["kind"], "file");
-        assert_eq!(parts[1]["file"]["name"], "test.png");
-        assert_eq!(parts[1]["file"]["mimeType"], "image/png");
-        assert_eq!(parts[1]["file"]["bytes"], "base64data");
+        assert_eq!(parts[1]["raw"], "base64data");
+        assert_eq!(parts[1]["mediaType"], "image/png");
+        assert_eq!(parts[1]["filename"], "test.png");
     }
 
     #[test]
     fn test_extract_parts_file_only_message() {
         let payload = serde_json::json!({
             "message": {
-                "role": "user",
+                "role": "ROLE_USER",
                 "parts": [
-                    {"kind": "file", "file": {"name": "doc.pdf", "mimeType": "application/pdf", "bytes": "cGRmZGF0YQ=="}},
-                    {"kind": "file", "file": {"name": "photo.jpg", "mimeType": "image/jpeg", "bytes": "anBnZGF0YQ=="}}
+                    {"raw": "cGRmZGF0YQ==", "mediaType": "application/pdf", "filename": "doc.pdf"},
+                    {"raw": "anBnZGF0YQ==", "mediaType": "image/jpeg", "filename": "photo.jpg"}
                 ]
             }
         });
         let parts = extract_parts(&payload).unwrap();
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0]["kind"], "file");
-        assert_eq!(parts[0]["file"]["name"], "doc.pdf");
-        assert_eq!(parts[1]["kind"], "file");
-        assert_eq!(parts[1]["file"]["name"], "photo.jpg");
+        assert_eq!(parts[0]["filename"], "doc.pdf");
+        assert_eq!(parts[1]["filename"], "photo.jpg");
 
         // extract_prompt_text should return empty string since there are no text parts
         let text = extract_prompt_text(&payload).unwrap();

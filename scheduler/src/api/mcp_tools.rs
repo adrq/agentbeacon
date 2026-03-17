@@ -279,8 +279,8 @@ async fn handle_delegate(
     // Record delegation event + child prompt atomically so observers never
     // see a partial delegation (event without prompt or vice versa).
     let delegate_event_str = serde_json::to_string(&json!({
-        "role": "agent",
-        "parts": [{"kind": "data", "data": {
+        "role": "ROLE_AGENT",
+        "parts": [{"data": {
             "type": "delegate",
             "agent": agent_name,
             "child_session_id": child_session_id,
@@ -289,14 +289,14 @@ async fn handle_delegate(
     }))
     .unwrap();
     let child_prompt_str = serde_json::to_string(&json!({
-        "role": "user",
+        "role": "ROLE_USER",
         "parts": [
-            {"kind": "data", "data": {
+            {"data": {
                 "type": "sender",
                 "name": &parent_hier_name,
                 "session_id": &auth.session_id,
             }},
-            {"kind": "text", "text": &prompt},
+            {"text": &prompt},
         ]
     }))
     .unwrap();
@@ -310,8 +310,8 @@ async fn handle_delegate(
         },
         "agent_config": agent_config,
         "message": {
-            "role": "user",
-            "parts": [{"kind": "text", "text": prompt}]
+            "role": "ROLE_USER",
+            "parts": [{"text": prompt}]
         },
     });
     if let Some(ref dir) = child_cwd {
@@ -456,8 +456,8 @@ async fn handle_release(
 
     // Log release event on the parent (caller) session
     let release_event = json!({
-        "role": "agent",
-        "parts": [{"kind": "data", "data": {
+        "role": "ROLE_AGENT",
+        "parts": [{"data": {
             "type": "release",
             "target_session_id": target_session_id,
             "sessions_terminated": result.sessions_terminated
@@ -562,8 +562,8 @@ async fn handle_escalate(
             data["context"] = json!(ctx);
         }
         let event_payload = json!({
-            "role": "agent",
-            "parts": [{"kind": "data", "data": data}]
+            "role": "ROLE_AGENT",
+            "parts": [{"data": data}]
         });
 
         let event_id = db::events::insert(
