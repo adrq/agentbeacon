@@ -286,11 +286,23 @@ async function main(): Promise<void> {
               // Claude SDK provides cumulative input/output tokens per assistant message.
               // The frontend overwrites (not accumulates) these values from usage_update blocks.
               // The usage_snapshot from the result event provides the authoritative final value.
+              //
+              // input_tokens only counts non-cached tokens. When prompt caching is active
+              // (default in the SDK), most tokens are in cache_read_input_tokens /
+              // cache_creation_input_tokens. Sum all three for true context consumption.
               const usage = inner?.usage as Record<string, unknown> | undefined;
               if (usage && typeof usage.input_tokens === "number") {
+                const cacheRead =
+                  typeof usage.cache_read_input_tokens === "number"
+                    ? usage.cache_read_input_tokens
+                    : 0;
+                const cacheCreation =
+                  typeof usage.cache_creation_input_tokens === "number"
+                    ? usage.cache_creation_input_tokens
+                    : 0;
                 content.push({
                   type: "usage_update",
-                  input_tokens: usage.input_tokens,
+                  input_tokens: usage.input_tokens + cacheRead + cacheCreation,
                   output_tokens:
                     typeof usage.output_tokens === "number"
                       ? usage.output_tokens
@@ -362,7 +374,16 @@ async function main(): Promise<void> {
                   resultUsage &&
                   typeof resultUsage.input_tokens === "number"
                 ) {
-                  snapshotBlock.input_tokens = resultUsage.input_tokens;
+                  const cacheRead =
+                    typeof resultUsage.cache_read_input_tokens === "number"
+                      ? resultUsage.cache_read_input_tokens
+                      : 0;
+                  const cacheCreation =
+                    typeof resultUsage.cache_creation_input_tokens === "number"
+                      ? resultUsage.cache_creation_input_tokens
+                      : 0;
+                  snapshotBlock.input_tokens =
+                    resultUsage.input_tokens + cacheRead + cacheCreation;
                   snapshotBlock.output_tokens =
                     typeof resultUsage.output_tokens === "number"
                       ? resultUsage.output_tokens

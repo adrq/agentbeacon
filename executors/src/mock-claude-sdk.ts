@@ -22,7 +22,12 @@ type MockSDKMessage =
       type: "assistant";
       message: {
         content: ContentBlock[];
-        usage?: { input_tokens: number; output_tokens: number };
+        usage?: {
+          input_tokens: number;
+          output_tokens: number;
+          cache_read_input_tokens?: number;
+          cache_creation_input_tokens?: number;
+        };
       };
     }
   | {
@@ -40,7 +45,12 @@ type MockSDKMessage =
       num_turns?: number;
       duration_ms?: number;
       model_usage?: Record<string, { contextWindow: number }>;
-      usage?: { input_tokens: number; output_tokens: number };
+      usage?: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      };
     }
   | {
       type: "stream_event";
@@ -170,7 +180,7 @@ async function* showcaseTurn(
           input: { file_path: "/workspace/src/config.rs" },
         },
       ],
-      usage: { input_tokens: 12500, output_tokens: 350 },
+      usage: { input_tokens: 500, output_tokens: 350, cache_read_input_tokens: 12000, cache_creation_input_tokens: 0 },
     },
   };
 
@@ -209,7 +219,7 @@ async function* showcaseTurn(
           input: { pattern: "TODO|FIXME", path: "/workspace/src" },
         },
       ],
-      usage: { input_tokens: 25000, output_tokens: 420 },
+      usage: { input_tokens: 1000, output_tokens: 420, cache_read_input_tokens: 12000, cache_creation_input_tokens: 12000 },
     },
   };
 
@@ -446,7 +456,7 @@ async function* showcaseTurn(
           ].join("\n"),
         },
       ],
-      usage: { input_tokens: 38000, output_tokens: 850 },
+      usage: { input_tokens: 2000, output_tokens: 850, cache_read_input_tokens: 24000, cache_creation_input_tokens: 12000 },
     },
   };
 
@@ -460,7 +470,7 @@ async function* showcaseTurn(
     num_turns: 1,
     duration_ms: 4500,
     model_usage: { "claude-sonnet-4-5-20250929": { contextWindow: 200000 } },
-    usage: { input_tokens: 45000, output_tokens: 2100 },
+    usage: { input_tokens: 3000, output_tokens: 2100, cache_read_input_tokens: 24000, cache_creation_input_tokens: 18000 },
   };
 }
 
