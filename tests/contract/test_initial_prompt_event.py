@@ -38,8 +38,8 @@ def test_root_session_has_initial_prompt_event(test_database):
         assert len(msg_events) >= 1
         first_msg = msg_events[0]
         payload = parse_payload(first_msg["payload"])
-        assert payload["role"] == "user"
-        assert payload["parts"][0]["kind"] == "text"
+        assert payload["role"] == "ROLE_USER"
+        assert "text" in payload["parts"][0]
         assert payload["parts"][0]["text"] == "implement auth module"
 
 
@@ -55,7 +55,7 @@ def test_root_session_prompt_event_has_no_sender(test_database):
         msg_events = [e for e in events if e["event_type"] == "message"]
         payload = parse_payload(msg_events[0]["payload"])
         assert len(payload["parts"]) == 1
-        assert payload["parts"][0]["kind"] == "text"
+        assert "text" in payload["parts"][0]
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -92,15 +92,15 @@ def test_child_session_has_initial_prompt_event_with_sender(test_database):
         assert len(msg_events) >= 1
 
         payload = parse_payload(msg_events[0]["payload"])
-        assert payload["role"] == "user"
+        assert payload["role"] == "ROLE_USER"
         assert len(payload["parts"]) == 2
         sender_part = payload["parts"][0]
-        assert sender_part["kind"] == "data"
+        assert "data" in sender_part
         assert sender_part["data"]["type"] == "sender"
         assert "name" in sender_part["data"]
         assert sender_part["data"]["session_id"] == lead_session_id
         text_part = payload["parts"][1]
-        assert text_part["kind"] == "text"
+        assert "text" in text_part
         assert text_part["text"] == "implement auth"
 
 
@@ -114,7 +114,7 @@ def test_empty_prompt_rejected(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "parts": [{"kind": "text", "text": ""}],
+                "parts": [{"text": ""}],
                 "cwd": "/tmp",
             },
             timeout=5,

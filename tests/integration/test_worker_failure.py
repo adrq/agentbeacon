@@ -95,8 +95,8 @@ def test_worker_handles_agent_process_failure():
                     "timeout": 5,
                 },
                 "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": "hello"}],
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "hello"}],
                 },
             },
         )
@@ -185,8 +185,8 @@ def test_worker_surfaces_adapter_rejection():
                     "timeout": 5,
                 },
                 "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": "hello"}],
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "hello"}],
                 },
             },
         )
@@ -272,8 +272,8 @@ def test_worker_fails_on_unknown_agent():
                 "driver": {"platform": "nonexistent_protocol", "config": {}},
                 "agent_config": {"command": "echo", "args": ["hi"]},
                 "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": "hello"}],
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "hello"}],
                 },
             },
         )

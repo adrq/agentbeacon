@@ -22,12 +22,15 @@ DOCS_ROOT = Path(__file__).resolve().parents[2] / "docs"
 SCHEMA_NAME_MAP: Dict[str, str] = {
     "workflow": "workflow-schema.json",
     "workflow-schema": "workflow-schema.json",
-    "a2a-task": "a2a-v0.3.0.schema.json",
-    "a2a-task.schema": "a2a-v0.3.0.schema.json",
-    "a2a": "a2a-v0.3.0.schema.json",
+    "a2a-task": "a2a-v1.0-flat.schema.json#/definitions/Task",
+    "a2a-task.schema": "a2a-v1.0-flat.schema.json#/definitions/Task",
+    "a2a": "a2a-v1.0-flat.schema.json",
+    "a2a-v1.0": "a2a-v1.0-flat.schema.json",
+    "message-send-params": "a2a-v1.0-flat.schema.json#/definitions/Send Message Request",
+    "SendMessageRequest": "a2a-v1.0-flat.schema.json#/definitions/Send Message Request",
+    # Legacy aliases kept for grep-ability during migration
     "a2a-v0.3.0": "a2a-v0.3.0.schema.json",
-    "message-send-params": "a2a-v0.3.0.schema.json#/definitions/MessageSendParams",
-    "MessageSendParams": "a2a-v0.3.0.schema.json#/definitions/MessageSendParams",
+    "MessageSendParams": "a2a-v1.0-flat.schema.json#/definitions/Send Message Request",
 }
 
 
@@ -35,6 +38,9 @@ def resolve_docs_path(relative_path: str) -> Path:
     """Return an absolute path within docs/ for the given relative path or alias."""
 
     candidate = SCHEMA_NAME_MAP.get(relative_path, relative_path)
+    # Strip JSON Pointer fragment (e.g., "file.json#/definitions/Task" → "file.json")
+    if "#" in candidate:
+        candidate = candidate.split("#", 1)[0]
     path = DOCS_ROOT / candidate
     if not path.exists():
         raise FileNotFoundError(f"Docs asset not found: {candidate}")
@@ -48,6 +54,10 @@ def load_schema(schema_name: str) -> Dict[str, Any]:
     Supports JSON Pointer fragments (e.g., "file.json#/definitions/Type").
     When a fragment is provided, the sub-schema is wrapped with the full schema's
     definitions and $schema metadata to preserve $ref resolution.
+
+    For Draft 2020-12 schemas (A2A v1.0), definitions are placed under $defs
+    and $ref paths are rewritten from #/definitions/ to #/$defs/ so that
+    Python's jsonschema library resolves them correctly.
     """
 
     candidate = SCHEMA_NAME_MAP.get(schema_name, schema_name)
@@ -75,12 +85,37 @@ def load_schema(schema_name: str) -> Dict[str, Any]:
         if "$schema" in full_schema:
             wrapped_schema["$schema"] = full_schema["$schema"]
 
+        # Draft 2020-12 requires $defs instead of definitions for local resolution
+        if "2020-12" in wrapped_schema.get("$schema", ""):
+            wrapped_schema = _adapt_for_draft2020(wrapped_schema)
+
         return wrapped_schema
 
     # Existing code for non-fragment references
     path = resolve_docs_path(schema_name)
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def _adapt_for_draft2020(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Adapt a Draft 2020-12 schema for Python jsonschema validation.
+
+    Moves 'definitions' to '$defs' and rewrites all internal $ref paths
+    from #/definitions/ to #/$defs/. Strips nested $schema from definitions
+    to avoid validator confusion.
+    """
+    result = dict(schema)
+    defs = result.pop("definitions", {})
+    cleaned_defs = {}
+    for k, v in defs.items():
+        d = dict(v)
+        d.pop("$schema", None)
+        cleaned_defs[k] = d
+    result["$defs"] = cleaned_defs
+    # Rewrite $ref paths
+    s = json.dumps(result)
+    s = s.replace("#/definitions/", "#/$defs/")
+    return json.loads(s)
 
 
 @lru_cache(maxsize=None)
@@ -149,16 +184,15 @@ def build_acp_task(
 ) -> Dict[str, Any]:
     """Construct an ACP task assignment with required metadata.cwd field.
 
-    ACP tasks use the A2A MessageSendParams.metadata extension field to pass
+    ACP tasks use the A2A Send Message Request metadata extension field to pass
     the cwd parameter required by the ACP protocol. This keeps validation enabled
     while conforming to both A2A and ACP protocol requirements.
     """
     message_id = f"{node_id}-msg-{uuid.uuid4()}"
     message = {
         "messageId": message_id,
-        "kind": "message",
-        "role": "user",
-        "parts": [{"kind": "text", "text": text}],
+        "role": "ROLE_USER",
+        "parts": [{"text": text}],
     }
 
     task_body = {"message": message, "metadata": {"cwd": cwd}}
@@ -196,9 +230,8 @@ def build_canonical_task(
         message_text = text or f"Task payload for {node_id}"
         message = {
             "messageId": f"{node_id}-msg-{uuid.uuid4()}",
-            "kind": "message",
-            "role": "user",
-            "parts": [{"kind": "text", "text": message_text}],
+            "role": "ROLE_USER",
+            "parts": [{"text": message_text}],
         }
         task_body = {"message": message}
 
@@ -215,7 +248,7 @@ def build_canonical_task(
     if artifacts:
         if validate_task:
             raise ValueError(
-                "MessageSendParams does not support artifacts field. "
+                "Send Message Request does not support artifacts field. "
                 "Set validate_task=False if testing invalid payloads."
             )
         payload["task"] = dict(payload["task"], artifacts=artifacts)

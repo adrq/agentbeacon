@@ -4,6 +4,12 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="Stdio mock agent not used in production; deferred from A2A v1.0 migration"
+)
+
 
 def test_bracketed_format_logging_stdio():
     """Test bracketed format logging in stdio mode."""

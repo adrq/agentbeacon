@@ -47,8 +47,8 @@ def _insert_task(db_url, execution_id, session_id, text="test task"):
     payload = json.dumps(
         {
             "message": {
-                "role": "user",
-                "parts": [{"kind": "text", "text": text}],
+                "role": "ROLE_USER",
+                "parts": [{"text": text}],
             }
         }
     )
@@ -216,7 +216,7 @@ def test_task_available_then_fetch_task_round_trip(test_database):
         # Push via API (triggers notify_waiters)
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "round trip"}]},
+            json={"parts": [{"text": "round trip"}]},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -275,8 +275,8 @@ def test_sync_with_result_returns_task_available_not_prompt_delivery(test_databa
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "done"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "done"}],
                             },
                         }
                     ],

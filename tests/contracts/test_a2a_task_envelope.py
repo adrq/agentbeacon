@@ -2,11 +2,11 @@ from __future__ import annotations
 
 
 def test_a2a_task_envelope_points_to_canonical_schema(load_json_asset) -> None:
-    # Load the official A2A v0.3.0 schema directly
-    payload = load_json_asset("a2a-v0.3.0.schema.json")
+    # Load the official A2A v1.0 schema directly
+    payload = load_json_asset("a2a-v1.0-flat.schema.json")
 
     # Verify it's a valid JSON Schema with proper draft declaration
-    assert payload["$schema"].startswith("http://json-schema.org/"), (
+    assert payload["$schema"].startswith("https://json-schema.org/"), (
         "$schema should declare draft version"
     )
 

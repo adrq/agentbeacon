@@ -49,7 +49,7 @@ def _enqueue_session(scheduler_url, session_id, execution_id, prompt_text):
         "agent_id": "mock-agent",
         "driver": {"platform": "acp", "config": {}},
         "agent_config": ACP_MOCK_CONFIG,
-        "message": {"role": "user", "parts": [{"kind": "text", "text": prompt_text}]},
+        "message": {"role": "ROLE_USER", "parts": [{"text": prompt_text}]},
     }
     resp = requests.post(
         f"{scheduler_url}/test/enqueue_session",
@@ -165,7 +165,9 @@ def test_worker_handles_task_with_output():
         assert output is not None, (
             f"Expected agent output from events or sync: {result}"
         )
-        assert output["role"] == "agent", f"Output role should be 'agent': {output}"
+        assert output["role"] == "ROLE_AGENT", (
+            f"Output role should be 'ROLE_AGENT': {output}"
+        )
         assert len(output["parts"]) > 0, f"Output should have parts: {output}"
 
         # The mock ACP agent echoes back the prompt

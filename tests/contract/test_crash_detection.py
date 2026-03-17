@@ -273,7 +273,7 @@ def test_crash_records_platform_event_on_parent(test_database):
         for (payload_str,) in rows:
             payload = json.loads(payload_str)
             for part in payload.get("parts", []):
-                if part.get("kind") == "data":
+                if "data" in part:
                     data = part["data"]
                     if data.get("type") == "child_crashed":
                         crashed_events.append(data)

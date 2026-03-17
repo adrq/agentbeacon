@@ -99,7 +99,7 @@ def test_claude_mock_emits_text_deltas():
             proc,
             {
                 "type": "start",
-                "parts": [{"kind": "text", "text": "Fix the tests"}],
+                "parts": [{"text": "Fix the tests"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -119,7 +119,7 @@ def test_copilot_mock_emits_text_deltas():
             proc,
             {
                 "type": "start",
-                "parts": [{"kind": "text", "text": "Fix the tests"}],
+                "parts": [{"text": "Fix the tests"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -139,7 +139,7 @@ def test_claude_mock_emits_thinking_deltas():
             proc,
             {
                 "type": "start",
-                "parts": [{"kind": "text", "text": "Fix tests"}],
+                "parts": [{"text": "Fix tests"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -184,7 +184,7 @@ def test_copilot_mock_thinking_before_text():
             proc,
             {
                 "type": "start",
-                "parts": [{"kind": "text", "text": "Fix tests"}],
+                "parts": [{"text": "Fix tests"}],
                 "cwd": os.getcwd(),
             },
         )
@@ -225,7 +225,7 @@ def test_copilot_mock_emits_reasoning_deltas():
             proc,
             {
                 "type": "start",
-                "parts": [{"kind": "text", "text": "Fix tests"}],
+                "parts": [{"text": "Fix tests"}],
                 "cwd": os.getcwd(),
             },
         )

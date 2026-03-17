@@ -48,7 +48,7 @@ def _send_lateral(ctx, sender_session_id, to, body):
     """POST /api/messages with Bearer auth."""
     return httpx.post(
         f"{ctx['url']}/api/messages",
-        json={"to": to, "parts": [{"kind": "text", "text": body}]},
+        json={"to": to, "parts": [{"text": body}]},
         headers={"Authorization": f"Bearer {sender_session_id}"},
         timeout=5,
     )
@@ -107,7 +107,7 @@ def test_user_message_still_works(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "JWT"}]},
+            json={"parts": [{"text": "JWT"}]},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -129,7 +129,7 @@ def test_user_message_to_working_session(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "follow up"}]},
+            json={"parts": [{"text": "follow up"}]},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -147,7 +147,7 @@ def test_user_message_to_terminal_session_rejected(test_database):
             _set_session_status(ctx["db_url"], session_id, status)
             resp = httpx.post(
                 f"{ctx['url']}/api/sessions/{session_id}/message",
-                json={"parts": [{"kind": "text", "text": "hello"}]},
+                json={"parts": [{"text": "hello"}]},
                 timeout=5,
             )
             assert resp.status_code == 409, f"expected 409 for status={status}"
@@ -276,7 +276,7 @@ def test_send_lateral_message_no_auth_rejected(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
             f"{ctx['url']}/api/messages",
-            json={"to": "some-name", "parts": [{"kind": "text", "text": "hello"}]},
+            json={"to": "some-name", "parts": [{"text": "hello"}]},
             timeout=5,
         )
         assert resp.status_code == 401
@@ -313,13 +313,13 @@ def test_send_lateral_message_records_event(test_database):
         msg_events = [(et, json.loads(p)) for et, p in events if et == "message"]
         assert len(msg_events) >= 1
         payload = msg_events[-1][1]
-        assert payload["role"] == "user"
+        assert payload["role"] == "ROLE_USER"
 
         # Verify sender data part
         data_parts = [
             p
             for p in payload["parts"]
-            if p.get("kind") == "data" and p.get("data", {}).get("type") == "sender"
+            if "data" in p and p.get("data", {}).get("type") == "sender"
         ]
         assert len(data_parts) == 1
         assert data_parts[0]["data"]["session_id"] == lead_session_id
@@ -450,7 +450,7 @@ def test_send_lateral_message_sender_uses_hierarchical_name(test_database):
         sender_parts = [
             p
             for p in payload["parts"]
-            if p.get("kind") == "data" and p.get("data", {}).get("type") == "sender"
+            if "data" in p and p.get("data", {}).get("type") == "sender"
         ]
         assert len(sender_parts) == 1
         # Sender name is the hierarchical slug path, not agent config name "lead"
@@ -493,7 +493,7 @@ def test_get_messages_returns_history(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "answer"}]},
+            json={"parts": [{"text": "answer"}]},
             timeout=5,
         )
 
@@ -521,7 +521,7 @@ def test_get_messages_since_id_filter(test_database):
         # Send first message
         resp1 = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "first"}]},
+            json={"parts": [{"text": "first"}]},
             timeout=5,
         )
         first_event_id = resp1.json()["event_id"]
@@ -530,7 +530,7 @@ def test_get_messages_since_id_filter(test_database):
         _set_session_status(ctx["db_url"], session_id, "input-required")
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "second"}]},
+            json={"parts": [{"text": "second"}]},
             timeout=5,
         )
 
@@ -591,7 +591,7 @@ def test_get_messages_user_messages_no_sender(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "user answer"}]},
+            json={"parts": [{"text": "user answer"}]},
             timeout=5,
         )
 
@@ -830,8 +830,8 @@ def test_turn_complete_wakes_parent(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "done"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "done"}],
                             },
                         }
                     ],

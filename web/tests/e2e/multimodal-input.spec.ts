@@ -23,7 +23,7 @@ test('text-only message still works after API change', async ({ page }) => {
 
   // Send a text-only follow-up using the parts-based API
   await apiPost(`/api/sessions/${sessionId}/message`, {
-    parts: [{ kind: 'text', text: 'follow up' }],
+    parts: [{ text: 'follow up' }],
   });
   await waitForTurnEnd(execId);
 

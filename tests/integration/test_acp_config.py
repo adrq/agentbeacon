@@ -49,7 +49,7 @@ def _enqueue_acp_session(
         "agent_id": "mock-agent",
         "driver": {"platform": "acp", "config": {}},
         "agent_config": agent_config,
-        "message": {"role": "user", "parts": [{"kind": "text", "text": prompt_text}]},
+        "message": {"role": "ROLE_USER", "parts": [{"text": prompt_text}]},
     }
     resp = requests.post(
         f"{url}/test/enqueue_session",
@@ -204,42 +204,10 @@ def test_mixed_a2a_and_acp_agents():
 
 
 @pytest.mark.skip(
-    reason="Phase 5+: worker no longer loads --agents-config YAML; "
-    "config validation happens per-session via task payload"
+    reason="Obsolete: worker no longer loads --agents-config YAML; "
+    "config validation happens per-session via task payload. "
+    "The example fixture file (examples/agents-with-invalid.yaml) has been deleted."
 )
 def test_invalid_acp_configs():
-    """Verify worker rejects ACP agent configs with validation errors at load time (missing command, zero/negative timeout)."""
-    port_manager = PortManager()
-    with port_manager.port_context("scheduler") as mock_orchestrator_port:
-        processes = []
-
-        try:
-            scheduler_proc = start_mock_scheduler(
-                mock_orchestrator_port, Path(__file__).parent.parent.parent
-            )
-            processes.append(scheduler_proc)
-
-            scheduler_ready = wait_for_port(mock_orchestrator_port, timeout=10)
-            assert scheduler_ready, "Mock scheduler should start"
-
-            worker_proc = start_worker(
-                f"http://localhost:{mock_orchestrator_port}",
-                agents_config="examples/agents-with-invalid.yaml",
-            )
-            processes.append(worker_proc)
-
-            exit_code = worker_proc.wait(timeout=5)
-
-            assert exit_code != 0, (
-                f"Worker should fail at startup with invalid ACP config, got exit code: {exit_code}"
-            )
-
-            worker_output, _ = worker_proc.communicate(timeout=1)
-            assert (
-                "invalid" in worker_output.lower()
-                or "config" in worker_output.lower()
-                or "validation" in worker_output.lower()
-            ), f"Worker error should mention config validation: {worker_output}"
-
-        finally:
-            cleanup_processes(processes)
+    """Verify worker rejects ACP agent configs with validation errors at load time."""
+    pass

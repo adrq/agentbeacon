@@ -38,7 +38,7 @@ test('decision card shows execution title and project name', async ({ page }) =>
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    parts: [{ kind: 'text', text: 'test polish decision card' }],
+    parts: [{ text: 'test polish decision card' }],
     title: 'Polish E2E Title',
     project_id: project!.id,
     cwd: '/tmp',
@@ -64,7 +64,7 @@ test('question banner has visible background', async ({ page }) => {
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    parts: [{ kind: 'text', text: 'test banner visibility' }],
+    parts: [{ text: 'test banner visibility' }],
     title: 'Banner Test',
     cwd: '/tmp',
   });

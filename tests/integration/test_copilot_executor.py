@@ -65,9 +65,7 @@ def test_copilot_executor_starts_and_completes():
             proc,
             {
                 "type": "start",
-                "parts": [
-                    {"kind": "text", "text": "What is 2+2? Reply with just the number."}
-                ],
+                "parts": [{"text": "What is 2+2? Reply with just the number."}],
                 "cwd": os.getcwd(),
             },
         )
@@ -97,7 +95,6 @@ def test_copilot_executor_mcp_tools_visible():
                 "type": "start",
                 "parts": [
                     {
-                        "kind": "text",
                         "text": "What tools do you have available? Just list them briefly.",
                     }
                 ],
@@ -133,7 +130,6 @@ def test_copilot_executor_multi_turn():
                 "type": "start",
                 "parts": [
                     {
-                        "kind": "text",
                         "text": "Remember the number 42. Reply with just 'ok'.",
                     }
                 ],
@@ -150,7 +146,6 @@ def test_copilot_executor_multi_turn():
                 "type": "prompt",
                 "parts": [
                     {
-                        "kind": "text",
                         "text": "What number did I ask you to remember? Reply with just the number.",
                     }
                 ],
@@ -178,7 +173,6 @@ def test_copilot_executor_cancel():
                 "type": "start",
                 "parts": [
                     {
-                        "kind": "text",
                         "text": "Write a very long essay about the history of mathematics. Make it at least 5000 words.",
                     }
                 ],

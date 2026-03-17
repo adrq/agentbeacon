@@ -50,7 +50,7 @@ def _enqueue_session(scheduler_url, session_id, execution_id, prompt_text):
         "agent_id": "mock-agent",
         "driver": {"platform": "acp", "config": {}},
         "agent_config": ACP_MOCK_CONFIG,
-        "message": {"role": "user", "parts": [{"kind": "text", "text": prompt_text}]},
+        "message": {"role": "ROLE_USER", "parts": [{"text": prompt_text}]},
     }
     resp = requests.post(
         f"{scheduler_url}/test/enqueue_session",
@@ -73,8 +73,8 @@ def _enqueue_prompt(scheduler_url, session_id, execution_id, prompt_text):
             "executionId": execution_id,
             "taskPayload": {
                 "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": prompt_text}],
+                    "role": "ROLE_USER",
+                    "parts": [{"text": prompt_text}],
                 },
             },
         },
@@ -152,7 +152,7 @@ def test_worker_completes_session_with_output():
         assert output is not None, (
             f"Expected agent output from events or sync: {result}"
         )
-        assert output["role"] == "agent"
+        assert output["role"] == "ROLE_AGENT"
         assert len(output["parts"]) > 0
     finally:
         _mark_complete(f"http://localhost:{port}", "sess-async-1")

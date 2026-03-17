@@ -105,23 +105,19 @@ tasks:
     agent: mock-agent
     task:
       message:
-        role: user
+        role: ROLE_USER
         messageId: "msg-task1"
-        kind: message
         parts:
-          - kind: text
-            text: Execute task 1
+          - text: Execute task 1
   - id: task2
     agent: mock-agent
     depends_on: [task1]
     task:
       message:
-        role: user
+        role: ROLE_USER
         messageId: "msg-task2"
-        kind: message
         parts:
-          - kind: text
-            text: Execute task 2
+          - text: Execute task 2
 """.strip()
 
         # Register workflow
@@ -142,17 +138,14 @@ tasks:
         # Submit workflow via A2A protocol
         a2a_endpoint = get_a2a_endpoint(scheduler_url)
         message = {
-            "role": "user",
-            "parts": [
-                {"kind": "data", "data": {"data": {"workflowRef": workflow_ref}}}
-            ],
+            "role": "ROLE_USER",
+            "parts": [{"data": {"workflowRef": workflow_ref}}],
             "messageId": str(uuid.uuid4()),
-            "kind": "message",
         }
 
         jsonrpc_request = {
             "jsonrpc": "2.0",
-            "method": "message/send",
+            "method": "SendMessage",
             "params": {"message": message},
             "id": str(uuid.uuid4()),
         }
@@ -370,12 +363,10 @@ tasks:
         delay_seconds: 1
     task:
       message:
-        role: user
+        role: ROLE_USER
         messageId: "msg-flaky"
-        kind: message
         parts:
-          - kind: text
-            text: Execute flaky task
+          - text: Execute flaky task
 """.strip()
 
         # Register workflow
@@ -396,17 +387,14 @@ tasks:
         # Submit workflow via A2A
         a2a_endpoint = get_a2a_endpoint(scheduler_url)
         message = {
-            "role": "user",
-            "parts": [
-                {"kind": "data", "data": {"data": {"workflowRef": workflow_ref}}}
-            ],
+            "role": "ROLE_USER",
+            "parts": [{"data": {"workflowRef": workflow_ref}}],
             "messageId": str(uuid.uuid4()),
-            "kind": "message",
         }
 
         jsonrpc_request = {
             "jsonrpc": "2.0",
-            "method": "message/send",
+            "method": "SendMessage",
             "params": {"message": message},
             "id": str(uuid.uuid4()),
         }
@@ -436,11 +424,9 @@ tasks:
                         "state": "failed",
                         "message": {
                             "messageId": str(uuid.uuid4()),
-                            "kind": "message",
-                            "role": "agent",
+                            "role": "ROLE_AGENT",
                             "parts": [
                                 {
-                                    "kind": "text",
                                     "text": "Simulated task failure - attempt 1",
                                 }
                             ],
@@ -486,11 +472,9 @@ tasks:
                         "state": "failed",
                         "message": {
                             "messageId": str(uuid.uuid4()),
-                            "kind": "message",
-                            "role": "agent",
+                            "role": "ROLE_AGENT",
                             "parts": [
                                 {
-                                    "kind": "text",
                                     "text": "Simulated task failure - attempt 2",
                                 }
                             ],
@@ -630,12 +614,10 @@ tasks:
     agent: mock-agent
     task:
       message:
-        role: user
+        role: ROLE_USER
         messageId: "msg-fail"
-        kind: message
         parts:
-          - kind: text
-            text: Execute failing task
+          - text: Execute failing task
 """.strip()
 
         # Register workflow
@@ -656,17 +638,14 @@ tasks:
         # Submit workflow via A2A
         a2a_endpoint = get_a2a_endpoint(scheduler_url)
         message = {
-            "role": "user",
-            "parts": [
-                {"kind": "data", "data": {"data": {"workflowRef": workflow_ref}}}
-            ],
+            "role": "ROLE_USER",
+            "parts": [{"data": {"workflowRef": workflow_ref}}],
             "messageId": str(uuid.uuid4()),
-            "kind": "message",
         }
 
         jsonrpc_request = {
             "jsonrpc": "2.0",
-            "method": "message/send",
+            "method": "SendMessage",
             "params": {"message": message},
             "id": str(uuid.uuid4()),
         }
@@ -696,11 +675,9 @@ tasks:
                         "state": "failed",
                         "message": {
                             "messageId": str(uuid.uuid4()),
-                            "kind": "message",
-                            "role": "agent",
+                            "role": "ROLE_AGENT",
                             "parts": [
                                 {
-                                    "kind": "text",
                                     "text": "Task execution failed: permanent failure simulated",
                                 }
                             ],
@@ -790,8 +767,8 @@ def test_event_sequence_inline_yaml_submission(test_database):
     This test demonstrates the correct A2A-compliant format for inline workflow
     submission, as the UI will use.
 
-    Uses direct format: {"kind": "data", "data": {"workflowYaml": "yaml"}}
-    (NOT nested format: {"kind": "data", "data": {"data": {"workflowYaml": "..."}}})
+    Uses direct format: {"data": {"workflowYaml": "yaml"}}
+    (NOT nested format: {"data": {"data": {"workflowYaml": "..."}}})
 
     Expected event sequence per DAG execution model (task2 depends_on task1):
     1. execution_started
@@ -813,42 +790,36 @@ tasks:
     agent: mock-agent
     task:
       message:
-        role: user
+        role: ROLE_USER
         messageId: "msg-task1"
-        kind: message
         parts:
-          - kind: text
-            text: Execute task 1
+          - text: Execute task 1
   - id: task2
     agent: mock-agent
     depends_on: [task1]
     task:
       message:
-        role: user
+        role: ROLE_USER
         messageId: "msg-task2"
-        kind: message
         parts:
-          - kind: text
-            text: Execute task 2
+          - text: Execute task 2
 """.strip()
 
         # Submit workflow via A2A with INLINE YAML (direct format - RECOMMENDED)
         a2a_endpoint = get_a2a_endpoint(scheduler_url)
         message = {
-            "role": "user",
+            "role": "ROLE_USER",
             "parts": [
                 {
-                    "kind": "data",
                     "data": {"workflowYaml": workflow_yaml},
-                }  # Direct format ✅
+                }  # Direct format
             ],
             "messageId": str(uuid.uuid4()),
-            "kind": "message",
         }
 
         jsonrpc_request = {
             "jsonrpc": "2.0",
-            "method": "message/send",
+            "method": "SendMessage",
             "params": {"message": message},
             "id": str(uuid.uuid4()),
         }

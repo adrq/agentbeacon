@@ -65,7 +65,7 @@ def enqueue_session(
             "args": args,
             "timeout": 30,
         },
-        "message": {"role": "user", "parts": [{"kind": "text", "text": prompt_text}]},
+        "message": {"role": "ROLE_USER", "parts": [{"text": prompt_text}]},
     }
     body = {
         "sessionId": session_id,
@@ -96,8 +96,8 @@ def enqueue_prompt(
             "executionId": execution_id,
             "taskPayload": {
                 "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": prompt_text}],
+                    "role": "ROLE_USER",
+                    "parts": [{"text": prompt_text}],
                 }
             },
         },
@@ -159,13 +159,13 @@ def get_agent_output(scheduler_url, session_id="sess-1"):
         payload = evt.get("payload", {})
         if (
             isinstance(payload, dict)
-            and payload.get("role") == "agent"
+            and payload.get("role") == "ROLE_AGENT"
             and "parts" in payload
         ):
             all_parts.extend(payload["parts"])
 
     if all_parts:
-        return {"role": "agent", "parts": all_parts}
+        return {"role": "ROLE_AGENT", "parts": all_parts}
 
     # Fallback: aggregate sync results via turn_messages
     results = get_results(scheduler_url)
@@ -177,13 +177,13 @@ def get_agent_output(scheduler_url, session_id="sess-1"):
             payload = msg.get("payload", {})
             if (
                 isinstance(payload, dict)
-                and payload.get("role") == "agent"
+                and payload.get("role") == "ROLE_AGENT"
                 and "parts" in payload
             ):
                 fallback_parts.extend(payload["parts"])
 
     if fallback_parts:
-        return {"role": "agent", "parts": fallback_parts}
+        return {"role": "ROLE_AGENT", "parts": fallback_parts}
 
     return None
 

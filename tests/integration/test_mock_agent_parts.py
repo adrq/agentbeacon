@@ -47,7 +47,7 @@ def _get_output_parts(url):
     assert results[0]["error"] is None, f"Unexpected error: {results[0]}"
     output = get_agent_output(url)
     assert output is not None, "Expected non-null output from events or sync"
-    assert output["role"] == "agent"
+    assert output["role"] == "ROLE_AGENT"
     return output["parts"]
 
 
@@ -62,7 +62,7 @@ def test_send_markdown_produces_text_part(mock_scheduler):
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
         parts = _get_output_parts(url)
 
-        text_parts = [p for p in parts if p.get("kind") == "text"]
+        text_parts = [p for p in parts if "text" in p]
         assert len(text_parts) >= 1, f"Expected at least one text part, got: {parts}"
 
         # The markdown should contain headers, tables, code blocks
@@ -87,7 +87,7 @@ def test_send_tool_call_produces_data_part(mock_scheduler):
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
         parts = _get_output_parts(url)
 
-        data_parts = [p for p in parts if p.get("kind") == "data"]
+        data_parts = [p for p in parts if "data" in p]
         tool_call_parts = [
             p for p in data_parts if p["data"].get("type") == "tool_call"
         ]
@@ -117,7 +117,7 @@ def test_send_plan_produces_data_part(mock_scheduler):
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
         parts = _get_output_parts(url)
 
-        data_parts = [p for p in parts if p.get("kind") == "data"]
+        data_parts = [p for p in parts if "data" in p]
         plan_parts = [p for p in data_parts if p["data"].get("type") == "plan"]
         assert len(plan_parts) >= 1, (
             f"Expected at least one Part::Data with type 'plan', got: {parts}"
@@ -143,7 +143,7 @@ def test_send_mode_update_produces_data_part(mock_scheduler):
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
         parts = _get_output_parts(url)
 
-        data_parts = [p for p in parts if p.get("kind") == "data"]
+        data_parts = [p for p in parts if "data" in p]
         mode_parts = [
             p for p in data_parts if p["data"].get("type") == "current_mode_update"
         ]
@@ -172,7 +172,7 @@ def test_send_commands_update_produces_data_part(mock_scheduler):
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
         parts = _get_output_parts(url)
 
-        data_parts = [p for p in parts if p.get("kind") == "data"]
+        data_parts = [p for p in parts if "data" in p]
         cmd_parts = [
             p
             for p in data_parts
@@ -206,7 +206,7 @@ def test_send_thought_produces_data_part(mock_scheduler):
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
         parts = _get_output_parts(url)
 
-        data_parts = [p for p in parts if p.get("kind") == "data"]
+        data_parts = [p for p in parts if "data" in p]
         thinking_parts = [
             p for p in data_parts if p["data"].get("type") == "agent_thought_chunk"
         ]
@@ -233,7 +233,7 @@ def test_send_tool_call_update_produces_data_part(mock_scheduler):
         assert poll_until(lambda: len(get_results(url)) > 0, timeout=30)
         parts = _get_output_parts(url)
 
-        data_parts = [p for p in parts if p.get("kind") == "data"]
+        data_parts = [p for p in parts if "data" in p]
         update_parts = [
             p for p in data_parts if p["data"].get("type") == "tool_call_update"
         ]
@@ -279,9 +279,7 @@ def test_end_turn_message_scenario_sends_message(mock_scheduler):
         messages = requests.get(f"{url}/test/messages", timeout=5).json()
         assert len(messages) == 1, f"Expected 1 captured message, got: {messages}"
         assert messages[0]["to"] == "lead/main"
-        text_parts = [
-            p["text"] for p in messages[0]["parts"] if p.get("kind") == "text"
-        ]
+        text_parts = [p["text"] for p in messages[0]["parts"] if "text" in p]
         assert any("do the task" in t for t in text_parts)
 
         # Worker events should contain END_TURN_MSG_SENT marker
@@ -291,7 +289,7 @@ def test_end_turn_message_scenario_sends_message(mock_scheduler):
             payload = ev.get("payload", {})
             if isinstance(payload, dict) and "parts" in payload:
                 for part in payload["parts"]:
-                    if part.get("kind") == "text":
+                    if "text" in part:
                         event_texts.append(part["text"])
         assert any("END_TURN_MSG_SENT" in t for t in event_texts), (
             f"Expected END_TURN_MSG_SENT marker in events, got texts: {event_texts}"

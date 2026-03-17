@@ -172,18 +172,19 @@ def assert_canonical_task_contract():
     """Assert that a task payload matches the canonical A2A task contract."""
 
     def _assert(payload: Dict[str, Any]) -> None:
-        canonical_subset = {
-            key: payload[key]
-            for key in ("history", "artifacts", "contextId", "metadata")
-            if key in payload
-        }
-
-        # Ensure history exists before attempting validation so failures are explicit.
-        assert "history" in canonical_subset, (
-            "canonical task payload must include history"
+        # Core identity and status fields required by A2A v1.0 Task
+        assert "id" in payload, f"task must include 'id': {list(payload.keys())}"
+        assert "status" in payload, (
+            f"task must include 'status': {list(payload.keys())}"
+        )
+        assert "state" in payload["status"], (
+            f"task.status must include 'state': {payload['status']}"
         )
 
-        contract_schema_helpers.validate_payload("a2a-task", canonical_subset)
+        # Ensure history exists before attempting validation so failures are explicit.
+        assert "history" in payload, "canonical task payload must include history"
+
+        contract_schema_helpers.validate_payload("a2a-task", payload)
 
         # Legacy prompt/messages fields should no longer surface on canonical tasks.
         assert "prompt" not in payload, "legacy prompt field should not appear"
@@ -200,7 +201,14 @@ def send_a2a_message(
     endpoint: str = "/rpc",
     payload_override: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
-    """Helper: Send message via A2A JSON-RPC and return task result.
+    """Helper: Send message via A2A JSON-RPC and return task.
+
+    Uses A2A v1.0 method name (SendMessage) and message format:
+    - Parts: {"text": X} (no "kind" field)
+    - Role: "ROLE_USER" enum prefix
+
+    For SendMessage (default): unwraps Send Message Response → returns task.
+    For GetTask/CancelTask (via payload_override): returns bare Task directly.
 
     Args:
         server_url: Base URL of the A2A server
@@ -212,14 +220,13 @@ def send_a2a_message(
 
     default_request = {
         "jsonrpc": "2.0",
-        "method": "message/send",
+        "method": "SendMessage",
         "id": 1,
         "params": {
             "message": {
-                "kind": "message",
                 "messageId": str(uuid.uuid4()),
-                "role": "user",
-                "parts": [{"kind": "text", "text": message_text}],
+                "role": "ROLE_USER",
+                "parts": [{"text": message_text}],
                 "contextId": "test-context",
             }
         },
@@ -229,7 +236,16 @@ def send_a2a_message(
     request = payload_override if payload_override else default_request
 
     response = httpx.post(f"{server_url}{endpoint}", json=request)
-    return response.json()["result"]
+    body = response.json()
+    assert "error" not in body, f"Unexpected JSON-RPC error: {body}"
+    assert "result" in body, f"JSON-RPC response missing 'result': {body}"
+    result = body["result"]
+
+    # SendMessage returns Send Message Response wrapper {task, message};
+    # GetTask/CancelTask return bare Task. Unwrap task if present.
+    if isinstance(result, dict) and "task" in result:
+        return result["task"]
+    return result
 
 
 def send_json_rpc(proc: subprocess.Popen, request: Dict[str, Any]) -> Dict[str, Any]:

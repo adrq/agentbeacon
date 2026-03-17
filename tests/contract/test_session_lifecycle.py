@@ -96,10 +96,9 @@ def test_worker_sync_delivers_prompt(test_database):
             payload = json.dumps(
                 {
                     "message": {
-                        "role": "user",
+                        "role": "ROLE_USER",
                         "parts": [
                             {
-                                "kind": "text",
                                 "text": "[turn complete from test-agent \u00b7 session fake-child]\n\nchild done",
                             }
                         ],
@@ -192,7 +191,7 @@ def test_worker_sync_long_poll_wakes(test_database):
         # Push task via scheduler API — this triggers notify_waiters()
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "wake up"}]},
+            json={"parts": [{"text": "wake up"}]},
             timeout=5,
         )
         assert resp.status_code == 200

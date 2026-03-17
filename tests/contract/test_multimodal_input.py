@@ -19,11 +19,11 @@ SMALL_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+
 
 
 def _text_part(text):
-    return {"kind": "text", "text": text}
+    return {"text": text}
 
 
 def _file_part(name="test.png", mime="image/png", b64=SMALL_PNG_B64):
-    return {"kind": "file", "file": {"name": name, "mimeType": mime, "bytes": b64}}
+    return {"raw": b64, "mediaType": mime, "filename": name}
 
 
 def _set_session_status(db_url, session_id, status):
@@ -67,13 +67,12 @@ def test_create_execution_with_image_part(test_database):
         assert len(msg_events) >= 1
 
         parts = msg_events[0]["payload"]["parts"]
-        kinds = [p["kind"] for p in parts]
-        assert "text" in kinds
-        assert "file" in kinds
+        assert any("text" in p for p in parts)
+        assert any("raw" in p for p in parts)
 
-        file_parts = [p for p in parts if p["kind"] == "file"]
-        assert file_parts[0]["file"]["name"] == "test.png"
-        assert file_parts[0]["file"]["mimeType"] == "image/png"
+        file_parts = [p for p in parts if "raw" in p]
+        assert file_parts[0]["filename"] == "test.png"
+        assert file_parts[0]["mediaType"] == "image/png"
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -208,13 +207,12 @@ def test_file_part_reaches_task_queue(test_database):
 
         # The task payload should contain the parts with the file data
         task_parts = payload.get("parts", payload.get("message", {}).get("parts", []))
-        kinds = [p["kind"] for p in task_parts]
-        assert "text" in kinds
-        assert "file" in kinds
+        assert any("text" in p for p in task_parts)
+        assert any("raw" in p for p in task_parts)
 
-        file_parts = [p for p in task_parts if p["kind"] == "file"]
-        assert file_parts[0]["file"]["name"] == "chart.png"
-        assert file_parts[0]["file"]["bytes"] == SMALL_PNG_B64
+        file_parts = [p for p in task_parts if "raw" in p]
+        assert file_parts[0]["filename"] == "chart.png"
+        assert file_parts[0]["raw"] == SMALL_PNG_B64
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -281,15 +279,14 @@ def test_get_messages_returns_parts(test_database):
         # body should contain the text
         assert "check this image" in msg["body"]
         # parts should contain both text and file parts (no internal data parts)
-        kinds = [p["kind"] for p in msg["parts"]]
-        assert "text" in kinds
-        assert "file" in kinds
+        assert any("text" in p for p in msg["parts"])
+        assert any("raw" in p for p in msg["parts"])
         # Verify no data parts leak through
-        assert "data" not in kinds
+        assert not any("data" in p for p in msg["parts"])
         # Verify file content is preserved
-        file_parts = [p for p in msg["parts"] if p["kind"] == "file"]
-        assert file_parts[0]["file"]["name"] == "screenshot.png"
-        assert file_parts[0]["file"]["bytes"] == SMALL_PNG_B64
+        file_parts = [p for p in msg["parts"] if "raw" in p]
+        assert file_parts[0]["filename"] == "screenshot.png"
+        assert file_parts[0]["raw"] == SMALL_PNG_B64
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -309,7 +306,7 @@ def test_session_message_rejects_no_deliverable_content(test_database):
         # Send parts with only a data part (no usable content)
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "data", "data": {"type": "meta"}}]},
+            json={"parts": [{"data": {"type": "meta"}}]},
             timeout=5,
         )
         assert resp.status_code == 400
@@ -356,7 +353,7 @@ def test_lateral_message_rejects_no_deliverable_content(test_database):
             f"{ctx['url']}/api/messages",
             json={
                 "to": child_hier_name,
-                "parts": [{"kind": "data", "data": {"type": "meta"}}],
+                "parts": [{"data": {"type": "meta"}}],
             },
             headers={"Authorization": f"Bearer {lead_session_id}"},
             timeout=5,

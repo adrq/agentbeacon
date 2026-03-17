@@ -84,8 +84,8 @@ def test_turn_complete_delivers_to_parent(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "auth done"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "auth done"}],
                             },
                         }
                     ],
@@ -125,8 +125,8 @@ def test_turn_complete_records_parent_event(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "result text"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "result text"}],
                             },
                         }
                     ],
@@ -147,7 +147,7 @@ def test_turn_complete_records_parent_event(test_database):
         turn_complete_events = []
         for _, payload in platform_events:
             for part in payload.get("parts", []):
-                if part.get("kind") == "data":
+                if "data" in part:
                     data = part["data"]
                     if data.get("type") == "turn_complete":
                         turn_complete_events.append(data)
@@ -179,8 +179,8 @@ def test_turn_complete_root_lead_no_delivery(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "lead output"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "lead output"}],
                             },
                         }
                     ],
@@ -276,8 +276,8 @@ def test_turn_complete_parent_long_poll_wakes(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "woke parent"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "woke parent"}],
                             },
                         }
                     ],
@@ -327,7 +327,7 @@ def test_turn_complete_claude_sdk_format(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
+                                "role": "ROLE_AGENT",
                                 "content": [
                                     {"type": "text", "text": "claude sdk output"}
                                 ],

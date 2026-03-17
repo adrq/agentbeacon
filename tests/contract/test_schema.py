@@ -77,7 +77,6 @@ EXPECTED_COLUMNS = {
         "context_id",
         "status",
         "title",
-        "input",
         "metadata",
         "max_depth",
         "max_width",
@@ -215,7 +214,7 @@ def test_executions_status_check_constraint():
         try:
             with pytest.raises(sqlite3.IntegrityError):
                 conn.execute(
-                    "INSERT INTO executions (id, context_id, status, input) VALUES ('test', 'test', 'invalid_status', '{}')"
+                    "INSERT INTO executions (id, context_id, status) VALUES ('test', 'test', 'invalid_status')"
                 )
         finally:
             conn.close()
@@ -260,7 +259,7 @@ def test_events_type_check_constraint():
                 "INSERT INTO agents (id, name, agent_type, config) VALUES ('a1', 'test-agent', 'acp', '{}')"
             )
             conn.execute(
-                "INSERT INTO executions (id, context_id, status, input) VALUES ('e1', 'e1', 'submitted', '{}')"
+                "INSERT INTO executions (id, context_id, status) VALUES ('e1', 'e1', 'submitted')"
             )
             conn.execute(
                 "INSERT INTO sessions (id, execution_id, agent_id, status) VALUES ('s1', 'e1', 'a1', 'submitted')"

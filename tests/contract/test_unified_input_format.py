@@ -72,7 +72,7 @@ def test_user_message_is_a2a(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "JWT"}]},
+            json={"parts": [{"text": "JWT"}]},
             timeout=5,
         )
 
@@ -91,7 +91,7 @@ def test_user_message_is_a2a(test_database):
         ]
         assert len(message_payloads) >= 1, f"No user message payload found: {payloads}"
         msg = message_payloads[-1]["message"]
-        assert msg["parts"][0]["kind"] == "text"
+        assert "text" in msg["parts"][0]
         assert msg["parts"][0]["text"] == "JWT"
         # No [user] prefix
         assert not msg["parts"][0]["text"].startswith("[user]")
@@ -180,8 +180,8 @@ def test_turn_complete_is_a2a(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "auth done"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "auth done"}],
                             },
                         }
                     ],

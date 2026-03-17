@@ -43,7 +43,7 @@ def _create_execution_with_limits(
     payload = {
         "root_agent_id": agent_id,
         "agent_ids": [agent_id],
-        "parts": [{"kind": "text", "text": prompt}],
+        "parts": [{"text": prompt}],
         "title": prompt,
         "cwd": tempfile.gettempdir(),
     }
@@ -108,8 +108,8 @@ def test_root_lead_at_max_depth_gets_escalate_only(test_database):
         context_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
-                "INSERT INTO executions (id, context_id, status, input, max_depth, max_width) VALUES (?, ?, 'submitted', ?, 0, 5)",
-                (exec_id, context_id, "test task"),
+                "INSERT INTO executions (id, context_id, status, max_depth, max_width) VALUES (?, ?, 'submitted', 0, 5)",
+                (exec_id, context_id),
             )
             conn.execute(
                 "INSERT INTO sessions (id, execution_id, agent_id, status) VALUES (?, ?, ?, 'submitted')",
@@ -428,7 +428,7 @@ def test_execution_creation_rejects_invalid_max_depth(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "parts": [{"kind": "text", "text": "test"}],
+                "parts": [{"text": "test"}],
                 "cwd": cwd,
                 "max_depth": 0,
             },
@@ -442,7 +442,7 @@ def test_execution_creation_rejects_invalid_max_depth(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "parts": [{"kind": "text", "text": "test"}],
+                "parts": [{"text": "test"}],
                 "cwd": cwd,
                 "max_depth": 11,
             },
@@ -464,7 +464,7 @@ def test_execution_creation_rejects_invalid_max_width(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "parts": [{"kind": "text", "text": "test"}],
+                "parts": [{"text": "test"}],
                 "cwd": cwd,
                 "max_width": 0,
             },
@@ -478,7 +478,7 @@ def test_execution_creation_rejects_invalid_max_width(test_database):
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
-                "parts": [{"kind": "text", "text": "test"}],
+                "parts": [{"text": "test"}],
                 "cwd": cwd,
                 "max_width": 51,
             },

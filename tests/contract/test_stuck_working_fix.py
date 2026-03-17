@@ -69,7 +69,7 @@ def _insert_task(db_url, execution_id, session_id, text):
     """Insert a task into task_queue for testing."""
     with db_conn(db_url) as conn:
         payload = json.dumps(
-            {"message": {"role": "user", "parts": [{"kind": "text", "text": text}]}}
+            {"message": {"role": "ROLE_USER", "parts": [{"text": text}]}}
         )
         conn.execute(
             "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
@@ -120,8 +120,8 @@ def test_child_completes_while_parent_has_queued_task(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "child output"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "child output"}],
                             },
                         }
                     ],
@@ -173,8 +173,8 @@ def test_fetch_task_transitions_input_required_to_working(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "done"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "done"}],
                             },
                         }
                     ],
@@ -233,8 +233,8 @@ def test_widened_guard_accepts_input_required(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "first turn"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "first turn"}],
                             },
                         }
                     ],
@@ -271,8 +271,8 @@ def test_widened_guard_accepts_input_required(test_database):
                         {
                             "msgSeq": 2,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "second turn"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "second turn"}],
                             },
                         }
                     ],
@@ -309,8 +309,8 @@ def test_reconciliation_fixes_stuck_execution(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "done"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "done"}],
                             },
                         }
                     ],
@@ -388,8 +388,8 @@ def test_reconciliation_does_not_fire_when_sessions_active(test_database):
                         {
                             "msgSeq": 1,
                             "payload": {
-                                "role": "assistant",
-                                "parts": [{"kind": "text", "text": "lead waiting"}],
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "lead waiting"}],
                             },
                         }
                     ],

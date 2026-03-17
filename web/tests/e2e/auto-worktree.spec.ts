@@ -51,7 +51,7 @@ test('auto worktree execution shows working directory', async ({ page }) => {
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    parts: [{ kind: 'text', text: 'test auto worktree' }],
+    parts: [{ text: 'test auto worktree' }],
     title: 'Auto WT Test',
     project_id: project.id,
   });
@@ -73,7 +73,7 @@ test('non git project shows no working directory', async ({ page }) => {
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    parts: [{ kind: 'text', text: 'test no worktree' }],
+    parts: [{ text: 'test no worktree' }],
     title: 'No WT Test',
     project_id: project.id,
   });
@@ -128,7 +128,7 @@ test('explicit branch override', async () => {
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    parts: [{ kind: 'text', text: 'test explicit branch' }],
+    parts: [{ text: 'test explicit branch' }],
     title: 'Explicit Branch',
     project_id: project.id,
     branch: 'test-feature',
@@ -152,7 +152,7 @@ test('explicit cwd overrides auto worktree', async ({ page }) => {
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    parts: [{ kind: 'text', text: 'test cwd override' }],
+    parts: [{ text: 'test cwd override' }],
     title: 'CWD Override',
     project_id: project.id,
     cwd: '/tmp',
@@ -176,7 +176,7 @@ test('working directory copy button exists', async ({ page }) => {
   const exec = await apiPost('/api/executions', {
     root_agent_id: agent.id,
     agent_ids: [agent.id],
-    parts: [{ kind: 'text', text: 'test copy' }],
+    parts: [{ text: 'test copy' }],
     title: 'Copy Test',
     project_id: project.id,
   });

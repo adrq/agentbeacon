@@ -74,7 +74,7 @@ def test_release_input_required_child_completes_it(test_database):
             e
             for e in parsed_events
             if any(
-                p.get("kind") == "data" and p.get("data", {}).get("type") == "release"
+                "data" in p and p.get("data", {}).get("type") == "release"
                 for p in e.get("parts", [])
             )
         ]

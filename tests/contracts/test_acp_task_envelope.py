@@ -7,7 +7,7 @@ def test_acp_envelope_reuses_a2a_task_schema(load_json_asset, validate_payload) 
     assert envelope_schema["properties"]["method"] == {"const": "agent.executeTask"}
     assert (
         envelope_schema["properties"]["params"]["properties"]["task"]["$ref"]
-        == "a2a-v0.3.0.schema.json#/definitions/MessageSendParams"
+        == "a2a-v1.0-flat.schema.json#/definitions/Send Message Request"
     )
 
     # Spot-check that a minimal valid payload round-trips against the schema by
@@ -15,9 +15,8 @@ def test_acp_envelope_reuses_a2a_task_schema(load_json_asset, validate_payload) 
     sample_task = {
         "message": {
             "messageId": "example",
-            "kind": "message",
-            "role": "user",
-            "parts": [{"kind": "text", "text": "hello"}],
+            "role": "ROLE_USER",
+            "parts": [{"text": "hello"}],
         }
     }
     validate_payload("message-send-params", sample_task)

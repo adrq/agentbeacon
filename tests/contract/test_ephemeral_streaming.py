@@ -70,7 +70,7 @@ def _get_text_parts(db_url, session_id):
     for seq, payload in events:
         parts = payload.get("parts", [])
         for part in parts:
-            if part.get("kind") == "text":
+            if "text" in part:
                 texts.append((seq, part.get("text", "")))
     return texts
 
@@ -304,7 +304,7 @@ def test_copilot_sdk_agent_no_delta_events_in_db(test_database):
             # Verify tool_use and thinking parts survived (non-delta content preserved)
             all_events = _get_message_events(ctx["db_url"], session_id)
             has_data_parts = any(
-                any(p.get("kind") == "data" for p in payload.get("parts", []))
+                any("data" in p for p in payload.get("parts", []))
                 for _, payload in all_events
             )
             assert has_data_parts, (

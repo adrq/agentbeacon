@@ -177,8 +177,8 @@ def test_worker_receives_a2a_prompt_delivery(mock_scheduler):
             "executionId": "exec-1",
             "taskPayload": {
                 "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": "follow-up as A2A message"}],
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "follow-up as A2A message"}],
                 }
             },
         },
@@ -271,8 +271,8 @@ def test_worker_invalid_agent_graceful(mock_scheduler):
             "timeout": 5,
         },
         "message": {
-            "role": "user",
-            "parts": [{"kind": "text", "text": "hello"}],
+            "role": "ROLE_USER",
+            "parts": [{"text": "hello"}],
         },
     }
     requests.post(

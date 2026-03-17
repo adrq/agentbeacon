@@ -36,8 +36,8 @@ test('claude mock: usage_update content blocks in assistant messages', async () 
   const messageEvents = events.filter((e: { event_type: string }) => e.event_type === 'message');
   const messagesWithUsage = messageEvents.filter((e: { payload: { parts: unknown[] } }) => {
     const parts = e.payload.parts || [];
-    return parts.some((p: { kind: string; data?: { type?: string } }) =>
-      p.kind === 'data' && p.data?.type === 'usage_update'
+    return parts.some((p: { data?: { type?: string } }) =>
+      'data' in p && p.data?.type === 'usage_update'
     );
   });
 
@@ -47,8 +47,8 @@ test('claude mock: usage_update content blocks in assistant messages', async () 
   // Verify structure of usage_update data part
   const firstUsageMessage = messagesWithUsage[0];
   const usagePart = firstUsageMessage.payload.parts.find(
-    (p: { kind: string; data?: { type?: string } }) =>
-      p.kind === 'data' && p.data?.type === 'usage_update'
+    (p: { data?: { type?: string } }) =>
+      'data' in p && p.data?.type === 'usage_update'
   );
 
   expect(usagePart).toBeDefined();
@@ -75,8 +75,8 @@ test('claude mock: usage_snapshot message before result', async () => {
   const snapshotMessages = events.filter((e: { event_type: string; payload: { parts: unknown[] } }) => {
     if (e.event_type !== 'message') return false;
     const parts = e.payload.parts || [];
-    return parts.some((p: { kind: string; data?: { type?: string } }) =>
-      p.kind === 'data' && p.data?.type === 'usage_snapshot'
+    return parts.some((p: { data?: { type?: string } }) =>
+      'data' in p && p.data?.type === 'usage_snapshot'
     );
   });
 
@@ -84,8 +84,8 @@ test('claude mock: usage_snapshot message before result', async () => {
 
   // Verify structure
   const snapshotPart = snapshotMessages[0].payload.parts.find(
-    (p: { kind: string; data?: { type?: string } }) =>
-      p.kind === 'data' && p.data?.type === 'usage_snapshot'
+    (p: { data?: { type?: string } }) =>
+      'data' in p && p.data?.type === 'usage_snapshot'
   );
 
   expect(snapshotPart).toBeDefined();
@@ -112,8 +112,8 @@ test('claude mock: compaction content block appears', async () => {
   const compactionMessages = events.filter((e: { event_type: string; payload: { parts: unknown[] } }) => {
     if (e.event_type !== 'message') return false;
     const parts = e.payload.parts || [];
-    return parts.some((p: { kind: string; data?: { type?: string } }) =>
-      p.kind === 'data' && p.data?.type === 'compaction'
+    return parts.some((p: { data?: { type?: string } }) =>
+      'data' in p && p.data?.type === 'compaction'
     );
   });
 
@@ -121,8 +121,8 @@ test('claude mock: compaction content block appears', async () => {
 
   // Verify structure
   const compactionPart = compactionMessages[0].payload.parts.find(
-    (p: { kind: string; data?: { type?: string } }) =>
-      p.kind === 'data' && p.data?.type === 'compaction'
+    (p: { data?: { type?: string } }) =>
+      'data' in p && p.data?.type === 'compaction'
   );
 
   expect(compactionPart).toBeDefined();

@@ -110,7 +110,7 @@ def _agent_message_count(db_url, session_id):
             "SELECT payload FROM events WHERE session_id = ? AND event_type = 'message'",
             (session_id,),
         ).fetchall()
-    return sum(1 for (p,) in rows if json.loads(p).get("role") == "agent")
+    return sum(1 for (p,) in rows if json.loads(p).get("role") == "ROLE_AGENT")
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -170,7 +170,7 @@ def test_worker_multi_turn_acp_session(test_database):
             # Push follow-up via scheduler API
             resp = httpx.post(
                 f"{ctx['url']}/api/sessions/{session_id}/message",
-                json={"parts": [{"kind": "text", "text": "second turn prompt"}]},
+                json={"parts": [{"text": "second turn prompt"}]},
                 timeout=10,
             )
             assert resp.status_code == 200, f"message push failed: {resp.text}"

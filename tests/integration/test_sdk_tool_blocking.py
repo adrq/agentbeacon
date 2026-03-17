@@ -88,7 +88,7 @@ def _run_session(script_name, timeout=30):
             proc,
             {
                 "type": "start",
-                "parts": [{"kind": "text", "text": "hello"}],
+                "parts": [{"text": "hello"}],
                 "cwd": os.getcwd(),
             },
         )

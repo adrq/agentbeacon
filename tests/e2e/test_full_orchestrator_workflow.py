@@ -84,23 +84,19 @@ tasks:
     agent: mock-agent
     task:
       message:
-        kind: message
         messageId: "{msg_id_1}"
-        role: user
+        role: ROLE_USER
         parts:
-          - kind: text
-            text: "[e2e-execution][task-1] NOW Process data step 1"
+          - text: "[e2e-execution][task-1] NOW Process data step 1"
   - id: task-2
     agent: mock-agent
     depends_on: [task-1]
     task:
       message:
-        kind: message
         messageId: "{msg_id_2}"
-        role: user
+        role: ROLE_USER
         parts:
-          - kind: text
-            text: "[e2e-execution][task-2] NOW Process data step 2"
+          - text: "[e2e-execution][task-2] NOW Process data step 2"
 """.strip()
 
             workflow_ref = register_workflow(
@@ -137,14 +133,10 @@ tasks:
             # Poll task status until completion
             final_task = poll_a2a_task_status(scheduler_url, task_id, timeout=120)
 
-            # Verify task completed successfully (new format: status is string)
-            assert final_task["status"] == "completed", (
+            # Verify task completed successfully (v1.0: status is object with state)
+            assert final_task["status"]["state"] == "TASK_STATE_COMPLETED", (
                 f"Task should complete successfully: {final_task}"
             )
-            assert "taskStates" in final_task or "task_states" in final_task, (
-                f"Completed task should have task states: {final_task}"
-            )
-
             # Verify scheduler still responding
             response = requests.get(f"{scheduler_url}/api/health", timeout=5)
             assert response.status_code == 200

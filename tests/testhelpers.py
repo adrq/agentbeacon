@@ -936,9 +936,14 @@ def get_a2a_endpoint(scheduler_url: str) -> str:
     )
 
     agent_card = agent_card_response.json()
-    assert "url" in agent_card, f"Agent card should have url field: {agent_card}"
+    assert (
+        "supportedInterfaces" in agent_card
+        and len(agent_card["supportedInterfaces"]) > 0
+    ), (
+        f"Agent card should have supportedInterfaces with at least one entry: {agent_card}"
+    )
 
-    return agent_card["url"]
+    return agent_card["supportedInterfaces"][0]["url"]
 
 
 def submit_workflow_via_a2a(
@@ -964,17 +969,16 @@ def submit_workflow_via_a2a(
     # A2A message with workflowRef
     # Per A2A spec: contextId is optional field inside Message, not in params
     message = {
-        "role": "user",
-        "parts": [{"kind": "data", "data": {"data": {"workflowRef": workflow_ref}}}],
+        "role": "ROLE_USER",
+        "parts": [{"data": {"workflowRef": workflow_ref}}],
         "messageId": str(uuid.uuid4()),
-        "kind": "message",
         "contextId": context_id,
     }
 
     # JSON-RPC request
     jsonrpc_request = {
         "jsonrpc": "2.0",
-        "method": "message/send",
+        "method": "SendMessage",
         "params": {"message": message},
         "id": str(uuid.uuid4()),
     }
@@ -986,16 +990,21 @@ def submit_workflow_via_a2a(
     )
 
     data = response.json()
+    assert "error" not in data, f"Unexpected JSON-RPC error: {data}"
     assert "result" in data, f"A2A response should have result: {data}"
-    assert data.get("error") is None, f"A2A response should not have error: {data}"
 
-    return data["result"]
+    # SendMessage returns Send Message Response wrapper {task, message}
+    send_response = data["result"]
+    assert "task" in send_response, (
+        f"SendMessage result should contain 'task' field: {send_response}"
+    )
+    return send_response["task"]
 
 
 def poll_a2a_task_status(
     scheduler_url: str, task_id: str, timeout: int = 60
 ) -> Dict[str, Any]:
-    """Poll task status via A2A tasks/get method until completion.
+    """Poll task status via A2A GetTask method until completion.
 
     Args:
         scheduler_url: Base URL of the scheduler
@@ -1016,8 +1025,8 @@ def poll_a2a_task_status(
     while time.time() - start_time < timeout:
         jsonrpc_request = {
             "jsonrpc": "2.0",
-            "method": "tasks/get",
-            "params": {"executionId": task_id},
+            "method": "GetTask",
+            "params": {"id": task_id},
             "id": str(uuid.uuid4()),
         }
 
@@ -1025,10 +1034,11 @@ def poll_a2a_task_status(
         assert response.status_code == 200, f"Task status poll failed: {response.text}"
 
         data = response.json()
+        assert "error" not in data, f"Unexpected JSON-RPC error: {data}"
         assert "result" in data, f"Task status response should have result: {data}"
 
         result = data["result"]
-        task_status = result.get("status", "unknown")
+        task_status = result.get("status", {}).get("state", "unknown")
 
         # Debug: Print status changes
         if task_status != last_state:
@@ -1037,7 +1047,15 @@ def poll_a2a_task_status(
             )
             last_state = task_status
 
-        if task_status in ["completed", "failed", "cancelled"]:
+        # Terminal and stop states — return on any state that won't auto-progress
+        if task_status in [
+            "TASK_STATE_COMPLETED",
+            "TASK_STATE_FAILED",
+            "TASK_STATE_CANCELED",
+            "TASK_STATE_REJECTED",
+            "TASK_STATE_INPUT_REQUIRED",
+            "TASK_STATE_AUTH_REQUIRED",
+        ]:
             return result
 
         time.sleep(1)  # Poll every second
@@ -1497,7 +1515,7 @@ def create_execution_via_api(
     if cwd is None and project_id is None:
         cwd = tempfile.gettempdir()
 
-    payload_parts = parts if parts is not None else [{"kind": "text", "text": prompt}]
+    payload_parts = parts if parts is not None else [{"text": prompt}]
     payload = {
         "root_agent_id": root_agent_id,
         "agent_ids": agent_ids,

@@ -146,7 +146,7 @@ def test_answer_input_required_session_returns_200(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "JWT"}]},
+            json={"parts": [{"text": "JWT"}]},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -167,7 +167,7 @@ def test_answer_transitions_session_to_working(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "option A"}]},
+            json={"parts": [{"text": "option A"}]},
             timeout=5,
         )
 
@@ -193,7 +193,7 @@ def test_answer_transitions_execution_to_working(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "option A"}]},
+            json={"parts": [{"text": "option A"}]},
             timeout=5,
         )
 
@@ -212,7 +212,7 @@ def test_answer_non_input_required_returns_409(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "answer"}]},
+            json={"parts": [{"text": "answer"}]},
             timeout=5,
         )
         assert resp.status_code == 409
@@ -272,7 +272,7 @@ def test_full_ask_answer_round_trip(test_database):
         # 3. Answer the question
         resp = httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "JWT"}]},
+            json={"parts": [{"text": "JWT"}]},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -299,10 +299,10 @@ def test_full_ask_answer_round_trip(test_database):
         # 6. Verify user message event payload shape (no question_event_id)
         # Skip the initial prompt event (first message) and check the answer event
         msg_events = [e for e in events if e["event_type"] == "message"]
-        user_events = [e for e in msg_events if e["payload"].get("role") == "user"]
+        user_events = [e for e in msg_events if e["payload"].get("role") == "ROLE_USER"]
         assert len(user_events) == 2  # initial prompt + user answer
         answer_event = user_events[1]  # second user event is the answer
-        assert answer_event["payload"]["parts"][0]["kind"] == "text"
+        assert "text" in answer_event["payload"]["parts"][0]
         assert "question_event_id" not in answer_event["payload"]
 
 
@@ -325,7 +325,7 @@ def test_message_pushes_a2a_task(test_database):
 
         httpx.post(
             f"{ctx['url']}/api/sessions/{session_id}/message",
-            json={"parts": [{"kind": "text", "text": "JWT"}]},
+            json={"parts": [{"text": "JWT"}]},
             timeout=5,
         )
 

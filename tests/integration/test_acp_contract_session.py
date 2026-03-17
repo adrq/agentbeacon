@@ -95,9 +95,8 @@ def test_session_new_invalid_cwd_missing():
                 task_body={
                     "message": {
                         "messageId": "node-missing-cwd-msg",
-                        "kind": "message",
-                        "role": "user",
-                        "parts": [{"kind": "text", "text": "Test missing cwd"}],
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "Test missing cwd"}],
                     },
                     "metadata": {},  # No cwd field - invalid for ACP
                 },
@@ -197,9 +196,8 @@ def test_session_new_invalid_cwd_relative():
                 task_body={
                     "message": {
                         "messageId": "node-relative-cwd-msg",
-                        "kind": "message",
-                        "role": "user",
-                        "parts": [{"kind": "text", "text": "Test relative cwd"}],
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "Test relative cwd"}],
                     },
                     "metadata": {
                         "cwd": "./relative/path"  # Relative path - invalid for ACP
@@ -302,9 +300,8 @@ def test_session_new_invalid_cwd_empty():
                 task_body={
                     "message": {
                         "messageId": "node-empty-cwd-msg",
-                        "kind": "message",
-                        "role": "user",
-                        "parts": [{"kind": "text", "text": "Test empty cwd"}],
+                        "role": "ROLE_USER",
+                        "parts": [{"text": "Test empty cwd"}],
                     },
                     "metadata": {
                         "cwd": ""  # Empty string - invalid for ACP

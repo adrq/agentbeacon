@@ -212,7 +212,7 @@ export async function sendAgentMessage(senderSessionId: string, toHierarchicalNa
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${senderSessionId}`,
     },
-    body: JSON.stringify({ to: toHierarchicalName, parts: [{ kind: 'text', text: body }] }),
+    body: JSON.stringify({ to: toHierarchicalName, parts: [{ text: body }] }),
   });
   if (!res.ok) throw new Error(`POST /api/messages failed: ${res.status} ${await res.text()}`);
   return res.json();
@@ -260,7 +260,7 @@ export async function createExecution(
   extraAgentIds?: string[],
 ) {
   const agent_ids = extraAgentIds ? [agentId, ...extraAgentIds] : [agentId];
-  const body = { root_agent_id: agentId, agent_ids, parts: [{ kind: 'text', text: prompt }], title, cwd: '/tmp' };
+  const body = { root_agent_id: agentId, agent_ids, parts: [{ text: prompt }], title, cwd: '/tmp' };
   const exec = await apiPost('/api/executions', body);
   return { execId: exec.execution.id, sessionId: exec.session_id };
 }

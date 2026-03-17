@@ -32,23 +32,19 @@ tasks:
     agent: mock-agent
     task:
       message:
-        role: user
+        role: ROLE_USER
         messageId: "msg-test-task-1"
-        kind: message
         parts:
-          - kind: text
-            text: Analyze the processed data
+          - text: Analyze the processed data
   - id: test-task-2
     agent: mock-agent
     depends_on: [test-task-1]
     task:
       message:
-        role: user
+        role: ROLE_USER
         messageId: "msg-test-task-2"
-        kind: message
         parts:
-          - kind: text
-            text: Analyze the processed data
+          - text: Analyze the processed data
 """.strip()
 
         register_response = requests.post(
@@ -87,23 +83,22 @@ tasks:
         )
 
         agent_card = agent_card_response.json()
-        assert "url" in agent_card, f"Agent card should have url field: {agent_card}"
-        a2a_endpoint = agent_card["url"]
+        assert "supportedInterfaces" in agent_card, (
+            f"Agent card should have supportedInterfaces field: {agent_card}"
+        )
+        a2a_endpoint = agent_card["supportedInterfaces"][0]["url"]
 
         # Start workflow execution via A2A JSON-RPC (following spec properly)
         # Per A2A spec: contextId is server-generated, not client-provided
         message = {
-            "role": "user",
-            "parts": [
-                {"kind": "data", "data": {"data": {"workflowRef": workflow_ref}}}
-            ],
+            "role": "ROLE_USER",
+            "parts": [{"data": {"workflowRef": workflow_ref}}],
             "messageId": str(uuid.uuid4()),
-            "kind": "message",
         }
 
         jsonrpc_request = {
             "jsonrpc": "2.0",
-            "method": "message/send",
+            "method": "SendMessage",
             "params": {"message": message},
             "id": str(uuid.uuid4()),
         }
@@ -408,12 +403,10 @@ tasks:
         delay_seconds: 1
     task:
       message:
-        role: user
+        role: ROLE_USER
         messageId: "msg-retry-test"
-        kind: message
         parts:
-          - kind: text
-            text: Execute flaky task
+          - text: Execute flaky task
 """.strip()
 
         register_response = requests.post(
@@ -440,22 +433,21 @@ tasks:
         )
 
         agent_card = agent_card_response.json()
-        assert "url" in agent_card, f"Agent card should have url field: {agent_card}"
-        a2a_endpoint = agent_card["url"]
+        assert "supportedInterfaces" in agent_card, (
+            f"Agent card should have supportedInterfaces field: {agent_card}"
+        )
+        a2a_endpoint = agent_card["supportedInterfaces"][0]["url"]
 
         # Start workflow execution via A2A JSON-RPC (following spec properly)
         message = {
-            "role": "user",
-            "parts": [
-                {"kind": "data", "data": {"data": {"workflowRef": workflow_ref}}}
-            ],
+            "role": "ROLE_USER",
+            "parts": [{"data": {"workflowRef": workflow_ref}}],
             "messageId": str(uuid.uuid4()),
-            "kind": "message",
         }
 
         jsonrpc_request = {
             "jsonrpc": "2.0",
-            "method": "message/send",
+            "method": "SendMessage",
             "params": {"message": message},
             "id": str(uuid.uuid4()),
         }
@@ -500,11 +492,9 @@ tasks:
                         "state": "failed",
                         "message": {
                             "messageId": str(uuid.uuid4()),
-                            "kind": "message",
-                            "role": "agent",
+                            "role": "ROLE_AGENT",
                             "parts": [
                                 {
-                                    "kind": "text",
                                     "text": "Simulated task failure - attempt 1",
                                 }
                             ],
@@ -549,11 +539,9 @@ tasks:
                         "state": "failed",
                         "message": {
                             "messageId": str(uuid.uuid4()),
-                            "kind": "message",
-                            "role": "agent",
+                            "role": "ROLE_AGENT",
                             "parts": [
                                 {
-                                    "kind": "text",
                                     "text": "Simulated task failure - attempt 2",
                                 }
                             ],

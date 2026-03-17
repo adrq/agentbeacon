@@ -13,19 +13,24 @@ import httpx
 
 
 def test_agent_card_a2a_protocol_compliance(mock_agent_a2a):
-    """Test agent card compliance with A2A v0.3.0 specification."""
+    """Test agent card compliance with A2A v1.0 specification."""
     response = httpx.get(f"{mock_agent_a2a}/.well-known/agent-card.json")
 
     assert response.status_code == 200
     assert response.headers.get("content-type") == "application/json"
     card = response.json()
 
-    # Core A2A v0.3.0 required fields
-    assert card["protocolVersion"] == "0.3.0"
+    # Core A2A v1.0 required fields
     assert card["name"] == "Mock A2A Agent"
-    assert card["url"] == f"{mock_agent_a2a}/rpc"
     assert card["version"] == "1.0.0"
-    assert card["preferredTransport"] == "JSONRPC"
+
+    # v1.0: URL moved to supportedInterfaces
+    assert "supportedInterfaces" in card
+    interfaces = card["supportedInterfaces"]
+    assert len(interfaces) >= 1
+    assert interfaces[0]["url"] == f"{mock_agent_a2a}/rpc"
+    assert interfaces[0]["protocolBinding"] == "JSONRPC"
+    assert interfaces[0]["protocolVersion"] == "1.0"
 
     # Required structure fields
     assert "description" in card
