@@ -33,23 +33,40 @@
     if (streaming) {
       untrack(() => {
         const gen = ++renderGen;
-        renderMarkdown(latestText, true, true).then(r => { if (gen === renderGen) html = r; }).catch(() => {});
+        renderMarkdown(latestText, true, true).then(r => { if (gen === renderGen) html = r; }).catch((err) => { console.warn('streaming render failed:', err); });
       });
       const interval = setInterval(() => {
         const gen = ++renderGen;
-        renderMarkdown(latestText, true, true).then(r => { if (gen === renderGen) html = r; }).catch(() => {});
+        renderMarkdown(latestText, true, true).then(r => { if (gen === renderGen) html = r; }).catch((err) => { console.warn('streaming render failed:', err); });
       }, 300);
       return () => clearInterval(interval);
     }
   });
 
-  // Non-streaming mode: immediate render (existing behavior)
+  // Non-streaming mode: immediate render with retry and fallback
   $effect(() => {
     if (!streaming) {
       const gen = ++renderGen;
-      renderMarkdown(text).then(result => {
-        if (gen === renderGen) html = result;
-      }).catch(() => {});
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const attempt = (retries: number) => {
+        renderMarkdown(text).then(result => {
+          if (gen === renderGen) html = result;
+        }).catch((err) => {
+          console.warn('renderMarkdown failed, retries left:', retries, err);
+          if (retries > 0 && gen === renderGen) {
+            timeoutId = setTimeout(() => attempt(retries - 1), 500);
+          } else if (gen === renderGen) {
+            // Fallback: render without Shiki rather than showing raw text
+            renderMarkdown(text, false, true).then(result => {
+              if (gen === renderGen) html = result;
+            }).catch((e) => { console.warn('renderMarkdown fallback also failed:', e); });
+          }
+        });
+      };
+      attempt(3);
+      return () => {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+      };
     }
   });
 

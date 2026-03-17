@@ -103,6 +103,7 @@ async function createStreamingProcessor() {
     .use(remarkParse)
     .use(remarkGfm)
     .use(remarkRehype)
+    .use(rehypeMermaidPre)
     .use(rehypeSanitize, sanitizeSchema)
     .use(rehypeRestoreClasses)
     .use(rehypeStringify);
@@ -111,6 +112,7 @@ async function createStreamingProcessor() {
 function getProcessor() {
   if (!processorPromise) {
     processorPromise = createProcessor().catch((err) => {
+      console.error('Shiki processor initialization failed:', err);
       processorPromise = null;
       throw err;
     });
@@ -121,6 +123,7 @@ function getProcessor() {
 function getStreamingProcessor() {
   if (!streamingProcessorPromise) {
     streamingProcessorPromise = createStreamingProcessor().catch((err) => {
+      console.error('Streaming processor initialization failed:', err);
       streamingProcessorPromise = null;
       throw err;
     });
