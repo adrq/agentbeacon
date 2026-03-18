@@ -53,6 +53,11 @@ type CatchAllHandler = (event: MockSessionEvent) => void;
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+const startupDelayMs = parseInt(
+  process.env.AGENTBEACON_MOCK_COPILOT_STARTUP_DELAY_MS ?? "0",
+  10,
+);
+
 let sessionCounter = 0;
 
 class MockCopilotSession {
@@ -110,7 +115,9 @@ class MockCopilotSession {
         `[mock-copilot-sdk] attachments=${JSON.stringify(options.attachments.map((a) => a.path))}\n`,
       );
     }
-    process.stderr.write(`[mock-copilot-sdk] send turn=${this._turnIndex}\n`);
+    process.stderr.write(
+      `[mock-copilot-sdk] send turn=${this._turnIndex} prompt=${JSON.stringify(options.prompt)}\n`,
+    );
     if (this._aborted) {
       this._aborted = false;
       this.dispatch({ type: "session.idle", data: {} });
@@ -143,6 +150,11 @@ class MockCopilotSession {
         },
       });
       return `msg-${this._turnIndex - 1}`;
+    }
+
+    // send() rejection simulation — rejects before session.idle is emitted.
+    if (options.prompt === "__send_reject__") {
+      throw new Error("mock send rejected before idle");
     }
 
     if (this._turnIndex === 0) {
@@ -403,6 +415,9 @@ export class CopilotClient {
   async createSession(
     _config?: Record<string, unknown>,
   ): Promise<MockCopilotSession> {
+    if (startupDelayMs > 0) {
+      await delay(startupDelayMs);
+    }
     const excludedTools = _config?.excludedTools;
     if (Array.isArray(excludedTools) && excludedTools.length > 0) {
       process.stderr.write(
@@ -420,6 +435,9 @@ export class CopilotClient {
     _sessionId: string,
     _config?: Record<string, unknown>,
   ): Promise<MockCopilotSession> {
+    if (startupDelayMs > 0) {
+      await delay(startupDelayMs);
+    }
     const excludedTools = _config?.excludedTools;
     if (Array.isArray(excludedTools) && excludedTools.length > 0) {
       process.stderr.write(

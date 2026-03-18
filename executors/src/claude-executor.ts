@@ -17,6 +17,8 @@ import { emit } from "./common/stdio-bridge.js";
 const MAX_TRANSIENT_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
 
+type TurnState = "idle" | "starting" | "in-flight";
+
 function isTransientError(e: unknown): boolean {
   const msg = String(e);
   // Only retry network-level errors, not HTTP status errors (401/403/etc.)
@@ -60,7 +62,31 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
 
 let currentAc: AbortController | null = null;
 let stoppedByUser = false;
+let pendingStopTurn = false;
 let sessionGeneration = 0;
+let turnState: TurnState = "idle";
+
+function hasQueuedTurnCommand(): boolean {
+  return commandQueue.some(
+    (cmd) => cmd.type === "start" || cmd.type === "prompt",
+  );
+}
+
+function discardQueuedTurnCommands(): void {
+  const retained = commandQueue.filter(
+    (cmd) => cmd.type !== "start" && cmd.type !== "prompt",
+  );
+  commandQueue.length = 0;
+  commandQueue.push(...retained);
+}
+
+function interruptPromptStream(): void {
+  commandQueue.push({ type: "cancel" } as Command);
+  if (queueResolve) {
+    queueResolve();
+    queueResolve = null;
+  }
+}
 
 const commandQueue: Command[] = [];
 let queueResolve: (() => void) | null = null;
@@ -76,9 +102,20 @@ rl.on("line", (line) => {
   }
   if (cmd.type === "cancel" && currentAc) {
     currentAc.abort();
-  } else if (cmd.type === "stop_turn" && currentAc) {
-    stoppedByUser = true;
-    currentAc.abort();
+  } else if (cmd.type === "stop_turn") {
+    // Known limitation: the worker only starts scheduler long-poll after init,
+    // so this local buffering only helps once stop_turn has actually reached
+    // the executor. True end-to-end pre-init stop delivery remains worker-side.
+    if (currentAc && (turnState !== "idle" || hasQueuedTurnCommand())) {
+      stoppedByUser = true;
+      discardQueuedTurnCommands();
+      interruptPromptStream();
+      currentAc.abort();
+    } else if (turnState === "starting" || hasQueuedTurnCommand()) {
+      pendingStopTurn = true;
+    } else {
+      process.stderr.write(`[claude] ignoring stale stop_turn while idle\n`);
+    }
   } else {
     commandQueue.push(cmd);
     if (queueResolve) {
@@ -156,6 +193,7 @@ async function* promptStream(
   message: { role: "user"; content: ContentBlock[] };
   parent_tool_use_id: null;
 }> {
+  turnState = "in-flight";
   yield {
     type: "user",
     session_id: "",
@@ -166,7 +204,9 @@ async function* promptStream(
   while (true) {
     const cmd = await nextCommand();
     if (gen !== sessionGeneration) return;
-    if (cmd.type === "stop" || cmd.type === "eof") return;
+    if (cmd.type === "stop" || cmd.type === "eof" || cmd.type === "cancel") {
+      return;
+    }
     if (cmd.type === "start") {
       emit({
         type: "error",
@@ -175,6 +215,7 @@ async function* promptStream(
       return;
     }
     if (cmd.type === "prompt") {
+      turnState = "in-flight";
       yield {
         type: "user",
         session_id: "",
@@ -188,11 +229,52 @@ async function* promptStream(
 // --- Main loop ---
 
 async function main(): Promise<void> {
+  let resumableStart: StartCommand | null = null;
+
+  function preserveResumableStart(
+    startCmd: StartCommand,
+    currentSessionId?: string,
+  ): void {
+    resumableStart = currentSessionId
+      ? { ...startCmd, resumeSessionId: currentSessionId }
+      : { ...startCmd };
+  }
+
+  function emitAbortedBeforeQuery(
+    startCmd: StartCommand,
+    currentSessionId?: string,
+  ): void {
+    emit({
+      type: "result",
+      subtype: stoppedByUser ? "stopped_by_user" : "cancelled",
+      sessionId: currentSessionId,
+    });
+    if (stoppedByUser) {
+      preserveResumableStart(startCmd, currentSessionId);
+    }
+    discardQueuedTurnCommands();
+    pendingStopTurn = false;
+    stoppedByUser = false;
+  }
+
   while (true) {
     const cmd = await nextCommand();
     if (cmd.type === "stop" || cmd.type === "eof") break;
 
-    if (cmd.type !== "start") continue;
+    let startCmd: StartCommand;
+    if (cmd.type === "start") {
+      resumableStart = null;
+      startCmd = cmd;
+    } else {
+      const resumeConfig: StartCommand | null = resumableStart;
+      if (cmd.type === "prompt" && resumeConfig !== null) {
+        startCmd = Object.assign({}, resumeConfig, { parts: cmd.parts });
+      } else {
+        continue;
+      }
+    }
+
+    turnState = "starting";
 
     sessionGeneration++;
     let currentSessionId: string | undefined;
@@ -203,6 +285,11 @@ async function main(): Promise<void> {
         currentAc = new AbortController();
         lastError = null;
 
+        if (pendingStopTurn) {
+          stoppedByUser = true;
+          currentAc.abort();
+        }
+
         if (attempt > 0) {
           await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
           // Don't start a new query() if stop/eof arrived during the delay
@@ -212,19 +299,20 @@ async function main(): Promise<void> {
           }
           // Don't start a new query() if cancel aborted the controller during the delay
           if (currentAc.signal.aborted) {
-            emit({
-              type: "result",
-              subtype: "cancelled",
-              sessionId: currentSessionId,
-            });
+            emitAbortedBeforeQuery(startCmd, currentSessionId);
             break;
           }
+        }
+
+        if (currentAc.signal.aborted) {
+          emitAbortedBeforeQuery(startCmd, currentSessionId);
+          break;
         }
 
         try {
           const options: Record<string, unknown> = {
             abortController: currentAc,
-            cwd: cmd.cwd,
+            cwd: startCmd.cwd,
             permissionMode: "bypassPermissions" as const,
             allowDangerouslySkipPermissions: true,
             settingSources: ["project"],
@@ -232,24 +320,27 @@ async function main(): Promise<void> {
             disallowedTools: DISALLOWED_ORCHESTRATION_TOOLS,
           };
 
-          if (cmd.mcpServers) options.mcpServers = cmd.mcpServers;
-          if (cmd.model) options.model = cmd.model;
-          if (cmd.maxTurns != null) options.maxTurns = cmd.maxTurns;
-          if (cmd.maxBudgetUsd != null) options.maxBudgetUsd = cmd.maxBudgetUsd;
-          if (cmd.systemPrompt) {
+          if (startCmd.mcpServers) options.mcpServers = startCmd.mcpServers;
+          if (startCmd.model) options.model = startCmd.model;
+          if (startCmd.maxTurns != null) options.maxTurns = startCmd.maxTurns;
+          if (startCmd.maxBudgetUsd != null) {
+            options.maxBudgetUsd = startCmd.maxBudgetUsd;
+          }
+          if (startCmd.systemPrompt) {
             options.systemPrompt = {
               type: "preset",
               preset: "claude_code",
-              append: cmd.systemPrompt,
+              append: startCmd.systemPrompt,
             };
           }
-          if (cmd.resumeSessionId) options.resume = cmd.resumeSessionId;
-          if (cmd.thinking) options.thinking = cmd.thinking;
-          if (cmd.effort) options.effort = cmd.effort;
+          if (startCmd.resumeSessionId)
+            options.resume = startCmd.resumeSessionId;
+          if (startCmd.thinking) options.thinking = startCmd.thinking;
+          if (startCmd.effort) options.effort = startCmd.effort;
           options.includePartialMessages = true;
 
           const q = query({
-            prompt: promptStream(cmd, sessionGeneration),
+            prompt: promptStream(startCmd, sessionGeneration),
             options,
           });
 
@@ -335,6 +426,7 @@ async function main(): Promise<void> {
                 }
               }
             } else if (msg.type === "result") {
+              turnState = "idle";
               const m = msg as unknown as Record<string, unknown>;
 
               // Emit usage_snapshot as a standalone message — contextWindow comes from
@@ -499,7 +591,7 @@ async function main(): Promise<void> {
           if (
             isTransientError(e) &&
             !currentSessionId &&
-            !cmd.resumeSessionId &&
+            !startCmd.resumeSessionId &&
             attempt < MAX_TRANSIENT_RETRIES
           ) {
             process.stderr.write(
@@ -516,18 +608,28 @@ async function main(): Promise<void> {
       // Handle final error (if any)
       if (lastError) {
         if (lastError instanceof Error && lastError.name === "AbortError") {
+          turnState = "idle";
           emit({
             type: "result",
             subtype: stoppedByUser ? "stopped_by_user" : "cancelled",
             sessionId: currentSessionId,
           });
+          if (stoppedByUser) {
+            preserveResumableStart(startCmd, currentSessionId);
+          } else {
+            resumableStart = null;
+          }
           stoppedByUser = false;
+          pendingStopTurn = false;
         } else {
+          resumableStart = null;
           emit({ type: "error", message: String(lastError) });
         }
       }
     } finally {
+      turnState = "idle";
       currentAc = null;
+      pendingStopTurn = false;
     }
   }
 }

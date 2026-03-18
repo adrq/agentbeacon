@@ -77,6 +77,7 @@ async fn send_message(
         &state.db_pool,
         &state.task_queue,
         &state.event_broadcast,
+        &state.stop_turn_intents,
         &recipient,
         &req.parts,
         Some(&sender_info),

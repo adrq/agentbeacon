@@ -222,6 +222,31 @@ async fn message_sender_task(
     }
 }
 
+async fn acknowledge_stop_without_active_turn(
+    client: &reqwest::Client,
+    scheduler_url: &str,
+    retry_config: &RetryConfig,
+    session_id: &str,
+    agent_session_id: Option<String>,
+) -> Result<SyncResponse> {
+    perform_sync_with_retry(
+        client,
+        scheduler_url,
+        &SyncRequest::with_result(
+            session_id,
+            agent_session_id,
+            Vec::new(),
+            None,
+            Some("stopped_by_user".to_string()),
+            None,
+            false,
+        ),
+        true,
+        retry_config,
+    )
+    .await
+}
+
 async fn run_session(
     args: &Args,
     client: &reqwest::Client,
@@ -381,7 +406,12 @@ async fn run_session(
                             || result.error_kind.as_ref()
                                 .is_some_and(|ek| ek.as_str() == "cancelled");
 
-                        // If we initiated a stop-turn, remap cancelled → stopped_by_user
+                        // Stop is authoritative for downstream orchestration semantics.
+                        // Once the user requests stop on a session, we intentionally
+                        // report this turn as stopped_by_user so the scheduler suppresses
+                        // normal turn-complete side effects such as parent notification.
+                        // This matches the UX requirement that a child stop should prevent
+                        // its result from propagating upward even in tight completion races.
                         let is_stopped = stopping
                             || result.error_kind.as_ref()
                                 .is_some_and(|ek| ek.as_str() == "stopped_by_user");
@@ -455,10 +485,51 @@ async fn run_session(
                             SyncResponse::Command { command } if command == "stop_turn" => {
                                 if turns_in_flight > 0 {
                                     let _ = cmd_tx.send(AgentCommand::StopTurn);
+                                    // SDK/ACP executors drop buffered follow-up prompts on stop,
+                                    // so only the currently running turn can still complete.
+                                    turns_in_flight = 1;
                                     stopping = true;
                                     // Don't restart long-poll — wait for TurnComplete
+                                } else {
+                                    match acknowledge_stop_without_active_turn(
+                                        client,
+                                        &args.scheduler_url,
+                                        retry_config,
+                                        session_id,
+                                        agent_session_id.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(SyncResponse::SessionComplete { .. }) => {
+                                            let _ = cmd_tx.send(AgentCommand::Stop);
+                                            break SessionExit::Done;
+                                        }
+                                        Ok(SyncResponse::Command { command }) if command == "cancel" => {
+                                            let _ = cmd_tx.send(AgentCommand::Stop);
+                                            break SessionExit::Done;
+                                        }
+                                        Ok(SyncResponse::Command { command }) if command == "shutdown" => {
+                                            let _ = cmd_tx.send(AgentCommand::Stop);
+                                            break SessionExit::ShutdownRequested;
+                                        }
+                                        Ok(_) => {
+                                            poll_fut = Some(start_long_poll(
+                                                client,
+                                                &args.scheduler_url,
+                                                session_id,
+                                                args.long_poll_timeout,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                error = %e,
+                                                "failed to acknowledge stop without active turn"
+                                            );
+                                            let _ = cmd_tx.send(AgentCommand::Stop);
+                                            break SessionExit::Done;
+                                        }
+                                    }
                                 }
-                                // No turn in flight — ignore, proceed normally
                             }
                             SyncResponse::Command { command } if command == "shutdown" => {
                                 let _ = cmd_tx.send(AgentCommand::Stop);
@@ -577,10 +648,43 @@ async fn run_session(
                             Ok(SyncResponse::Command { command }) if command == "stop_turn" => {
                                 if turns_in_flight > 0 {
                                     let _ = cmd_tx.send(AgentCommand::StopTurn);
+                                    // SDK/ACP executors drop buffered follow-up prompts on stop,
+                                    // so only the currently running turn can still complete.
+                                    turns_in_flight = 1;
                                     stopping = true;
                                     continue;
                                 }
-                                // No turn in flight — ignore stop_turn, fall through to restart long-poll
+                                match acknowledge_stop_without_active_turn(
+                                    client,
+                                    &args.scheduler_url,
+                                    retry_config,
+                                    session_id,
+                                    agent_session_id.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(SyncResponse::SessionComplete { .. }) => {
+                                        let _ = cmd_tx.send(AgentCommand::Stop);
+                                        break SessionExit::Done;
+                                    }
+                                    Ok(SyncResponse::Command { command }) if command == "cancel" => {
+                                        let _ = cmd_tx.send(AgentCommand::Stop);
+                                        break SessionExit::Done;
+                                    }
+                                    Ok(SyncResponse::Command { command }) if command == "shutdown" => {
+                                        let _ = cmd_tx.send(AgentCommand::Stop);
+                                        break SessionExit::ShutdownRequested;
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        tracing::error!(
+                                            error = %e,
+                                            "failed to acknowledge stop without active turn"
+                                        );
+                                        let _ = cmd_tx.send(AgentCommand::Stop);
+                                        break SessionExit::Done;
+                                    }
+                                }
                             }
                             Ok(SyncResponse::Command { command }) if command == "shutdown" => {
                                 let _ = cmd_tx.send(AgentCommand::Stop);
@@ -608,11 +712,44 @@ async fn run_session(
                     Ok(SyncResponse::Command { command }) if command == "stop_turn" => {
                         if turns_in_flight > 0 {
                             let _ = cmd_tx.send(AgentCommand::StopTurn);
+                            // SDK/ACP executors drop buffered follow-up prompts on stop,
+                            // so only the currently running turn can still complete.
+                            turns_in_flight = 1;
                             stopping = true;
                             // Don't restart the long-poll — wait for TurnComplete from executor
                             continue;
                         }
-                        // No turn in flight — ignore stop_turn, fall through to restart long-poll
+                        match acknowledge_stop_without_active_turn(
+                            client,
+                            &args.scheduler_url,
+                            retry_config,
+                            session_id,
+                            agent_session_id.clone(),
+                        )
+                        .await
+                        {
+                            Ok(SyncResponse::SessionComplete { .. }) => {
+                                let _ = cmd_tx.send(AgentCommand::Stop);
+                                break SessionExit::Done;
+                            }
+                            Ok(SyncResponse::Command { command }) if command == "cancel" => {
+                                let _ = cmd_tx.send(AgentCommand::Stop);
+                                break SessionExit::Done;
+                            }
+                            Ok(SyncResponse::Command { command }) if command == "shutdown" => {
+                                let _ = cmd_tx.send(AgentCommand::Stop);
+                                break SessionExit::ShutdownRequested;
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to acknowledge stop without active turn"
+                                );
+                                let _ = cmd_tx.send(AgentCommand::Stop);
+                                break SessionExit::Done;
+                            }
+                        }
                     }
                     Ok(SyncResponse::Command { command }) if command == "shutdown" => {
                         let _ = cmd_tx.send(AgentCommand::Stop);

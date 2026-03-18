@@ -38,12 +38,30 @@ const EXCLUDED_ORCHESTRATION_TOOLS: string[] = [
   "list_agents", // Enumerate delegation targets
 ];
 
+type TurnState = "idle" | "starting" | "in-flight";
+
 // --- Command queue (single stdin listener, cancel as side-effect) ---
 
 let currentSession: CopilotSession | null = null;
 let aborted = false;
 let stoppedByUser = false;
+let pendingStopTurn = false;
+let turnState: TurnState = "idle";
 let pendingBlocks: Record<string, unknown>[] = [];
+
+function hasQueuedTurnCommand(): boolean {
+  return commandQueue.some(
+    (cmd) => cmd.type === "start" || cmd.type === "prompt",
+  );
+}
+
+function discardQueuedTurnCommands(): void {
+  const retained = commandQueue.filter(
+    (cmd) => cmd.type !== "start" && cmd.type !== "prompt",
+  );
+  commandQueue.length = 0;
+  commandQueue.push(...retained);
+}
 
 function flushPendingBlocks(): void {
   if (pendingBlocks.length > 0) {
@@ -71,10 +89,20 @@ rl.on("line", (line) => {
   if (cmd.type === "cancel" && currentSession) {
     aborted = true;
     currentSession.abort();
-  } else if (cmd.type === "stop_turn" && currentSession) {
-    stoppedByUser = true;
-    aborted = true;
-    currentSession.abort();
+  } else if (cmd.type === "stop_turn") {
+    // Known limitation: the worker only starts scheduler long-poll after init,
+    // so this local buffering only helps once stop_turn has actually reached
+    // the executor. True end-to-end pre-init stop delivery remains worker-side.
+    if (currentSession && turnState !== "idle") {
+      stoppedByUser = true;
+      aborted = true;
+      discardQueuedTurnCommands();
+      currentSession.abort();
+    } else if (turnState === "starting" || hasQueuedTurnCommand()) {
+      pendingStopTurn = true;
+    } else {
+      process.stderr.write(`[copilot] ignoring stale stop_turn while idle\n`);
+    }
   } else {
     commandQueue.push(cmd);
     if (queueResolve) {
@@ -223,6 +251,7 @@ function cleanupTempFiles(paths?: string[]): void {
 }
 
 async function runSession(startCmd: StartCommand): Promise<void> {
+  turnState = "starting";
   const client = new CopilotClient({
     useStdio: true,
     autoRestart: true,
@@ -393,27 +422,61 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       },
     );
 
-    // First turn
-    aborted = false;
-    lastAssistantContent = undefined;
-    {
+    async function runTurn(parts: Part[]): Promise<void> {
+      aborted = false;
+      lastAssistantContent = undefined;
+      turnState = "starting";
+
+      const shouldStopTurn = pendingStopTurn;
+      if (shouldStopTurn) {
+        stoppedByUser = true;
+        aborted = true;
+        pendingStopTurn = false;
+        turnState = "idle";
+        emitTurnResult(undefined);
+        return;
+      }
+
       let fatalError: string | undefined;
       const idle = waitForIdle(session);
-      const sendOpts = partsToSendOptions(startCmd.parts);
+      const sendOpts = partsToSendOptions(parts);
+      if (pendingStopTurn) {
+        stoppedByUser = true;
+        aborted = true;
+        pendingStopTurn = false;
+      }
+      if (aborted) {
+        turnState = "idle";
+        idle.cancel();
+        cleanupTempFiles(sendOpts._tempFiles);
+        emitTurnResult(undefined);
+        return;
+      }
+      turnState = "in-flight";
       try {
         await session.send({
           prompt: sendOpts.prompt,
           attachments: sendOpts.attachments,
         });
+
         await idle.promise;
       } catch (e: unknown) {
         fatalError = String(e);
-        process.stderr.write(`[copilot] fatal during turn: ${fatalError}\n`);
       } finally {
+        turnState = "idle";
         idle.cancel();
         cleanupTempFiles(sendOpts._tempFiles);
       }
+
+      if (fatalError && !aborted && !stoppedByUser) {
+        process.stderr.write(`[copilot] fatal during turn: ${fatalError}\n`);
+      }
       emitTurnResult(lastAssistantContent, fatalError);
+    }
+
+    // First turn
+    {
+      await runTurn(startCmd.parts);
     }
 
     // Multi-turn loop
@@ -428,30 +491,13 @@ async function runSession(startCmd: StartCommand): Promise<void> {
         break;
       }
       if (cmd.type === "prompt") {
-        aborted = false;
-        lastAssistantContent = undefined;
-        let fatalError: string | undefined;
-        const idle = waitForIdle(session);
-        const sendOpts = partsToSendOptions(cmd.parts);
-        try {
-          await session.send({
-            prompt: sendOpts.prompt,
-            attachments: sendOpts.attachments,
-          });
-          await idle.promise;
-        } catch (e: unknown) {
-          fatalError = String(e);
-          process.stderr.write(`[copilot] fatal during turn: ${fatalError}\n`);
-        } finally {
-          idle.cancel();
-          cleanupTempFiles(sendOpts._tempFiles);
-        }
-        emitTurnResult(lastAssistantContent, fatalError);
+        await runTurn(cmd.parts);
       }
     }
 
     await session.disconnect();
   } finally {
+    turnState = "idle";
     currentSession = null;
     await client.stop();
   }
@@ -467,7 +513,9 @@ function emitTurnResult(
       type: "result",
       subtype: "stopped_by_user",
     });
+    discardQueuedTurnCommands();
     stoppedByUser = false;
+    pendingStopTurn = false;
     aborted = false;
   } else if (aborted) {
     emit({
@@ -493,6 +541,7 @@ function emitTurnResult(
       result: lastAssistantContent,
     });
   }
+  pendingStopTurn = false;
   aborted = false;
 }
 

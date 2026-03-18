@@ -126,6 +126,37 @@ pub async fn update_status(pool: &DbPool, id: &str, status: &str) -> Result<(), 
     Ok(())
 }
 
+pub async fn update_status_if_current(
+    pool: &DbPool,
+    id: &str,
+    current_status: &str,
+    new_status: &str,
+) -> Result<bool, SchedulerError> {
+    let is_terminal = matches!(new_status, "completed" | "failed" | "canceled");
+
+    let query = if is_terminal {
+        pool.prepare_query(
+            "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?",
+        )
+    } else {
+        pool.prepare_query(
+            "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, completed_at = NULL WHERE id = ? AND status = ?",
+        )
+    };
+
+    let result = sqlx::query(&query)
+        .bind(new_status)
+        .bind(id)
+        .bind(current_status)
+        .execute(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("conditional update session status failed: {e}"))
+        })?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 /// Atomically create a child session only if the parent has fewer than
 /// `max_width` active (non-terminal) children. Returns `true` if the
 /// session was created, `false` if width limit was reached.

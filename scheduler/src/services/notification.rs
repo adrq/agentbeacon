@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
+
 use serde_json::json;
 use tokio::sync::broadcast;
 
@@ -17,6 +20,7 @@ pub async fn deliver_to_parent(
     db_pool: &DbPool,
     task_queue: &TaskQueue,
     event_broadcast: &broadcast::Sender<EventNotification>,
+    stop_turn_intents: &Arc<RwLock<HashSet<String>>>,
     child_session_id: &str,
     turn_output: &str,
 ) -> Result<(), SchedulerError> {
@@ -90,7 +94,12 @@ pub async fn deliver_to_parent(
     // If we push first, the worker wakes, sees input-required, and may go back to sleep
     // before we transition to working.
     let parent = db::sessions::get_by_id(db_pool, &parent_id).await?;
-    crate::services::messaging::transition_to_working(db_pool, event_broadcast, &parent).await?;
+    let (_, _, transitioned_to_working) =
+        crate::services::messaging::transition_to_working(db_pool, event_broadcast, &parent)
+            .await?;
+    if transitioned_to_working {
+        crate::services::messaging::clear_stop_intent(stop_turn_intents, &parent.id);
+    }
 
     // Format and push to parent's inbox
     let formatted_text = format!(

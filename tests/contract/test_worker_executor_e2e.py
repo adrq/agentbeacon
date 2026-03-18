@@ -5,6 +5,7 @@ a real worker binary, and the ACP mock agent subprocess.
 """
 
 import json
+import os
 import time
 
 import httpx
@@ -18,6 +19,15 @@ from tests.testhelpers import (
     seed_acp_mock_agent,
     seed_test_agent,
     start_worker,
+)
+
+
+os.environ["AGENTBEACON_MOCK_SDK"] = "1"
+_project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+os.environ.setdefault(
+    "AGENTBEACON_EXECUTORS_DIR", os.path.join(_project_root, "executors", "dist")
 )
 
 
@@ -49,6 +59,16 @@ def _session_status(db_url, session_id):
             (session_id,),
         ).fetchone()
     return row[0] if row else None
+
+
+def _task_queue_count(db_url, session_id):
+    """Count queued tasks for a session."""
+    with db_conn(db_url) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM task_queue WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    return row[0] if row else 0
 
 
 def _mark_session_completed(db_url, session_id):
@@ -223,6 +243,63 @@ def test_worker_idle_no_sessions(test_database):
         try:
             time.sleep(3)
             assert worker.poll() is None, "Worker should stay alive with no sessions"
+        finally:
+            cleanup_processes([worker])
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_worker_stop_turn_clears_buffered_followups_from_pending_count(test_database):
+    """Stop-turn after queued follow-ups returns lead session to input-required."""
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(
+            ctx["db_url"], name="stop-buffered-sdk-agent", agent_type="claude_sdk"
+        )
+        exec_id, session_id = create_execution_via_api(
+            ctx["url"], agent_id, "initial long-running turn"
+        )
+
+        worker = start_worker(ctx["url"], interval="500ms")
+        try:
+            assert _poll_until(
+                lambda: _session_status(ctx["db_url"], session_id) == "working",
+                timeout=30,
+                interval=0.2,
+            ), "Worker did not start the initial SDK turn"
+
+            for prompt_text in ("buffered follow-up 1", "buffered follow-up 2"):
+                resp = httpx.post(
+                    f"{ctx['url']}/api/sessions/{session_id}/message",
+                    json={"parts": [{"kind": "text", "text": prompt_text}]},
+                    timeout=10,
+                )
+                assert resp.status_code == 200, f"message push failed: {resp.text}"
+
+            assert _poll_until(
+                lambda: _task_queue_count(ctx["db_url"], session_id) == 0,
+                timeout=30,
+                interval=0.2,
+            ), (
+                "Worker never cleared follow-up prompts from the scheduler queue during the active turn"
+            )
+
+            stop_resp = httpx.post(
+                f"{ctx['url']}/api/sessions/{session_id}/stop",
+                timeout=10,
+            )
+            assert stop_resp.status_code == 200, f"stop failed: {stop_resp.text}"
+            assert stop_resp.json()["tasks_flushed"] == 0
+
+            assert _poll_until(
+                lambda: _session_status(ctx["db_url"], session_id) == "input-required",
+                timeout=30,
+                interval=0.2,
+            ), (
+                "Stopped session did not return to input-required after buffered prompts were dropped"
+            )
+
+            time.sleep(1)
+            assert _task_queue_count(ctx["db_url"], session_id) == 0
+            assert worker.poll() is None, "Worker should remain alive after stop-turn"
         finally:
             cleanup_processes([worker])
 

@@ -132,6 +132,7 @@ async fn post_message(
         &state.db_pool,
         &state.task_queue,
         &state.event_broadcast,
+        &state.stop_turn_intents,
         &session,
         &req.parts,
         None, // None = user message
@@ -182,8 +183,8 @@ async fn cancel_session(
 
     // Clean up any pending stop_turn command (prevents unbounded HashMap growth)
     {
-        let mut commands = state.session_commands.write().unwrap();
-        commands.remove(&id);
+        let mut intents = state.stop_turn_intents.write().unwrap();
+        intents.remove(&id);
     }
 
     // Notify parent that this session was canceled
@@ -273,61 +274,86 @@ async fn stop_turn_handler(
 
     // If session is submitted (no worker yet), transition directly to input-required
     if session.status == "submitted" {
-        db::sessions::update_status(&state.db_pool, &id, "input-required").await?;
-        let event_payload = json!({"from": "submitted", "to": "input-required"});
-        if let Ok(event_id) = db::events::insert(
+        if db::sessions::update_status_if_current(
             &state.db_pool,
-            &session.execution_id,
-            Some(&id),
-            "state_change",
-            &serde_json::to_string(&event_payload).unwrap(),
+            &id,
+            "submitted",
+            "input-required",
         )
-        .await
+        .await?
         {
-            let _ = state.event_broadcast.send(EventNotification::persisted(
-                session.execution_id.clone(),
-                event_id,
-            ));
-        }
-        // Also transition execution if lead session
-        if session.parent_session_id.is_none() {
-            use db::executions::CasResult;
-            if let Ok(CasResult::Applied) = db::executions::update_status_cas(
+            let event_payload = json!({"from": "submitted", "to": "input-required"});
+            if let Ok(event_id) = db::events::insert(
                 &state.db_pool,
                 &session.execution_id,
-                "input-required",
-                &["submitted", "working"],
+                Some(&id),
+                "state_change",
+                &serde_json::to_string(&event_payload).unwrap(),
             )
             .await
             {
-                let exec_event = json!({"from": "submitted", "to": "input-required"});
-                if let Ok(event_id) = db::events::insert(
+                let _ = state.event_broadcast.send(EventNotification::persisted(
+                    session.execution_id.clone(),
+                    event_id,
+                ));
+            }
+            // Also transition execution if lead session
+            if session.parent_session_id.is_none() {
+                use db::executions::CasResult;
+                if let Ok(CasResult::Applied) = db::executions::update_status_cas(
                     &state.db_pool,
                     &session.execution_id,
-                    None,
-                    "state_change",
-                    &serde_json::to_string(&exec_event).unwrap(),
+                    "input-required",
+                    &["submitted", "working"],
                 )
                 .await
                 {
-                    let _ = state.event_broadcast.send(EventNotification::persisted(
-                        session.execution_id.clone(),
-                        event_id,
-                    ));
+                    let exec_event = json!({"from": "submitted", "to": "input-required"});
+                    if let Ok(event_id) = db::events::insert(
+                        &state.db_pool,
+                        &session.execution_id,
+                        None,
+                        "state_change",
+                        &serde_json::to_string(&exec_event).unwrap(),
+                    )
+                    .await
+                    {
+                        let _ = state.event_broadcast.send(EventNotification::persisted(
+                            session.execution_id.clone(),
+                            event_id,
+                        ));
+                    }
                 }
             }
+            // No command slot needed — no worker to notify
+            return Ok(Json(StopTurnResponse {
+                stopped: true,
+                tasks_flushed,
+            }));
         }
-        // No command slot needed — no worker to notify
-        return Ok(Json(StopTurnResponse {
-            stopped: true,
-            tasks_flushed,
-        }));
+
+        let fresh_session = db::sessions::get_by_id(&state.db_pool, &id).await?;
+        if matches!(
+            fresh_session.status.as_str(),
+            "completed" | "failed" | "canceled"
+        ) {
+            return Err(SchedulerError::Conflict(format!(
+                "session is already in terminal state: {}",
+                fresh_session.status
+            )));
+        }
+        if fresh_session.status != "working" {
+            return Ok(Json(StopTurnResponse {
+                stopped: true,
+                tasks_flushed,
+            }));
+        }
     }
 
-    // 2. THEN write command to per-session slot (overwrites any previous command)
+    // 2. THEN publish one atomic stop intent for this session.
     {
-        let mut commands = state.session_commands.write().unwrap();
-        commands.insert(id.clone(), "stop_turn".to_string());
+        let mut intents = state.stop_turn_intents.write().unwrap();
+        intents.insert(id.clone());
     }
 
     // 3. Wake long-polling workers so they discover the command

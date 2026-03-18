@@ -4,7 +4,7 @@ use axum::{
     response::Redirect,
     routing::get,
 };
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
@@ -63,7 +63,7 @@ pub struct AppState {
     pub event_broadcast: broadcast::Sender<EventNotification>,
     pub wiki_search: WikiSearchIndex,
     pub vite_dev_port: u16,
-    pub session_commands: Arc<RwLock<HashMap<String, String>>>,
+    pub stop_turn_intents: Arc<RwLock<HashSet<String>>>,
 }
 
 impl AppState {
@@ -88,7 +88,7 @@ impl AppState {
             event_broadcast,
             wiki_search,
             vite_dev_port,
-            session_commands: Arc::new(RwLock::new(HashMap::new())),
+            stop_turn_intents: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 

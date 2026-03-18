@@ -74,6 +74,10 @@ const transientFailureCount = parseInt(
   process.env.AGENTBEACON_MOCK_SDK_TRANSIENT_FAILURES ?? "0",
   10,
 );
+const initDelayMs = parseInt(
+  process.env.AGENTBEACON_MOCK_CLAUDE_INIT_DELAY_MS ?? "0",
+  10,
+);
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -180,7 +184,12 @@ async function* showcaseTurn(
           input: { file_path: "/workspace/src/config.rs" },
         },
       ],
-      usage: { input_tokens: 500, output_tokens: 350, cache_read_input_tokens: 12000, cache_creation_input_tokens: 0 },
+      usage: {
+        input_tokens: 500,
+        output_tokens: 350,
+        cache_read_input_tokens: 12000,
+        cache_creation_input_tokens: 0,
+      },
     },
   };
 
@@ -219,7 +228,12 @@ async function* showcaseTurn(
           input: { pattern: "TODO|FIXME", path: "/workspace/src" },
         },
       ],
-      usage: { input_tokens: 1000, output_tokens: 420, cache_read_input_tokens: 12000, cache_creation_input_tokens: 12000 },
+      usage: {
+        input_tokens: 1000,
+        output_tokens: 420,
+        cache_read_input_tokens: 12000,
+        cache_creation_input_tokens: 12000,
+      },
     },
   };
 
@@ -456,7 +470,12 @@ async function* showcaseTurn(
           ].join("\n"),
         },
       ],
-      usage: { input_tokens: 2000, output_tokens: 850, cache_read_input_tokens: 24000, cache_creation_input_tokens: 12000 },
+      usage: {
+        input_tokens: 2000,
+        output_tokens: 850,
+        cache_read_input_tokens: 24000,
+        cache_creation_input_tokens: 12000,
+      },
     },
   };
 
@@ -470,7 +489,12 @@ async function* showcaseTurn(
     num_turns: 1,
     duration_ms: 4500,
     model_usage: { "claude-sonnet-4-5-20250929": { contextWindow: 200000 } },
-    usage: { input_tokens: 3000, output_tokens: 2100, cache_read_input_tokens: 24000, cache_creation_input_tokens: 18000 },
+    usage: {
+      input_tokens: 3000,
+      output_tokens: 2100,
+      cache_read_input_tokens: 24000,
+      cache_creation_input_tokens: 18000,
+    },
   };
 }
 
@@ -520,6 +544,12 @@ export async function* query(params: {
   process.stderr.write(
     `[mock-claude-sdk] query() called, sessionId=${sessionId}\n`,
   );
+
+  if (initDelayMs > 0) {
+    checkAbort(signal);
+    await delay(initDelayMs);
+    checkAbort(signal);
+  }
 
   const disallowedTools = params.options?.disallowedTools;
   if (Array.isArray(disallowedTools) && disallowedTools.length > 0) {

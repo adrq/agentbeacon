@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 use serde_json::json;
 use tokio::sync::broadcast;
@@ -42,6 +43,11 @@ pub struct SenderInfo {
     pub session_id: String,
 }
 
+pub fn clear_stop_intent(stop_turn_intents: &Arc<RwLock<HashSet<String>>>, session_id: &str) {
+    let mut intents = stop_turn_intents.write().unwrap();
+    intents.remove(session_id);
+}
+
 /// Transition a session from input-required → working.
 /// Records state_change events, propagates to execution if root session.
 /// No-op if session is not in input-required state.
@@ -53,10 +59,10 @@ pub async fn transition_to_working(
     db_pool: &DbPool,
     event_broadcast: &broadcast::Sender<EventNotification>,
     session: &Session,
-) -> Result<(String, String), SchedulerError> {
+) -> Result<(String, String, bool), SchedulerError> {
     if session.status != "input-required" {
         let execution = db::executions::get_by_id(db_pool, &session.execution_id).await?;
-        return Ok((session.status.clone(), execution.status));
+        return Ok((session.status.clone(), execution.status, false));
     }
 
     db::sessions::update_status(db_pool, &session.id, "working").await?;
@@ -106,7 +112,7 @@ pub async fn transition_to_working(
                 }
                 CasResult::Conflict => {
                     // Execution is terminal or already working — return actual status
-                    return Ok(("working".to_string(), execution.status));
+                    return Ok(("working".to_string(), execution.status, true));
                 }
                 CasResult::NotFound => {
                     return Err(SchedulerError::NotFound(format!(
@@ -122,7 +128,7 @@ pub async fn transition_to_working(
         execution.status
     };
 
-    Ok(("working".to_string(), execution_status))
+    Ok(("working".to_string(), execution_status, true))
 }
 
 /// Core message delivery: guard, record event, push to inbox, transition state.
@@ -133,10 +139,12 @@ pub async fn transition_to_working(
 /// - working: accept, queue for delivery (no transition)
 /// - submitted: reject (agent not started, cannot process messages)
 /// - completed/failed/canceled: reject (terminal)
+#[allow(clippy::too_many_arguments)]
 pub async fn deliver_message(
     db_pool: &DbPool,
     task_queue: &TaskQueue,
     event_broadcast: &broadcast::Sender<EventNotification>,
+    stop_turn_intents: &Arc<RwLock<HashSet<String>>>,
     session: &Session,
     parts: &[serde_json::Value],
     sender: Option<&SenderInfo>,
@@ -210,8 +218,11 @@ pub async fn deliver_message(
     // Must happen first: push() calls notify_waiters(), which wakes the worker.
     // If we push first, the worker wakes, sees input-required, and may go back
     // to sleep before we transition to working.
-    let (session_status, execution_status) =
+    let (session_status, execution_status, transitioned_to_working) =
         transition_to_working(db_pool, event_broadcast, session).await?;
+    if transitioned_to_working {
+        clear_stop_intent(stop_turn_intents, &session.id);
+    }
 
     task_queue
         .push(TaskAssignment {

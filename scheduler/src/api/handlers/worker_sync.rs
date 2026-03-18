@@ -209,8 +209,8 @@ pub async fn handle_worker_sync(
                     }
                     // Clean up any pending stop_turn command (prevents unbounded HashMap growth)
                     {
-                        let mut commands = state.session_commands.write().unwrap();
-                        commands.remove(&result.session_id);
+                        let mut intents = state.stop_turn_intents.write().unwrap();
+                        intents.remove(&result.session_id);
                     }
                 }
                 "stopped_by_user" => {
@@ -220,92 +220,107 @@ pub async fn handle_worker_sync(
                         session_id = %result.session_id,
                         "Worker reported session stopped by user"
                     );
-                    if let Ok(session) =
+                    let has_stop_intent = {
+                        let intents = state.stop_turn_intents.read().unwrap();
+                        intents.contains(&result.session_id)
+                    };
+
+                    if !has_stop_intent {
+                        tracing::info!(
+                            session_id = %result.session_id,
+                            "Ignoring stale stopped_by_user acknowledgement"
+                        );
+                    } else if let Ok(session) =
                         db::sessions::get_by_id(&state.db_pool, &result.session_id).await
                         && !matches!(session.status.as_str(), "completed" | "failed" | "canceled")
                     {
                         let target_status = "input-required";
-                        if let Err(e) = db::sessions::update_status(
-                            &state.db_pool,
-                            &result.session_id,
-                            target_status,
-                        )
-                        .await
-                        {
-                            tracing::error!(
-                                session_id = %result.session_id,
-                                error = %e,
-                                "failed to transition session to input-required after stop"
-                            );
-                        } else {
-                            let event_payload = json!({
-                                "from": session.status,
-                                "to": target_status,
-                            });
-                            if let Ok(event_id) = db::events::insert(
+                        let mut session_now_input_required = session.status == target_status;
+                        if session.status != target_status {
+                            if let Err(e) = db::sessions::update_status(
                                 &state.db_pool,
-                                &session.execution_id,
-                                Some(&result.session_id),
-                                "state_change",
-                                &serde_json::to_string(&event_payload).unwrap(),
+                                &result.session_id,
+                                target_status,
                             )
                             .await
                             {
-                                let _ = state.event_broadcast.send(EventNotification::persisted(
-                                    session.execution_id.clone(),
-                                    event_id,
-                                ));
-                            }
-
-                            // Also transition execution to input-required if this is the lead session
-                            if session.parent_session_id.is_none() {
-                                use db::executions::CasResult;
-                                match db::executions::update_status_cas(
+                                tracing::error!(
+                                    session_id = %result.session_id,
+                                    error = %e,
+                                    "failed to transition session to input-required after stop"
+                                );
+                            } else {
+                                session_now_input_required = true;
+                                let event_payload = json!({
+                                    "from": session.status,
+                                    "to": target_status,
+                                });
+                                if let Ok(event_id) = db::events::insert(
                                     &state.db_pool,
                                     &session.execution_id,
-                                    "input-required",
-                                    &["working"],
+                                    Some(&result.session_id),
+                                    "state_change",
+                                    &serde_json::to_string(&event_payload).unwrap(),
                                 )
                                 .await
                                 {
-                                    Ok(CasResult::Applied) => {
-                                        let exec_event = json!({
-                                            "from": "working",
-                                            "to": "input-required",
-                                        });
-                                        if let Ok(event_id) = db::events::insert(
-                                            &state.db_pool,
-                                            &session.execution_id,
-                                            None,
-                                            "state_change",
-                                            &serde_json::to_string(&exec_event).unwrap(),
-                                        )
-                                        .await
-                                        {
-                                            let _ = state.event_broadcast.send(
-                                                EventNotification::persisted(
-                                                    session.execution_id.clone(),
-                                                    event_id,
-                                                ),
-                                            );
-                                        }
-                                    }
-                                    Ok(_) => {} // Conflict or NotFound — expected in some cases
-                                    Err(e) => {
-                                        tracing::error!(
-                                            execution_id = %session.execution_id,
-                                            error = %e,
-                                            "failed to transition execution to input-required after stop"
-                                        );
-                                    }
+                                    let _ =
+                                        state.event_broadcast.send(EventNotification::persisted(
+                                            session.execution_id.clone(),
+                                            event_id,
+                                        ));
                                 }
                             }
                         }
-                    }
-                    // Consume the command slot (defensive — should already be consumed by long-poll)
-                    {
-                        let mut commands = state.session_commands.write().unwrap();
-                        commands.remove(&result.session_id);
+
+                        // Also transition execution to input-required if this is the lead session.
+                        // This stays safe even when the session was already input-required.
+                        if session.parent_session_id.is_none() && session_now_input_required {
+                            use db::executions::CasResult;
+                            match db::executions::update_status_cas(
+                                &state.db_pool,
+                                &session.execution_id,
+                                "input-required",
+                                &["working"],
+                            )
+                            .await
+                            {
+                                Ok(CasResult::Applied) => {
+                                    let exec_event = json!({
+                                        "from": "working",
+                                        "to": "input-required",
+                                    });
+                                    if let Ok(event_id) = db::events::insert(
+                                        &state.db_pool,
+                                        &session.execution_id,
+                                        None,
+                                        "state_change",
+                                        &serde_json::to_string(&exec_event).unwrap(),
+                                    )
+                                    .await
+                                    {
+                                        let _ = state.event_broadcast.send(
+                                            EventNotification::persisted(
+                                                session.execution_id.clone(),
+                                                event_id,
+                                            ),
+                                        );
+                                    }
+                                }
+                                Ok(_) => {} // Conflict or NotFound — expected in some cases
+                                Err(e) => {
+                                    tracing::error!(
+                                        execution_id = %session.execution_id,
+                                        error = %e,
+                                        "failed to transition execution to input-required after stop"
+                                    );
+                                }
+                            }
+                        }
+
+                        // First matching ack wins; later retries are ignored.
+                        let mut intents = state.stop_turn_intents.write().unwrap();
+                        intents.remove(&result.session_id);
                     }
                 }
                 _ => {
@@ -327,8 +342,8 @@ pub async fn handle_worker_sync(
                     .await;
                     // Clean up any pending stop_turn command (prevents unbounded HashMap growth)
                     {
-                        let mut commands = state.session_commands.write().unwrap();
-                        commands.remove(&result.session_id);
+                        let mut intents = state.stop_turn_intents.write().unwrap();
+                        intents.remove(&result.session_id);
                     }
                 }
             }
@@ -422,6 +437,7 @@ pub async fn handle_worker_sync(
                         &state.db_pool,
                         &state.task_queue,
                         &state.event_broadcast,
+                        &state.stop_turn_intents,
                         &result.session_id,
                         &output_text,
                     )
@@ -614,16 +630,11 @@ async fn long_poll_session(
         // Check per-session command slot BEFORE checking task queue.
         // This ensures stop_turn is delivered immediately, bypassing queued tasks.
         {
-            let commands = state.session_commands.read().unwrap();
-            if let Some(command) = commands.get(session_id) {
-                let command = command.clone();
-                drop(commands); // Release read lock before write
-                // Consume the command (one-shot)
-                {
-                    let mut commands = state.session_commands.write().unwrap();
-                    commands.remove(session_id);
-                }
-                return Ok(Json(WorkerSyncResponse::Command { command }));
+            let intents = state.stop_turn_intents.read().unwrap();
+            if intents.contains(session_id) {
+                return Ok(Json(WorkerSyncResponse::Command {
+                    command: "stop_turn".to_string(),
+                }));
             }
         }
 
@@ -678,6 +689,17 @@ async fn fetch_task(
         Ok(_) => {} // Session exists and is non-terminal; proceed to pop
     }
 
+    // Defensive re-check: long-poll normally returns stop_turn before task_available,
+    // but a stop can land after task_available is observed and before fetch_task runs.
+    {
+        let intents = state.stop_turn_intents.read().unwrap();
+        if intents.contains(session_id) {
+            return Ok(Json(WorkerSyncResponse::Command {
+                command: "stop_turn".to_string(),
+            }));
+        }
+    }
+
     // Destructive pop — no biased-select race (worker actively awaits within
     // a single select arm). Residual risk: HTTP response loss after server
     // commits DELETE would still lose the task (microsecond window).
@@ -690,6 +712,15 @@ async fn fetch_task(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
     {
+        // Test-only failpoint to make the post-pop stop race deterministic in
+        // contract tests. When unset, this adds no overhead to production paths.
+        if let Ok(delay_ms) = std::env::var("AGENTBEACON_TEST_FETCH_TASK_POST_POP_DELAY_MS")
+            && let Ok(ms) = delay_ms.parse::<u64>()
+            && ms > 0
+        {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+        }
+
         // Re-fetch session to avoid stale snapshot (concurrent cancel could have
         // changed status between initial fetch and pop_by_session).
         // On re-fetch failure, skip the transition entirely — don't use stale data
@@ -711,6 +742,23 @@ async fn fetch_task(
                     session_id: session_id.to_string(),
                 }));
             }
+
+            // A fresh stop can arrive after task_available woke the worker but before
+            // this destructive pop completed. In that case the popped task is exactly
+            // the work stop intended to suppress, so drop it instead of delivering it.
+            {
+                let intents = state.stop_turn_intents.read().unwrap();
+                if intents.contains(session_id) {
+                    tracing::info!(
+                        session_id = %session_id,
+                        "fetch_task: discarding popped task because stop_turn arrived after task_available"
+                    );
+                    return Ok(Json(WorkerSyncResponse::Command {
+                        command: "stop_turn".to_string(),
+                    }));
+                }
+            }
+
             if fresh_session.status == "input-required"
                 && let Err(e) = crate::services::messaging::transition_to_working(
                     &state.db_pool,
