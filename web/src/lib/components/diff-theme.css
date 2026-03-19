@@ -104,30 +104,44 @@
 }
 
 /* Line numbers — override diff2html's position:absolute + 7.5em width.
-   Use static table-cell layout so line numbers flow naturally in the table. */
+   Use static table-cell layout so line numbers participate in table sizing
+   and scroll with the code content. font-size:0 on the cell eliminates
+   whitespace between the inline-block line-num divs; font-size is restored
+   on the children. Widths use rem (not em) since em resolves against the
+   cell's own font-size:0. */
 .diff-panel .d2h-code-linenumber {
   position: static;
   display: table-cell;
-  width: 4em;
-  min-width: 4em;
-  white-space: nowrap;
+  width: 6rem;
+  min-width: 6rem;
+  max-width: 6rem;
+  direction: ltr;
   vertical-align: top;
-  padding: 0 0.5em;
-  text-align: right;
+  padding: 0;
+  font-size: 0;
+  white-space: nowrap;
   color: hsl(var(--muted-foreground) / 0.6);
   background: hsl(var(--muted) / 0.15);
   border-right: 1px solid hsl(var(--border));
-  font-size: var(--text-sm);
 }
 
-.diff-panel .d2h-code-linenumber .line-num1 {
-  float: left;
-  width: 2em;
+/* Suppress the upstream ::after { content: "\200b" } zero-width space
+   that would otherwise add an extra inline pseudo-element. */
+.diff-panel .d2h-code-linenumber::after {
+  content: none;
 }
 
+.diff-panel .d2h-code-linenumber .line-num1,
 .diff-panel .d2h-code-linenumber .line-num2 {
-  float: right;
-  width: 2em;
+  display: inline-block;
+  width: 50%;
+  box-sizing: border-box;
+  padding: 0 0.5em;
+  font-size: var(--text-sm);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
 }
 
 /* Insertion lines */
