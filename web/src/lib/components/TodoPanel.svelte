@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { TodoItem } from '../types';
+  import { statusIcon, todoCounts } from './todo-helpers';
 
   interface Props {
     todos: TodoItem[];
@@ -8,41 +9,34 @@
   let { todos }: Props = $props();
   let collapsed = $state(false);
 
-  let completedCount = $derived(todos.filter(t => t.status === 'completed').length);
-  let inProgressCount = $derived(todos.filter(t => t.status === 'in_progress').length);
-
-  function statusIcon(status: string): string {
-    switch (status) {
-      case 'completed': return '\u25CF';   // ●
-      case 'in_progress': return '\u25D0'; // ◐
-      default: return '\u25CB';            // ○
-    }
-  }
+  let counts = $derived(todoCounts(todos));
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
 <div class="todo-panel">
-  <div class="todo-panel-header" onclick={() => collapsed = !collapsed}>
+  <button
+    class="todo-panel-header"
+    aria-expanded={!collapsed}
+    aria-controls="todo-panel-body"
+    onclick={() => collapsed = !collapsed}
+  >
     <span class="panel-chevron" class:open={!collapsed}>&#x25B8;</span>
     <span class="panel-label">Tasks</span>
     <span class="panel-counts">
-      {#if inProgressCount > 0}
-        <span class="count-working">{inProgressCount} active</span>
+      {#if counts.inProgress > 0}
+        <span class="count-working">{counts.inProgress} active</span>
         <span class="count-sep">&middot;</span>
       {/if}
-      <span class="count-done">{completedCount}/{todos.length} done</span>
+      <span class="count-done">{counts.completed}/{counts.total} done</span>
     </span>
+  </button>
+  <div class="todo-panel-body scroll-thin" id="todo-panel-body" hidden={collapsed}>
+    {#each todos as item}
+      <div class="panel-item {item.status}">
+        <span class="panel-icon {item.status}">{statusIcon(item.status)}</span>
+        <span class="panel-content">{item.content}</span>
+      </div>
+    {/each}
   </div>
-  {#if !collapsed}
-    <div class="todo-panel-body scroll-thin">
-      {#each todos as item}
-        <div class="panel-item {item.status}">
-          <span class="panel-icon {item.status}">{statusIcon(item.status)}</span>
-          <span class="panel-content">{item.content}</span>
-        </div>
-      {/each}
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -60,6 +54,19 @@
     cursor: pointer;
     font-size: 0.6875rem;
     transition: background 0.1s;
+    width: 100%;
+    border: none;
+    background: none;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+
+  .todo-panel-header:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: -2px;
   }
 
   .todo-panel-header:hover {

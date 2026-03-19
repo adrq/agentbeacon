@@ -63,7 +63,7 @@ test('clicking a session node in the sidebar selects it', async ({ page }) => {
 
   // Insert a working child session — it won't be auto-selected (only lead is)
   const childId = `child-sel-${Date.now()}`;
-  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd) VALUES ('${childId}', '${execId}', '${sessionId}', '${agent.id}', 'working', 'sel-child', '/tmp')`);
+  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('${childId}', '${execId}', '${sessionId}', '${agent.id}', 'working', 'sel-child', '/tmp', CURRENT_TIMESTAMP)`);
 
   await page.goto(`/#/execution/${execId}`);
 

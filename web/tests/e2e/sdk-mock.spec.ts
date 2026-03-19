@@ -56,9 +56,11 @@ test('claude mock: full showcase renders all SDK content types', async ({ page }
   await expect(markdown.locator('pre')).toBeVisible();
   await expect(page.locator('.shiki').first()).toBeVisible({ timeout: 15000 });
 
-  // TodoWrite: checklist visible in chat view
+  // TodoWrite: checklist visible in chat view, collapsed by default
   const todoChecklist = page.locator('.todo-checklist');
   await expect(todoChecklist).toBeVisible();
+  await expect(todoChecklist.locator('.todo-summary')).toContainText('Todo list updated');
+  await expect(todoChecklist.locator('.todo-summary')).toHaveAttribute('aria-expanded', 'false');
 
   // Switch to log view: TodoWrite entry with hamburger icon
   await page.getByRole('tab', { name: 'Log' }).click();
