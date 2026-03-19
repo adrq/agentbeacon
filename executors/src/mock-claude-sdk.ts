@@ -490,10 +490,10 @@ async function* showcaseTurn(
     duration_ms: 4500,
     model_usage: { "claude-sonnet-4-5-20250929": { contextWindow: 200000 } },
     usage: {
-      input_tokens: 3000,
-      output_tokens: 2100,
-      cache_read_input_tokens: 24000,
-      cache_creation_input_tokens: 18000,
+      input_tokens: 3500,
+      output_tokens: 1620,
+      cache_read_input_tokens: 48000,
+      cache_creation_input_tokens: 24000,
     },
   };
 }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { AlertDialog } from 'bits-ui';
   import type { Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
   import { isMessagePayload, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
@@ -222,6 +223,12 @@
             } else if (isUsageSnapshotData(typed)) {
               const current = getOrCreateUsage(event.session_id);
               const next = new Map($usageBySession);
+              // usage_snapshot now only carries context_window (from modelUsage).
+              // input_tokens/output_tokens are absent — we intentionally preserve
+              // the prior values from the last usage_update so the UI shows the
+              // last known context fill rather than nothing. Preserves last known
+              // usage when the current turn emits no usage_update (e.g.,
+              // failed/early-stop turns). This is the best available fallback.
               next.set(event.session_id, {
                 ...current,
                 contextWindow: typed.context_window ?? current.contextWindow,
@@ -361,6 +368,41 @@
   );
   let events = $derived(eventsQuery.data ?? []);
 
+  // Extract usage data from REST-loaded events (terminal executions where SSE is not established)
+  $effect(() => {
+    if (!isTerminal || !events.length) return;
+    const sid = activeSessionId;
+    if (!sid) return;
+    let changed = false;
+    const next = new Map(untrack(() => $usageBySession));
+    for (const event of events) {
+      if (event.event_type !== 'message' || !event.session_id) continue;
+      const payload = event.payload as MessagePayload;
+      for (const part of payload.parts ?? []) {
+        if (!('data' in part)) continue;
+        const d = (part as { data: unknown }).data;
+        if (typeof d !== 'object' || d === null) continue;
+        const dataObj = d as { type?: string; [key: string]: unknown };
+        if (!dataObj.type) continue;
+        const typed = dataObj as { type: string; [key: string]: unknown };
+        if (isUsageUpdateData(typed)) {
+          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: true };
+          next.set(event.session_id, { ...current, inputTokens: typed.input_tokens, outputTokens: typed.output_tokens });
+          changed = true;
+        } else if (isUsageSnapshotData(typed)) {
+          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: true };
+          next.set(event.session_id, { ...current, contextWindow: typed.context_window ?? current.contextWindow, inputTokens: typed.input_tokens ?? current.inputTokens, outputTokens: typed.output_tokens ?? current.outputTokens });
+          changed = true;
+        } else if (isCompactionData(typed)) {
+          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: true };
+          next.set(event.session_id, { ...current, compactions: current.compactions + 1 });
+          changed = true;
+        }
+      }
+    }
+    if (changed) usageBySession.set(next);
+  });
+
   // Events for the input-required session (may differ from viewed session)
   let inputSessionId = $derived(
     detail?.sessions.find(s => s.status === 'input-required')?.id ?? activeSessionId
@@ -491,10 +533,10 @@
           Wiki
         </Button>
       {/if}
-      {#if recoverError}
-        <span class="action-error">{recoverError}</span>
-      {/if}
     </div>
+    {#if recoverError}
+      <div class="action-error">{recoverError}</div>
+    {/if}
 
     <QuestionBanner execution={detail.execution} sessions={detail.sessions} events={inputEvents} {agents} />
 
@@ -748,6 +790,7 @@
   }
 
   .action-error {
+    padding: 0.25rem 1rem;
     font-size: 0.8125rem;
     color: hsl(var(--status-danger));
   }

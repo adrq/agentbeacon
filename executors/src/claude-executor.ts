@@ -373,9 +373,9 @@ async function main(): Promise<void> {
 
               // Append usage as a content block — flows through worker's
               // content_block_to_part catch-all → { data: {...} }
-              // Claude SDK provides cumulative input/output tokens per assistant message.
+              // Claude SDK provides per-API-request usage on each assistant message.
               // The frontend overwrites (not accumulates) these values from usage_update blocks.
-              // The usage_snapshot from the result event provides the authoritative final value.
+              // NOTE: result.usage is a session aggregate — do NOT use it for the context indicator.
               //
               // input_tokens only counts non-cached tokens. When prompt caching is active
               // (default in the SDK), most tokens are in cache_read_input_tokens /
@@ -448,38 +448,11 @@ async function main(): Promise<void> {
                 }
               }
 
-              const resultUsage = m.usage as
-                | Record<string, unknown>
-                | undefined;
-              if (
-                maxContextWindow > 0 ||
-                (resultUsage && typeof resultUsage.input_tokens === "number")
-              ) {
+              if (maxContextWindow > 0) {
                 const snapshotBlock: Record<string, unknown> = {
                   type: "usage_snapshot",
+                  context_window: maxContextWindow,
                 };
-                if (maxContextWindow > 0) {
-                  snapshotBlock.context_window = maxContextWindow;
-                }
-                if (
-                  resultUsage &&
-                  typeof resultUsage.input_tokens === "number"
-                ) {
-                  const cacheRead =
-                    typeof resultUsage.cache_read_input_tokens === "number"
-                      ? resultUsage.cache_read_input_tokens
-                      : 0;
-                  const cacheCreation =
-                    typeof resultUsage.cache_creation_input_tokens === "number"
-                      ? resultUsage.cache_creation_input_tokens
-                      : 0;
-                  snapshotBlock.input_tokens =
-                    resultUsage.input_tokens + cacheRead + cacheCreation;
-                  snapshotBlock.output_tokens =
-                    typeof resultUsage.output_tokens === "number"
-                      ? resultUsage.output_tokens
-                      : 0;
-                }
                 // N.B. This message will overwrite last_content in the worker, but
                 // result.result takes precedence for success subtypes.
                 emit({

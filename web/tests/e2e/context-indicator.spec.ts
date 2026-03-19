@@ -91,8 +91,61 @@ test('claude mock: usage_snapshot message before result', async () => {
   expect(snapshotPart).toBeDefined();
   expect(snapshotPart.data).toHaveProperty('context_window');
   expect(snapshotPart.data.context_window).toBe(200000); // Mock SDK value
-  expect(snapshotPart.data).toHaveProperty('input_tokens');
-  expect(snapshotPart.data).toHaveProperty('output_tokens');
+  // Snapshot should NOT include token counts (those come from per-call usage_update blocks)
+  expect(snapshotPart.data).not.toHaveProperty('input_tokens');
+  expect(snapshotPart.data).not.toHaveProperty('output_tokens');
+});
+
+// --- Test 2b: Context indicator shows per-call tokens, not session aggregate ---
+
+test('claude mock: context indicator uses per-call tokens not session aggregate', async () => {
+  const agent = await ensureClaudeAgent();
+  const { execId } = await createExecution(agent.id, 'Test per-call tokens', 'Per-call token test');
+  await waitForTurnEnd(execId, 20000);
+
+  const result = await apiGet(`/api/executions/${execId}`);
+  const sessions = result.sessions;
+  const leadSession = sessions.find((s: { parent_session_id: null }) => !s.parent_session_id);
+
+  const events = await apiGet(`/api/sessions/${leadSession.id}/events`);
+  const messageEvents = events.filter((e: { event_type: string }) => e.event_type === 'message');
+
+  // Replay the frontend merge logic from ExecutionDetail.svelte:
+  // - usage_update always overwrites inputTokens/outputTokens
+  // - usage_snapshot only takes input_tokens/output_tokens if present (?? fallback)
+  // This mirrors the actual UI state machine so the assertion catches the real bug.
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let contextWindow = 0;
+
+  for (const e of messageEvents) {
+    const parts = e.payload.parts || [];
+    for (const p of parts) {
+      if (!('data' in p)) continue;
+      const data = p.data as Record<string, unknown>;
+      if (data?.type === 'usage_update') {
+        // Frontend overwrites on every usage_update
+        inputTokens = data.input_tokens as number;
+        outputTokens = data.output_tokens as number;
+      } else if (data?.type === 'usage_snapshot') {
+        // Frontend uses ?? fallback — only updates if field is present
+        if (typeof data.context_window === 'number') contextWindow = data.context_window;
+        if (typeof data.input_tokens === 'number') inputTokens = data.input_tokens;
+        if (typeof data.output_tokens === 'number') outputTokens = data.output_tokens;
+      }
+    }
+  }
+
+  // context_window must come from the snapshot
+  expect(contextWindow).toBe(200000);
+
+  // Final inputTokens must equal the last per-call usage_update value:
+  // mock last call: input=2000 + cache_read=24000 + cache_creation=12000 = 38000
+  // If the bug were present, snapshot would have overwritten with the session
+  // aggregate (3500 + 48000 + 24000 = 75500), so we'd get 75500 here instead.
+  expect(inputTokens).toBe(38000);
+  expect(inputTokens).toBeLessThanOrEqual(contextWindow);
+  expect(outputTokens).toBe(850); // last per-call output_tokens from mock
 });
 
 // --- Test 3: compact_boundary appears as compaction message ---
