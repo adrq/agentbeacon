@@ -81,12 +81,8 @@ test('recover icon visible in session tree for recoverable failed session', asyn
 
   await page.goto(`/#/execution/${execId}`);
 
-  // Tree defaults to collapsed for terminal executions — open it first
-  const disclosure = page.locator('.tree-disclosure');
-  await expect(disclosure).toBeVisible({ timeout: 10000 });
-  await disclosure.click();
-
-  const sessionNode = page.locator('.tree-node').first();
+  // Sidebar tree is always visible (no disclosure toggle needed)
+  const sessionNode = page.locator('.sidebar-node').first();
   await expect(sessionNode).toBeVisible({ timeout: 10000 });
 
   // Hover to reveal the action button
@@ -105,7 +101,7 @@ test('recover header button triggers recovery and UI updates', async ({ page }) 
 
   // Execution should transition away from "failed"
   // Wait for the status text to change — it should no longer say "Failed"
-  await expect(page.locator('.detail-title-row')).not.toContainText('Failed', { timeout: 15000 });
+  await expect(page.locator('.detail-header')).not.toContainText('Failed', { timeout: 15000 });
 });
 
 test('recover shows error toast when agent deleted before click', async ({ page }) => {
@@ -140,14 +136,14 @@ test('session tree recover icon triggers child session recovery', async ({ page 
 
   await page.goto(`/#/execution/${execId}`);
 
-  // Wait for tree to render
-  const treeBody = page.locator('.tree-body');
-  await expect(treeBody).toBeVisible({ timeout: 10000 });
+  // Wait for sidebar tree to render
+  const sidebarTree = page.locator('.sidebar-tree');
+  await expect(sidebarTree).toBeVisible({ timeout: 10000 });
 
   // Failed child is auto-collapsed into summary — expand it first.
   // Wait for either the summary or the failed node to appear.
   const summary = page.locator('.terminal-summary');
-  const childNode = page.locator('.tree-node.failed');
+  const childNode = page.locator('.sidebar-node.failed');
   await expect(summary.or(childNode)).toBeVisible({ timeout: 10000 });
   if (await summary.isVisible()) {
     await summary.click();
@@ -161,6 +157,6 @@ test('session tree recover icon triggers child session recovery', async ({ page 
   await expect(recoverBtn).toBeAttached();
   await recoverBtn.click();
 
-  // Child should transition from failed
-  await expect(childNode).not.toBeAttached({ timeout: 10000 });
+  // Child should transition from failed (node changes class or disappears)
+  await expect(page.locator('.sidebar-node.failed')).not.toBeAttached({ timeout: 10000 });
 });

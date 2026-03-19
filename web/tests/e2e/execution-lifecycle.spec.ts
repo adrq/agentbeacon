@@ -88,12 +88,8 @@ test('completion summary shows for terminal executions', async ({ page }) => {
 
   await page.goto(`/#/execution/${execId}`);
 
-  const summary = page.locator('.completion-summary');
-  await expect(summary).toBeVisible({ timeout: 10000 });
-
-  await expect(summary).toContainText('Failed at');
-  await expect(summary).toContainText('Elapsed');
-  await expect(summary).toContainText('session');
+  // Completion summary removed from detail view — verify terminal state via StatusBadge
+  await expect(page.getByText('Failed', { exact: true })).toBeVisible({ timeout: 10000 });
 });
 
 // --- Test 5: ToolGroup renderer in Chat view ---

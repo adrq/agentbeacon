@@ -20,98 +20,123 @@ test.afterEach(async () => {
   await waitForWorkerIdle();
 });
 
-test('session tree has bounded height with internal scroll', async ({ page }) => {
+test('clicking an execution in the sidebar expands the session tree', async ({ page }) => {
   const agent = await ensureDirectAgent();
-  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Bounded height test');
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Sidebar tree expand test');
+  await waitForTurnEnd(execId);
+
+  // Navigate to the executions list view and click the execution item
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Executions' }).click();
+
+  const execItem = page.locator('.exec-item', { hasText: 'Sidebar tree expand test' });
+  await expect(execItem).toBeVisible({ timeout: 15000 });
+  await execItem.click();
+
+  // The sidebar tree should appear below the selected execution
+  const sidebarTree = page.locator('.sidebar-tree');
+  await expect(sidebarTree).toBeVisible({ timeout: 10000 });
+});
+
+test('session nodes appear in sidebar with correct status indicators', async ({ page }) => {
+  const agent = await ensureDirectAgent();
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Sidebar node status test');
   await waitForTurnEnd(execId);
 
   await page.goto(`/#/execution/${execId}`);
 
-  const treeBody = page.locator('.tree-body');
-  await expect(treeBody).toBeVisible({ timeout: 10000 });
+  // Sidebar node should be visible with a node-icon
+  const sidebarNode = page.locator('.sidebar-node').first();
+  await expect(sidebarNode).toBeVisible({ timeout: 10000 });
 
-  // Verify CSS constraints
-  const maxHeight = await treeBody.evaluate(el => getComputedStyle(el).maxHeight);
-  expect(maxHeight).toBeTruthy();
-  expect(maxHeight).not.toBe('none');
-
-  const overflowY = await treeBody.evaluate(el => getComputedStyle(el).overflowY);
-  expect(overflowY).toBe('auto');
+  // Node icon should show a non-empty status character (●, ✓, ✗, !, ○)
+  const nodeIcon = sidebarNode.locator('.node-icon');
+  await expect(nodeIcon).toBeVisible();
+  const iconText = await nodeIcon.innerText();
+  expect(iconText.trim()).not.toBe('');
 });
 
-test('disclosure header shows session counts', async ({ page }) => {
+test('clicking a session node in the sidebar selects it', async ({ page }) => {
   const agent = await ensureDirectAgent();
-  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Counts test');
+  const { execId, sessionId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Sidebar select test');
+  await waitForTurnEnd(execId);
+
+  // Insert a working child session — it won't be auto-selected (only lead is)
+  const childId = `child-sel-${Date.now()}`;
+  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd) VALUES ('${childId}', '${execId}', '${sessionId}', '${agent.id}', 'working', 'sel-child', '/tmp')`);
+
+  await page.goto(`/#/execution/${execId}`);
+
+  // Lead node is auto-selected
+  const leadNode = page.locator('.sidebar-node').first();
+  await expect(leadNode).toBeVisible({ timeout: 10000 });
+  await expect(leadNode).toHaveClass(/active/, { timeout: 5000 });
+
+  // Child node should NOT be auto-selected
+  const childNode = page.locator(`.sidebar-node[data-session-id="${childId}"]`);
+  await expect(childNode).toBeVisible({ timeout: 5000 });
+  await expect(childNode).not.toHaveClass(/active/);
+
+  // Click child to select it
+  await childNode.click();
+  await expect(childNode).toHaveClass(/active/);
+});
+
+test('detail view does not show old SessionTree disclosure header', async ({ page }) => {
+  const agent = await ensureDirectAgent();
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'No old tree test');
   await waitForTurnEnd(execId);
 
   await page.goto(`/#/execution/${execId}`);
 
-  const disclosure = page.locator('.tree-disclosure');
-  await expect(disclosure).toBeVisible({ timeout: 10000 });
+  // The old .tree-disclosure element should NOT exist in the detail panel
+  await expect(page.locator('.tree-disclosure')).not.toBeVisible();
 
-  // Non-terminal execution with 1 active session
-  await expect(disclosure.locator('.count-active')).toContainText('active');
-  await expect(disclosure.locator('.count-total')).toContainText('total');
+  // The old .tree-body with bounded height should NOT exist
+  await expect(page.locator('.tree-body')).not.toBeVisible();
 });
 
-test('disclosure toggle collapses and expands tree', async ({ page }) => {
+test('detail view does not show pool section or detail meta', async ({ page }) => {
   const agent = await ensureDirectAgent();
-  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Toggle test');
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'No pool meta test');
   await waitForTurnEnd(execId);
 
   await page.goto(`/#/execution/${execId}`);
 
-  const disclosure = page.locator('.tree-disclosure');
-  const treeBody = page.locator('.tree-body');
-  await expect(treeBody).toBeVisible({ timeout: 10000 });
-
-  // Click to collapse
-  await disclosure.click();
-  await expect(treeBody).not.toBeVisible();
-
-  // Click to expand
-  await disclosure.click();
-  await expect(treeBody).toBeVisible();
+  await expect(page.locator('.pool-section')).not.toBeVisible();
+  await expect(page.locator('.detail-meta')).not.toBeVisible();
+  await expect(page.locator('.completion-summary')).not.toBeVisible();
 });
 
-test('terminal execution defaults to collapsed tree', async ({ page }) => {
+test('detail header is compact single-line bar', async ({ page }) => {
   const agent = await ensureDirectAgent();
-  const { execId } = await createExecution(agent.id, 'EXIT_1', 'Terminal collapse test');
-  await waitForTerminal(execId);
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Compact header test');
+  await waitForTurnEnd(execId);
 
   await page.goto(`/#/execution/${execId}`);
 
-  const disclosure = page.locator('.tree-disclosure');
-  await expect(disclosure).toBeVisible({ timeout: 10000 });
+  const header = page.locator('.detail-header');
+  await expect(header).toBeVisible({ timeout: 10000 });
 
-  // Tree body should NOT be visible (collapsed by default for terminal)
-  const treeBody = page.locator('.tree-body');
-  await expect(treeBody).not.toBeVisible();
-
-  // Counts still shown in header
-  await expect(disclosure.locator('.count-total')).toContainText('total');
-
-  // Click to open
-  await disclosure.click();
-  await expect(treeBody).toBeVisible();
+  // Header should be around 36px tall (compact single-line bar)
+  const height = await header.evaluate(el => el.getBoundingClientRect().height);
+  expect(height).toBeLessThan(60);
 });
 
-test('terminal children auto-collapse into summary line', async ({ page }) => {
+test('terminal children auto-collapse into summary line in sidebar', async ({ page }) => {
   const agent = await ensureDirectAgent();
-  const { execId, sessionId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Auto-collapse test');
+  const { execId, sessionId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Sidebar auto-collapse test');
   await waitForTurnEnd(execId);
 
-  // Add completed child sessions via SQL
-  const childId1 = `child-ac-1-${Date.now()}`;
-  const childId2 = `child-ac-2-${Date.now()}`;
+  const childId1 = `child-sac-1-${Date.now()}`;
+  const childId2 = `child-sac-2-${Date.now()}`;
   sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('${childId1}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c1', '/tmp', CURRENT_TIMESTAMP)`);
   sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('${childId2}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c2', '/tmp', CURRENT_TIMESTAMP)`);
 
   await page.goto(`/#/execution/${execId}`);
 
-  // Wait for tree to render
-  const treeBody = page.locator('.tree-body');
-  await expect(treeBody).toBeVisible({ timeout: 10000 });
+  const sidebarTree = page.locator('.sidebar-tree');
+  await expect(sidebarTree).toBeVisible({ timeout: 10000 });
 
   // Terminal summary should be visible (not the individual completed nodes)
   const summary = page.locator('.terminal-summary');
@@ -119,14 +144,13 @@ test('terminal children auto-collapse into summary line', async ({ page }) => {
   await expect(summary).toContainText('completed');
 });
 
-test('clicking summary line expands terminal children', async ({ page }) => {
+test('clicking terminal summary line expands children in sidebar', async ({ page }) => {
   const agent = await ensureDirectAgent();
-  const { execId, sessionId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Summary expand test');
+  const { execId, sessionId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Sidebar summary expand test');
   await waitForTurnEnd(execId);
 
-  // Add completed child sessions
-  const childId1 = `child-se-1-${Date.now()}`;
-  const childId2 = `child-se-2-${Date.now()}`;
+  const childId1 = `child-sse-1-${Date.now()}`;
+  const childId2 = `child-sse-2-${Date.now()}`;
   sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('${childId1}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c1', '/tmp', CURRENT_TIMESTAMP)`);
   sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('${childId2}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c2', '/tmp', CURRENT_TIMESTAMP)`);
 
@@ -135,84 +159,53 @@ test('clicking summary line expands terminal children', async ({ page }) => {
   const summary = page.locator('.terminal-summary');
   await expect(summary).toBeVisible({ timeout: 10000 });
 
-  // Click summary to expand
   await summary.click();
 
-  // Summary should disappear, individual nodes should appear
+  // Summary should disappear, individual completed nodes should appear
   await expect(summary).not.toBeVisible();
-
-  // The completed child nodes should now be visible
-  const completedNodes = page.locator('.tree-node.completed');
+  const completedNodes = page.locator('.sidebar-node.completed');
   await expect(completedNodes.first()).toBeVisible();
 });
 
-test('action buttons still work on tree nodes', async ({ page }) => {
+test('action buttons appear on sidebar node hover', async ({ page }) => {
   const agent = await ensureDirectAgent();
-  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Tree action test');
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Sidebar action btn test');
   await waitForTurnEnd(execId);
 
   await page.goto(`/#/execution/${execId}`);
 
-  const sessionNode = page.locator('.tree-node').first();
-  await expect(sessionNode).toBeVisible({ timeout: 10000 });
+  // Find a non-terminal sidebar node to hover
+  const sidebarNode = page.locator('.sidebar-node:not(.canceled):not(.completed):not(.failed)').first();
+  await expect(sidebarNode).toBeVisible({ timeout: 10000 });
 
-  // Hover to reveal cancel button
-  await sessionNode.hover();
-  const cancelBtn = sessionNode.locator('.cancel-btn');
+  // Cancel button is attached to DOM (opacity hidden by default, shown on hover via CSS)
+  const cancelBtn = sidebarNode.locator('.cancel-btn');
+  await expect(cancelBtn).toBeAttached();
+  await sidebarNode.hover();
   await expect(cancelBtn).toBeVisible();
 });
 
-test('selecting session scrolls it into view in bounded tree', async ({ page }) => {
+test('data-session-id attribute present on sidebar nodes', async ({ page }) => {
   const agent = await ensureDirectAgent();
-  const { execId, sessionId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Scroll into view test');
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Sidebar data attr test');
   await waitForTurnEnd(execId);
-
-  // Add enough active child sessions to overflow the tree body (single transaction to avoid DB lock)
-  const ts = Date.now();
-  const inserts = Array.from({ length: 15 }, (_, i) =>
-    `INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('child-siv-${i}-${ts}', '${execId}', '${sessionId}', '${agent.id}', 'submitted', 'c${i}', '/tmp', CURRENT_TIMESTAMP);`
-  ).join('\n');
-  sqliteExec(`BEGIN; ${inserts} COMMIT;`);
 
   await page.goto(`/#/execution/${execId}`);
 
-  const treeBody = page.locator('.tree-body');
-  await expect(treeBody).toBeVisible({ timeout: 10000 });
+  const sidebarNode = page.locator('.sidebar-node').first();
+  await expect(sidebarNode).toBeVisible({ timeout: 10000 });
 
-  // Tree should overflow (scrollHeight > clientHeight)
-  const overflows = await treeBody.evaluate(el => el.scrollHeight > el.clientHeight);
-  expect(overflows).toBe(true);
-
-  // Click the last node to select it — it should scroll into view
-  const lastNode = page.locator('.tree-node').last();
-  const lastSid = await lastNode.getAttribute('data-session-id');
-  expect(lastSid).toBeTruthy();
-
-  await lastNode.click();
-
-  // After click + scroll animation, the node should be within the visible area
-  await page.waitForTimeout(500); // allow smooth scroll to settle
-  const isVisible = await treeBody.evaluate((container, sid) => {
-    const node = container.querySelector(`[data-session-id="${sid}"]`);
-    if (!node) return false;
-    const cRect = container.getBoundingClientRect();
-    const nRect = node.getBoundingClientRect();
-    return nRect.top >= cRect.top && nRect.bottom <= cRect.bottom;
-  }, lastSid);
-  expect(isVisible).toBe(true);
+  const sid = await sidebarNode.getAttribute('data-session-id');
+  expect(sid).toBeTruthy();
 });
 
-test('data-session-id attribute present on tree nodes', async ({ page }) => {
+test('exec meta line shows in sidebar tree', async ({ page }) => {
   const agent = await ensureDirectAgent();
-  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Data attr test');
+  const { execId } = await createExecution(agent.id, 'SEND_TOOL_CALL', 'Sidebar exec meta test');
   await waitForTurnEnd(execId);
 
   await page.goto(`/#/execution/${execId}`);
 
-  const sessionNode = page.locator('.tree-node').first();
-  await expect(sessionNode).toBeVisible({ timeout: 10000 });
-
-  // Verify data-session-id attribute exists
-  const sid = await sessionNode.getAttribute('data-session-id');
-  expect(sid).toBeTruthy();
+  const execMeta = page.locator('.exec-meta');
+  await expect(execMeta).toBeVisible({ timeout: 10000 });
 });

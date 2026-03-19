@@ -41,9 +41,9 @@ test('execution creation with multi-agent pool', async ({ page }) => {
   // Verify navigated to execution detail
   await expect(page.getByRole('heading', { name: 'Pool E2E' })).toBeVisible({ timeout: 10000 });
 
-  // Verify pool section shows both agents
-  const poolSection = page.locator('.pool-section');
-  await expect(poolSection).toBeVisible({ timeout: 5000 });
+  // Verify pool pills show in the sidebar tree
+  const poolPill = page.locator('.pool-pill');
+  await expect(poolPill.first()).toBeVisible({ timeout: 5000 });
 });
 
 test('project agent pool management via UI', async ({ page }) => {

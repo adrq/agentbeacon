@@ -1,16 +1,25 @@
 <script lang="ts">
-  import type { Execution } from '../types';
+  import type { Execution, SessionSummary, Agent, UsageState } from '../types';
   import { selectedExecutionId } from '../stores/appState';
   import { router } from '../router';
   import { executionsWithQuestions, noQuestionExecutions } from '../stores/questionState';
   import ElapsedTime from './ElapsedTime.svelte';
+  import SidebarSessionTree from './SidebarSessionTree.svelte';
 
   interface Props {
     execution: Execution;
     projectName?: string | null;
+    sessions?: SessionSummary[];
+    agents?: Agent[];
+    selectedSessionId?: string | null;
+    usageBySession?: Map<string, UsageState>;
+    poolAgents?: { agent_id: string; name: string }[];
+    isTerminal?: boolean;
+    onselectsession?: (sessionId: string | null) => void;
+    onstatuschange?: () => void;
   }
 
-  let { execution, projectName = null }: Props = $props();
+  let { execution, projectName = null, sessions, agents, selectedSessionId, usageBySession, poolAgents, isTerminal = false, onselectsession, onstatuschange }: Props = $props();
 
   const activeStatuses = new Set(['working', 'input-required', 'submitted']);
 
@@ -32,6 +41,8 @@
     : execution.status === 'failed' ? 'failed'
     : 'canceled');
 
+  let showTree = $derived(selected && sessions && sessions.length > 0);
+
   function relativeTime(iso: string): string {
     const diff = Date.now() - new Date(iso).getTime();
     const seconds = Math.floor(diff / 1000);
@@ -49,35 +60,59 @@
   }
 </script>
 
-<button
-  class="exec-item"
-  class:selected
-  class:needs-input={needsInput && hasQuestions}
-  onclick={handleClick}
-  aria-current={selected || undefined}
->
-  <div class="exec-item-top">
-    <span class="status-indicator" class:working={execution.status === 'working'} class:completed={execution.status === 'completed'} class:failed={execution.status === 'failed'} class:input-required={needsInput && hasQuestions} class:turn-complete={needsInput && hasQuestions === false} class:submitted={execution.status === 'submitted'} class:canceled={execution.status === 'canceled'}>
-      {#if needsInput && hasQuestions}!{/if}
-    </span>
-    <span class="exec-title">{displayTitle}</span>
-    <span class="exec-time">
-      {#if isActive}
-        <ElapsedTime startTime={execution.created_at} />
-      {:else}
-        {relativeTime(execution.updated_at)}
+<div class="exec-item-wrapper">
+  <button
+    class="exec-item"
+    class:selected
+    class:needs-input={needsInput && hasQuestions}
+    onclick={handleClick}
+    aria-current={selected || undefined}
+  >
+    <div class="exec-item-top">
+      <span class="status-indicator" class:working={execution.status === 'working'} class:completed={execution.status === 'completed'} class:failed={execution.status === 'failed'} class:input-required={needsInput && hasQuestions} class:turn-complete={needsInput && hasQuestions === false} class:submitted={execution.status === 'submitted'} class:canceled={execution.status === 'canceled'}>
+        {#if needsInput && hasQuestions}!{/if}
+      </span>
+      <span class="exec-title">{displayTitle}</span>
+      <span class="exec-time">
+        {#if isActive}
+          <ElapsedTime startTime={execution.created_at} />
+        {:else}
+          {relativeTime(execution.updated_at)}
+        {/if}
+      </span>
+    </div>
+    <div class="exec-item-bottom">
+      <span class="exec-status">{statusText}</span>
+      {#if projectName}
+        <span class="exec-project">{projectName}</span>
       {/if}
-    </span>
-  </div>
-  <div class="exec-item-bottom">
-    <span class="exec-status">{statusText}</span>
-    {#if projectName}
-      <span class="exec-project">{projectName}</span>
-    {/if}
-  </div>
-</button>
+    </div>
+  </button>
+
+  {#if showTree}
+    <div class="sidebar-tree-container">
+      <SidebarSessionTree
+        sessions={sessions!}
+        agents={agents ?? []}
+        {selectedSessionId}
+        {isTerminal}
+        {usageBySession}
+        {poolAgents}
+        maxDepth={execution.max_depth}
+        maxWidth={execution.max_width}
+        {onselectsession}
+        {onstatuschange}
+      />
+    </div>
+  {/if}
+</div>
 
 <style>
+  .exec-item-wrapper {
+    display: flex;
+    flex-direction: column;
+  }
+
   .exec-item {
     display: block;
     width: 100%;
@@ -189,5 +224,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .sidebar-tree-container {
+    border-left: 3px solid hsl(var(--primary));
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--muted) / 0.1);
   }
 </style>

@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { selectedFilterProjectId } from '../stores/appState';
-  import { executionsQuery } from '../queries/executions';
+  import { selectedFilterProjectId, selectedExecutionId, selectedSessionId, usageBySession } from '../stores/appState';
+  import { executionsQuery, executionDetailQuery, executionAgentsQuery } from '../queries/executions';
   import { projectsQuery } from '../queries/projects';
+  import { agentsQuery } from '../queries/agents';
   import { executionsWithQuestions } from '../stores/questionState';
   import { router } from '../router';
   import ExecutionListItem from './ExecutionListItem.svelte';
+  import { useQueryClient } from '@tanstack/svelte-query';
 
   const statusOrder: Record<string, number> = {
     'input-required': 0,
@@ -15,11 +17,14 @@
     'canceled': 5,
   };
 
+  const terminalStatuses = new Set(['completed', 'failed', 'canceled']);
+
+  const queryClient = useQueryClient();
   const projects = projectsQuery();
   const execsQuery = executionsQuery(() => $selectedFilterProjectId);
+  const agentsQ = agentsQuery();
 
   let executions = $derived(execsQuery.data ?? []);
-
   let inputRequiredCount = $derived($executionsWithQuestions.size);
 
   let projectNameMap = $derived(
@@ -63,9 +68,38 @@
       : statusFiltered
   );
 
+  // Fetch detail data for the selected execution so we can render the sidebar tree
+  const selectedDetailQuery = executionDetailQuery(() => $selectedExecutionId);
+  const selectedPoolQuery = executionAgentsQuery(() => $selectedExecutionId);
+
+  // Pin the selected execution if it's filtered out — keeps the sidebar tree accessible.
+  // Uses the detail query (always fetched regardless of filters) so project filter changes
+  // don't lose the pinned item when the execution is no longer in the executions list.
+  let pinnedExecution = $derived(
+    $selectedExecutionId && !filtered.some(e => e.id === $selectedExecutionId)
+      ? (selectedDetailQuery.data?.execution ?? null)
+      : null
+  );
+
+  let selectedSessions = $derived(selectedDetailQuery.data?.sessions ?? []);
+  let selectedAgents = $derived(agentsQ.data ?? []);
+  let selectedPoolAgents = $derived(selectedPoolQuery.data ?? []);
+  let selectedIsTerminal = $derived(terminalStatuses.has(
+    selectedDetailQuery.data?.execution.status ?? ''
+  ));
+
   function handleAttentionClick() {
     const first = sorted.find(e => $executionsWithQuestions.has(e.id));
     if (first) router.navigate(`/execution/${first.id}`);
+  }
+
+  function handleSelectSession(sessionId: string | null) {
+    selectedSessionId.set(sessionId);
+  }
+
+  function handleStatusChange(executionId: string) {
+    queryClient.invalidateQueries({ queryKey: ['execution', executionId] });
+    queryClient.invalidateQueries({ queryKey: ['executions'] });
   }
 </script>
 
@@ -133,12 +167,44 @@
     <div class="list-message">Loading...</div>
   {:else if execsQuery.isError}
     <div class="list-message list-error">{execsQuery.error?.message ?? 'Failed to load'}</div>
-  {:else if filtered.length === 0}
-    <div class="list-message">{searchText ? 'No matches' : 'No executions yet'}</div>
   {:else}
-    {#each filtered as execution (execution.id)}
-      <ExecutionListItem {execution} projectName={projectNameMap.get(execution.project_id ?? '') ?? null} />
-    {/each}
+    {#if pinnedExecution}
+      <div class="pinned-item">
+        <ExecutionListItem
+          execution={pinnedExecution}
+          projectName={projectNameMap.get(pinnedExecution.project_id ?? '') ?? null}
+          sessions={selectedSessions}
+          agents={selectedAgents}
+          selectedSessionId={$selectedSessionId}
+          usageBySession={$usageBySession}
+          poolAgents={selectedPoolAgents}
+          isTerminal={selectedIsTerminal}
+          onselectsession={handleSelectSession}
+          onstatuschange={() => handleStatusChange(pinnedExecution!.id)}
+        />
+      </div>
+    {/if}
+    {#if filtered.length === 0}
+      {#if !pinnedExecution}
+        <div class="list-message">{searchText || statusFilter !== 'all' ? 'No matches' : 'No executions yet'}</div>
+      {/if}
+    {:else}
+      {#each filtered as execution (execution.id)}
+        {@const isSelected = $selectedExecutionId === execution.id}
+        <ExecutionListItem
+          {execution}
+          projectName={projectNameMap.get(execution.project_id ?? '') ?? null}
+          sessions={isSelected ? selectedSessions : undefined}
+          agents={isSelected ? selectedAgents : undefined}
+          selectedSessionId={isSelected ? $selectedSessionId : undefined}
+          usageBySession={isSelected ? $usageBySession : undefined}
+          poolAgents={isSelected ? selectedPoolAgents : undefined}
+          isTerminal={isSelected ? selectedIsTerminal : false}
+          onselectsession={isSelected ? handleSelectSession : undefined}
+          onstatuschange={isSelected ? () => handleStatusChange(execution.id) : undefined}
+        />
+      {/each}
+    {/if}
   {/if}
 </div>
 
@@ -311,5 +377,10 @@
 
   .list-error {
     color: hsl(var(--status-danger));
+  }
+
+  .pinned-item {
+    opacity: 0.65;
+    border-bottom: 1px dashed hsl(var(--border));
   }
 </style>

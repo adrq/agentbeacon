@@ -43,7 +43,6 @@ test('complete button opens dialog and completes execution', async ({ page }) =>
   await page.getByRole('button', { name: 'Complete Execution' }).click();
 
   await expect(page.getByText('Completed', { exact: true })).toBeVisible({ timeout: 15000 });
-  await expect(page.locator('.completion-summary')).toContainText('Completed at');
   await expect(completeBtn).not.toBeVisible();
   await expect(header.getByRole('button', { name: 'Cancel' })).not.toBeVisible();
   await expect(header.getByRole('button', { name: 'Re-run' })).toBeVisible();

@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { Theme, NavSection, ExecutionPrefill, RouteMode } from '../types';
+import type { Theme, NavSection, ExecutionPrefill, RouteMode, UsageState } from '../types';
 import type { AgentTemplate } from '../utils/agentUtils';
 
 export function safeGetItem(key: string): string | null {
@@ -61,3 +61,6 @@ export const notificationsEnabled = createPersistedBoolStore('agentbeacon-notifi
 
 export type HomeFeedFilter = 'running' | 'waiting' | 'completed' | 'failed' | null;
 export const homeFeedFilter = writable<HomeFeedFilter>(null);
+
+export const selectedSessionId = writable<string | null>(null);
+export const usageBySession = writable<Map<string, UsageState>>(new Map());

@@ -19,8 +19,8 @@ test('session cancel button cancels input-required session', async ({ page }) =>
 
   await page.goto(`/#/execution/${execId}`);
 
-  // Wait for session tree to render with input-required session
-  const sessionNode = page.locator('.tree-node').first();
+  // Wait for sidebar session node to render
+  const sessionNode = page.locator('.sidebar-node').first();
   await expect(sessionNode).toBeVisible({ timeout: 10000 });
 
   const cancelBtn = sessionNode.locator('.cancel-btn');
@@ -29,9 +29,9 @@ test('session cancel button cancels input-required session', async ({ page }) =>
   await sessionNode.hover();
   await cancelBtn.click();
 
-  // After cancel, the execution becomes terminal and the tree auto-collapses.
-  // Verify via the header status badge instead of the (now hidden) tree node.
-  await expect(page.locator('.detail-title-row')).toContainText('Canceled', { timeout: 10000 });
+  // After cancel, the execution becomes terminal.
+  // Verify via the header status badge or title.
+  await expect(page.locator('.detail-header')).toContainText('Canceled', { timeout: 10000 });
 });
 
 test('session complete button completes input-required session', async ({ page }) => {
@@ -41,7 +41,7 @@ test('session complete button completes input-required session', async ({ page }
 
   await page.goto(`/#/execution/${execId}`);
 
-  const sessionNode = page.locator('.tree-node').first();
+  const sessionNode = page.locator('.sidebar-node').first();
   await expect(sessionNode).toBeVisible({ timeout: 10000 });
 
   const completeBtn = sessionNode.locator('.complete-btn');
@@ -49,9 +49,8 @@ test('session complete button completes input-required session', async ({ page }
   await sessionNode.hover();
   await completeBtn.click();
 
-  // After complete, the execution becomes terminal and the tree auto-collapses.
-  // Verify via the header status badge instead of the (now hidden) tree node.
-  await expect(page.locator('.detail-title-row')).toContainText('Completed', { timeout: 10000 });
+  // After complete, the execution becomes terminal.
+  await expect(page.locator('.detail-header')).toContainText('Completed', { timeout: 10000 });
 });
 
 test('session action buttons hidden on terminal sessions', async ({ page }) => {
@@ -63,17 +62,13 @@ test('session action buttons hidden on terminal sessions', async ({ page }) => {
 
   await page.goto(`/#/execution/${execId}`);
 
-  // Tree defaults to collapsed for terminal executions — open it first
-  const disclosure = page.locator('.tree-disclosure');
-  await expect(disclosure).toBeVisible({ timeout: 10000 });
-  await disclosure.click();
-
-  const sessionNode = page.locator('.tree-node').first();
-  await expect(sessionNode).toBeVisible({ timeout: 10000 });
+  // Sidebar tree is always visible (no disclosure toggle)
+  const sidebarNode = page.locator('.sidebar-node').first();
+  await expect(sidebarNode).toBeVisible({ timeout: 10000 });
 
   // No cancel or complete buttons on terminal sessions
-  await expect(sessionNode.locator('.cancel-btn')).not.toBeAttached();
-  await expect(sessionNode.locator('.complete-btn')).not.toBeAttached();
+  await expect(sidebarNode.locator('.cancel-btn')).not.toBeAttached();
+  await expect(sidebarNode.locator('.complete-btn')).not.toBeAttached();
 });
 
 test('session cancel on terminal session shows error toast', async ({ page }) => {
@@ -88,7 +83,7 @@ test('session cancel on terminal session shows error toast', async ({ page }) =>
 
   // The session is terminal so the cancel button is hidden in the UI.
   // Trigger the error toast by calling the cancel API directly via page context,
-  // which exercises the same error path as SessionTree.handleCancel.
+  // which exercises the same error path as SidebarSessionTree.handleCancel.
   await page.evaluate(async (sid) => {
     const res = await fetch(`/api/sessions/${sid}/cancel`, { method: 'POST' });
     if (!res.ok) {

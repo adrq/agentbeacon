@@ -157,17 +157,17 @@ test('claude mock: context bar in session tree', async ({ page }) => {
 
   await page.goto(`/#/execution/${execId}`);
 
-  // Wait for session tree to load
-  const sessionTree = page.locator('.session-tree');
+  // Wait for sidebar tree to load
+  const sessionTree = page.locator('.sidebar-tree');
   await expect(sessionTree).toBeVisible({ timeout: 10000 });
 
-  // Context bar should be visible
+  // Context bar should be visible — SSE events may take time to replay
   const contextBar = page.locator('.context-bar');
-  await expect(contextBar).toBeVisible({ timeout: 5000 });
+  await expect(contextBar).toBeVisible({ timeout: 15000 });
 
   // Should have a fill indicating usage
   const contextFill = page.locator('.context-fill');
-  await expect(contextFill).toBeVisible();
+  await expect(contextFill).toBeVisible({ timeout: 5000 });
 });
 
 // --- Test 6: Compaction divider renders in chat ---

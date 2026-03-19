@@ -106,6 +106,6 @@ test('elapsed time appears for running executions', async ({ page }) => {
 
   await page.goto(`/#/execution/${execId}`);
 
-  // Elapsed time should be visible in the detail header (scope to main-content to avoid sidebar match)
-  await expect(page.locator('.main-content .elapsed-time')).toBeVisible({ timeout: 20000 });
+  // Elapsed time should be visible in the sidebar for active executions
+  await expect(page.locator('.elapsed-time')).toBeVisible({ timeout: 20000 });
 });
