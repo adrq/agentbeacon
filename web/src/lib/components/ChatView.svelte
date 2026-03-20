@@ -289,7 +289,7 @@
   function parseEntries(evs: Event[]): ChatEntry[] {
     const entries: ChatEntry[] = [];
     const toolGroups = new Map<string, ToolGroupEntry>();
-    const agentLabel = leadSession ? agentName(leadSession.agent_id) : 'Agent';
+    const agentLabel = viewedSession ? agentName(viewedSession.agent_id) : (leadSession ? agentName(leadSession.agent_id) : 'Agent');
     let seq = 0;
     let lastAgentSessionId: string | null = null;
 
@@ -575,7 +575,7 @@
     }
 
     if (ephemeralText) {
-      const agentLabel = leadSession ? agentName(leadSession.agent_id) : 'Agent';
+      const agentLabel = viewedSession ? agentName(viewedSession.agent_id) : (leadSession ? agentName(leadSession.agent_id) : 'Agent');
       entries.push({
         type: 'agent',
         text: ephemeralText,
