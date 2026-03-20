@@ -229,22 +229,26 @@
       </span>
     {:else if usage && !usage.available}
       <span class="context-bar unavailable"><span class="context-dash">&mdash;</span></span>
+    {:else}
+      <span class="context-bar placeholder" aria-hidden="true"></span>
     {/if}
-    {#if !TERMINAL_STATUSES.has(s.status)}
-      <button class="action-btn cancel-btn" title="Cancel session" onclick={(e) => handleCancel(e, s.id)}>
-        &#x2717;
-      </button>
-    {/if}
-    {#if s.status === 'input-required'}
-      <button class="action-btn complete-btn" title="Complete session" onclick={(e) => handleComplete(e, s.id)}>
-        &#x2713;
-      </button>
-    {/if}
-    {#if s.status === 'failed' && s.agent_session_id}
-      <button class="action-btn recover-btn" title="Attempt recovery" onclick={(e) => handleRecover(e, s.id)}>
-        &#x21BB;
-      </button>
-    {/if}
+    <span class="action-zone">
+      {#if !TERMINAL_STATUSES.has(s.status)}
+        <button class="action-btn cancel-btn" title="Cancel session" onclick={(e) => handleCancel(e, s.id)}>
+          &#x2717;
+        </button>
+      {/if}
+      {#if s.status === 'input-required'}
+        <button class="action-btn complete-btn" title="Complete session" onclick={(e) => handleComplete(e, s.id)}>
+          &#x2713;
+        </button>
+      {/if}
+      {#if s.status === 'failed' && s.agent_session_id}
+        <button class="action-btn recover-btn" title="Attempt recovery" onclick={(e) => handleRecover(e, s.id)}>
+          &#x21BB;
+        </button>
+      {/if}
+    </span>
   </div>
 
   {#each active as child}
@@ -479,6 +483,19 @@
     font-size: 0.5rem;
   }
 
+  .context-bar.placeholder {
+    visibility: hidden;
+  }
+
+  .action-zone {
+    display: flex;
+    align-items: center;
+    gap: 0.125rem;
+    flex-shrink: 0;
+    width: 2.25rem;
+    justify-content: flex-end;
+  }
+
   .action-btn {
     display: inline-flex;
     align-items: center;
@@ -496,7 +513,7 @@
     transition: opacity 0.1s, color 0.1s, background 0.1s;
   }
 
-  .sidebar-node:hover .action-btn {
+  .sidebar-node:hover .action-zone .action-btn {
     opacity: 1;
   }
 
