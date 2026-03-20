@@ -374,17 +374,43 @@ pub async fn handle_worker_sync(
     if let Some(ref result) = request.session_result {
         let has_error = result.error_kind.is_some() || result.error.is_some();
 
-        if !has_error {
-            // Only transition to input-required if the worker has no pending
-            // turns locally. When has_pending_turn is true, the worker already
-            // has the next prompt queued and will start processing it
-            // immediately — transitioning to input-required would be incorrect.
-            if !result.has_pending_turn
-                && let Ok(session) =
-                    db::sessions::get_by_id(&state.db_pool, &result.session_id).await
-                && matches!(session.status.as_str(), "working" | "input-required")
+        if !has_error
+            && let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await
+            && matches!(session.status.as_str(), "working" | "input-required")
+        {
+            // Touch last_progress_at on every turn result (real progress signal).
+            // Unconditional — tracks progress even when has_pending_turn=true.
+            let _ = db::sessions::touch_last_progress_at(&state.db_pool, &result.session_id).await;
+
+            // Deliver child output to parent unconditionally — parent needs
+            // the notification regardless of whether the child has local turns.
+            if session.parent_session_id.is_some()
+                && let Some(output_text) =
+                    crate::services::notification::extract_turn_output(&result.turn_messages)
+                && let Err(e) = crate::services::notification::deliver_to_parent(
+                    &state.db_pool,
+                    &state.task_queue,
+                    &state.event_broadcast,
+                    &state.stop_turn_intents,
+                    &result.session_id,
+                    &output_text,
+                )
+                .await
             {
-                // Only transition session if currently working (not already input-required)
+                tracing::error!(
+                    session_id = %result.session_id,
+                    error = %e,
+                    "failed to deliver turn-complete to parent"
+                );
+            }
+
+            // Only transition to input-required when the worker has no
+            // pending local turns. When has_pending_turn=true, the worker
+            // is already executing the next turn — emitting input-required
+            // would disrupt the frontend's streaming state machine.
+            // If has_pending_turn was incorrectly reported (no follow-up
+            // turn arrives), the idle-root reconciler catches it within ~90s.
+            if !result.has_pending_turn {
                 if session.status == "working" {
                     if let Err(e) = db::sessions::update_status(
                         &state.db_pool,
@@ -429,29 +455,7 @@ pub async fn handle_worker_sync(
                     }
                 }
 
-                // Turn-complete auto-notification — deliver to parent (runs regardless of session status)
-                if session.parent_session_id.is_some()
-                    && let Some(output_text) =
-                        crate::services::notification::extract_turn_output(&result.turn_messages)
-                    && let Err(e) = crate::services::notification::deliver_to_parent(
-                        &state.db_pool,
-                        &state.task_queue,
-                        &state.event_broadcast,
-                        &state.stop_turn_intents,
-                        &result.session_id,
-                        &output_text,
-                    )
-                    .await
-                {
-                    tracing::error!(
-                        session_id = %result.session_id,
-                        error = %e,
-                        "failed to deliver turn-complete to parent"
-                    );
-                }
-
                 // Child sessions: check queue and return TaskAvailable or NoAction
-                // (don't skip the queue check like we did before — the parent may have queued work)
                 if session.parent_session_id.is_some() {
                     if state
                         .task_queue
@@ -470,7 +474,7 @@ pub async fn handle_worker_sync(
                     }
                 }
 
-                // Propagate to execution for lead sessions (runs regardless of session status)
+                // Propagate to execution for lead sessions
                 if session.parent_session_id.is_none() {
                     use db::executions::CasResult;
                     match db::executions::update_status_cas(
@@ -512,8 +516,6 @@ pub async fn handle_worker_sync(
                             }
                         }
                         Ok(CasResult::Conflict) => {
-                            // Expected when widened guard runs for session already in input-required
-                            // (execution was already transitioned by a prior path)
                             tracing::debug!(
                                 execution_id = %session.execution_id,
                                 "execution already transitioned from working — CAS conflict (expected)"
@@ -553,8 +555,8 @@ pub async fn handle_worker_sync(
                 }
             }
 
-            // Fallback queue check: if the turn-completion block didn't run
-            // (because has_pending_turn=true), still check for queued tasks
+            // Fallback queue check: when has_pending_turn=true, the status
+            // transition was skipped but the parent may have queued work.
             if result.has_pending_turn
                 && state
                     .task_queue
@@ -581,10 +583,39 @@ pub async fn handle_worker_sync(
             tracing::warn!(error = %e, session_id = %session_state.session_id, "heartbeat touch failed");
         }
 
+        // Active-turn heartbeats ("running") touch last_progress_at.
+        // Idle heartbeats ("waiting_for_event") do NOT — that distinction is
+        // what lets the liveness scan detect stuck-idle sessions.
+        //
+        // Trade-off: a hung executor (alive but wedged) will still mask itself
+        // via running heartbeats, same as the old updated_at behavior. We accept
+        // this because the alternative — not touching last_progress_at here —
+        // would falsely recover healthy quiet turns (long tool executions, slow
+        // API calls with no mid-turn output). Hung executor detection requires
+        // a turn-level watchdog in the worker, not a scheduler-side timestamp.
+        if session_state.status == "running" {
+            let _ = db::sessions::touch_last_progress_at(&state.db_pool, &session_state.session_id)
+                .await;
+        }
+
+        // If a session_result was included in this request, it was already
+        // processed in Step 1. Don't enter long-poll — the result submission
+        // must return immediately. Long-poll is only for standalone
+        // heartbeat/poll requests (e.g., start_active_turn_poll, start_long_poll).
+        if request.session_result.is_some() {
+            return Ok(Json(WorkerSyncResponse::NoAction));
+        }
+
         return match session_state.status.as_str() {
-            "waiting_for_event" => long_poll_session(&state, &session_state.session_id).await,
+            // Both "waiting_for_event" (idle) and "running" (active turn) use
+            // long-poll so mid-turn commands (stop_turn, cancel) can be delivered.
+            // The distinction is progress tracking: "running" touches
+            // last_progress_at (above), "waiting_for_event" does not.
+            "waiting_for_event" | "running" => {
+                long_poll_session(&state, &session_state.session_id).await
+            }
             "fetch_task" => fetch_task(&state, &session_state.session_id).await,
-            // "running" or any other status — heartbeat ack
+            // Any other status — heartbeat ack
             _ => Ok(Json(WorkerSyncResponse::NoAction)),
         };
     }
@@ -1026,6 +1057,10 @@ pub async fn handle_worker_event(
         )
         .await?
         {
+            // Persisted mid-turn event = real progress. Touch last_progress_at
+            // so the liveness scan doesn't falsely recover active turns.
+            let _ = db::sessions::touch_last_progress_at(&state.db_pool, &request.session_id).await;
+
             let _ = state
                 .event_broadcast
                 .send(EventNotification::persisted(session.execution_id, event_id));

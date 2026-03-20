@@ -136,7 +136,7 @@ test('session tree recover icon triggers child session recovery', async ({ page 
 
   // Add a failed child session with agent_session_id
   const childId = `child-e2e-${Date.now()}`;
-  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, agent_session_id) VALUES ('${childId}', '${execId}', '${sessionId}', '${agent.id}', 'failed', 'child', '/tmp', 'cs_child_e2e')`);
+  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, agent_session_id, last_progress_at) VALUES ('${childId}', '${execId}', '${sessionId}', '${agent.id}', 'failed', 'child', '/tmp', 'cs_child_e2e', CURRENT_TIMESTAMP)`);
 
   await page.goto(`/#/execution/${execId}`);
 

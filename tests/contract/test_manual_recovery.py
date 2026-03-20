@@ -101,7 +101,7 @@ def _add_child_session(
     with db_conn(db_url) as conn:
         conn.execute(
             "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, "
-            "cwd, agent_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "cwd, agent_session_id, last_progress_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
             (
                 child_id,
                 execution_id,

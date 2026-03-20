@@ -53,16 +53,18 @@ def _get_session(db_url, session_id):
 
 
 def _backdate_session(db_url, session_id, seconds=120):
-    """Backdate session updated_at so liveness scan sees it as clearly stale."""
+    """Backdate session timestamps so liveness scan sees it as clearly stale."""
     with db_conn(db_url) as conn:
         if db_url.startswith("postgres"):
             conn.execute(
-                f"UPDATE sessions SET updated_at = CURRENT_TIMESTAMP - INTERVAL '{seconds} seconds' WHERE id = ?",
+                f"UPDATE sessions SET updated_at = CURRENT_TIMESTAMP - INTERVAL '{seconds} seconds', "
+                f"last_progress_at = CURRENT_TIMESTAMP - INTERVAL '{seconds} seconds' WHERE id = ?",
                 (session_id,),
             )
         else:
             conn.execute(
-                f"UPDATE sessions SET updated_at = datetime('now', '-{seconds} seconds') WHERE id = ?",
+                f"UPDATE sessions SET updated_at = datetime('now', '-{seconds} seconds'), "
+                f"last_progress_at = datetime('now', '-{seconds} seconds') WHERE id = ?",
                 (session_id,),
             )
         conn.commit()
@@ -172,7 +174,7 @@ def test_liveness_acp_failure_cascades_children(test_database):
         child_sid = "child-" + lead_sid[:20]
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug) VALUES (?, ?, ?, ?, 'working', 'child')",
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, last_progress_at) VALUES (?, ?, ?, ?, 'working', 'child', CURRENT_TIMESTAMP)",
                 (child_sid, exec_id, lead_sid, child_agent_id),
             )
             conn.commit()
@@ -248,3 +250,38 @@ def test_liveness_skips_terminal_execution(test_database):
         session = _get_session(ctx["db_url"], lead_sid)
         assert session["status"] == "working"
         assert session["recovery_attempts"] == 0
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_liveness_uses_last_progress_at_not_updated_at(test_database):
+    """Session with stale last_progress_at but fresh updated_at IS recovered.
+
+    Demonstrates that the liveness scan uses last_progress_at (not updated_at)
+    to detect staleness. Uses two contexts: ctx1 sets up state with stale
+    last_progress_at but fresh updated_at, ctx2's startup scan detects it.
+    """
+    with scheduler_context(db_url=test_database, env=SHORT_LIVENESS) as ctx1:
+        agent_id, exec_id, lead_sid = _setup_working_session(ctx1)
+        # Backdate only last_progress_at, keep updated_at fresh
+        with db_conn(ctx1["db_url"]) as conn:
+            if test_database.startswith("postgres"):
+                conn.execute(
+                    "UPDATE sessions SET last_progress_at = CURRENT_TIMESTAMP - INTERVAL '300 seconds' WHERE id = ?",
+                    (lead_sid,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE sessions SET last_progress_at = datetime('now', '-300 seconds') WHERE id = ?",
+                    (lead_sid,),
+                )
+            # Keep updated_at fresh (simulates a worker that heartbeats but makes no progress)
+            conn.execute(
+                "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (lead_sid,),
+            )
+            conn.commit()
+
+    # Restart scheduler — startup scan uses last_progress_at, not updated_at
+    with scheduler_context(db_url=test_database, env=SHORT_LIVENESS) as ctx2:
+        session = _wait_for_status_change(ctx2["db_url"], lead_sid)
+        assert session["status"] == "submitted"

@@ -205,11 +205,11 @@ def test_leaf_cannot_call_delegate(test_database):
         grandchild_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, 'submitted', CURRENT_TIMESTAMP)",
                 (child_id, exec_id, lead_id, agent_id),
             )
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, 'submitted', CURRENT_TIMESTAMP)",
                 (grandchild_id, exec_id, child_id, agent_id),
             )
             conn.commit()

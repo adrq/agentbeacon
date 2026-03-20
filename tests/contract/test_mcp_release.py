@@ -20,7 +20,7 @@ def _create_child_session(ctx, lead_session_id, exec_id, agent_id, status="submi
     child_id = str(uuid.uuid4())
     with db_conn(ctx["db_url"]) as conn:
         conn.execute(
-            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
             (child_id, exec_id, lead_session_id, agent_id, status),
         )
         conn.commit()
@@ -32,7 +32,7 @@ def _create_grandchild_session(ctx, parent_id, exec_id, agent_id, status="submit
     gc_id = str(uuid.uuid4())
     with db_conn(ctx["db_url"]) as conn:
         conn.execute(
-            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
             (gc_id, exec_id, parent_id, agent_id, status),
         )
         conn.commit()
@@ -178,11 +178,11 @@ def test_release_requires_parent_authority(test_database):
         with db_conn(ctx["db_url"]) as conn:
             # Create another session as another parent
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'working')",
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, 'working', CURRENT_TIMESTAMP)",
                 (other_parent_id, exec_id, lead_sid, agent_id),
             )
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'input-required')",
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, 'input-required', CURRENT_TIMESTAMP)",
                 (child_id, exec_id, other_parent_id, agent_id),
             )
             conn.commit()
@@ -420,7 +420,7 @@ def test_sub_lead_cannot_release_parent(test_database):
         child_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, 'submitted', CURRENT_TIMESTAMP)",
                 (child_id, exec_id, lead_id, agent_id),
             )
             conn.commit()

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde_json::json;
+use sqlx::Row;
 use tokio::sync::broadcast;
 
 use crate::app::EventNotification;
@@ -106,6 +107,13 @@ pub async fn recover_orphaned_sessions(
                     error = %e,
                     "recovery scan: failed to recover session"
                 );
+                // Increment recovery_attempts on deterministic pre-CAS failures
+                // (e.g., bad payload construction) to prevent infinite retry loops.
+                // Skip increment on transient DB errors — those should be retried
+                // cleanly without burning the recovery budget.
+                if !matches!(&e, SchedulerError::Database(_)) {
+                    let _ = db::sessions::increment_recovery_attempts(pool, &session.id).await;
+                }
                 stats.failed += 1;
             }
         }
@@ -210,23 +218,22 @@ pub async fn recover_orphaned_sessions(
     stats
 }
 
-/// Reconcile execution statuses that are stuck in 'working' when all sessions
-/// are 'input-required' (the race condition this fix targets).
+/// Reconcile execution statuses covering three stuck scenarios:
 ///
-/// This is a belt-and-suspenders safety net that should never fire once
-/// Changes 1-3 are in place, but will self-heal within 90s if an edge case
-/// was missed.
+/// Case 1: execution=working, all sessions=input-required (no working/submitted).
+/// Case 2: execution=working, root session=working with stale last_progress_at,
+///         no active children, no queued work (idle-root — exact stuck-68635654 scenario).
+/// Case 3: execution non-terminal but ALL sessions terminal (orphaned execution).
 ///
-/// ONLY transitions working → input-required. Does NOT handle the all-terminal
-/// case (that's a different bug/different fix).
+/// Belt-and-suspenders safety net — should rarely fire after the primary fixes.
 async fn reconcile_execution_statuses(
     pool: &DbPool,
     event_broadcast: &broadcast::Sender<EventNotification>,
+    updated_before: DateTime<Utc>,
 ) -> usize {
-    // Find executions in 'working' where NO session is 'working' or 'submitted'
-    // AND at least one session is 'input-required' (the actual stuck scenario).
-    // The input-required guard prevents matching all-terminal cases, which need
-    // a different target status (completed/failed) — that's a separate fix.
+    let mut count = 0usize;
+
+    // --- Case 1: execution=working, all sessions=input-required ---
     let query = pool.prepare_query(
         "SELECT e.id \
          FROM executions e \
@@ -249,84 +256,333 @@ async fn reconcile_execution_statuses(
     {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(error = %e, "reconcile: query for stuck executions failed");
+            tracing::error!(error = %e, "reconcile case 1: query for stuck executions failed");
             return 0;
         }
     };
 
-    if rows.is_empty() {
-        return 0;
+    if !rows.is_empty() {
+        tracing::info!(
+            count = rows.len(),
+            "reconcile case 1: found executions stuck in working (all sessions input-required)"
+        );
     }
 
-    tracing::info!(
-        count = rows.len(),
-        "reconcile: found executions stuck in working state"
-    );
-
-    let mut count = 0usize;
     for execution_id in &rows {
-        // CAS transition: working → input-required
-        use db::executions::CasResult;
-        match db::executions::update_status_cas(pool, execution_id, "input-required", &["working"])
+        count += reconcile_execution_to(
+            pool,
+            event_broadcast,
+            execution_id,
+            "input-required",
+            &["working"],
+            "working",
+            "reconcile case 1: all sessions input-required",
+        )
+        .await;
+    }
+
+    // --- Case 2: idle root with stale last_progress_at ---
+    let ts_cast = if pool.is_postgres() {
+        "::timestamptz"
+    } else {
+        ""
+    };
+    let updated_before_str = if pool.is_postgres() {
+        updated_before
+            .format("%Y-%m-%d %H:%M:%S%.6f+00")
+            .to_string()
+    } else {
+        updated_before.format("%Y-%m-%d %H:%M:%S").to_string()
+    };
+
+    let idle_root_sql = format!(
+        "SELECT e.id, s.id as root_session_id \
+         FROM executions e \
+         JOIN sessions s ON s.execution_id = e.id AND s.parent_session_id IS NULL \
+         WHERE e.status = 'working' \
+           AND s.status = 'working' \
+           AND s.last_progress_at < ?{ts_cast} \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM sessions c \
+               WHERE c.execution_id = e.id \
+                 AND c.parent_session_id IS NOT NULL \
+                 AND c.status NOT IN ('completed', 'failed', 'canceled') \
+           ) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM task_queue tq \
+               WHERE tq.session_id = s.id \
+           )"
+    );
+    let idle_root_query = pool.prepare_query(&idle_root_sql);
+
+    let idle_rows = match sqlx::query(&idle_root_query)
+        .bind(&updated_before_str)
+        .fetch_all(pool.as_ref())
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "reconcile case 2: query for idle-root executions failed");
+            return count;
+        }
+    };
+
+    for row in &idle_rows {
+        let execution_id: String = row.get("id");
+        let root_session_id: String = row.get("root_session_id");
+
+        // Atomically transition root session to input-required, but only if
+        // still working AND no work has been queued since the SELECT scan.
+        // Without the queue re-check, a user message landing between the scan
+        // and this UPDATE would be stranded in the queue.
+        let cas_sql = pool.prepare_query(
+            "UPDATE sessions SET status = 'input-required', \
+             updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ? AND status = 'working' \
+             AND NOT EXISTS (SELECT 1 FROM task_queue WHERE session_id = ?)",
+        );
+        let cas_result = match sqlx::query(&cas_sql)
+            .bind(&root_session_id)
+            .bind(&root_session_id)
+            .execute(pool.as_ref())
             .await
         {
-            Ok(CasResult::Applied) => {
-                let event_payload = json!({
-                    "from": "working",
-                    "to": "input-required",
-                    "reconciled": true,
-                });
-                match db::events::insert(
-                    pool,
-                    execution_id,
-                    None,
-                    "state_change",
-                    &serde_json::to_string(&event_payload).unwrap(),
-                )
-                .await
-                {
-                    Ok(event_id) => {
-                        let _ = event_broadcast
-                            .send(EventNotification::persisted(execution_id.clone(), event_id));
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            execution_id = %execution_id,
-                            error = %e,
-                            "reconcile: failed to insert state_change event"
-                        );
-                    }
+            Ok(r) => r.rows_affected() > 0,
+            Err(e) => {
+                tracing::error!(
+                    session_id = %root_session_id,
+                    error = %e,
+                    "reconcile case 2: failed to transition idle root session"
+                );
+                continue;
+            }
+        };
+        if !cas_result {
+            tracing::debug!(
+                session_id = %root_session_id,
+                "reconcile case 2: session changed or work queued concurrently, skipping"
+            );
+            continue;
+        }
+        // Refresh last_progress_at to prevent the recovery scan from
+        // immediately resubmitting this session on the next liveness tick
+        let _ = db::sessions::touch_last_progress_at(pool, &root_session_id).await;
+
+        let event_payload = json!({
+            "from": "working",
+            "to": "input-required",
+            "reconciled": true,
+            "reason": "idle_root",
+        });
+        if let Ok(event_id) = db::events::insert(
+            pool,
+            &execution_id,
+            Some(&root_session_id),
+            "state_change",
+            &serde_json::to_string(&event_payload).unwrap(),
+        )
+        .await
+        {
+            let _ =
+                event_broadcast.send(EventNotification::persisted(execution_id.clone(), event_id));
+        }
+
+        count += reconcile_execution_to(
+            pool,
+            event_broadcast,
+            &execution_id,
+            "input-required",
+            &["working"],
+            "working",
+            "reconcile case 2: idle root with stale progress",
+        )
+        .await;
+    }
+
+    // --- Case 3: all sessions terminal but execution non-terminal ---
+    let all_terminal_query = pool.prepare_query(
+        "SELECT e.id \
+         FROM executions e \
+         WHERE e.status IN ('working', 'submitted', 'input-required') \
+         AND NOT EXISTS ( \
+             SELECT 1 FROM sessions s \
+             WHERE s.execution_id = e.id \
+             AND s.status NOT IN ('completed', 'failed', 'canceled') \
+         ) \
+         AND EXISTS ( \
+             SELECT 1 FROM sessions s \
+             WHERE s.execution_id = e.id \
+         )",
+    );
+
+    let terminal_rows = match sqlx::query_scalar::<_, String>(&all_terminal_query)
+        .fetch_all(pool.as_ref())
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "reconcile case 3: query for all-terminal executions failed");
+            return count;
+        }
+    };
+
+    for execution_id in &terminal_rows {
+        // Derive target from root session's terminal state, not aggregate child
+        // states. A successful execution routinely has canceled descendants
+        // (release completes input-required children but cancels working ones),
+        // so aggregating "any canceled → canceled" would be wrong.
+        let root_query = pool.prepare_query(
+            "SELECT status FROM sessions \
+             WHERE execution_id = ? AND parent_session_id IS NULL",
+        );
+        let target_status = match sqlx::query_scalar::<_, String>(&root_query)
+            .bind(execution_id)
+            .fetch_optional(pool.as_ref())
+            .await
+        {
+            Ok(Some(status)) => match status.as_str() {
+                "failed" => "failed",
+                "canceled" => "canceled",
+                "completed" => "completed",
+                _ => {
+                    // Root session still non-terminal — shouldn't happen given
+                    // the all-terminal filter, but skip defensively
+                    tracing::debug!(
+                        execution_id = %execution_id,
+                        root_status = %status,
+                        "reconcile case 3: root session not terminal, skipping"
+                    );
+                    continue;
                 }
-                tracing::warn!(
-                    execution_id = %execution_id,
-                    "reconciled stuck execution: working → input-required"
-                );
-                count += 1;
-            }
-            Ok(CasResult::Conflict) => {
-                // Execution status changed between query and CAS (concurrent transition won)
-                tracing::debug!(
-                    execution_id = %execution_id,
-                    "reconcile: execution status changed concurrently, skipping"
-                );
-            }
-            Ok(CasResult::NotFound) => {
+            },
+            Ok(None) => {
                 tracing::error!(
                     execution_id = %execution_id,
-                    "reconcile: execution row missing — data integrity issue"
+                    "reconcile case 3: no root session found"
                 );
+                continue;
             }
             Err(e) => {
                 tracing::error!(
                     execution_id = %execution_id,
                     error = %e,
-                    "reconcile: CAS transition failed"
+                    "reconcile case 3: failed to query root session status"
                 );
+                continue;
             }
-        }
+        };
+
+        // Read actual execution status for accurate event payload
+        let from_status = match db::executions::get_by_id(pool, execution_id).await {
+            Ok(exec) => exec.status,
+            Err(e) => {
+                tracing::error!(
+                    execution_id = %execution_id,
+                    error = %e,
+                    "reconcile case 3: failed to read execution status"
+                );
+                continue;
+            }
+        };
+
+        tracing::warn!(
+            execution_id = %execution_id,
+            from = %from_status,
+            target = target_status,
+            "reconcile case 3: all sessions terminal, transitioning execution"
+        );
+
+        count += reconcile_execution_to(
+            pool,
+            event_broadcast,
+            execution_id,
+            target_status,
+            &["working", "submitted", "input-required"],
+            &from_status,
+            "reconcile case 3: all sessions terminal",
+        )
+        .await;
     }
 
     count
+}
+
+/// Helper: CAS-transition an execution and emit a reconciliation event.
+/// Returns 1 if applied, 0 otherwise.
+///
+/// `from_status`: the actual pre-CAS status for the event payload. When the
+/// CAS allows multiple source statuses, the caller should read the current
+/// status and pass it here so the event payload is accurate.
+async fn reconcile_execution_to(
+    pool: &DbPool,
+    event_broadcast: &broadcast::Sender<EventNotification>,
+    execution_id: &str,
+    target: &str,
+    allowed_from: &[&str],
+    from_status: &str,
+    reason: &str,
+) -> usize {
+    use db::executions::CasResult;
+    match db::executions::update_status_cas(pool, execution_id, target, allowed_from).await {
+        Ok(CasResult::Applied) => {
+            let event_payload = json!({
+                "from": from_status,
+                "to": target,
+                "reconciled": true,
+            });
+            match db::events::insert(
+                pool,
+                execution_id,
+                None,
+                "state_change",
+                &serde_json::to_string(&event_payload).unwrap(),
+            )
+            .await
+            {
+                Ok(event_id) => {
+                    let _ = event_broadcast.send(EventNotification::persisted(
+                        execution_id.to_string(),
+                        event_id,
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        execution_id = %execution_id,
+                        error = %e,
+                        "{reason}: failed to insert state_change event"
+                    );
+                }
+            }
+            tracing::warn!(
+                execution_id = %execution_id,
+                "{reason}: {from} → {target}",
+                from = allowed_from[0],
+            );
+            1
+        }
+        Ok(CasResult::Conflict) => {
+            tracing::debug!(
+                execution_id = %execution_id,
+                "{reason}: execution status changed concurrently, skipping"
+            );
+            0
+        }
+        Ok(CasResult::NotFound) => {
+            tracing::error!(
+                execution_id = %execution_id,
+                "{reason}: execution row missing — data integrity issue"
+            );
+            0
+        }
+        Err(e) => {
+            tracing::error!(
+                execution_id = %execution_id,
+                error = %e,
+                "{reason}: CAS transition failed"
+            );
+            0
+        }
+    }
 }
 
 /// Run a full liveness scan: recover resumable sessions + fail non-resumable ones + reconcile executions.
@@ -352,7 +608,7 @@ pub async fn run_liveness_scan(
         fail_stale_non_resumable(pool, task_queue, event_broadcast, updated_before).await;
 
     // Reconcile execution statuses (belt-and-suspenders safety net)
-    let reconciled = reconcile_execution_statuses(pool, event_broadcast).await;
+    let reconciled = reconcile_execution_statuses(pool, event_broadcast, updated_before).await;
 
     LivenessScanStats {
         recovered: recovery.recovered,
@@ -637,7 +893,10 @@ async fn recover_session(
         "UPDATE sessions SET recovery_attempts = recovery_attempts + 1, \
          status = 'submitted', updated_at = CURRENT_TIMESTAMP, completed_at = NULL \
          WHERE id = ? AND status IN ('working', 'input-required') \
-         AND updated_at < ?{ts_cast} \
+         AND ( \
+             (status = 'working' AND last_progress_at < ?{ts_cast}) \
+             OR (status = 'input-required' AND updated_at < ?{ts_cast}) \
+         ) \
          AND agent_session_id IS NOT NULL AND cwd IS NOT NULL"
     );
     let cas_query = pool.prepare_query(&cas_sql);
@@ -655,6 +914,7 @@ async fn recover_session(
 
     let cas_result = sqlx::query(&cas_query)
         .bind(&session.id)
+        .bind(updated_before)
         .bind(updated_before)
         .execute(&mut *tx)
         .await

@@ -128,7 +128,7 @@ def test_valid_child_token_returns_initialize_response(test_database):
         child_session_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, 'submitted', CURRENT_TIMESTAMP)",
                 (child_session_id, exec_id, lead_session_id, agent_id),
             )
             conn.commit()

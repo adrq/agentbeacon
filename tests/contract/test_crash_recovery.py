@@ -95,22 +95,23 @@ def _wait_for_task_payload(db_url, session_id, timeout=5, interval=0.15):
 
 
 def _backdate_session(db_url, session_id):
-    """Backdate session updated_at so recovery scan sees it as clearly stale.
+    """Backdate session timestamps so recovery scan sees it as clearly stale.
 
     SQLite CURRENT_TIMESTAMP has second precision, so without backdating,
     a session updated in the same second as scheduler startup would be missed
-    by the `updated_at < startup_time` filter.
+    by the `last_progress_at < startup_time` filter.
     """
     with db_conn(db_url) as conn:
-        # Works for both SQLite (datetime function) and PostgreSQL (interval)
         if db_url.startswith("postgres"):
             conn.execute(
-                "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP - INTERVAL '10 seconds' WHERE id = ?",
+                "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP - INTERVAL '10 seconds', "
+                "last_progress_at = CURRENT_TIMESTAMP - INTERVAL '10 seconds' WHERE id = ?",
                 (session_id,),
             )
         else:
             conn.execute(
-                "UPDATE sessions SET updated_at = datetime('now', '-10 seconds') WHERE id = ?",
+                "UPDATE sessions SET updated_at = datetime('now', '-10 seconds'), "
+                "last_progress_at = datetime('now', '-10 seconds') WHERE id = ?",
                 (session_id,),
             )
         conn.commit()
@@ -167,7 +168,12 @@ def test_recovery_resubmits_input_required_session(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_recovery_skips_session_without_agent_session_id(test_database):
-    """Session without agent_session_id is NOT recovered."""
+    """Session without agent_session_id is NOT recovered via resume.
+
+    The session may be transitioned to input-required by the idle-root
+    reconciler (a separate safety net), but it should NOT be resubmitted
+    via the resume path (recovery_attempts stays 0).
+    """
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx1:
         agent_id = seed_test_agent(
             ctx1["db_url"], name="claude-no-sid", agent_type="claude_sdk"
@@ -182,7 +188,10 @@ def test_recovery_skips_session_without_agent_session_id(test_database):
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
         time.sleep(NEGATIVE_WAIT)
         session = _get_session(ctx2["db_url"], lead_sid)
-        assert session["status"] == "working"
+        # Session should NOT have been resubmitted via resume recovery
+        assert session["status"] != "submitted", (
+            "should not be resubmitted without agent_session_id"
+        )
         assert session["recovery_attempts"] == 0
 
 
@@ -331,7 +340,12 @@ def test_recovery_uses_session_cwd(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_recovery_skips_session_without_cwd(test_database):
-    """Session with cwd = NULL is NOT recovered (stays in original state)."""
+    """Session with cwd = NULL is NOT recovered via resume.
+
+    The session may be transitioned to input-required by the idle-root
+    reconciler, but it should NOT be resubmitted via the resume path
+    (recovery_attempts stays 0).
+    """
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx1:
         agent_id = seed_test_agent(
             ctx1["db_url"], name="claude-no-cwd", agent_type="claude_sdk"
@@ -350,28 +364,43 @@ def test_recovery_skips_session_without_cwd(test_database):
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
         time.sleep(NEGATIVE_WAIT)
         session = _get_session(ctx2["db_url"], lead_sid)
-        # cwd IS NULL is filtered by find_recoverable, so session stays working
-        # (the SQL WHERE clause has cwd IS NOT NULL)
-        assert session["status"] == "working"
+        # cwd IS NULL is filtered by find_recoverable, so session is NOT resubmitted
+        assert session["status"] != "submitted", "should not be resubmitted without cwd"
         assert session["recovery_attempts"] == 0
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_heartbeat_prevents_recovery(test_database):
-    """Session synced during grace period is NOT recovered."""
+def test_fresh_progress_prevents_recovery(test_database):
+    """Session with fresh last_progress_at is NOT recovered on restart."""
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx1:
         _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1)
 
-    # Start second scheduler — sync during grace period to update updated_at.
-    # The heartbeat pushes updated_at past startup_time, so the session is
-    # excluded from the recovery scan's `updated_at < startup_time` filter.
+    # Start second scheduler — submit a turn result during grace period to
+    # push last_progress_at past startup_time. Recovery uses last_progress_at
+    # (not updated_at) so only actual progress prevents recovery.
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
         _worker_sync(
             ctx2["url"],
-            payload={"sessionState": {"sessionId": lead_sid, "status": "running"}},
+            {
+                "sessionResult": {
+                    "sessionId": lead_sid,
+                    "turnMessages": [
+                        {
+                            "msgSeq": 1,
+                            "payload": {
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "alive"}],
+                            },
+                        }
+                    ],
+                    "hasPendingTurn": True,
+                }
+            },
         )
         time.sleep(NEGATIVE_WAIT)
         session = _get_session(ctx2["db_url"], lead_sid)
+        # has_pending_turn=true keeps session working, but last_progress_at
+        # was refreshed by the turn result so recovery scan skips it
         assert session["status"] == "working"
         assert session["recovery_attempts"] == 0
 
@@ -390,20 +419,37 @@ def test_recovery_atomicity_status_and_task(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_over_budget_skips_recently_heartbeated(test_database):
-    """Over-budget session with fresh heartbeat is NOT permanently failed."""
+def test_over_budget_skips_recent_progress(test_database):
+    """Over-budget session with fresh last_progress_at is NOT permanently failed."""
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx1:
         _agent_id, _exec_id, lead_sid = _setup_working_session(ctx1)
         _set_session_fields(ctx1["db_url"], lead_sid, recovery_attempts=2)
 
     with scheduler_context(db_url=test_database, env=SHORT_GRACE) as ctx2:
-        # Heartbeat during grace to push updated_at past startup_time
+        # Submit a turn result during grace to push last_progress_at past
+        # startup_time. Over-budget detection uses last_progress_at, not updated_at.
         _worker_sync(
             ctx2["url"],
-            payload={"sessionState": {"sessionId": lead_sid, "status": "running"}},
+            {
+                "sessionResult": {
+                    "sessionId": lead_sid,
+                    "turnMessages": [
+                        {
+                            "msgSeq": 1,
+                            "payload": {
+                                "role": "ROLE_AGENT",
+                                "parts": [{"text": "alive"}],
+                            },
+                        }
+                    ],
+                    "hasPendingTurn": True,
+                }
+            },
         )
         time.sleep(NEGATIVE_WAIT)
         session = _get_session(ctx2["db_url"], lead_sid)
+        # has_pending_turn=true keeps session working, but last_progress_at
+        # was refreshed so the over-budget scan skips it
         assert session["status"] == "working", (
-            "over-budget session should NOT be failed if recently heartbeated"
+            "over-budget session should NOT be failed if recently made progress"
         )

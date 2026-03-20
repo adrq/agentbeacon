@@ -106,7 +106,6 @@ impl SyncRequest {
         Self::default()
     }
 
-    #[allow(dead_code)]
     pub fn running(session_id: &str) -> Self {
         Self {
             session_state: Some(SessionState {

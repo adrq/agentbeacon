@@ -262,7 +262,7 @@ def test_events_type_check_constraint():
                 "INSERT INTO executions (id, context_id, status) VALUES ('e1', 'e1', 'submitted')"
             )
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, agent_id, status) VALUES ('s1', 'e1', 'a1', 'submitted')"
+                "INSERT INTO sessions (id, execution_id, agent_id, status, last_progress_at) VALUES ('s1', 'e1', 'a1', 'submitted', CURRENT_TIMESTAMP)"
             )
             with pytest.raises(sqlite3.IntegrityError):
                 conn.execute(

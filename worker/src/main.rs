@@ -208,6 +208,21 @@ fn start_long_poll<'a>(
     })
 }
 
+/// Long-poll variant that signals the scheduler that a turn is actively executing.
+/// The scheduler treats "running" heartbeats as proof of progress, preventing
+/// false recovery of long-running turns.
+fn start_active_turn_poll<'a>(
+    client: &'a reqwest::Client,
+    scheduler_url: &'a str,
+    session_id: &str,
+    long_poll_timeout: Duration,
+) -> Pin<Box<dyn Future<Output = Result<SyncResponse>> + Send + 'a>> {
+    let request = SyncRequest::running(session_id);
+    Box::pin(async move {
+        perform_sync_long_poll(client, scheduler_url, &request, long_poll_timeout).await
+    })
+}
+
 /// Drains mid-turn message events from the channel and POSTs them to the scheduler.
 /// Serializes delivery to prevent burst-induced resource exhaustion.
 async fn message_sender_task(
@@ -469,7 +484,12 @@ async fn run_session(
                             SyncResponse::TaskAvailable { .. } => {
                                 // Task available — start long-poll, which will immediately
                                 // return TaskAvailable, then Branch B handles the fetch_task
-                                poll_fut = Some(start_long_poll(
+                                let poll_fn = if turns_in_flight > 0 {
+                                    start_active_turn_poll
+                                } else {
+                                    start_long_poll
+                                };
+                                poll_fut = Some(poll_fn(
                                     client, &args.scheduler_url,
                                     session_id, args.long_poll_timeout,
                                 ));
@@ -536,9 +556,15 @@ async fn run_session(
                                 break SessionExit::ShutdownRequested;
                             }
                             _ => {
-                                // NoAction — agent is idle, start long-poll to
-                                // wait for next task (user message, etc.)
-                                poll_fut = Some(start_long_poll(
+                                // NoAction — start appropriate long-poll. Use
+                                // active-turn poll while turns are in flight so
+                                // last_progress_at stays fresh for quiet turns.
+                                let poll_fn = if turns_in_flight > 0 {
+                                    start_active_turn_poll
+                                } else {
+                                    start_long_poll
+                                };
+                                poll_fut = Some(poll_fn(
                                     client, &args.scheduler_url,
                                     session_id, args.long_poll_timeout,
                                 ));
@@ -548,9 +574,10 @@ async fn run_session(
                     Some(AgentEvent::Init { session_id: sid }) => {
                         agent_session_id = Some(sid);
                         // Agent is initialized and processing the initial prompt.
-                        // Start the long-poll now so mid-turn messages can be delivered.
+                        // Start active-turn poll so mid-turn messages can be delivered
+                        // and the scheduler knows a turn is in progress.
                         if poll_fut.is_none() {
-                            poll_fut = Some(start_long_poll(
+                            poll_fut = Some(start_active_turn_poll(
                                 client, &args.scheduler_url,
                                 session_id, args.long_poll_timeout,
                             ));
@@ -774,8 +801,15 @@ async fn run_session(
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                 }
-                // Restart the long-poll (cancel path skips this via `continue`)
-                poll_fut = Some(start_long_poll(
+                // Restart the long-poll (cancel path skips this via `continue`).
+                // Use active-turn poll while a turn is executing so the scheduler
+                // knows the session is making progress (prevents false recovery).
+                let poll_fn = if turns_in_flight > 0 {
+                    start_active_turn_poll
+                } else {
+                    start_long_poll
+                };
+                poll_fut = Some(poll_fn(
                     client, &args.scheduler_url,
                     session_id, args.long_poll_timeout,
                 ));

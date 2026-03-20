@@ -104,8 +104,8 @@ test('terminal children auto-collapse into summary line', async ({ page }) => {
   // Add completed child sessions via SQL
   const childId1 = `child-ac-1-${Date.now()}`;
   const childId2 = `child-ac-2-${Date.now()}`;
-  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd) VALUES ('${childId1}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c1', '/tmp')`);
-  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd) VALUES ('${childId2}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c2', '/tmp')`);
+  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('${childId1}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c1', '/tmp', CURRENT_TIMESTAMP)`);
+  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('${childId2}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c2', '/tmp', CURRENT_TIMESTAMP)`);
 
   await page.goto(`/#/execution/${execId}`);
 
@@ -127,8 +127,8 @@ test('clicking summary line expands terminal children', async ({ page }) => {
   // Add completed child sessions
   const childId1 = `child-se-1-${Date.now()}`;
   const childId2 = `child-se-2-${Date.now()}`;
-  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd) VALUES ('${childId1}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c1', '/tmp')`);
-  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd) VALUES ('${childId2}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c2', '/tmp')`);
+  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('${childId1}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c1', '/tmp', CURRENT_TIMESTAMP)`);
+  sqliteExec(`INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('${childId2}', '${execId}', '${sessionId}', '${agent.id}', 'completed', 'c2', '/tmp', CURRENT_TIMESTAMP)`);
 
   await page.goto(`/#/execution/${execId}`);
 
@@ -170,7 +170,7 @@ test('selecting session scrolls it into view in bounded tree', async ({ page }) 
   // Add enough active child sessions to overflow the tree body (single transaction to avoid DB lock)
   const ts = Date.now();
   const inserts = Array.from({ length: 15 }, (_, i) =>
-    `INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd) VALUES ('child-siv-${i}-${ts}', '${execId}', '${sessionId}', '${agent.id}', 'submitted', 'c${i}', '/tmp');`
+    `INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, slug, cwd, last_progress_at) VALUES ('child-siv-${i}-${ts}', '${execId}', '${sessionId}', '${agent.id}', 'submitted', 'c${i}', '/tmp', CURRENT_TIMESTAMP);`
   ).join('\n');
   sqliteExec(`BEGIN; ${inserts} COMMIT;`);
 

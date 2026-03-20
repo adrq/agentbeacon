@@ -294,7 +294,11 @@ def test_worker_sync_idle_no_sessions(test_database):
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_worker_sync_running_heartbeat(test_database):
-    """Worker reporting 'running' status gets no_action (heartbeat ack)."""
+    """Worker reporting 'running' enters long-poll (same as waiting_for_event).
+
+    Active-turn heartbeats use long-poll to enable mid-turn command delivery
+    (stop_turn, cancel) while also signaling progress to the scheduler.
+    """
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
@@ -303,7 +307,7 @@ def test_worker_sync_running_heartbeat(test_database):
         data = _worker_sync(ctx["url"])
         assert data["type"] == "session_assigned"
 
-        # Report running — should get heartbeat ack
+        # Report running — enters long-poll, returns no_action after timeout
         data = _worker_sync(
             ctx["url"],
             {
@@ -312,6 +316,7 @@ def test_worker_sync_running_heartbeat(test_database):
                     "status": "running",
                 }
             },
+            timeout=35,
         )
         assert data["type"] == "no_action"
 

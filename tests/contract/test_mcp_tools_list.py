@@ -21,7 +21,7 @@ def _create_child_session(ctx, agent_id):
     child_id = str(uuid.uuid4())
     with db_conn(ctx["db_url"]) as conn:
         conn.execute(
-            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, 'submitted', CURRENT_TIMESTAMP)",
             (child_id, exec_id, lead_id, agent_id),
         )
         conn.commit()
@@ -34,7 +34,7 @@ def _create_leaf_session(ctx, agent_id):
     leaf_id = str(uuid.uuid4())
     with db_conn(ctx["db_url"]) as conn:
         conn.execute(
-            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, 'submitted')",
+            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, 'submitted', CURRENT_TIMESTAMP)",
             (leaf_id, exec_id, child_id, agent_id),
         )
         conn.commit()

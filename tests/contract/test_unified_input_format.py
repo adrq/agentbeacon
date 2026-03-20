@@ -221,7 +221,7 @@ def test_session_terminated_notification_is_a2a(test_database):
         child_id = str(uuid.uuid4())
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
                 (child_id, exec_id, lead_id, agent_id, "working"),
             )
             conn.commit()

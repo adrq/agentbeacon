@@ -22,6 +22,7 @@ pub enum TimestampColumn {
     UpdatedAt,
     CompletedAt,
     Timestamp,
+    LastProgressAt,
 }
 
 impl TimestampColumn {
@@ -32,6 +33,7 @@ impl TimestampColumn {
             Self::UpdatedAt => "updated_at",
             Self::CompletedAt => "completed_at",
             Self::Timestamp => "timestamp",
+            Self::LastProgressAt => "last_progress_at",
         }
     }
 }

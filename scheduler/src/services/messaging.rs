@@ -62,6 +62,9 @@ pub async fn transition_to_working(
     }
 
     db::sessions::update_status(db_pool, &session.id, "working").await?;
+    // Refresh last_progress_at so the session isn't immediately classified as
+    // stale after a long idle period in input-required.
+    let _ = db::sessions::touch_last_progress_at(db_pool, &session.id).await;
 
     let session_state_event = json!({"from": "input-required", "to": "working"});
     let sc_event_id = db::events::insert(

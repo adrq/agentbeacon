@@ -29,7 +29,7 @@ def _create_child_session(
     child_id = str(uuid.uuid4())
     with db_conn(ctx["db_url"]) as conn:
         conn.execute(
-            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
             (child_id, exec_id, parent_session_id, agent_id, status),
         )
         conn.commit()
@@ -112,7 +112,7 @@ def test_root_lead_at_max_depth_gets_escalate_only(test_database):
                 (exec_id, context_id),
             )
             conn.execute(
-                "INSERT INTO sessions (id, execution_id, agent_id, status) VALUES (?, ?, ?, 'submitted')",
+                "INSERT INTO sessions (id, execution_id, agent_id, status, last_progress_at) VALUES (?, ?, ?, 'submitted', CURRENT_TIMESTAMP)",
                 (session_id, exec_id, agent_id),
             )
             conn.commit()

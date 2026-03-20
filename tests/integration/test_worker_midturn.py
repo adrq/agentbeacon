@@ -39,38 +39,42 @@ def mock_scheduler():
 
 
 def test_long_poll_active_during_agent_turn(mock_scheduler):
-    """Worker long-polls scheduler during agent turn (not just after)."""
+    """Worker long-polls scheduler during agent turn (not just after).
+
+    During an active turn, the worker sends 'running' heartbeats (not
+    'waiting_for_event') so the scheduler knows a turn is in progress.
+    """
     scheduler_url, _, _ = mock_scheduler
     clear_state(scheduler_url)
 
     # DELAY_5: agent takes 5 seconds to respond, giving ample time to
-    # observe the waiting_for_event sync before the result arrives.
+    # observe the running sync before the result arrives.
     enqueue_session(scheduler_url, prompt_text="DELAY_5")
 
     worker = start_worker(scheduler_url)
     try:
-        # Wait for a waiting_for_event sync to appear in the log.
+        # Wait for a running sync to appear in the log.
         # With DELAY_5, the agent takes 5 seconds, so this should appear
         # well before the result is reported.
         assert poll_until(
             lambda: any(
-                e.get("sessionState", {}).get("status") == "waiting_for_event"
+                e.get("sessionState", {}).get("status") == "running"
                 for e in get_sync_log(scheduler_url)
             ),
             timeout=10,
-        ), "Worker did not start long-poll during turn"
+        ), "Worker did not start active-turn long-poll during turn"
 
         # Now wait for the turn to complete normally
         assert poll_until(lambda: len(get_results(scheduler_url)) > 0, timeout=30)
 
-        # Verify ordering: waiting_for_event appeared before the first result
+        # Verify ordering: running appeared before the first result
         # in the sync log (proves long-poll was active during the turn).
         sync_log = get_sync_log(scheduler_url)
-        first_waiting = next(
+        first_running = next(
             (
                 i
                 for i, e in enumerate(sync_log)
-                if e.get("sessionState", {}).get("status") == "waiting_for_event"
+                if e.get("sessionState", {}).get("status") == "running"
             ),
             None,
         )
@@ -78,11 +82,11 @@ def test_long_poll_active_during_agent_turn(mock_scheduler):
             (i for i, e in enumerate(sync_log) if e.get("sessionResult")),
             None,
         )
-        assert first_waiting is not None and first_result is not None, (
-            f"Missing expected entries: waiting={first_waiting}, result={first_result}"
+        assert first_running is not None and first_result is not None, (
+            f"Missing expected entries: running={first_running}, result={first_result}"
         )
-        assert first_waiting < first_result, (
-            f"waiting_for_event (idx {first_waiting}) should precede "
+        assert first_running < first_result, (
+            f"running (idx {first_running}) should precede "
             f"first result (idx {first_result})"
         )
     finally:

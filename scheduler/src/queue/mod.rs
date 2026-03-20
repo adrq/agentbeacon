@@ -133,7 +133,7 @@ mod tests {
             .expect("Failed to create execution");
 
         sqlx::query(
-            "INSERT INTO sessions (id, execution_id, agent_id, status) VALUES (?, ?, 'agent-1', 'submitted')"
+            "INSERT INTO sessions (id, execution_id, agent_id, status, last_progress_at) VALUES (?, ?, 'agent-1', 'submitted', CURRENT_TIMESTAMP)"
         )
         .bind(session_id)
         .bind(execution_id)
