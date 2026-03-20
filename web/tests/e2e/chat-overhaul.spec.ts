@@ -118,14 +118,19 @@ test('scroll-to-bottom button appears when scrolled up', async ({ page }) => {
   // Wait for content to load
   await expect(page.locator('.chat-row').first()).toBeVisible({ timeout: 15000 });
 
-  // Scroll up to trigger FAB
+  // Scroll up to trigger banner (pad content to ensure > 80px overflow, fire scroll event)
   await page.evaluate(() => {
     const el = document.querySelector('.chat-scroll');
-    if (el) el.scrollTop = 0;
+    if (!el) return;
+    const msgs = el.querySelector('.chat-messages') as HTMLElement | null;
+    if (msgs) msgs.style.paddingBottom = '200px';
+    el.scrollTop = el.scrollHeight;
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event('scroll'));
   });
 
-  // FAB should appear
-  const fab = page.getByRole('button', { name: 'Scroll to bottom' });
+  // Banner should appear
+  const fab = page.locator('[aria-label="Scroll to bottom"]');
   await expect(fab).toBeVisible({ timeout: 5000 });
 
   // Click FAB — should scroll to bottom and disappear

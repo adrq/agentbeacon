@@ -1,6 +1,6 @@
 import type {
   Agent, AgentPoolEntry, SessionDiscoveryEntry, ConfigEntry, Driver, Execution, ExecutionDetail, Session, Event, Project,
-  CreateExecutionResponse, PostMessageResponse, DiffResponse,
+  CreateExecutionResponse, PostMessageResponse, DiffResponse, WorktreeInfo,
   McpServer, McpServerPoolEntry,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
@@ -339,6 +339,10 @@ export class AgentBeaconAPI {
       method: 'POST',
       body: JSON.stringify({ message: message ?? undefined }),
     });
+  }
+
+  async getSessionWorktree(sessionId: string): Promise<WorktreeInfo> {
+    return this.fetchJSON<WorktreeInfo>(`/sessions/${sessionId}/worktree`);
   }
 
   // Session diffs — custom fetch to handle 413 (truncated) as valid data

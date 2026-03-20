@@ -217,7 +217,7 @@
   function handleScroll() {
     if (!scrollContainer) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-    shouldAutoScroll = scrollHeight - scrollTop - clientHeight < 40;
+    shouldAutoScroll = scrollHeight - scrollTop - clientHeight < 80;
   }
 
   let scrollRafId = 0;
@@ -744,14 +744,9 @@
   {/if}
 </div>
 
-{#if latestTodos.length > 0}
-  <TodoPanel todos={latestTodos} />
-{/if}
-
 {#if !shouldAutoScroll}
   <button
-    class="scroll-to-bottom"
-    class:has-panel={latestTodos.length > 0}
+    class="new-messages-bar"
     onclick={() => {
       if (scrollContainer) {
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
@@ -759,7 +754,16 @@
       }
     }}
     aria-label="Scroll to bottom"
-  >{'\u2193'}</button>
+  >
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M7 2v10M3 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    New messages below
+  </button>
+{/if}
+
+{#if latestTodos.length > 0}
+  <TodoPanel todos={latestTodos} />
 {/if}
 
 <div class="chat-input-area">
@@ -1166,34 +1170,27 @@
     word-break: break-word;
   }
 
-  /* Scroll-to-bottom FAB */
-  .scroll-to-bottom {
-    position: absolute;
-    bottom: 4rem;
-    right: 1.5rem;
-    width: 2rem;
-    height: 2rem;
-    border-radius: 50%;
-    border: 1px solid hsl(var(--border));
-    background: hsl(var(--card) / 0.9);
-    color: hsl(var(--foreground));
-    font-size: 1rem;
-    cursor: pointer;
+  /* Scroll-to-bottom banner */
+  .new-messages-bar {
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 2px 4px hsl(var(--shadow-hsl) / 0.15);
-    z-index: 10;
-    transition: opacity 0.15s;
+    gap: 0.375rem;
+    width: 100%;
+    height: 28px;
+    flex-shrink: 0;
+    border: none;
+    border-top: 1px solid hsl(var(--primary) / 0.25);
+    background: hsl(var(--primary) / 0.08);
+    color: hsl(var(--primary));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
   }
 
-  .scroll-to-bottom.has-panel {
-    bottom: 7rem;
-  }
-
-  .scroll-to-bottom:hover {
-    background: hsl(var(--card));
-    border-color: hsl(var(--primary));
+  .new-messages-bar:hover {
+    background: hsl(var(--primary) / 0.14);
   }
 
   .chat-input-area {

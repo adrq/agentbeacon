@@ -1,8 +1,9 @@
 <script lang="ts">
-  import type { SessionSummary, Agent, UsageState } from '../types';
+  import type { SessionSummary, Agent, UsageState, WorktreeInfo } from '../types';
   import { formatTokens } from '../format';
   import { api } from '../api';
   import { toasts } from '../stores/toasts';
+  import CopyButton from './CopyButton.svelte';
 
   interface Props {
     sessions: SessionSummary[];
@@ -161,7 +162,7 @@
     return `${h}h ${m % 60}m`;
   }
 
-  let execMeta = $derived(() => {
+  let execMetaBase = $derived(() => {
     if (!leadSession) return '';
     const name = agentName(leadSession.agent_id);
     const d = maxDepth ?? 0;
@@ -171,12 +172,18 @@
 
   let worktreePath = $derived(leadSession?.worktree_path ?? null);
 
-  async function copyWorktreePath(e: Event) {
-    e.stopPropagation();
-    if (worktreePath) {
-      await navigator.clipboard.writeText(worktreePath);
-    }
-  }
+  let worktreeInfo = $state<WorktreeInfo | null>(null);
+
+  $effect(() => {
+    const id = leadSession?.id;
+    if (!id) { worktreeInfo = null; return; }
+    api.getSessionWorktree(id)
+      .then(info => { if (leadSession?.id === id) worktreeInfo = info; })
+      .catch(() => { if (leadSession?.id === id) worktreeInfo = null; });
+  });
+
+  let branchName = $derived(worktreeInfo?.branch ?? null);
+  let worktreeExists = $derived(worktreeInfo?.exists ?? false);
 </script>
 
 {#snippet renderNode(node: TreeNode, depth: number)}
@@ -276,15 +283,24 @@
 
 <div class="sidebar-tree">
   {#if leadSession}
-    <div class="exec-meta">{execMeta()}</div>
+    <div class="exec-meta">
+      <span class="exec-meta-text">{execMetaBase()}</span>
+      {#if worktreeExists && branchName !== undefined}
+        <span class="exec-meta-sep">·</span>
+        {#if branchName}
+          <span class="exec-meta-branch">{branchName}</span>
+          <CopyButton text={branchName} label="Copy branch name" />
+        {:else}
+          <span class="exec-meta-detached">detached</span>
+        {/if}
+      {/if}
+    </div>
   {/if}
   {#if worktreePath}
-    <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-    <button
-      class="working-dir-btn"
-      title="Copy working directory path"
-      onclick={copyWorktreePath}
-    >{worktreePath}</button>
+    <div class="working-dir-row" title="Copy working directory path">
+      <span class="working-dir-text">{worktreePath}</span>
+      <CopyButton text={worktreePath} label="Copy working directory path" />
+    </div>
   {/if}
   {#if (poolAgents ?? []).length > 0}
     <div class="pool-pills">
@@ -307,35 +323,60 @@
   }
 
   .exec-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
     padding: 0.1875rem 0.75rem;
     font-size: 0.625rem;
     font-weight: 500;
     color: hsl(var(--muted-foreground));
     overflow: hidden;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .exec-meta-text {
+    overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .working-dir-btn {
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    text-align: left;
+  .exec-meta-sep {
+    flex-shrink: 0;
+  }
+
+  .exec-meta-branch {
+    font-family: var(--font-mono, monospace);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .exec-meta-detached {
+    font-family: var(--font-mono, monospace);
+    font-style: italic;
+    color: hsl(var(--muted-foreground) / 0.7);
+  }
+
+  .working-dir-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
     padding: 0.1rem 0.75rem;
-    background: transparent;
-    border: none;
-    cursor: pointer;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .working-dir-text {
+    flex: 1;
     font-size: 0.625rem;
     color: hsl(var(--muted-foreground));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--font-mono, monospace);
-  }
-
-  .working-dir-btn:hover {
-    color: hsl(var(--foreground));
-    background: hsl(var(--muted) / 0.3);
+    font-weight: 500;
   }
 
   .pool-pills {

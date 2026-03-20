@@ -83,6 +83,14 @@ export interface SessionSummary {
 // Full session from GET /api/sessions — same shape as SessionSummary
 export type Session = SessionSummary;
 
+// GET /api/sessions/{id}/worktree
+export interface WorktreeInfo {
+  path: string;
+  branch: string | null;
+  head_sha: string | null;
+  exists: boolean;
+}
+
 // GET /api/sessions/{id}/worktree/diff
 export interface DiffFileEntry {
   path: string;
