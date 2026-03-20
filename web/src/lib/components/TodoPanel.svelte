@@ -50,15 +50,15 @@
     display: flex;
     align-items: center;
     gap: 0.375rem;
-    padding: 0.3125rem 1rem;
+    padding: 0.25rem 1rem;
     cursor: pointer;
-    font-size: 0.6875rem;
+    font-size: 0.625rem;
     transition: background 0.1s;
     width: 100%;
     border: none;
     background: none;
     text-align: left;
-    font: inherit;
+    font-family: inherit;
     color: inherit;
     appearance: none;
     -webkit-appearance: none;
@@ -85,7 +85,7 @@
   }
 
   .panel-label {
-    font-weight: 600;
+    font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: hsl(var(--muted-foreground));
@@ -111,15 +111,15 @@
   .panel-item {
     display: flex;
     align-items: flex-start;
-    gap: 0.375rem;
+    gap: 0.25rem;
     padding: 0.125rem 1rem 0.125rem 1.5rem;
-    font-size: 0.6875rem;
+    font-size: 0.625rem;
     line-height: 1.4;
   }
 
   .panel-icon {
     flex-shrink: 0;
-    font-size: 0.5625rem;
+    font-size: 0.5rem;
     line-height: 1.4;
     width: 0.625rem;
     text-align: center;
