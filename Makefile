@@ -137,6 +137,11 @@ test-rust: all
 # Build Rust binaries and run Python integration tests
 test-int: all
 	@echo "Running Python integration tests with Rust binaries..."
+	uv run pytest -n8 -v tests
+
+# Build Rust binaries and run Python integration tests for CI only
+test-int-ci: all
+	@echo "Running Python integration tests with Rust binaries..."
 	uv run pytest -n4 -v tests
 
 # Boot system, seed agents, run Playwright E2E tests, tear down
