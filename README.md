@@ -44,6 +44,29 @@ One engineer, multiple features in flight, decisions as the main touchpoint.
 
 ## Quick Start
 
+Install via pip, npm, or build from source:
+
+```bash
+# Python (pick one)
+uv tool install agentbeacon        # recommended
+pipx install agentbeacon
+pip install --user agentbeacon
+
+# npm
+npm install -g agentbeacon
+```
+
+Then install the agent SDK dependencies and start:
+
+```bash
+agentbeacon --setup          # install Claude + Copilot SDK dependencies
+agentbeacon --workers 2      # start scheduler + 2 workers
+# Open http://localhost:9456
+```
+
+<details>
+<summary>Build from source</summary>
+
 ```bash
 git clone https://github.com/adrq/agentbeacon.git
 cd agentbeacon
@@ -52,9 +75,13 @@ make run
 # Open http://localhost:9456
 ```
 
+Requires Rust toolchain and Node.js 20+.
+
+</details>
+
 **Prerequisites:**
-- Rust toolchain and Node.js 20+ (`uv`/Python 3.10+ if you want to run tests)
-- At least one coding agent CLI installed: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Copilot CLI](https://github.com/github/copilot-cli), [OpenCode](https://github.com/anomalyco/opencode), or any [ACP](https://spec.agentcontextprotocol.org/)-compatible agent
+- Node.js 20+ (for agent SDK dependencies)
+- At least one coding agent CLI installed: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex) (coming soon), [Copilot CLI](https://github.com/github/copilot-cli), [OpenCode](https://github.com/anomalyco/opencode) (coming soon), or any [ACP](https://spec.agentcontextprotocol.org/)-compatible agent
 - An API key or subscription for the corresponding provider
 
 **Note:** AgentBeacon orchestrates coding agents you already have installed — it doesn't bundle or replace them.
