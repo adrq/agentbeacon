@@ -82,6 +82,69 @@ pub fn extract_if_needed(data_dir: &Path) -> Result<PathBuf> {
     Ok(executors_dir)
 }
 
+// --- SDK installation (KI-87) ---
+
+pub struct SdkPackage {
+    pub driver: &'static str,
+    pub npm_package: &'static str,
+}
+
+pub const SDK_PACKAGES: &[SdkPackage] = &[
+    SdkPackage {
+        driver: "claude",
+        npm_package: "@anthropic-ai/claude-agent-sdk",
+    },
+    SdkPackage {
+        driver: "copilot",
+        npm_package: "@github/copilot-sdk",
+    },
+];
+
+/// Check if an SDK is installed by reading its package.json in node_modules.
+/// Returns the installed version, or None if not installed.
+pub fn check_sdk_installed(data_dir: &Path, npm_package: &str) -> Option<String> {
+    let pkg_json = data_dir
+        .join("node_modules")
+        .join(npm_package)
+        .join("package.json");
+    let content = std::fs::read_to_string(pkg_json).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    parsed.get("version")?.as_str().map(|s| s.to_string())
+}
+
+/// Verify npm is available on PATH.
+fn find_npm() -> Result<()> {
+    let status = std::process::Command::new("npm")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        _ => anyhow::bail!("npm not found on PATH. Install Node.js from https://nodejs.org/"),
+    }
+}
+
+/// Install all SDK dependencies from the extracted package.json and lockfile.
+/// Uses `npm ci` for deterministic, lockfile-pinned installation.
+pub fn install_sdks(data_dir: &Path) -> Result<()> {
+    find_npm()?;
+
+    tracing::info!("Installing executor SDK dependencies...");
+
+    let status = std::process::Command::new("npm")
+        .args(["ci", "--omit=dev"])
+        .current_dir(data_dir)
+        .status()
+        .context("failed to run npm ci")?;
+
+    if !status.success() {
+        anyhow::bail!("npm ci failed with exit code {status}");
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +232,35 @@ mod tests {
 
         let version = std::fs::read_to_string(data_dir.join(".version")).unwrap();
         assert_eq!(version.trim(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn test_check_sdk_not_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            check_sdk_installed(tmp.path(), "@anthropic-ai/claude-agent-sdk"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_check_sdk_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp
+            .path()
+            .join("node_modules/@anthropic-ai/claude-agent-sdk");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("package.json"), r#"{"version":"1.2.3"}"#).unwrap();
+        assert_eq!(
+            check_sdk_installed(tmp.path(), "@anthropic-ai/claude-agent-sdk"),
+            Some("1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_sdk_packages_covers_drivers() {
+        let drivers: Vec<&str> = SDK_PACKAGES.iter().map(|p| p.driver).collect();
+        assert!(drivers.contains(&"claude"));
+        assert!(drivers.contains(&"copilot"));
     }
 }

@@ -47,6 +47,20 @@ impl SdkKind {
             SdkKind::Copilot => "copilot_executor",
         }
     }
+
+    fn npm_package(self) -> &'static str {
+        match self {
+            SdkKind::Claude => "@anthropic-ai/claude-agent-sdk",
+            SdkKind::Copilot => "@github/copilot-sdk",
+        }
+    }
+
+    fn driver_name(self) -> &'static str {
+        match self {
+            SdkKind::Claude => "claude",
+            SdkKind::Copilot => "copilot",
+        }
+    }
 }
 
 // --- Protocol types (Rust ↔ Node JSON Lines) ---
@@ -179,6 +193,19 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
         )?;
 
     let script_path = format!("{}/{}", executors_dir, kind.script_name());
+
+    // Check SDK is installed before spawning executor
+    if let Some(ref nm_dir) = config.node_modules_dir {
+        let sdk_marker = std::path::Path::new(nm_dir)
+            .join(kind.npm_package())
+            .join("package.json");
+        if !sdk_marker.exists() {
+            anyhow::bail!(
+                "{} SDK not installed. Run: agentbeacon --setup",
+                kind.driver_name()
+            );
+        }
+    }
 
     let mut cmd = tokio::process::Command::new(&node_path);
     cmd.arg(&script_path)

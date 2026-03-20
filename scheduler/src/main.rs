@@ -52,12 +52,25 @@ struct Cli {
     /// Worker sync polling interval (e.g., '1s', '500ms')
     #[arg(long)]
     worker_poll_interval: Option<String>,
+
+    /// Run SDK setup (delegates to worker binary)
+    #[arg(long, help_heading = "Setup")]
+    setup: bool,
+
+    /// Show installed SDK status without installing (use with --setup)
+    #[arg(long, requires = "setup", help_heading = "Setup")]
+    status: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse();
+
+    // Setup mode: delegate to worker binary, then exit
+    if cli.setup {
+        return run_scheduler_setup(&cli);
+    }
 
     // Initialize telemetry (JSON-formatted logs)
     telemetry::init_telemetry();
@@ -70,6 +83,29 @@ async fn main() -> Result<()> {
 
     // Run bootstrap and startup flow
     bootstrap(cli).await
+}
+
+fn run_scheduler_setup(cli: &Cli) -> Result<()> {
+    use scheduler::supervisor;
+
+    let worker_bin = supervisor::worker_binary_path();
+    let mut cmd = std::process::Command::new(&worker_bin);
+    cmd.arg("--setup");
+    if cli.status {
+        cmd.arg("--status");
+    }
+
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to run {}", worker_bin.display()))?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "worker setup failed with exit code {}",
+            status.code().unwrap_or(1)
+        );
+    }
+    Ok(())
 }
 
 async fn bootstrap(cli: Cli) -> Result<()> {

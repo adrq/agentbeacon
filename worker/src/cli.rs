@@ -7,8 +7,8 @@ use std::time::Duration;
 #[command(about = "AgentBeacon distributed task execution worker")]
 pub struct Args {
     /// Scheduler URL for syncing and task retrieval
-    #[arg(long, env = "SCHEDULER_URL")]
-    pub scheduler_url: String,
+    #[arg(long, env = "SCHEDULER_URL", required_unless_present = "setup")]
+    pub scheduler_url: Option<String>,
 
     /// Sync polling interval (e.g., "5s", "100ms")
     #[arg(long, default_value = "5s", value_parser = parse_duration)]
@@ -51,6 +51,14 @@ pub struct Args {
     /// Not a CLI flag — set programmatically during startup.
     #[arg(skip)]
     pub node_modules_dir: Option<String>,
+
+    /// Run SDK setup (extract executors and install npm dependencies)
+    #[arg(long, help_heading = "Setup")]
+    pub setup: bool,
+
+    /// Show installed SDK status without installing (use with --setup)
+    #[arg(long, requires = "setup", help_heading = "Setup")]
+    pub status: bool,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, humantime::DurationError> {

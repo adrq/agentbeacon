@@ -46,7 +46,7 @@ fn get_color(name: &str) -> &'static str {
 }
 
 /// Resolve the worker binary path: sibling of current exe, then fallback.
-fn worker_binary_path() -> PathBuf {
+pub fn worker_binary_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe
             .parent()

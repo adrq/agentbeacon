@@ -38,6 +38,16 @@ async fn main() -> Result<()> {
 
     let mut args = Args::parse();
 
+    // Setup mode: extract executors + install SDK dependencies, then exit
+    if args.setup {
+        return run_setup(&args);
+    }
+
+    // Daemon mode: scheduler_url is guaranteed present by clap's required_unless_present
+    let scheduler_url = args.scheduler_url.take().expect(
+        "scheduler_url must be set in daemon mode (enforced by clap required_unless_present)",
+    );
+
     // Resolve executor directory: CLI/env override → embedded extraction
     if args.executors_dir.is_none() && std::env::var("AGENTBEACON_EXECUTORS_DIR").is_err() {
         let data_dir = embedded_executors::resolve_data_dir();
@@ -47,7 +57,7 @@ async fn main() -> Result<()> {
         args.node_modules_dir = Some(data_dir.join("node_modules").to_string_lossy().to_string());
     }
 
-    validate_startup(&args).await?;
+    validate_startup(&scheduler_url).await?;
 
     let client = reqwest::Client::builder()
         .timeout(args.http_timeout)
@@ -55,18 +65,50 @@ async fn main() -> Result<()> {
         .context("failed to build HTTP client")?;
 
     tracing::info!(
-        scheduler_url = %args.scheduler_url,
+        scheduler_url = %scheduler_url,
         interval = ?args.interval,
         "Worker started"
     );
 
     tokio::select! {
-        result = run_worker_loop(&args, &client) => result,
+        result = run_worker_loop(&scheduler_url, &args, &client) => result,
         _ = shutdown_signal() => {
             tracing::info!("Received shutdown signal, exiting gracefully");
             Ok(())
         }
     }
+}
+
+fn run_setup(args: &Args) -> Result<()> {
+    if args.executors_dir.is_some() || std::env::var("AGENTBEACON_EXECUTORS_DIR").is_ok() {
+        tracing::warn!(
+            "AGENTBEACON_EXECUTORS_DIR is set — --setup installs to the default data directory, \
+             not the override location. SDK dependencies for development must be installed manually."
+        );
+    }
+
+    let data_dir = embedded_executors::resolve_data_dir();
+    embedded_executors::extract_if_needed(&data_dir)
+        .context("Failed to extract embedded executors")?;
+
+    if args.status {
+        return show_sdk_status(&data_dir);
+    }
+
+    embedded_executors::install_sdks(&data_dir)?;
+
+    show_sdk_status(&data_dir)
+}
+
+fn show_sdk_status(data_dir: &std::path::Path) -> Result<()> {
+    println!("AgentBeacon SDK status ({})", data_dir.display());
+    for pkg in embedded_executors::SDK_PACKAGES {
+        match embedded_executors::check_sdk_installed(data_dir, pkg.npm_package) {
+            Some(version) => println!("  {}: installed (v{version})", pkg.driver),
+            None => println!("  {}: not installed", pkg.driver),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -89,13 +131,13 @@ async fn shutdown_signal() {
         .expect("failed to install Ctrl+C handler");
 }
 
-async fn validate_startup(args: &Args) -> Result<()> {
+async fn validate_startup(scheduler_url: &str) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .context("failed to build health check client")?;
 
-    let health_url = format!("{}/api/health", args.scheduler_url);
+    let health_url = format!("{}/api/health", scheduler_url);
     match client.get(&health_url).send().await {
         Ok(response) if response.status().is_success() => {
             tracing::debug!("Scheduler health check passed");
@@ -109,7 +151,7 @@ async fn validate_startup(args: &Args) -> Result<()> {
         Err(e) => {
             tracing::warn!(
                 "Scheduler unreachable at {}: {} - will retry during sync",
-                args.scheduler_url,
+                scheduler_url,
                 e
             );
         }
@@ -118,7 +160,7 @@ async fn validate_startup(args: &Args) -> Result<()> {
     Ok(())
 }
 
-async fn run_worker_loop(args: &Args, client: &reqwest::Client) -> Result<()> {
+async fn run_worker_loop(scheduler_url: &str, args: &Args, client: &reqwest::Client) -> Result<()> {
     let retry_config = RetryConfig {
         startup_max_attempts: args.startup_max_attempts,
         reconnect_max_attempts: args.reconnect_max_attempts,
@@ -132,7 +174,7 @@ async fn run_worker_loop(args: &Args, client: &reqwest::Client) -> Result<()> {
     loop {
         let response = perform_sync_with_retry(
             client,
-            &args.scheduler_url,
+            scheduler_url,
             &SyncRequest::idle(),
             has_connected,
             &retry_config,
@@ -152,7 +194,16 @@ async fn run_worker_loop(args: &Args, client: &reqwest::Client) -> Result<()> {
                     "Session assigned"
                 );
 
-                match run_session(args, client, &retry_config, &session_id, task).await {
+                match run_session(
+                    scheduler_url,
+                    args,
+                    client,
+                    &retry_config,
+                    &session_id,
+                    task,
+                )
+                .await
+                {
                     Ok(SessionExit::Done) => {}
                     Ok(SessionExit::ShutdownRequested) => {
                         tracing::info!("Received shutdown command during session");
@@ -263,6 +314,7 @@ async fn acknowledge_stop_without_active_turn(
 }
 
 async fn run_session(
+    scheduler_url: &str,
     args: &Args,
     client: &reqwest::Client,
     retry_config: &RetryConfig,
@@ -283,7 +335,7 @@ async fn run_session(
             tracing::error!(error = %e, "Invalid task payload");
             let _ = perform_sync_with_retry(
                 client,
-                &args.scheduler_url,
+                scheduler_url,
                 &SyncRequest::with_result(
                     session_id,
                     None,
@@ -340,7 +392,7 @@ async fn run_session(
         agent_config,
         sandbox_config,
         cwd,
-        scheduler_url: args.scheduler_url.clone(),
+        scheduler_url: scheduler_url.to_string(),
         node_path: args.node_path.clone(),
         executors_dir: args.executors_dir.clone(),
         node_modules_dir: args.node_modules_dir.clone(),
@@ -357,7 +409,7 @@ async fn run_session(
             // Report failure so scheduler can transition session to failed
             let _ = perform_sync_with_retry(
                 client,
-                &args.scheduler_url,
+                scheduler_url,
                 &SyncRequest::with_result(
                     session_id,
                     None,
@@ -384,7 +436,7 @@ async fn run_session(
     // Mid-turn message forwarding channel + sender task
     let (msg_fwd_tx, msg_fwd_rx) = tokio::sync::mpsc::unbounded_channel::<WorkerMessageEvent>();
     let sender_client = client.clone();
-    let sender_url = args.scheduler_url.clone();
+    let sender_url = scheduler_url.to_string();
     let sender_handle = tokio::spawn(async move {
         message_sender_task(sender_client, sender_url, msg_fwd_rx).await;
     });
@@ -448,7 +500,7 @@ async fn run_session(
                         drop(poll_fut.take());
 
                         // Report result to scheduler
-                        let response = match perform_sync_with_retry(client, &args.scheduler_url,
+                        let response = match perform_sync_with_retry(client, scheduler_url,
                             &SyncRequest::with_result(session_id,
                                 agent_session_id.clone(),
                                 messages_for_sync, result.error,
@@ -490,7 +542,7 @@ async fn run_session(
                                     start_long_poll
                                 };
                                 poll_fut = Some(poll_fn(
-                                    client, &args.scheduler_url,
+                                    client, scheduler_url,
                                     session_id, args.long_poll_timeout,
                                 ));
                             }
@@ -513,7 +565,7 @@ async fn run_session(
                                 } else {
                                     match acknowledge_stop_without_active_turn(
                                         client,
-                                        &args.scheduler_url,
+                                        scheduler_url,
                                         retry_config,
                                         session_id,
                                         agent_session_id.clone(),
@@ -535,7 +587,7 @@ async fn run_session(
                                         Ok(_) => {
                                             poll_fut = Some(start_long_poll(
                                                 client,
-                                                &args.scheduler_url,
+                                                scheduler_url,
                                                 session_id,
                                                 args.long_poll_timeout,
                                             ));
@@ -565,7 +617,7 @@ async fn run_session(
                                     start_long_poll
                                 };
                                 poll_fut = Some(poll_fn(
-                                    client, &args.scheduler_url,
+                                    client, scheduler_url,
                                     session_id, args.long_poll_timeout,
                                 ));
                             }
@@ -578,7 +630,7 @@ async fn run_session(
                         // and the scheduler knows a turn is in progress.
                         if poll_fut.is_none() {
                             poll_fut = Some(start_active_turn_poll(
-                                client, &args.scheduler_url,
+                                client, scheduler_url,
                                 session_id, args.long_poll_timeout,
                             ));
                         }
@@ -598,7 +650,7 @@ async fn run_session(
                     }
                     Some(AgentEvent::ProcessDied { error, stderr }) => {
                         let messages_for_sync = std::mem::take(&mut turn_messages);
-                        let _ = perform_sync_with_retry(client, &args.scheduler_url,
+                        let _ = perform_sync_with_retry(client, scheduler_url,
                             &SyncRequest::with_result(session_id, agent_session_id.clone(),
                                 messages_for_sync, Some(error), Some("executor_failed".into()),
                                 stderr, false),
@@ -633,7 +685,7 @@ async fn run_session(
                         // (destructive pop happens here, in a request we actively await).
                         match perform_sync(
                             client,
-                            &args.scheduler_url,
+                            scheduler_url,
                             &SyncRequest::fetch_task(session_id),
                         )
                         .await
@@ -647,7 +699,7 @@ async fn run_session(
                                     Err(e) => {
                                         tracing::error!(error = %e, "bad task payload from fetch_task");
                                         let _ = perform_sync_with_retry(client,
-                                            &args.scheduler_url,
+                                            scheduler_url,
                                             &SyncRequest::with_result(session_id,
                                                 agent_session_id.clone(),
                                                 Vec::new(), Some(format!("Bad task payload: {e}")),
@@ -683,7 +735,7 @@ async fn run_session(
                                 }
                                 match acknowledge_stop_without_active_turn(
                                     client,
-                                    &args.scheduler_url,
+                                    scheduler_url,
                                     retry_config,
                                     session_id,
                                     agent_session_id.clone(),
@@ -748,7 +800,7 @@ async fn run_session(
                         }
                         match acknowledge_stop_without_active_turn(
                             client,
-                            &args.scheduler_url,
+                            scheduler_url,
                             retry_config,
                             session_id,
                             agent_session_id.clone(),
@@ -810,7 +862,7 @@ async fn run_session(
                     start_long_poll
                 };
                 poll_fut = Some(poll_fn(
-                    client, &args.scheduler_url,
+                    client, scheduler_url,
                     session_id, args.long_poll_timeout,
                 ));
             }
