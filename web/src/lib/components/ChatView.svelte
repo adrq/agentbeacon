@@ -821,25 +821,34 @@
         </button>
       </div>
 
-      {#if currentUsage?.available && currentUsage.contextWindow > 0}
-        {@const pct = Math.max(0, Math.min(100, Math.round(100 * currentUsage.inputTokens / currentUsage.contextWindow)))}
-        {@const level = pct >= 90 ? 'danger' : pct >= 70 ? 'warning' : 'ok'}
+      {#if currentUsage?.available && currentUsage.inputTokens > 0}
+        {@const hasWindow = currentUsage.contextWindow > 0}
+        {@const pct = hasWindow ? Math.max(0, Math.min(100, Math.round(100 * currentUsage.inputTokens / currentUsage.contextWindow))) : null}
+        {@const level = pct !== null ? (pct >= 90 ? 'danger' : pct >= 70 ? 'warning' : 'ok') : 'ok'}
         <div class="context-indicator-wrapper" style="position: relative;">
           <button
             class="context-indicator"
-            aria-label="Context window: {pct}% used ({formatTokens(currentUsage.inputTokens)} of {formatTokens(currentUsage.contextWindow)})"
+            aria-label={hasWindow ? `Context window: ${pct}% used (${formatTokens(currentUsage.inputTokens)} of ${formatTokens(currentUsage.contextWindow)})` : `Context: ${formatTokens(currentUsage.inputTokens)} tokens used`}
             aria-expanded={showUsagePopover}
             onclick={() => showUsagePopover = !showUsagePopover}
           >
-            <span class="ctx-bar-inline" role="meter" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-              <span class="ctx-fill-inline {level}" style="width: {pct}%"></span>
-            </span>
-            <span class="ctx-label {level}">{formatTokens(currentUsage.inputTokens)}/{formatTokens(currentUsage.contextWindow)}</span>
+            {#if hasWindow}
+              <span class="ctx-bar-inline" role="meter" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+                <span class="ctx-fill-inline {level}" style="width: {pct}%"></span>
+              </span>
+              <span class="ctx-label {level}">{formatTokens(currentUsage.inputTokens)}/{formatTokens(currentUsage.contextWindow)}</span>
+            {:else}
+              <span class="ctx-label ok">{formatTokens(currentUsage.inputTokens)} tokens</span>
+            {/if}
           </button>
           {#if showUsagePopover}
             <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
             <div class="usage-popover" role="tooltip">
-              <div class="usage-row"><span>Context</span><span>{formatTokens(currentUsage.inputTokens)} / {formatTokens(currentUsage.contextWindow)} ({pct}%)</span></div>
+              {#if hasWindow}
+                <div class="usage-row"><span>Context</span><span>{formatTokens(currentUsage.inputTokens)} / {formatTokens(currentUsage.contextWindow)} ({pct}%)</span></div>
+              {:else}
+                <div class="usage-row"><span>Context</span><span>{formatTokens(currentUsage.inputTokens)} tokens</span></div>
+              {/if}
               {#if currentUsage.compactions > 0}
                 <div class="usage-row"><span>Compactions</span><span>{currentUsage.compactions}</span></div>
               {/if}
