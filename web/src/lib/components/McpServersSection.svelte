@@ -166,7 +166,7 @@
 
 <div class="mcp-section">
   <div class="mcp-header">
-    <h3 class="section-heading">MCP Servers</h3>
+    <h4 class="section-heading">MCP Servers</h4>
     <button class="pool-add-btn" onclick={openAddForm}>+ Add</button>
   </div>
 
@@ -317,7 +317,7 @@
   }
 
   .mcp-summary {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
     font-family: var(--font-mono);
     overflow: hidden;
@@ -337,7 +337,7 @@
     border: none;
     color: hsl(var(--muted-foreground));
     cursor: pointer;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     padding: 0.125rem 0.375rem;
     border-radius: var(--radius-sm);
   }
@@ -356,7 +356,7 @@
     border: none;
     color: hsl(var(--primary));
     cursor: pointer;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     padding: 0;
   }
 
@@ -376,7 +376,7 @@
 
   .form-label {
     display: block;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 500;
     color: hsl(var(--foreground));
     margin-bottom: 0.25rem;
