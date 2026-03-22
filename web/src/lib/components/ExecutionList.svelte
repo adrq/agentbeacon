@@ -1,6 +1,6 @@
 <script lang="ts">
   import { selectedFilterProjectId, selectedExecutionId, selectedSessionId, usageBySession } from '../stores/appState';
-  import { executionsQuery, executionDetailQuery, executionAgentsQuery } from '../queries/executions';
+  import { executionsQuery, executionDetailQuery, executionAgentsQuery, executionSessionsQuery, buildSessionIdentityMap } from '../queries/executions';
   import { projectsQuery } from '../queries/projects';
   import { agentsQuery } from '../queries/agents';
   import { executionsWithQuestions } from '../stores/questionState';
@@ -71,6 +71,8 @@
   // Fetch detail data for the selected execution so we can render the sidebar tree
   const selectedDetailQuery = executionDetailQuery(() => $selectedExecutionId);
   const selectedPoolQuery = executionAgentsQuery(() => $selectedExecutionId);
+  const selectedSessionsDiscoveryQuery = executionSessionsQuery(() => $selectedExecutionId);
+  let selectedSessionIdentity = $derived(buildSessionIdentityMap(selectedSessionsDiscoveryQuery.data ?? []));
 
   // Pin the selected execution if it's filtered out — keeps the sidebar tree accessible.
   // Uses the detail query (always fetched regardless of filters) so project filter changes
@@ -179,6 +181,7 @@
           usageBySession={$usageBySession}
           poolAgents={selectedPoolAgents}
           isTerminal={selectedIsTerminal}
+          sessionIdentity={selectedSessionIdentity}
           onselectsession={handleSelectSession}
           onstatuschange={() => handleStatusChange(pinnedExecution!.id)}
         />
@@ -200,6 +203,7 @@
           usageBySession={isSelected ? $usageBySession : undefined}
           poolAgents={isSelected ? selectedPoolAgents : undefined}
           isTerminal={isSelected ? selectedIsTerminal : false}
+          sessionIdentity={isSelected ? selectedSessionIdentity : undefined}
           onselectsession={isSelected ? handleSelectSession : undefined}
           onstatuschange={isSelected ? () => handleStatusChange(execution.id) : undefined}
         />

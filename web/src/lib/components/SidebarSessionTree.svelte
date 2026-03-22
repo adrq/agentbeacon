@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { SessionSummary, Agent, UsageState, WorktreeInfo } from '../types';
+  import type { SessionSummary, Agent, UsageState, WorktreeInfo, SessionIdentity } from '../types';
+  import AgentPill from './AgentPill.svelte';
   import { formatTokens } from '../format';
   import { api } from '../api';
   import { toasts } from '../stores/toasts';
@@ -14,11 +15,12 @@
     poolAgents?: { agent_id: string; name: string }[];
     maxDepth?: number;
     maxWidth?: number;
+    sessionIdentity?: Map<string, SessionIdentity>;
     onselectsession?: (sessionId: string | null) => void;
     onstatuschange?: () => void;
   }
 
-  let { sessions, agents, selectedSessionId = null, isTerminal = false, usageBySession, poolAgents, maxDepth, maxWidth, onselectsession, onstatuschange }: Props = $props();
+  let { sessions, agents, selectedSessionId = null, isTerminal = false, usageBySession, poolAgents, maxDepth, maxWidth, sessionIdentity, onselectsession, onstatuschange }: Props = $props();
 
   const TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
 
@@ -164,7 +166,8 @@
 
   let execMetaBase = $derived(() => {
     if (!leadSession) return '';
-    const name = agentName(leadSession.agent_id);
+    const identity = sessionIdentity?.get(leadSession.id);
+    const name = identity?.slug ?? agentName(leadSession.agent_id);
     const d = maxDepth ?? 0;
     const w = maxWidth ?? sessions.length;
     return `${name} · D:${d} W:${w}`;
@@ -200,6 +203,7 @@
   {@const usageTitle = usagePct !== null && usage
     ? `${formatTokens(usage.inputTokens)} / ${formatTokens(usage.contextWindow)} (${usagePct}%)`
     : usage && !usage.available ? 'Context tracking unavailable' : ''}
+  {@const identity = sessionIdentity?.get(s.id)}
 
   <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
   <div
@@ -221,7 +225,12 @@
         onclick={(e) => { e.stopPropagation(); toggleExpand(s.id); }}>&#x25B8;</span>
     {/if}
     <span class="node-icon">{statusIcon(s.status)}</span>
-    <span class="node-label">{depth === 0 ? `Lead (${agentName(s.agent_id)})` : agentName(s.agent_id)}</span>
+    <span class="node-label">
+      <span class="node-slug">{identity?.slug ?? agentName(s.agent_id)}</span>
+      {#if identity?.agentName}
+        <AgentPill name={identity.agentName} />
+      {/if}
+    </span>
     <span class="node-status">{s.status}</span>
     {#if usagePct !== null}
       <span
@@ -480,11 +489,21 @@
 
   .node-label {
     flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    overflow: hidden;
+    min-width: 0;
+    font-size: 0.6875rem;
+    font-weight: 500;
+  }
+
+  .node-slug {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 0.6875rem;
-    font-weight: 500;
+    flex: 1 1 auto;
+    min-width: 2rem;
   }
 
   .node-status {

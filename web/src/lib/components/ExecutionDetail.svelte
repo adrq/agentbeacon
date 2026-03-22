@@ -4,7 +4,7 @@
   import type { Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
   import { isMessagePayload, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
   import { api } from '../api';
-  import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation, executionAgentsQuery, recoverSessionMutation } from '../queries/executions';
+  import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation, executionAgentsQuery, recoverSessionMutation, executionSessionsQuery, buildSessionIdentityMap } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { connectExecutionSSE, type SSEConnection } from '../sse';
@@ -35,6 +35,8 @@
 
   const detailQuery = executionDetailQuery(() => executionId);
   const poolQuery = executionAgentsQuery(() => executionId);
+  const sessionsQuery = executionSessionsQuery(() => executionId);
+  let sessionIdentity = $derived(buildSessionIdentityMap(sessionsQuery.data ?? []));
   const cancelMut = cancelExecutionMutation();
   const completeMut = completeExecutionMutation();
   const recoverMut = recoverSessionMutation();
@@ -251,6 +253,7 @@
         if (event.event_type === 'state_change') {
           queryClient.invalidateQueries({ queryKey: ['execution', execId] });
           queryClient.invalidateQueries({ queryKey: ['executions'] });
+          queryClient.invalidateQueries({ queryKey: ['execution-sessions', execId] });
           queryClient.invalidateQueries({ queryKey: ['session-diff'] });
           if (event.session_id) {
             const p = event.payload as { to?: string };
@@ -584,7 +587,7 @@
     {#if viewMode === 'log'}
       <EventsTimeline {events} {agents} sessions={detail.sessions} {eventFilter} onfilterchange={(f) => eventFilter = f} />
     {:else if viewMode === 'chat'}
-      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {eventFilter} onfilterchange={(f) => eventFilter = f} />
+      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} {eventFilter} onfilterchange={(f) => eventFilter = f} />
     {:else if viewMode === 'diff'}
       <DiffPanel sessionId={activeSessionId} {isTerminal} />
     {/if}

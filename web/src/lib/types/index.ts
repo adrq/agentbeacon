@@ -472,6 +472,14 @@ export interface SessionDiscoveryEntry {
   parent_name: string | null;
 }
 
+// Derived identity info built from SessionDiscoveryEntry
+export interface SessionIdentity {
+  slug: string;
+  hierarchicalName: string;
+  agentName: string;
+  role: string;
+}
+
 // GET/POST /api/config — briefing configuration
 export interface ConfigEntry {
   name: string;

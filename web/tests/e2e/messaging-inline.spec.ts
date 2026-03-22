@@ -33,7 +33,7 @@ test('mock agent inter-agent message renders in chat view', async ({ page }) => 
 
   const lateral = page.locator('.lateral-message');
   await expect(lateral.first()).toBeVisible({ timeout: 10000 });
-  await expect(lateral.first().locator('.lateral-header')).toContainText('From');
+  await expect(lateral.first().locator('.lateral-header')).toBeVisible();
   await expect(lateral.first().locator('.lateral-body')).toContainText('Status update');
   // No DataFallback with sender data
   await expect(page.locator('.fallback-card:has-text("sender")')).not.toBeVisible();

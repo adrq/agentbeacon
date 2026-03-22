@@ -1,6 +1,8 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Event, Agent, SessionSummary, AgentType, TodoItem, UsageState } from '../types';
+  import type { Event, Agent, SessionSummary, AgentType, TodoItem, UsageState, SessionIdentity } from '../types';
+  import AgentPill from './AgentPill.svelte';
+  import CopyButton from './CopyButton.svelte';
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
   import { formatTokens } from '../format';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
@@ -24,11 +26,12 @@
     ephemeralThinking?: { text: string; startedAt: string } | null;
     settledThinkingDuration?: { durationMs: number; startedAt: string } | null;
     usageBySession?: Map<string, UsageState>;
+    sessionIdentity?: Map<string, SessionIdentity>;
     eventFilter?: EventFilter;
     onfilterchange?: (filter: EventFilter) => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, eventFilter = 'all', onfilterchange }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, eventFilter = 'all', onfilterchange }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
   let messageText = $state('');
@@ -263,9 +266,9 @@
   }
 
   type ChatEntry =
-    | { type: 'agent'; text: string; agentLabel: string; time: string; key: string; isStreaming: boolean }
+    | { type: 'agent'; text: string; agentLabel: string; agentSessionId: string | null; time: string; key: string; isStreaming: boolean }
     | { type: 'user'; text: string; time: string; key: string }
-    | { type: 'lateral'; senderName: string; text: string; time: string; key: string }
+    | { type: 'lateral'; senderName: string; senderSessionId: string | null; text: string; time: string; key: string }
     | { type: 'state'; text: string; time: string; key: string }
     | { type: 'tool'; icon: string; text: string; time: string; key: string }
     | { type: 'tool_group'; group: ToolGroupEntry; key: string }
@@ -274,10 +277,10 @@
     | { type: 'data_fallback'; data: Record<string, unknown>; time: string; key: string }
     | { type: 'error'; message: string; stderr?: string; time: string; key: string }
     | { type: 'fyi'; text: string; time: string; key: string }
-    | { type: 'child_response'; agentLabel: string; text: string; time: string; key: string }
+    | { type: 'child_response'; agentLabel: string; childSessionId: string | null; text: string; time: string; key: string }
     | { type: 'todo_write'; todos: TodoItem[]; time: string; key: string }
     | { type: 'user_image'; mimeType: string; bytes: string; name?: string; time: string; key: string }
-    | { type: 'lateral_image'; senderName: string; mimeType: string; bytes: string; name?: string; time: string; key: string }
+    | { type: 'lateral_image'; senderName: string; senderSessionId: string | null; mimeType: string; bytes: string; name?: string; time: string; key: string }
     | { type: 'compaction'; time: string; key: string };
 
   function resolveAgentType(sessionId: string | null): AgentType {
@@ -327,6 +330,9 @@
         const senderName = senderPart
           ? ((senderPart as { data: Record<string, unknown> }).data.name as string) || 'unknown'
           : null;
+        const senderSessionId = senderPart
+          ? ((senderPart as { data: Record<string, unknown> }).data.session_id as string) || null
+          : null;
 
         for (const part of msg.parts) {
           if ('data' in part) {
@@ -374,7 +380,7 @@
               const tc = d as unknown as import('../types').TurnCompleteData;
               const childSession = sessions.find(s => s.id === tc.child_session_id);
               const childAgentLabel = childSession ? agentName(childSession.agent_id) : 'Child';
-              entries.push({ type: 'child_response', agentLabel: childAgentLabel, text: tc.message, time, key: `${ev.id}-${seq++}` });
+              entries.push({ type: 'child_response', agentLabel: childAgentLabel, childSessionId: tc.child_session_id ?? null, text: tc.message, time, key: `${ev.id}-${seq++}` });
               continue;
             }
 
@@ -471,7 +477,7 @@
             const mimeType = part.mediaType;
             const name = part.filename;
             if (raw && mimeType?.startsWith('image/') && senderName) {
-              entries.push({ type: 'lateral_image', senderName, mimeType, bytes: raw, name, time, key: `${ev.id}-${seq++}` });
+              entries.push({ type: 'lateral_image', senderName, senderSessionId, mimeType, bytes: raw, name, time, key: `${ev.id}-${seq++}` });
             } else if (msg.role === 'ROLE_USER' && raw && mimeType?.startsWith('image/')) {
               entries.push({ type: 'user_image', mimeType, bytes: raw, name, time, key: `${ev.id}-${seq++}` });
             } else {
@@ -480,7 +486,7 @@
           } else if ('text' in part) {
             const text = (part as { text: string }).text;
             if (senderName) {
-              entries.push({ type: 'lateral', senderName, text, time, key: `${ev.id}-${seq++}` });
+              entries.push({ type: 'lateral', senderName, senderSessionId, text, time, key: `${ev.id}-${seq++}` });
             } else if (msg.role === 'ROLE_USER') {
               entries.push({ type: 'user', text, time, key: `${ev.id}-${seq++}` });
             } else {
@@ -488,7 +494,7 @@
               if (prevEntry && prevEntry.type === 'agent' && prevEntry.agentLabel === agentLabel && ev.session_id === lastAgentSessionId) {
                 prevEntry.text += text;
               } else {
-                entries.push({ type: 'agent', text, agentLabel, time, key: `${ev.id}-${seq++}`, isStreaming: false });
+                entries.push({ type: 'agent', text, agentLabel, agentSessionId: ev.session_id ?? null, time, key: `${ev.id}-${seq++}`, isStreaming: false });
                 lastAgentSessionId = ev.session_id ?? null;
               }
             }
@@ -580,6 +586,7 @@
         type: 'agent',
         text: ephemeralText,
         agentLabel,
+        agentSessionId: viewedSession?.id ?? leadSession?.id ?? null,
         time: ephemeralStartTime || formatTime(new Date().toISOString()),
         key: 'ephemeral-stream',
         isStreaming: true,
@@ -642,9 +649,15 @@
     <div class="chat-messages">
       {#each filteredParsed as entry (entry.key)}
         {#if entry.type === 'agent'}
+          {@const identity = entry.agentSessionId ? sessionIdentity?.get(entry.agentSessionId) : undefined}
           <div class="chat-row agent-row">
             <div class="agent-prose">
-              <div class="agent-prose-header">{entry.agentLabel}</div>
+              <div class="agent-prose-header">
+                <span class="agent-header-slug">{identity?.slug ?? entry.agentLabel}</span>
+                {#if identity?.agentName}
+                  <AgentPill name={identity.agentName} />
+                {/if}
+              </div>
               <div class="agent-prose-body"><Markdown text={entry.text} streaming={entry.key === 'ephemeral-stream'} /></div>
               <div class="agent-prose-time">{entry.time}</div>
             </div>
@@ -664,17 +677,35 @@
             </div>
           </div>
         {:else if entry.type === 'lateral'}
+          {@const lIdentity = entry.senderSessionId ? sessionIdentity?.get(entry.senderSessionId) : undefined}
+          {@const lSlug = lIdentity?.slug ?? entry.senderName.split('/').pop() ?? entry.senderName}
           <div class="chat-row lateral-row">
             <div class="lateral-message">
-              <div class="lateral-header">From {entry.senderName}</div>
+              <div class="lateral-header">
+                <span class="lateral-slug">{lSlug}</span>
+                {#if lIdentity?.agentName}
+                  <AgentPill name={lIdentity.agentName} />
+                {/if}
+                <span class="lateral-path">{entry.senderName}</span>
+                <CopyButton text={entry.senderName} label="Copy path" />
+              </div>
               <div class="lateral-body"><Markdown text={entry.text} /></div>
               <div class="lateral-time">{entry.time}</div>
             </div>
           </div>
         {:else if entry.type === 'lateral_image'}
+          {@const liIdentity = entry.senderSessionId ? sessionIdentity?.get(entry.senderSessionId) : undefined}
+          {@const liSlug = liIdentity?.slug ?? entry.senderName.split('/').pop() ?? entry.senderName}
           <div class="chat-row lateral-row">
             <div class="lateral-message">
-              <div class="lateral-header">From {entry.senderName}</div>
+              <div class="lateral-header">
+                <span class="lateral-slug">{liSlug}</span>
+                {#if liIdentity?.agentName}
+                  <AgentPill name={liIdentity.agentName} />
+                {/if}
+                <span class="lateral-path">{entry.senderName}</span>
+                <CopyButton text={entry.senderName} label="Copy path" />
+              </div>
               <div class="lateral-body">
                 <img src="data:{entry.mimeType};base64,{entry.bytes}" alt={entry.name ?? 'Attached image'} class="user-image" />
               </div>
@@ -682,9 +713,19 @@
             </div>
           </div>
         {:else if entry.type === 'child_response'}
+          {@const crIdentity = entry.childSessionId ? sessionIdentity?.get(entry.childSessionId) : undefined}
           <div class="chat-row child-response-row">
             <div class="child-response">
-              <div class="child-response-header">{entry.agentLabel}</div>
+              <div class="child-response-header">
+                <span class="lateral-slug">{crIdentity?.slug ?? entry.agentLabel}</span>
+                {#if crIdentity?.agentName}
+                  <AgentPill name={crIdentity.agentName} />
+                {/if}
+                {#if crIdentity?.hierarchicalName}
+                  <span class="lateral-path">{crIdentity.hierarchicalName}</span>
+                  <CopyButton text={crIdentity.hierarchicalName} label="Copy path" />
+                {/if}
+              </div>
               <div class="child-response-body"><Markdown text={entry.text} /></div>
               <div class="child-response-time">{entry.time}</div>
             </div>
@@ -1001,10 +1042,18 @@
   }
 
   .agent-prose-header {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
     font-size: 0.6875rem;
     font-weight: 600;
     color: hsl(var(--primary));
     margin-bottom: 0.125rem;
+  }
+
+  .agent-header-slug {
+    font-size: 0.6875rem;
+    font-weight: 500;
   }
 
   .agent-prose-time {
@@ -1050,10 +1099,27 @@
   }
 
   .lateral-header {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-wrap: wrap;
     font-size: 0.6875rem;
     font-weight: 600;
     color: hsl(var(--status-working));
     margin-bottom: 0.125rem;
+  }
+
+  .lateral-slug {
+    font-size: 0.6875rem;
+    font-weight: 500;
+  }
+
+  .lateral-path {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.625rem;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: hsl(var(--muted-foreground));
   }
 
   .lateral-body {
@@ -1083,6 +1149,10 @@
   }
 
   .child-response-header {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-wrap: wrap;
     font-size: 0.6875rem;
     font-weight: 600;
     color: hsl(var(--status-success));

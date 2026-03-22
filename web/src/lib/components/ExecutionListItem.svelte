@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Execution, SessionSummary, Agent, UsageState } from '../types';
+  import type { Execution, SessionSummary, Agent, UsageState, SessionIdentity } from '../types';
   import { selectedExecutionId } from '../stores/appState';
   import { router } from '../router';
   import { executionsWithQuestions, noQuestionExecutions } from '../stores/questionState';
@@ -15,11 +15,12 @@
     usageBySession?: Map<string, UsageState>;
     poolAgents?: { agent_id: string; name: string }[];
     isTerminal?: boolean;
+    sessionIdentity?: Map<string, SessionIdentity>;
     onselectsession?: (sessionId: string | null) => void;
     onstatuschange?: () => void;
   }
 
-  let { execution, projectName = null, sessions, agents, selectedSessionId, usageBySession, poolAgents, isTerminal = false, onselectsession, onstatuschange }: Props = $props();
+  let { execution, projectName = null, sessions, agents, selectedSessionId, usageBySession, poolAgents, isTerminal = false, sessionIdentity, onselectsession, onstatuschange }: Props = $props();
 
   const activeStatuses = new Set(['working', 'input-required', 'submitted']);
 
@@ -100,6 +101,7 @@
         {poolAgents}
         maxDepth={execution.max_depth}
         maxWidth={execution.max_width}
+        {sessionIdentity}
         {onselectsession}
         {onstatuschange}
       />

@@ -146,3 +146,27 @@ export function recoverSessionMutation() {
     },
   }));
 }
+
+export function executionSessionsQuery(executionId: () => string | null) {
+  return createQuery(() => ({
+    queryKey: ['execution-sessions', executionId()],
+    queryFn: () => api.getExecutionSessions(executionId()!),
+    enabled: !!executionId(),
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+  }));
+}
+
+export function buildSessionIdentityMap(entries: import('../types').SessionDiscoveryEntry[]): Map<string, import('../types').SessionIdentity> {
+  const map = new Map<string, import('../types').SessionIdentity>();
+  for (const e of entries) {
+    const slug = e.hierarchical_name.split('/').pop() ?? e.session_id.slice(0, 8);
+    map.set(e.session_id, {
+      slug,
+      hierarchicalName: e.hierarchical_name,
+      agentName: e.agent_name,
+      role: e.role,
+    });
+  }
+  return map;
+}
