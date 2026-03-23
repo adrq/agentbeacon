@@ -217,6 +217,19 @@
     autoResize();
   });
 
+  // Focus chat scroll container when session changes so arrow keys scroll it
+  $effect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    tick().then(() => {
+      if (cancelled || !scrollContainer) return;
+      const active = document.activeElement;
+      if (active === textareaEl || active?.closest('button, input, textarea, [contenteditable]')) return;
+      scrollContainer.focus({ preventScroll: true });
+    });
+    return () => { cancelled = true; };
+  });
+
   function handleScroll() {
     if (!scrollContainer) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
@@ -642,7 +655,7 @@
     >{pill.label}</button>
   {/each}
 </div>
-<div class="chat-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll}>
+<div class="chat-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll} tabindex="-1">
   {#if filteredParsed.length === 0}
     <div class="chat-empty">{parsed.length === 0 ? 'No messages yet' : 'No matching events'}</div>
   {:else}
@@ -996,6 +1009,15 @@
     overflow-y: auto;
     padding: 0.5rem 1rem 1rem;
     overflow-anchor: auto;
+  }
+
+  .chat-scroll:focus {
+    outline: none;
+  }
+
+  .chat-scroll:focus-visible {
+    outline: 2px solid hsl(var(--primary) / 0.3);
+    outline-offset: -2px;
   }
 
   .chat-empty {
