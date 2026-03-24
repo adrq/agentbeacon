@@ -33,11 +33,22 @@
     if (streaming) {
       untrack(() => {
         const gen = ++renderGen;
-        renderMarkdown(latestText, true, true).then(r => { if (gen === renderGen) html = r; }).catch((err) => { console.warn('streaming render failed:', err); });
+        renderMarkdown(latestText, true, true).then(r => {
+          if (gen !== renderGen) return;
+          // Guard initial render too — component may mount mid-stream with
+          // unclosed fences that produce regressive HTML vs the plain-text fallback.
+          if (html && r.length < html.length * 0.7) return;
+          html = r;
+        }).catch((err) => { console.warn('streaming render failed:', err); });
       });
       const interval = setInterval(() => {
         const gen = ++renderGen;
-        renderMarkdown(latestText, true, true).then(r => { if (gen === renderGen) html = r; }).catch((err) => { console.warn('streaming render failed:', err); });
+        renderMarkdown(latestText, true, true).then(r => {
+          if (gen !== renderGen) return;
+          // Guard against transient parse regression (e.g. unclosed code fences)
+          if (html && r.length < html.length * 0.7) return;
+          html = r;
+        }).catch((err) => { console.warn('streaming render failed:', err); });
       }, 300);
       return () => clearInterval(interval);
     }

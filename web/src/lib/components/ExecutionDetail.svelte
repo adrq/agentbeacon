@@ -50,6 +50,9 @@
   let ephemeralThinkingBuffers = $state<Map<string, { text: string; lastSeq: number; startedAt: string }>>(new Map());
   let settledThinkingDurations = $state<Map<string, { durationMs: number; startedAt: string }>>(new Map());
   let lastPersistedSeq = new Map<string, number>();
+  // Running total of persisted text length per session, used to decide when
+  // persisted content has caught up with the ephemeral buffer.
+  let persistedTextLen = new Map<string, number>();
 
   // Event filter state (shared between Chat and Log views, resets on exec change)
   let eventFilter = $state<EventFilter>('all');
@@ -70,6 +73,7 @@
       const hashView = getHashViewParam();
       if (hashView) viewMode = hashView;
       lastPersistedSeq.clear();
+      persistedTextLen.clear();
       ephemeralBuffers = new Map();
       ephemeralThinkingBuffers = new Map();
       sseReconnecting = false;
@@ -179,12 +183,24 @@
             event.msg_seq ?? 0,
           ));
           const payload = event.payload as MessagePayload;
-          const hasText = payload.parts?.some((p: Record<string, unknown>) => 'text' in p);
-          if (hasText) {
+          const persistedText = payload.parts
+            ?.filter((p: Record<string, unknown>) => 'text' in p)
+            .map((p: Record<string, unknown>) => (p.text as string) ?? '')
+            .join('') ?? '';
+          if (persistedText) {
             const buf = ephemeralBuffers.get(event.session_id);
+            // Only accumulate and compare when the persisted event is for
+            // the message currently being streamed. Late arrivals from
+            // earlier msg_seqs must not inflate the counter.
             if (buf && (event.msg_seq ?? 0) >= buf.lastSeq) {
-              ephemeralBuffers.delete(event.session_id);
-              ephemeralBuffers = new Map(ephemeralBuffers);
+              const prevLen = persistedTextLen.get(event.session_id) ?? 0;
+              const totalLen = prevLen + persistedText.length;
+              persistedTextLen.set(event.session_id, totalLen);
+              if (totalLen >= buf.text.length) {
+                ephemeralBuffers.delete(event.session_id);
+                persistedTextLen.delete(event.session_id);
+                ephemeralBuffers = new Map(ephemeralBuffers);
+              }
             }
           }
           const thinkBuf = ephemeralThinkingBuffers.get(event.session_id);
@@ -259,6 +275,7 @@
             const p = event.payload as { to?: string };
             if (p.to === 'working') {
               lastPersistedSeq.delete(event.session_id);
+              persistedTextLen.delete(event.session_id);
               settledThinkingDurations.delete(event.session_id);
               settledThinkingDurations = new Map(settledThinkingDurations);
               ephemeralThinkingBuffers.delete(event.session_id);
@@ -266,6 +283,7 @@
             } else {
               if (ephemeralBuffers.has(event.session_id)) {
                 ephemeralBuffers.delete(event.session_id);
+                persistedTextLen.delete(event.session_id);
                 ephemeralBuffers = new Map(ephemeralBuffers);
               }
               if (ephemeralThinkingBuffers.has(event.session_id)) {

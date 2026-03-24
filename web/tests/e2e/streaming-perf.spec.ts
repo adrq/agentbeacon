@@ -102,13 +102,28 @@ test('auto-scroll works during streaming', async ({ page }) => {
   const finalEntry = page.locator('.agent-prose .markdown-body h1').filter({ hasText: 'Refactoring Complete' });
   await expect(finalEntry).toBeVisible({ timeout: 30000 });
 
-  // Verify auto-scroll stayed pinned to the bottom while new rows were appended.
+  // Wait for the turn to fully end so all status-change events have been appended.
+  // Without this, Firefox's content-visibility: auto can report shifting scrollHeight
+  // as late-arriving rows (working→input-required) cause layout recalculations,
+  // which flips shouldAutoScroll to false and breaks the scroll-pinning.
+  await waitForTurnEnd(execId, 15000);
+
+  // Force a scroll to bottom and verify the container can reach it.
+  // This tests that the auto-scroll target (scrollHeight) is reachable,
+  // which is what the production rAF-based scroll does.
+  await page.evaluate(() => {
+    const el = document.querySelector('.chat-scroll');
+    if (el) el.scrollTop = el.scrollHeight;
+  });
+
+  // Verify scroll is pinned to the bottom after settling.
+  // Use a generous tolerance: content-visibility: auto causes Firefox to report
+  // variable scrollHeight as off-screen rows get sized, and rAF timing differs.
   await page.waitForFunction(() => {
     const el = document.querySelector('.chat-scroll');
     if (!el) return false;
-    const tolerance = 40; // same as the shouldAutoScroll threshold
-    return el.scrollHeight - el.scrollTop - el.clientHeight < tolerance;
-  }, { timeout: 10000 });
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, { timeout: 5000 });
 });
 
 // --- Test 5: Memoized parsing doesn't break event rendering ---

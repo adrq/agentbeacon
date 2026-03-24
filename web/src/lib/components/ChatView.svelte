@@ -1035,6 +1035,8 @@
   .chat-row {
     display: flex;
     contain: layout style;
+    content-visibility: auto;
+    contain-intrinsic-size: 0 60px;
   }
 
   .agent-row {
