@@ -1,6 +1,6 @@
 [project]
 name = "agentbeacon"
-version = "0.8.0"
+version = "0.9.0"
 description = "Multi-agent orchestrator for AI coding tools"
 requires-python = ">=3.10"
 
