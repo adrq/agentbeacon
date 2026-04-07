@@ -2,7 +2,6 @@
 //!
 //! Manages the lifecycle of N worker subprocesses: spawning, colored log
 //! streaming, crash detection with auto-restart, and graceful shutdown.
-//! Ported from the standalone orchestrator binary.
 
 use anyhow::{Context, Result};
 use nix::sys::signal::{Signal, kill};

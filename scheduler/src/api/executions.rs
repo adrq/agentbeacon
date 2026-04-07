@@ -6,20 +6,18 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tracing::warn;
 
-use crate::api::types::{EventResponse, ExecutionResponse, SessionResponse};
+use crate::api::types::{self, EventResponse, ExecutionResponse, SessionResponse};
 use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
-use crate::services::execution;
+use crate::services::{execution, reconciler, transition};
 
 /// Query parameters for listing executions
 #[derive(Debug, Deserialize)]
 pub struct ListExecutionsQuery {
     pub project_id: Option<String>,
-    pub status: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -55,16 +53,25 @@ pub struct CreateExecutionResponse {
     pub warning: Option<String>,
 }
 
-/// Cancel response
-#[derive(Debug, Serialize)]
-pub struct CancelExecutionResponse {
-    pub execution: ExecutionResponse,
-}
-
-/// Complete response
-#[derive(Debug, Serialize)]
-pub struct CompleteExecutionResponse {
-    pub execution: ExecutionResponse,
+/// Derive execution display fields, fetching session data as needed.
+async fn derive_execution_fields_async(
+    pool: &db::DbPool,
+    exec: &db::Execution,
+) -> Result<types::ExecutionDerived, SchedulerError> {
+    if let Some(ref outcome) = exec.outcome {
+        return Ok(types::ExecutionDerived {
+            status: outcome.clone(),
+            completion_eligible: false,
+        });
+    }
+    if exec.desired == "terminate" {
+        return Ok(types::ExecutionDerived {
+            status: "canceled".to_string(),
+            completion_eligible: false,
+        });
+    }
+    let snapshot = db::sessions::list_by_execution_with_pending(pool, &exec.id).await?;
+    Ok(ExecutionResponse::derive_from_snapshot(exec, &snapshot))
 }
 
 /// List all executions (GET /api/executions)
@@ -75,13 +82,19 @@ async fn list_executions(
     let executions = db::executions::list(
         &state.db_pool,
         query.project_id.as_deref(),
-        query.status.as_deref(),
         query.limit,
         query.offset,
     )
     .await?;
 
-    let responses: Vec<ExecutionResponse> = executions.into_iter().map(Into::into).collect();
+    let mut responses = Vec::with_capacity(executions.len());
+    for exec in executions {
+        let derived = derive_execution_fields_async(&state.db_pool, &exec).await?;
+        let mut resp: ExecutionResponse = exec.into();
+        resp.status = derived.status;
+        resp.completion_eligible = derived.completion_eligible;
+        responses.push(resp);
+    }
     Ok(Json(responses))
 }
 
@@ -91,11 +104,26 @@ async fn get_execution(
     Path(id): Path<String>,
 ) -> Result<Json<ExecutionDetailResponse>, SchedulerError> {
     let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
-    let sessions = db::sessions::list_by_execution(&state.db_pool, &id).await?;
+    let snapshot = db::sessions::list_by_execution_with_pending(&state.db_pool, &id).await?;
+
+    let derived = ExecutionResponse::derive_from_snapshot(&exec, &snapshot);
+    let mut execution_response: ExecutionResponse = exec.into();
+    execution_response.status = derived.status;
+    execution_response.completion_eligible = derived.completion_eligible;
+
+    let session_responses: Vec<SessionResponse> = snapshot
+        .into_iter()
+        .map(|(session, pending)| {
+            let status = types::derive_session_display_status(&session, pending);
+            let mut resp: SessionResponse = session.into();
+            resp.status = status;
+            resp
+        })
+        .collect();
 
     Ok(Json(ExecutionDetailResponse {
-        execution: exec.into(),
-        sessions: sessions.into_iter().map(Into::into).collect(),
+        execution: execution_response,
+        sessions: session_responses,
     }))
 }
 
@@ -104,7 +132,6 @@ async fn create_execution_handler(
     State(state): State<AppState>,
     Json(req): Json<CreateExecutionRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    // Validate agent_ids non-empty and root_agent_id ∈ agent_ids
     if req.agent_ids.is_empty() {
         return Err(SchedulerError::ValidationFailed(
             "agent_ids must be non-empty".to_string(),
@@ -116,7 +143,6 @@ async fn create_execution_handler(
         ));
     }
 
-    // Validate parts non-empty and at least one text part with non-empty text
     if req.parts.is_empty() {
         return Err(SchedulerError::ValidationFailed(
             "parts must be non-empty".to_string(),
@@ -129,7 +155,6 @@ async fn create_execution_handler(
         ));
     }
 
-    // Deduplicate
     let mut seen = std::collections::HashSet::new();
     let all_agent_ids: Vec<String> = req
         .agent_ids
@@ -139,7 +164,6 @@ async fn create_execution_handler(
         .collect();
     let lead_agent_id = req.root_agent_id.clone();
 
-    // Validate all agent IDs exist and are enabled
     for aid in &all_agent_ids {
         let agent = db::agents::get_by_id(&state.db_pool, aid)
             .await
@@ -173,309 +197,105 @@ async fn create_execution_handler(
     )
     .await?;
 
-    // Broadcast for the initial "submitted" event created by the service.
     let _ = state
         .event_broadcast
         .send(EventNotification::persisted(result.execution.id.clone(), 0));
 
+    let derived = derive_execution_fields_async(&state.db_pool, &result.execution).await?;
+    let mut exec_resp: ExecutionResponse = result.execution.into();
+    exec_resp.status = derived.status;
+    exec_resp.completion_eligible = derived.completion_eligible;
+
     Ok((
         StatusCode::CREATED,
         Json(CreateExecutionResponse {
-            execution: result.execution.into(),
+            execution: exec_resp,
             session_id: result.session_id,
             warning: result.warning,
         }),
     ))
 }
 
-/// Cancel an execution (POST /api/executions/:id/cancel)
-async fn cancel_execution(
+/// Sets desired=terminate on the root session.
+async fn terminate_execution(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<CancelExecutionResponse>, SchedulerError> {
-    // Pre-read for fast rejection (not authoritative — just avoids unnecessary CAS)
+) -> Result<Json<serde_json::Value>, SchedulerError> {
     let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
-    if matches!(exec.status.as_str(), "completed" | "failed" | "canceled") {
-        return Err(SchedulerError::Conflict(format!(
-            "execution is already in terminal state: {}",
-            exec.status
-        )));
+
+    if exec.outcome.is_some() {
+        let exec_resp: ExecutionResponse = exec.into();
+        return Ok(Json(serde_json::json!({"execution": exec_resp})));
     }
 
-    // CAS-first: establish this handler as the winner before touching sessions.
-    use db::executions::CasResult;
-    match db::executions::update_status_cas(
+    let sessions = db::sessions::list_by_execution(&state.db_pool, &id).await?;
+    let root_session = sessions
+        .iter()
+        .find(|s| s.parent_session_id.is_none())
+        .ok_or_else(|| {
+            SchedulerError::NotFound(format!("no root session found for execution {id}"))
+        })?;
+
+    let already_terminated = match transition::transition(
         &state.db_pool,
         &id,
-        "canceled",
-        &["submitted", "working", "input-required"],
-    )
-    .await?
-    {
-        CasResult::Applied => {}
-        CasResult::Conflict => {
-            let current = db::executions::get_by_id(&state.db_pool, &id).await?;
-            return Err(SchedulerError::Conflict(format!(
-                "execution transitioned to '{}' by concurrent handler",
-                current.status
-            )));
-        }
-        CasResult::NotFound => {
-            return Err(SchedulerError::NotFound(format!(
-                "execution not found: {id}"
-            )));
-        }
-    }
-
-    // --- Post-CAS best-effort: execution is irrevocably terminal. ---
-    // Cascade and sweep failures are logged but do NOT fail the request.
-
-    use crate::services::cascade::{CascadeMode, terminate_subtree};
-
-    match db::sessions::list_by_execution(&state.db_pool, &id).await {
-        Ok(sessions) => {
-            if let Some(root) = sessions.iter().find(|s| s.parent_session_id.is_none())
-                && let Err(e) = terminate_subtree(
-                    &state.db_pool,
-                    &root.id,
-                    true,
-                    CascadeMode::Cancel,
-                    &state.event_broadcast,
-                    &state.task_queue,
-                )
-                .await
-            {
-                tracing::warn!(execution_id = %id, error = %e, "post-CAS cascade failed");
-            }
-        }
-        Err(e) => {
-            tracing::warn!(execution_id = %id, error = %e, "post-CAS session list for cascade failed");
-        }
-    }
-
-    // Safety sweep: cancel any non-terminal sessions.
-    // SQL guard (AND status NOT IN terminal) prevents overwriting sessions
-    // that became terminal between list read and update.
-    let sweep_sql = state.db_pool.prepare_query(
-        "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, \
-         completed_at = CURRENT_TIMESTAMP \
-         WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')",
-    );
-    match db::sessions::list_by_execution(&state.db_pool, &id).await {
-        Ok(remaining) => {
-            for session in &remaining {
-                if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
-                    match sqlx::query(&sweep_sql)
-                        .bind("canceled")
-                        .bind(&session.id)
-                        .execute(state.db_pool.as_ref())
-                        .await
-                    {
-                        Err(e) => {
-                            tracing::warn!(session_id = %session.id, error = %e, "post-CAS sweep failed");
-                        }
-                        Ok(result) if result.rows_affected() > 0 => {
-                            let sweep_event = json!({"from": session.status, "to": "canceled"});
-                            let _ = db::events::insert(
-                                &state.db_pool,
-                                &id,
-                                Some(&session.id),
-                                "state_change",
-                                &serde_json::to_string(&sweep_event).unwrap(),
-                            )
-                            .await
-                            .inspect_err(|e| {
-                                tracing::warn!(session_id = %session.id, error = %e, "post-CAS sweep event insert failed");
-                            })
-                            .ok()
-                            .map(|event_id| {
-                                let _ = state
-                                    .event_broadcast
-                                    .send(EventNotification::persisted(id.clone(), event_id));
-                            });
-                        }
-                        Ok(_) => {} // SQL guard blocked write — session already terminal
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!(execution_id = %id, error = %e, "post-CAS session list for sweep failed");
-        }
-    }
-
-    state.task_queue.wake_waiters();
-
-    // Record execution state_change event (best-effort)
-    let exec_state_event = json!({"from": exec.status, "to": "canceled"});
-    let _ = db::events::insert(
-        &state.db_pool,
-        &id,
-        None,
-        "state_change",
-        &serde_json::to_string(&exec_state_event).unwrap(),
+        &root_session.id,
+        transition::Action::SetDesired(transition::Desired::Terminate, "user".to_string()),
     )
     .await
-    .inspect_err(|e| {
-        tracing::warn!(execution_id = %id, error = %e, "post-CAS event insert failed");
-    })
-    .ok()
-    .map(|event_id| {
-        let _ = state
-            .event_broadcast
-            .send(EventNotification::persisted(id.clone(), event_id));
-    });
-
-    let updated = db::executions::get_by_id(&state.db_pool, &id).await?;
-    Ok(Json(CancelExecutionResponse {
-        execution: updated.into(),
-    }))
-}
-
-/// Complete an execution (POST /api/executions/:id/complete)
-async fn complete_execution(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<CompleteExecutionResponse>, SchedulerError> {
-    // Pre-read for fast rejection
-    let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
-    if !matches!(exec.status.as_str(), "working" | "input-required") {
-        return Err(SchedulerError::Conflict(format!(
-            "execution must be 'working' or 'input-required' to complete (current: {})",
-            exec.status
-        )));
-    }
-
-    // CAS-first: establish this handler as the winner before touching sessions.
-    use db::executions::CasResult;
-    match db::executions::update_status_cas(
-        &state.db_pool,
-        &id,
-        "completed",
-        &["working", "input-required"],
-    )
-    .await?
     {
-        CasResult::Applied => {}
-        CasResult::Conflict => {
-            let current = db::executions::get_by_id(&state.db_pool, &id).await?;
-            return Err(SchedulerError::Conflict(format!(
-                "execution transitioned to '{}' by concurrent handler",
-                current.status
-            )));
-        }
-        CasResult::NotFound => {
-            return Err(SchedulerError::NotFound(format!(
-                "execution not found: {id}"
-            )));
-        }
-    }
-
-    // --- Post-CAS best-effort: execution is irrevocably terminal. ---
-    // Release transitions: input-required → completed, working/submitted → canceled.
-    use crate::services::cascade::{CascadeMode, terminate_subtree};
-
-    match db::sessions::list_by_execution(&state.db_pool, &id).await {
-        Ok(sessions) => {
-            if let Some(root) = sessions.iter().find(|s| s.parent_session_id.is_none())
-                && let Err(e) = terminate_subtree(
-                    &state.db_pool,
-                    &root.id,
-                    true,
-                    CascadeMode::Release,
-                    &state.event_broadcast,
-                    &state.task_queue,
-                )
-                .await
-            {
-                tracing::warn!(execution_id = %id, error = %e, "post-CAS cascade failed");
-            }
-        }
+        Ok(_) => false,
+        Err(transition::Rejected::Ratchet) => true,
         Err(e) => {
-            tracing::warn!(execution_id = %id, error = %e, "post-CAS session list for cascade failed");
+            return Err(SchedulerError::Database(format!(
+                "transition failed: {e:?}"
+            )));
         }
-    }
+    };
 
-    // Safety sweep: Release-mode transitions for unreachable sessions.
-    // SQL guard prevents TOCTOU overwrite of sessions that became terminal.
-    match db::sessions::list_by_execution(&state.db_pool, &id).await {
-        Ok(remaining) => {
-            let sweep_sql = state.db_pool.prepare_query(
-                "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, \
-                 completed_at = CURRENT_TIMESTAMP \
-                 WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')",
+    if already_terminated && exec.outcome.is_none() {
+        let mut fix_tx = db::executions::begin_execution_tx(&state.db_pool, &id)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("begin fix tx: {e}")))?;
+        let tx_root = db::sessions::get_in_tx(&state.db_pool, &mut fix_tx, &root_session.id)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("recheck root: {e}")))?;
+        if tx_root.outcome.is_none() || tx_root.desired != "terminate" {
+            let _ = fix_tx.rollback().await;
+        } else {
+            let derived =
+                transition::derive_execution_outcome(&state.db_pool, &mut fix_tx, &id).await?;
+            let fix_sql = state.db_pool.prepare_query(
+                "UPDATE executions SET desired = 'terminate', outcome = ?, \
+                 updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
+                 WHERE id = ? AND outcome IS NULL",
             );
-            for session in &remaining {
-                if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
-                    let target = match session.status.as_str() {
-                        "input-required" => "completed",
-                        _ => "canceled",
-                    };
-                    match sqlx::query(&sweep_sql)
-                        .bind(target)
-                        .bind(&session.id)
-                        .execute(state.db_pool.as_ref())
-                        .await
-                    {
-                        Err(e) => {
-                            tracing::warn!(session_id = %session.id, error = %e, "post-CAS sweep failed");
-                        }
-                        Ok(result) if result.rows_affected() > 0 => {
-                            let sweep_event = json!({"from": session.status, "to": target});
-                            let _ = db::events::insert(
-                                &state.db_pool,
-                                &id,
-                                Some(&session.id),
-                                "state_change",
-                                &serde_json::to_string(&sweep_event).unwrap(),
-                            )
-                            .await
-                            .inspect_err(|e| {
-                                tracing::warn!(session_id = %session.id, error = %e, "post-CAS sweep event insert failed");
-                            })
-                            .ok()
-                            .map(|event_id| {
-                                let _ = state
-                                    .event_broadcast
-                                    .send(EventNotification::persisted(id.clone(), event_id));
-                            });
-                        }
-                        Ok(_) => {} // SQL guard blocked write — session already terminal
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!(execution_id = %id, error = %e, "post-CAS session list for sweep failed");
+            let _ = sqlx::query(&fix_sql)
+                .bind(&derived)
+                .bind(&id)
+                .execute(&mut *fix_tx)
+                .await;
+            reconciler::emit_execution_repair_event(&state.db_pool, &mut fix_tx, &id, &derived)
+                .await;
+            let _ = fix_tx.commit().await;
+            let _ = state
+                .event_broadcast
+                .send(crate::app::EventNotification::persisted(id.clone(), 0));
         }
     }
 
+    let fresh_root = db::sessions::get_by_id(&state.db_pool, &root_session.id).await?;
+    let _ = reconciler::cascade_children(&state.db_pool, &fresh_root).await;
+
     state.task_queue.wake_waiters();
 
-    // Record execution state_change event (best-effort)
-    let exec_state_event = json!({"from": exec.status, "to": "completed"});
-    let _ = db::events::insert(
-        &state.db_pool,
-        &id,
-        None,
-        "state_change",
-        &serde_json::to_string(&exec_state_event).unwrap(),
-    )
-    .await
-    .inspect_err(|e| {
-        tracing::warn!(execution_id = %id, error = %e, "post-CAS event insert failed");
-    })
-    .ok()
-    .map(|event_id| {
-        let _ = state
-            .event_broadcast
-            .send(EventNotification::persisted(id.clone(), event_id));
-    });
+    let _ = state
+        .event_broadcast
+        .send(crate::app::EventNotification::persisted(id.clone(), 0));
 
-    let updated = db::executions::get_by_id(&state.db_pool, &id).await?;
-    Ok(Json(CompleteExecutionResponse {
-        execution: updated.into(),
-    }))
+    let fresh_exec = db::executions::get_by_id(&state.db_pool, &id).await?;
+    let exec_resp: ExecutionResponse = fresh_exec.into();
+    Ok(Json(serde_json::json!({"execution": exec_resp})))
 }
 
 /// Get events for an execution (GET /api/executions/:id/events)
@@ -483,7 +303,6 @@ async fn execution_events(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<EventResponse>>, SchedulerError> {
-    // Verify execution exists
     db::executions::get_by_id(&state.db_pool, &id).await?;
 
     let events = db::events::list_by_execution(&state.db_pool, &id).await?;
@@ -549,7 +368,6 @@ async fn add_to_execution_pool(
 ) -> Result<impl IntoResponse, SchedulerError> {
     let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
 
-    // Verify agent exists and is enabled
     let agent = db::agents::get_by_id(&state.db_pool, &req.agent_id).await?;
     if !agent.enabled {
         return Err(SchedulerError::ValidationFailed(format!(
@@ -560,7 +378,6 @@ async fn add_to_execution_pool(
 
     db::execution_agents::insert(&state.db_pool, &id, &req.agent_id).await?;
 
-    // Propagate to project pool if requested
     if req.add_to_project
         && let Some(ref project_id) = exec.project_id
         && let Err(e) = db::project_agents::insert(&state.db_pool, project_id, &req.agent_id).await
@@ -594,8 +411,34 @@ struct SessionDiscoveryResponse {
     hierarchical_name: String,
     agent_name: String,
     role: String,
+    desired: String,
+    executor_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<String>,
     status: String,
     parent_name: Option<String>,
+}
+
+/// Derive display status from a discovery entry + pending_turns.
+fn derive_discovery_status(
+    entry: &db::sessions::SessionDiscoveryEntry,
+    pending_turns: i64,
+) -> String {
+    if let Some(ref outcome) = entry.outcome {
+        return outcome.clone();
+    }
+    if entry.executor_state == "running" || pending_turns > 0 || entry.command_token.is_some() {
+        return "working".to_string();
+    }
+    if entry.desired == "stop" {
+        return "stopped".to_string();
+    }
+    match entry.executor_state.as_str() {
+        "idle" => "idle".to_string(),
+        "unassigned" => "unassigned".to_string(),
+        "crashed" => "crashed".to_string(),
+        _ => "unassigned".to_string(),
+    }
 }
 
 /// Get running sessions for an execution (GET /api/executions/:id/sessions)
@@ -634,12 +477,17 @@ async fn execution_sessions_handler(
             .as_ref()
             .and_then(|pid| name_map.get(pid).cloned());
 
+        let status = derive_discovery_status(entry, entry.pending_turns);
+
         entries.push(SessionDiscoveryResponse {
             session_id: entry.session_id.clone(),
             hierarchical_name: hier_name,
             agent_name: entry.agent_name.clone(),
             role: role.to_string(),
-            status: entry.status.clone(),
+            desired: entry.desired.clone(),
+            executor_state: entry.executor_state.clone(),
+            outcome: entry.outcome.clone(),
+            status,
             parent_name,
         });
     }
@@ -656,12 +504,8 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/executions/{id}", get(get_execution))
         .route(
-            "/api/executions/{id}/cancel",
-            axum::routing::post(cancel_execution),
-        )
-        .route(
-            "/api/executions/{id}/complete",
-            axum::routing::post(complete_execution),
+            "/api/executions/{id}/terminate",
+            axum::routing::post(terminate_execution),
         )
         .route("/api/executions/{id}/events", get(execution_events))
         .route(

@@ -263,12 +263,10 @@ export class AgentBeaconAPI {
 
   // Executions
   async getExecutions(params?: {
-    status?: string;
     limit?: number;
     project_id?: string;
   }): Promise<Execution[]> {
     const search = new URLSearchParams();
-    if (params?.status) search.set('status', params.status);
     if (params?.limit) search.set('limit', String(params.limit));
     if (params?.project_id) search.set('project_id', params.project_id);
     const qs = search.toString();
@@ -297,12 +295,8 @@ export class AgentBeaconAPI {
     });
   }
 
-  async cancelExecution(id: string): Promise<{ execution: Execution }> {
-    return this.fetchJSON(`/executions/${id}/cancel`, { method: 'POST' });
-  }
-
-  async completeExecution(id: string): Promise<{ execution: Execution }> {
-    return this.fetchJSON(`/executions/${id}/complete`, { method: 'POST' });
+  async terminateExecution(id: string): Promise<{ execution: Execution }> {
+    return this.fetchJSON(`/executions/${id}/terminate`, { method: 'POST' });
   }
 
   async getExecutionEvents(id: string): Promise<Event[]> {
@@ -310,9 +304,8 @@ export class AgentBeaconAPI {
   }
 
   // Sessions
-  async getSessions(params?: { status?: string; execution_id?: string }): Promise<Session[]> {
+  async getSessions(params?: { execution_id?: string }): Promise<Session[]> {
     const search = new URLSearchParams();
-    if (params?.status) search.set('status', params.status);
     if (params?.execution_id) search.set('execution_id', params.execution_id);
     const qs = search.toString();
     return this.fetchJSON<Session[]>(`/sessions${qs ? `?${qs}` : ''}`);
@@ -322,16 +315,19 @@ export class AgentBeaconAPI {
     return this.fetchJSON<Event[]>(`/sessions/${sessionId}/events`);
   }
 
-  async cancelSession(sessionId: string): Promise<{ canceled: boolean; sessions_terminated: number }> {
-    return this.fetchJSON(`/sessions/${sessionId}/cancel`, { method: 'POST' });
+  async terminateSession(sessionId: string): Promise<{ terminated: boolean }> {
+    return this.fetchJSON(`/sessions/${sessionId}/terminate`, { method: 'POST' });
   }
 
   async stopSession(sessionId: string): Promise<{ stopped: boolean; tasks_flushed: number }> {
     return this.fetchJSON(`/sessions/${sessionId}/stop`, { method: 'POST' });
   }
 
-  async completeSession(sessionId: string): Promise<{ completed: boolean; sessions_terminated: number }> {
-    return this.fetchJSON(`/sessions/${sessionId}/complete`, { method: 'POST' });
+  async continueSession(sessionId: string, parts: import('./types').MessagePart[]): Promise<import('./types').ContinueSessionResponse> {
+    return this.fetchJSON(`/sessions/${sessionId}/continue`, {
+      method: 'POST',
+      body: JSON.stringify({ parts }),
+    });
   }
 
   async recoverSession(sessionId: string, message?: string): Promise<{ session: Session; execution_recovered: boolean }> {

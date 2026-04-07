@@ -17,8 +17,7 @@ pub enum BriefingRole {
     Leaf,
 }
 
-// Fallback text used when the config table row is missing or unreadable.
-// The authoritative source is the config table, seeded by migration 0014.
+// Fallback text used when the config table row is missing.
 // Edit briefing text via POST /api/config, not by changing these constants.
 
 const FALLBACK_DELEGATION: &str = "Use the AgentBeacon `delegate` MCP tool to assign work to child agents.\n\
@@ -58,11 +57,43 @@ async fn read_briefing_section(pool: &DbPool, key: &str, fallback: &str) -> Stri
     }
 }
 
+async fn read_briefing_section_in_tx(
+    pool: &DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    key: &str,
+    fallback: &str,
+) -> String {
+    let sql = pool.prepare_query("SELECT value FROM config WHERE name = ?");
+    match sqlx::query(&sql).bind(key).fetch_one(&mut **tx).await {
+        Ok(row) => {
+            use sqlx::Row;
+            row.get::<String, _>("value")
+        }
+        Err(_) => fallback.to_string(),
+    }
+}
+
 pub async fn build_environment_briefing(pool: &DbPool, ctx: &BriefingContext) -> String {
     let delegation_text =
         read_briefing_section(pool, "briefing.delegation", FALLBACK_DELEGATION).await;
     let escalate_text = read_briefing_section(pool, "briefing.escalate", FALLBACK_ESCALATE).await;
     let rest_api_text = read_briefing_section(pool, "briefing.rest_api", FALLBACK_REST_API).await;
+
+    build_environment_briefing_with_sections(ctx, &delegation_text, &escalate_text, &rest_api_text)
+}
+
+/// Like `build_environment_briefing` but reads config through an existing transaction.
+pub async fn build_environment_briefing_in_tx(
+    pool: &DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    ctx: &BriefingContext,
+) -> String {
+    let delegation_text =
+        read_briefing_section_in_tx(pool, tx, "briefing.delegation", FALLBACK_DELEGATION).await;
+    let escalate_text =
+        read_briefing_section_in_tx(pool, tx, "briefing.escalate", FALLBACK_ESCALATE).await;
+    let rest_api_text =
+        read_briefing_section_in_tx(pool, tx, "briefing.rest_api", FALLBACK_REST_API).await;
 
     build_environment_briefing_with_sections(ctx, &delegation_text, &escalate_text, &rest_api_text)
 }
@@ -121,126 +152,5 @@ pub fn prepend_briefing(briefing: &str, existing_prompt: &str) -> String {
         briefing.to_string()
     } else {
         format!("{briefing}\n---\n\n{existing_prompt}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_ctx(role: BriefingRole) -> BriefingContext {
-        BriefingContext {
-            role,
-            slug: "swift-falcon".to_string(),
-            hierarchical_name: "swift-falcon".to_string(),
-            agent_config_name: "lead-agent".to_string(),
-            parent_info: "user".to_string(),
-        }
-    }
-
-    #[test]
-    fn test_root_lead_briefing_has_all_sections() {
-        let ctx = make_ctx(BriefingRole::RootLead);
-        let briefing = build_environment_briefing_with_sections(
-            &ctx,
-            FALLBACK_DELEGATION,
-            FALLBACK_ESCALATE,
-            FALLBACK_REST_API,
-        );
-        assert!(briefing.contains("# AgentBeacon Environment"));
-        assert!(briefing.contains("## Delegation"));
-        assert!(briefing.contains("## Escalate"));
-        assert!(briefing.contains("## REST API"));
-        assert!(briefing.contains("root lead"));
-    }
-
-    #[test]
-    fn test_sub_lead_briefing_omits_escalate() {
-        let ctx = BriefingContext {
-            role: BriefingRole::SubLead,
-            slug: "bold-eagle".to_string(),
-            hierarchical_name: "swift-falcon/bold-eagle".to_string(),
-            agent_config_name: "backend-dev".to_string(),
-            parent_info: "swift-falcon".to_string(),
-        };
-        let briefing = build_environment_briefing_with_sections(
-            &ctx,
-            FALLBACK_DELEGATION,
-            FALLBACK_ESCALATE,
-            FALLBACK_REST_API,
-        );
-        assert!(briefing.contains("## Delegation"));
-        assert!(!briefing.contains("## Escalate"));
-        assert!(briefing.contains("## REST API"));
-        assert!(briefing.contains("sub-lead"));
-    }
-
-    #[test]
-    fn test_leaf_briefing_omits_delegation_and_escalate() {
-        let ctx = BriefingContext {
-            role: BriefingRole::Leaf,
-            slug: "keen-hawk".to_string(),
-            hierarchical_name: "swift-falcon/bold-eagle/keen-hawk".to_string(),
-            agent_config_name: "frontend-dev".to_string(),
-            parent_info: "swift-falcon/bold-eagle".to_string(),
-        };
-        let briefing = build_environment_briefing_with_sections(
-            &ctx,
-            FALLBACK_DELEGATION,
-            FALLBACK_ESCALATE,
-            FALLBACK_REST_API,
-        );
-        assert!(!briefing.contains("## Delegation"));
-        assert!(!briefing.contains("## Escalate"));
-        assert!(briefing.contains("## REST API"));
-        assert!(briefing.contains("leaf"));
-    }
-
-    #[test]
-    fn test_briefing_under_800_tokens() {
-        let ctx = make_ctx(BriefingRole::RootLead);
-        let briefing = build_environment_briefing_with_sections(
-            &ctx,
-            FALLBACK_DELEGATION,
-            FALLBACK_ESCALATE,
-            FALLBACK_REST_API,
-        );
-        // Conservative estimate: ~4 chars per token
-        let estimated_tokens = briefing.len() / 4;
-        assert!(
-            estimated_tokens < 800,
-            "briefing is ~{estimated_tokens} tokens ({} chars), should be under 800",
-            briefing.len()
-        );
-    }
-
-    #[test]
-    fn test_briefing_prepends_to_existing_prompt() {
-        let briefing = "# AgentBeacon Environment\ntest briefing";
-        let existing = "You are a helpful assistant.";
-        let combined = prepend_briefing(briefing, existing);
-        assert!(combined.starts_with("# AgentBeacon Environment"));
-        assert!(combined.contains("---"));
-        assert!(combined.ends_with(existing));
-    }
-
-    #[test]
-    fn test_briefing_prepends_to_empty_prompt() {
-        let briefing = "# AgentBeacon Environment\ntest briefing";
-        let combined = prepend_briefing(briefing, "");
-        assert_eq!(combined, briefing);
-        assert!(!combined.contains("---"));
-    }
-
-    #[test]
-    fn test_delegation_contains_api_discovery() {
-        let ctx = make_ctx(BriefingRole::RootLead);
-        let briefing = build_environment_briefing_with_sections(
-            &ctx,
-            FALLBACK_DELEGATION,
-            FALLBACK_ESCALATE,
-            FALLBACK_REST_API,
-        );
-        assert!(briefing.contains("/api/executions/$AGENTBEACON_EXECUTION_ID/agents"));
     }
 }

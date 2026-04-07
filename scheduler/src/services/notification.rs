@@ -20,7 +20,7 @@ pub async fn deliver_to_parent(
     db_pool: &DbPool,
     task_queue: &TaskQueue,
     event_broadcast: &broadcast::Sender<EventNotification>,
-    stop_turn_intents: &Arc<RwLock<HashSet<String>>>,
+    _stop_turn_intents: &Arc<RwLock<HashSet<String>>>,
     child_session_id: &str,
     turn_output: &str,
 ) -> Result<(), SchedulerError> {
@@ -52,10 +52,7 @@ pub async fn deliver_to_parent(
         agent_name
     };
 
-    // Record platform event on parent session (audit + UI rendering).
-    // Insert failure is non-fatal: delivery to task_queue is more important
-    // than the audit trail. The parent agent must receive the child's output
-    // even if the event store is temporarily unavailable.
+    // Record platform event on parent session (non-fatal if it fails).
     let parent_event = common::a2a::message_payload(
         common::a2a::role::AGENT,
         vec![common::a2a::data_part(json!({
@@ -89,17 +86,8 @@ pub async fn deliver_to_parent(
         }
     }
 
-    // Transition parent from input-required → working BEFORE push.
-    // Must happen first: push() calls notify_waiters(), which wakes the parent's worker.
-    // If we push first, the worker wakes, sees input-required, and may go back to sleep
-    // before we transition to working.
-    let parent = db::sessions::get_by_id(db_pool, &parent_id).await?;
-    let (_, _, transitioned_to_working) =
-        crate::services::messaging::transition_to_working(db_pool, event_broadcast, &parent)
-            .await?;
-    if transitioned_to_working {
-        crate::services::messaging::clear_stop_intent(stop_turn_intents, &parent.id);
-    }
+    // Parent notification: auto-resume if stopped (handled by transition function)
+    let _parent = db::sessions::get_by_id(db_pool, &parent_id).await?;
 
     // Format and push to parent's inbox
     let formatted_text = format!(

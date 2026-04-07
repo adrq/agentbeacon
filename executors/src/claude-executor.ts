@@ -8,10 +8,7 @@ console.debug = (...args: unknown[]) => console.error(...args);
 import * as readline from "node:readline";
 import type { Command, StartCommand, Part, Event } from "./common/protocol.js";
 
-const { query } =
-  process.env.AGENTBEACON_MOCK_SDK === "1"
-    ? await import("./mock-claude-sdk.js")
-    : await import("@anthropic-ai/claude-agent-sdk");
+const { query, AbortError } = await import("@anthropic-ai/claude-agent-sdk");
 import { emit } from "./common/stdio-bridge.js";
 
 const MAX_TRANSIENT_RETRIES = 2;
@@ -42,7 +39,6 @@ function isTransientError(e: unknown): boolean {
 
 // Orchestration tools that bypass AgentBeacon's coordination layer.
 // Blocked via disallowedTools — reliable in ALL permission modes.
-// See: kb/research/118-claude-sdk-orchestration-tools-deep-dive.md
 const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "Agent", // Subagent spawning (renamed from Task in v2.1.63)
   "Task", // Legacy alias for Agent
@@ -54,7 +50,7 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "TaskUpdate",
   "TaskList",
   "TaskGet",
-  "SendMessage", // Inter-agent messaging outside AgentBeacon
+  "SendMessage", // Inter-agent messaging
   "SendMessageTool", // Alternate name for SendMessage (block both defensively)
 ];
 
@@ -71,6 +67,8 @@ function hasQueuedTurnCommand(): boolean {
     (cmd) => cmd.type === "start" || cmd.type === "prompt",
   );
 }
+
+let shutdownRequested = false;
 
 function discardQueuedTurnCommands(): void {
   const retained = commandQueue.filter(
@@ -100,12 +98,21 @@ rl.on("line", (line) => {
     process.stderr.write(`ignoring malformed stdin line, len=${line.length}\n`);
     return;
   }
-  if (cmd.type === "cancel" && currentAc) {
+  if (cmd.type === "cancel" && currentAc && turnState !== "idle") {
     currentAc.abort();
+  } else if (cmd.type === "cancel") {
+    // Cancel received while idle — shut down cleanly.
+    shutdownRequested = true;
+    discardQueuedTurnCommands();
+    // Push a stop command to wake nextCommand() and break whatever loop is
+    // currently awaiting it (main loop or promptStream generator).
+    commandQueue.push({ type: "stop" } as Command);
+    if (queueResolve) {
+      queueResolve();
+      queueResolve = null;
+    }
   } else if (cmd.type === "stop_turn") {
-    // Known limitation: the worker only starts scheduler long-poll after init,
-    // so this local buffering only helps once stop_turn has actually reached
-    // the executor. True end-to-end pre-init stop delivery remains worker-side.
+    // Buffered locally until the worker can deliver it.
     if (currentAc && (turnState !== "idle" || hasQueuedTurnCommand())) {
       stoppedByUser = true;
       discardQueuedTurnCommands();
@@ -257,6 +264,7 @@ async function main(): Promise<void> {
   }
 
   while (true) {
+    if (shutdownRequested) break;
     const cmd = await nextCommand();
     if (cmd.type === "stop" || cmd.type === "eof") break;
 
@@ -371,15 +379,8 @@ async function main(): Promise<void> {
                 ? [...rawContent]
                 : [];
 
-              // Append usage as a content block — flows through worker's
-              // content_block_to_part catch-all → { data: {...} }
-              // Claude SDK provides per-API-request usage on each assistant message.
-              // The frontend overwrites (not accumulates) these values from usage_update blocks.
-              // NOTE: result.usage is a session aggregate — do NOT use it for the context indicator.
-              //
-              // input_tokens only counts non-cached tokens. When prompt caching is active
-              // (default in the SDK), most tokens are in cache_read_input_tokens /
-              // cache_creation_input_tokens. Sum all three for true context consumption.
+              // input_tokens excludes cached tokens — sum with cache_read_input_tokens
+              // and cache_creation_input_tokens for true context consumption.
               const usage = inner?.usage as Record<string, unknown> | undefined;
               if (usage && typeof usage.input_tokens === "number") {
                 const cacheRead =
@@ -453,8 +454,6 @@ async function main(): Promise<void> {
                   type: "usage_snapshot",
                   context_window: maxContextWindow,
                 };
-                // N.B. This message will overwrite last_content in the worker, but
-                // result.result takes precedence for success subtypes.
                 emit({
                   type: "message",
                   role: "assistant",
@@ -557,9 +556,7 @@ async function main(): Promise<void> {
             queueResolve = null;
           }
 
-          // Only retry if: transient + no init received yet + not a resume + retries remaining.
-          // Resume sessions are never retried — a client-side failure before init does not
-          // prove the server didn't accept the prompt, and replaying could duplicate side effects.
+          // Only retry transient errors on fresh (non-resume) sessions before init.
           if (
             isTransientError(e) &&
             !currentSessionId &&
@@ -579,7 +576,7 @@ async function main(): Promise<void> {
 
       // Handle final error (if any)
       if (lastError) {
-        if (lastError instanceof Error && lastError.name === "AbortError") {
+        if (lastError instanceof AbortError) {
           turnState = "idle";
           emit({
             type: "result",
@@ -604,9 +601,18 @@ async function main(): Promise<void> {
       pendingStopTurn = false;
     }
   }
+
+  // Emit terminal result so the scheduler knows this session is done.
+  if (shutdownRequested) {
+    emit({ type: "result", subtype: "cancelled" });
+  }
 }
 
-main().catch((e) => {
-  process.stderr.write(`fatal: ${e}\n`);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    rl.close();
+  })
+  .catch((e) => {
+    process.stderr.write(`fatal: ${e}\n`);
+    process.exit(1);
+  });

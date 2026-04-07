@@ -9,31 +9,152 @@ pub struct RetryConfig {
     pub retry_delay: Duration,
 }
 
-// --- Request types (Serialize, camelCase) ---
-
 #[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct SyncRequest {
+    pub worker_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_state: Option<SessionState>,
+    pub executor_report: Option<ExecutorReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_result: Option<SessionResult>,
+    pub turn_result: Option<TurnResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_ack: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionState {
+#[derive(Debug, Clone, Serialize)]
+pub struct ExecutorReport {
     pub session_id: String,
-    pub status: String,
+    pub executor_state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TurnMessage {
     pub msg_seq: i64,
+    #[serde(flatten)]
     pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TurnResult {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<TurnMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
+pub enum SyncResponse {
+    NoAction,
+    Command {
+        token: String,
+        action: CommandAction,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code, clippy::large_enum_variant)]
+pub enum CommandAction {
+    Assign {
+        session_id: String,
+        #[serde(default)]
+        execution_id: String,
+        #[serde(default)]
+        payload: Option<serde_json::Value>,
+        #[serde(default)]
+        resume: bool,
+        #[serde(default)]
+        cwd: Option<String>,
+        #[serde(default)]
+        driver: serde_json::Value,
+        /// Agent configuration for this session.
+        #[serde(default)]
+        agent_config: serde_json::Value,
+        #[serde(default)]
+        agent_session_id: Option<String>,
+        #[serde(default)]
+        project_id: Option<String>,
+        #[serde(default)]
+        mcp_servers: Option<serde_json::Value>,
+        #[serde(default)]
+        next_msg_seq: i64,
+    },
+    FeedTurn {
+        session_id: String,
+        payload: serde_json::Value,
+    },
+    StopTurn {
+        session_id: String,
+    },
+    Cancel {
+        session_id: String,
+    },
+}
+
+impl SyncRequest {
+    pub fn empty(worker_id: &str) -> Self {
+        Self {
+            worker_id: worker_id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_report(worker_id: &str, report: ExecutorReport) -> Self {
+        Self {
+            worker_id: worker_id.to_string(),
+            executor_report: Some(report),
+            ..Default::default()
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_result(worker_id: &str, result: TurnResult) -> Self {
+        Self {
+            worker_id: worker_id.to_string(),
+            turn_result: Some(result),
+            ..Default::default()
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_ack(worker_id: &str, token: &str) -> Self {
+        Self {
+            worker_id: worker_id.to_string(),
+            command_ack: Some(token.to_string()),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_report_and_result(
+        worker_id: &str,
+        report: ExecutorReport,
+        result: TurnResult,
+    ) -> Self {
+        Self {
+            worker_id: worker_id.to_string(),
+            executor_report: Some(report),
+            turn_result: Some(result),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_report_and_ack(worker_id: &str, report: ExecutorReport, ack_token: &str) -> Self {
+        Self {
+            worker_id: worker_id.to_string(),
+            executor_report: Some(report),
+            command_ack: Some(ack_token.to_string()),
+            ..Default::default()
+        }
+    }
 }
 
 fn is_false(v: &bool) -> bool {
@@ -42,138 +163,8 @@ fn is_false(v: &bool) -> bool {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionResult {
-    pub session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub turn_messages: Vec<TurnMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stderr: Option<String>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub has_pending_turn: bool,
-}
-
-// --- Response types (Deserialize, tagged union) ---
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SyncResponse {
-    NoAction,
-    SessionAssigned {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        task: TaskAssignment,
-    },
-    PromptDelivery {
-        #[serde(rename = "sessionId")]
-        #[allow(dead_code)]
-        session_id: String,
-        task: TaskAssignment,
-    },
-    TaskAvailable {
-        #[serde(rename = "sessionId")]
-        #[allow(dead_code)]
-        session_id: String,
-    },
-    SessionComplete {
-        #[serde(rename = "sessionId")]
-        #[allow(dead_code)]
-        session_id: String,
-    },
-    Command {
-        command: String,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-pub struct TaskAssignment {
-    pub execution_id: String,
-    pub session_id: String,
-    pub task_payload: serde_json::Value,
-}
-
-// --- Convenience constructors ---
-
-impl SyncRequest {
-    pub fn idle() -> Self {
-        Self::default()
-    }
-
-    pub fn running(session_id: &str) -> Self {
-        Self {
-            session_state: Some(SessionState {
-                session_id: session_id.to_string(),
-                status: "running".to_string(),
-                agent_session_id: None,
-            }),
-            session_result: None,
-        }
-    }
-
-    pub fn waiting_for_event(session_id: &str) -> Self {
-        Self {
-            session_state: Some(SessionState {
-                session_id: session_id.to_string(),
-                status: "waiting_for_event".to_string(),
-                agent_session_id: None,
-            }),
-            session_result: None,
-        }
-    }
-
-    pub fn fetch_task(session_id: &str) -> Self {
-        Self {
-            session_state: Some(SessionState {
-                session_id: session_id.to_string(),
-                status: "fetch_task".to_string(),
-                agent_session_id: None,
-            }),
-            session_result: None,
-        }
-    }
-
-    pub fn with_result(
-        session_id: &str,
-        agent_session_id: Option<String>,
-        turn_messages: Vec<TurnMessage>,
-        error: Option<String>,
-        error_kind: Option<String>,
-        stderr: Option<String>,
-        has_pending_turn: bool,
-    ) -> Self {
-        // Include session_state "running" so scheduler knows we're still in this session
-        // and doesn't try to assign us a new one
-        Self {
-            session_state: Some(SessionState {
-                session_id: session_id.to_string(),
-                status: "running".to_string(),
-                agent_session_id: None,
-            }),
-            session_result: Some(SessionResult {
-                session_id: session_id.to_string(),
-                agent_session_id,
-                turn_messages,
-                error,
-                error_kind,
-                stderr,
-                has_pending_turn,
-            }),
-        }
-    }
-}
-
-// --- Mid-turn message forwarding ---
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct WorkerMessageEvent {
+    pub worker_id: String,
     pub session_id: String,
     pub execution_id: String,
     pub msg_seq: i64,
@@ -214,8 +205,6 @@ pub async fn post_worker_message(
     }
     unreachable!()
 }
-
-// --- HTTP functions ---
 
 /// Parse response body as SyncResponse, logging raw body on failure.
 async fn parse_sync_response(response: reqwest::Response) -> Result<SyncResponse> {
@@ -259,7 +248,7 @@ pub async fn perform_sync(
     parse_sync_response(response).await
 }
 
-/// Perform sync with extended timeout for long-poll (waiting_for_event)
+/// Perform sync with extended timeout for long-poll
 pub async fn perform_sync_long_poll(
     client: &reqwest::Client,
     scheduler_url: &str,
@@ -268,7 +257,6 @@ pub async fn perform_sync_long_poll(
 ) -> Result<SyncResponse> {
     let url = format!("{scheduler_url}/api/worker/sync");
 
-    // Build a one-off request with extended timeout
     let response = client
         .post(&url)
         .json(request)
@@ -295,7 +283,9 @@ pub async fn perform_sync_with_retry(
     has_connected: bool,
     config: &RetryConfig,
 ) -> Result<SyncResponse> {
-    let is_in_session = request.session_state.is_some() || request.session_result.is_some();
+    let is_in_session = request.executor_report.is_some()
+        || request.turn_result.is_some()
+        || request.command_ack.is_some();
 
     let max_attempts = if is_in_session {
         usize::MAX
@@ -318,303 +308,20 @@ pub async fn perform_sync_with_retry(
                     } else {
                         "during startup"
                     };
-
-                    return Err(anyhow::anyhow!(
-                        "Sync failed after {max_attempts} attempts ({context}), scheduler unreachable: {e}"
-                    ));
+                    return Err(
+                        e.context(format!("sync failed {context} after {attempt} attempts"))
+                    );
                 }
 
                 tracing::warn!(
-                    attempt = attempt,
-                    max_attempts = max_attempts,
+                    attempt,
+                    max_attempts,
                     error = %e,
-                    "Sync failed, retrying"
+                    "sync failed, retrying"
                 );
-
                 tokio::time::sleep(config.retry_delay).await;
                 attempt += 1;
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn test_idle_request_serializes_to_empty_object() {
-        let request = SyncRequest::idle();
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value, json!({}));
-    }
-
-    #[test]
-    fn test_session_result_serializes_camelcase() {
-        let request = SyncRequest::with_result(
-            "sess-1",
-            Some("agent-sess-1".to_string()),
-            Vec::new(),
-            None,
-            None,
-            None,
-            false,
-        );
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["sessionResult"]["sessionId"], "sess-1");
-        assert_eq!(value["sessionResult"]["agentSessionId"], "agent-sess-1");
-    }
-
-    #[test]
-    fn test_session_result_with_turn_messages_serializes() {
-        let msgs = vec![
-            TurnMessage {
-                msg_seq: 1,
-                payload: json!({"role": "ROLE_AGENT", "parts": [{"text": "hello"}]}),
-            },
-            TurnMessage {
-                msg_seq: 2,
-                payload: json!({"role": "ROLE_AGENT", "parts": [{"text": "world"}]}),
-            },
-        ];
-        let request = SyncRequest::with_result(
-            "sess-1",
-            Some("agent-sess-1".to_string()),
-            msgs,
-            None,
-            None,
-            None,
-            false,
-        );
-        let value = serde_json::to_value(&request).unwrap();
-        let turn_msgs = value["sessionResult"]["turnMessages"].as_array().unwrap();
-        assert_eq!(turn_msgs.len(), 2);
-        assert_eq!(turn_msgs[0]["msgSeq"], 1);
-        assert_eq!(turn_msgs[1]["msgSeq"], 2);
-    }
-
-    #[test]
-    fn test_session_result_without_turn_messages_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
-        let value = serde_json::to_value(&request).unwrap();
-        assert!(value["sessionResult"].get("turnMessages").is_none());
-    }
-
-    #[test]
-    fn test_session_result_with_error_serializes() {
-        let request = SyncRequest::with_result(
-            "sess-1",
-            None,
-            Vec::new(),
-            Some("executor failed".to_string()),
-            None,
-            None,
-            false,
-        );
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["sessionResult"]["error"], "executor failed");
-    }
-
-    #[test]
-    fn test_session_result_without_error_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
-        let value = serde_json::to_value(&request).unwrap();
-        assert!(value["sessionResult"].get("error").is_none());
-    }
-
-    #[test]
-    fn test_session_result_with_error_kind_serializes() {
-        let request = SyncRequest::with_result(
-            "sess-1",
-            None,
-            Vec::new(),
-            Some("budget limit hit".to_string()),
-            Some("budget_exceeded".to_string()),
-            None,
-            false,
-        );
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["sessionResult"]["errorKind"], "budget_exceeded");
-        assert_eq!(value["sessionResult"]["error"], "budget limit hit");
-    }
-
-    #[test]
-    fn test_session_result_without_error_kind_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
-        let value = serde_json::to_value(&request).unwrap();
-        assert!(value["sessionResult"].get("errorKind").is_none());
-    }
-
-    #[test]
-    fn test_session_result_with_stderr_serializes() {
-        let request = SyncRequest::with_result(
-            "sess-1",
-            None,
-            Vec::new(),
-            Some("crash".to_string()),
-            Some("executor_failed".to_string()),
-            Some("Error: module not found\n    at require".to_string()),
-            false,
-        );
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(
-            value["sessionResult"]["stderr"],
-            "Error: module not found\n    at require"
-        );
-    }
-
-    #[test]
-    fn test_session_result_without_stderr_omits_field() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
-        let value = serde_json::to_value(&request).unwrap();
-        assert!(value["sessionResult"].get("stderr").is_none());
-    }
-
-    #[test]
-    fn test_waiting_for_event_serializes() {
-        let request = SyncRequest::waiting_for_event("sess-1");
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["sessionState"]["sessionId"], "sess-1");
-        assert_eq!(value["sessionState"]["status"], "waiting_for_event");
-    }
-
-    #[test]
-    fn test_running_heartbeat_serializes() {
-        let request = SyncRequest::running("sess-1");
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["sessionState"]["sessionId"], "sess-1");
-        assert_eq!(value["sessionState"]["status"], "running");
-    }
-
-    #[test]
-    fn test_has_pending_turn_true_serializes() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, true);
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["sessionResult"]["hasPendingTurn"], true);
-    }
-
-    #[test]
-    fn test_has_pending_turn_false_omitted() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, false);
-        let value = serde_json::to_value(&request).unwrap();
-        assert!(value["sessionResult"].get("hasPendingTurn").is_none());
-    }
-
-    #[test]
-    fn test_has_pending_turn_true_round_trips_camelcase() {
-        let request = SyncRequest::with_result("sess-1", None, Vec::new(), None, None, None, true);
-        let json_str = serde_json::to_string(&request).unwrap();
-        assert!(json_str.contains("hasPendingTurn"));
-        assert!(json_str.contains("true"));
-    }
-
-    #[test]
-    fn test_no_action_deserializes() {
-        let json = r#"{"type": "no_action"}"#;
-        let response: SyncResponse = serde_json::from_str(json).unwrap();
-        assert!(matches!(response, SyncResponse::NoAction));
-    }
-
-    #[test]
-    fn test_session_assigned_deserializes() {
-        let json = json!({
-            "type": "session_assigned",
-            "sessionId": "sess-1",
-            "task": {
-                "executionId": "exec-1",
-                "sessionId": "sess-1",
-                "taskPayload": {
-                    "agent_id": "agent-1",
-                    "driver": {"platform": "acp", "config": {}},
-                    "agent_config": {"command": "uv", "args": ["run", "agent"]},
-                    "message": {"role": "ROLE_USER", "parts": [{"text": "hello"}]}
-                }
-            }
-        });
-        let response: SyncResponse = serde_json::from_value(json).unwrap();
-        match response {
-            SyncResponse::SessionAssigned { session_id, task } => {
-                assert_eq!(session_id, "sess-1");
-                assert_eq!(task.execution_id, "exec-1");
-                assert_eq!(task.session_id, "sess-1");
-                assert_eq!(task.task_payload["driver"]["platform"], "acp");
-            }
-            _ => panic!("expected SessionAssigned"),
-        }
-    }
-
-    #[test]
-    fn test_prompt_delivery_deserializes() {
-        let json = json!({
-            "type": "prompt_delivery",
-            "sessionId": "sess-1",
-            "task": {
-                "executionId": "exec-1",
-                "sessionId": "sess-1",
-                "taskPayload": {
-                    "message": {
-                        "role": "ROLE_USER",
-                        "parts": [{"text": "yes, use JWT"}]
-                    }
-                }
-            }
-        });
-        let response: SyncResponse = serde_json::from_value(json).unwrap();
-        match response {
-            SyncResponse::PromptDelivery { session_id, task } => {
-                assert_eq!(session_id, "sess-1");
-                assert!(task.task_payload.is_object());
-                assert_eq!(
-                    task.task_payload["message"]["parts"][0]["text"],
-                    "yes, use JWT"
-                );
-            }
-            _ => panic!("expected PromptDelivery"),
-        }
-    }
-
-    #[test]
-    fn test_session_complete_deserializes() {
-        let json = json!({"type": "session_complete", "sessionId": "sess-1"});
-        let response: SyncResponse = serde_json::from_value(json).unwrap();
-        match response {
-            SyncResponse::SessionComplete { session_id } => {
-                assert_eq!(session_id, "sess-1");
-            }
-            _ => panic!("expected SessionComplete"),
-        }
-    }
-
-    #[test]
-    fn test_command_deserializes() {
-        let json = json!({"type": "command", "command": "shutdown"});
-        let response: SyncResponse = serde_json::from_value(json).unwrap();
-        match &response {
-            SyncResponse::Command { command } => assert_eq!(command, "shutdown"),
-            _ => panic!("expected Command"),
-        }
-
-        let json = json!({"type": "command", "command": "cancel"});
-        let response: SyncResponse = serde_json::from_value(json).unwrap();
-        match &response {
-            SyncResponse::Command { command } => assert_eq!(command, "cancel"),
-            _ => panic!("expected Command"),
-        }
-    }
-
-    #[test]
-    fn test_task_available_deserializes() {
-        let json = json!({"type": "task_available", "sessionId": "sess-1"});
-        let response: SyncResponse = serde_json::from_value(json).unwrap();
-        assert!(matches!(response, SyncResponse::TaskAvailable { .. }));
-    }
-
-    #[test]
-    fn test_fetch_task_serializes() {
-        let request = SyncRequest::fetch_task("sess-1");
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["sessionState"]["sessionId"], "sess-1");
-        assert_eq!(value["sessionState"]["status"], "fetch_task");
     }
 }

@@ -35,6 +35,7 @@
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
   let messageText = $state('');
+
   let sending = $state(false);
   let stopping = $state(false);
   let sendError: string | null = $state(null);
@@ -93,7 +94,7 @@
   // The viewed session determines whether the input is enabled
   let viewedSession = $derived(sessions.find(s => s.id === sessionId) ?? null);
   let inputEnabled = $derived(
-    viewedSession?.status === 'input-required' || viewedSession?.status === 'working'
+    !!viewedSession && !viewedSession.outcome && viewedSession.desired !== 'terminate'
   );
   let canSend = $derived(inputEnabled && (messageText.trim().length > 0 || attachments.length > 0) && !sending);
   let showUsagePopover = $state(false);
@@ -312,20 +313,81 @@
     for (const ev of evs) {
       const time = formatTime(ev.created_at);
 
+      // Platform events with structured parts (turn_complete, delegate, etc.)
+      if (ev.event_type === 'platform' && ev.payload && 'parts' in ev.payload && !('role' in ev.payload)) {
+        const parts = (ev.payload as { parts: Array<Record<string, unknown>> }).parts ?? [];
+        for (const part of parts) {
+          if ('data' in part) {
+            const d = part.data as Record<string, unknown>;
+            if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
+              const tc = d as unknown as import('../types').TurnCompleteData;
+              // Self-referencing turn_complete (root reporting its own turn) — render as marker
+              if (tc.child_session_id && tc.child_session_id === sessionId) {
+                entries.push({ type: 'state', text: 'Turn complete', time, key: `${ev.id}-tc-${seq++}` });
+                continue;
+              }
+              const childSession = sessions.find(s => s.id === tc.child_session_id);
+              const childAgentLabel = childSession ? agentName(childSession.agent_id) : 'Child';
+              const text = `${childAgentLabel} turn complete`;
+              entries.push({ type: 'child_response', agentLabel: childAgentLabel, childSessionId: tc.child_session_id ?? null, text, time, key: `${ev.id}-${seq++}` });
+            } else if (isDelegateData(d as unknown as import('../types').DataPartPayload)) {
+              const del = d as unknown as import('../types').DelegateData;
+              entries.push({ type: 'tool', icon: '\u2192', text: `Delegated to ${del.agent}`, time, key: `${ev.id}-${seq++}` });
+            }
+          }
+        }
+        continue;
+      }
+
+      // Bare-object platform events (crash/message-loss warnings)
+      if (ev.event_type === 'platform' && ev.payload && !('parts' in ev.payload) && !('role' in ev.payload)) {
+        const p = ev.payload as Record<string, unknown>;
+        // Skip known internal/operational events that aren't user-facing
+        if (p.type === 'message_delivered' || p.type === 'child_continued') continue;
+        // Show warnings with a message field; skip everything else
+        const msg = p.message as string | undefined;
+        if (!msg) continue;
+        entries.push({ type: 'tool', icon: '\u26A0', text: msg, time, key: `${ev.id}-platform-${seq++}` });
+        continue;
+      }
+
       if (isStateChangePayload(ev.payload)) {
         const p = ev.payload;
-        if (p.to === 'failed') {
+        const isFailed = p.outcome === 'failed' || p.to === 'failed';
+        const isCrashed = p.executor_state === 'crashed' && !isFailed;
+        if (isFailed) {
           entries.push({
             type: 'error',
-            message: p.error ?? (p.from ? `Execution failed (was ${p.from})` : 'Execution failed'),
+            message: p.error ?? 'Execution failed',
             stderr: p.stderr,
             time,
             key: `${ev.id}-err-${seq++}`,
           });
+        } else if (isCrashed) {
+          entries.push({
+            type: 'tool',
+            icon: '\u26A0',
+            text: p.error ? `Executor crashed: ${p.error}` : 'Executor crashed',
+            time,
+            key: `${ev.id}-crash-${seq++}`,
+          });
+        }
+        // Build state transition text
+        let stateText: string;
+        if (p.executor_state) {
+          stateText = `executor: ${p.executor_state}`;
+        } else if (p.desired && p.outcome) {
+          stateText = `${p.desired} \u2192 ${p.outcome}`;
+        } else if (p.desired) {
+          stateText = `desired: ${p.desired}`;
+        } else if (p.from !== undefined) {
+          stateText = p.from ? `${p.from} \u2192 ${p.to}` : `started \u2192 ${p.to}`;
+        } else {
+          stateText = JSON.stringify(p);
         }
         entries.push({
           type: 'state',
-          text: p.from ? `${p.from} \u2192 ${p.to}` : `started \u2192 ${p.to}`,
+          text: stateText,
           time,
           key: `${ev.id}-${seq++}`,
         });
@@ -391,9 +453,14 @@
             }
             if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
               const tc = d as unknown as import('../types').TurnCompleteData;
+              if (tc.child_session_id && tc.child_session_id === sessionId) {
+                entries.push({ type: 'state', text: 'Turn complete', time, key: `${ev.id}-tc-${seq++}` });
+                continue;
+              }
               const childSession = sessions.find(s => s.id === tc.child_session_id);
               const childAgentLabel = childSession ? agentName(childSession.agent_id) : 'Child';
-              entries.push({ type: 'child_response', agentLabel: childAgentLabel, childSessionId: tc.child_session_id ?? null, text: tc.message, time, key: `${ev.id}-${seq++}` });
+              const text = `${childAgentLabel} turn complete`;
+              entries.push({ type: 'child_response', agentLabel: childAgentLabel, childSessionId: tc.child_session_id ?? null, text, time, key: `${ev.id}-${seq++}` });
               continue;
             }
 
@@ -525,20 +592,58 @@
     return entries;
   }
 
+  // State entries between tool calls (executor: running/idle) are visual noise — skip them.
+  function isBenignState(entry: ChatEntry): boolean {
+    if (entry.type !== 'state') return false;
+    const text = (entry as { text?: string }).text ?? '';
+    return text.includes('executor: running') || text.includes('executor: idle');
+  }
+
+  /** Flush accumulated tool_group indices as a stream (3+) or individual entries. */
+  function flushToolRun(entries: ChatEntry[], runIndices: number[], result: ChatEntry[]) {
+    if (runIndices.length >= 3) {
+      const groups: ToolGroupEntry[] = runIndices.map(
+        idx => (entries[idx] as { type: 'tool_group'; group: ToolGroupEntry; key: string }).group
+      );
+      const hasPending = groups.some(g =>
+        g.call.status !== 'completed' && g.call.status !== 'failed' && g.result == null
+      );
+      result.push({
+        type: 'tool_stream',
+        groups,
+        live: false,
+        key: `stream-${(entries[runIndices[0]] as { key: string }).key}`,
+      });
+    } else {
+      for (const idx of runIndices) result.push(entries[idx]);
+    }
+  }
+
   function groupToolStreams(entries: ChatEntry[]): ChatEntry[] {
     const result: ChatEntry[] = [];
     let i = 0;
     while (i < entries.length) {
       if (entries[i].type === 'tool_group') {
-        const runStart = i;
-        while (i < entries.length && entries[i].type === 'tool_group') i++;
-        const runLen = i - runStart;
-        if (runLen >= 3) {
-          const groups: ToolGroupEntry[] = [];
-          for (let j = runStart; j < i; j++) {
-            groups.push((entries[j] as { type: 'tool_group'; group: ToolGroupEntry; key: string }).group);
+        // Collect tool_group entries, skipping running/idle state entries.
+        // Stop at other state entries to preserve chronological ordering.
+        const runIndices: number[] = [];
+        let j = i;
+        while (j < entries.length) {
+          if (entries[j].type === 'tool_group') {
+            runIndices.push(j);
+            j++;
+          } else if (entries[j].type === 'state' && isBenignState(entries[j])) {
+            j++; // skip benign
+          } else {
+            break; // non-benign state or other entry — stop the run
           }
-          const isTrailing = i === entries.length;
+        }
+        // Check if trailing (for live indicator)
+        if (runIndices.length >= 3) {
+          const groups: ToolGroupEntry[] = runIndices.map(
+            idx => (entries[idx] as { type: 'tool_group'; group: ToolGroupEntry; key: string }).group
+          );
+          const isTrailing = j === entries.length;
           const hasPending = groups.some(g =>
             g.call.status !== 'completed' && g.call.status !== 'failed' && g.result == null
           );
@@ -546,11 +651,12 @@
             type: 'tool_stream',
             groups,
             live: isTrailing && hasPending,
-            key: `stream-${(entries[runStart] as { key: string }).key}`,
+            key: `stream-${(entries[runIndices[0]] as { key: string }).key}`,
           });
         } else {
-          for (let j = runStart; j < i; j++) result.push(entries[j]);
+          for (const idx of runIndices) result.push(entries[idx]);
         }
+        i = j;
       } else {
         result.push(entries[i]);
         i++;
@@ -846,7 +952,7 @@
     <textarea
       class="chat-input"
       aria-label="Message to agent"
-      placeholder={viewedSession?.status === 'input-required' ? 'Type a message...' : viewedSession?.status === 'working' ? 'Message will be delivered after current step...' : 'Agent is working...'}
+      placeholder={viewedSession?.status === 'idle' ? 'Type a message...' : viewedSession?.status === 'working' ? 'Message will be delivered after current step...' : 'Agent is working...'}
       disabled={!inputEnabled || sending}
       bind:value={messageText}
       bind:this={textareaEl}

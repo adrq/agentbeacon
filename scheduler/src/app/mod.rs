@@ -4,7 +4,7 @@ use axum::{
     response::Redirect,
     routing::get,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
@@ -64,6 +64,10 @@ pub struct AppState {
     pub wiki_search: WikiSearchIndex,
     pub vite_dev_port: u16,
     pub stop_turn_intents: Arc<RwLock<HashSet<String>>>,
+    pub worker_heartbeats: Arc<RwLock<HashMap<String, std::time::Instant>>>,
+    pub heartbeat_timeout_secs: u64,
+    pub scheduler_started_at: std::time::Instant,
+    pub long_poll_timeout_secs: u64,
 }
 
 impl AppState {
@@ -80,6 +84,10 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(port + 1000);
+        let heartbeat_timeout_secs = std::env::var("AGENTBEACON_HEARTBEAT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
         Self {
             db_pool,
             task_queue,
@@ -89,6 +97,13 @@ impl AppState {
             wiki_search,
             vite_dev_port,
             stop_turn_intents: Arc::new(RwLock::new(HashSet::new())),
+            worker_heartbeats: Arc::new(RwLock::new(HashMap::new())),
+            heartbeat_timeout_secs,
+            scheduler_started_at: std::time::Instant::now(),
+            long_poll_timeout_secs: std::env::var("AGENTBEACON_LONG_POLL_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
         }
     }
 

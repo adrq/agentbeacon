@@ -146,6 +146,10 @@
     </div>
   </div>
 
+  {#if selectedProjectId}
+    {@render createForm()}
+  {/if}
+
   <div class="results-area">
     {#if !selectedProjectId}
       <div class="empty-state">Select a project to browse wiki pages.</div>
@@ -161,7 +165,6 @@
           No wiki pages yet.
         {/if}
       </div>
-      {@render createForm()}
     {:else}
       <ul class="results-list">
         {#each pages as page}
@@ -179,7 +182,6 @@
           </li>
         {/each}
       </ul>
-      {@render createForm()}
     {/if}
   </div>
 </div>

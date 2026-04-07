@@ -330,6 +330,53 @@ test('wiki create new page', async ({ page }) => {
   await expect(page.getByText('Fresh content.')).toBeVisible();
 });
 
+test('wiki create button visible without scrolling when many pages exist', async ({ page }) => {
+  const project = await createTestProject('Wiki Many Pages Test');
+  const pageCreates = [];
+  for (let i = 1; i <= 22; i++) {
+    pageCreates.push(createTestPage(project.id, `page-${i.toString().padStart(2, '0')}`, `Page ${i}`, `# Page ${i}`));
+  }
+  await Promise.all(pageCreates);
+
+  await gotoWiki(page);
+  await selectProject(page, project.id);
+  await expect(page.getByRole('button', { name: /Page 1/ }).first()).toBeVisible({ timeout: 5000 });
+
+  const createBtn = page.getByRole('button', { name: 'Create new page' });
+  await expect(createBtn).toBeVisible();
+  await expect(createBtn).toBeInViewport();
+});
+
+test('wiki title input stable during new page creation', async ({ page }) => {
+  const project = await createTestProject('Wiki Stable Input Test');
+
+  await gotoWiki(page);
+  await selectProject(page, project.id);
+  await expect(page.getByText(/No wiki pages/)).toBeVisible({ timeout: 5000 });
+
+  await page.getByRole('button', { name: 'Create new page' }).click();
+  await page.getByRole('textbox', { name: 'New page slug' }).fill('stable-input-test');
+  await page.getByRole('button', { name: 'Create' }).click();
+
+  await expect(page.getByRole('heading', { name: /New Page/ })).toBeVisible({ timeout: 5000 });
+
+  const titleInput = page.getByRole('textbox', { name: 'Title' });
+  await expect(titleInput).toBeVisible();
+  // Select all text with triple-click so the first typed char replaces the pre-filled slug.
+  // (fill('') doesn't reliably clear a Svelte bind:value input in all browsers.)
+  await titleInput.click({ clickCount: 3 });
+
+  const testTitle = 'My Stable Title';
+  for (const char of testTitle) {
+    await page.keyboard.type(char);
+    await expect(page.getByText('Loading page...')).not.toBeVisible();
+  }
+
+  await expect(titleInput).toHaveValue(testTitle);
+  await expect(page.locator('textarea')).toBeVisible();
+  await expect(page.getByText('Loading page...')).not.toBeVisible();
+});
+
 test('wiki cross-section link from project detail', async ({ page }) => {
   const project = await createTestProject('Wiki Cross Link Test');
   await createTestPage(project.id, 'linked-page', 'Linked Page', '# Linked');

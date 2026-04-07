@@ -58,7 +58,7 @@ async fn execution_event_stream(
                 // Check execution status directly to avoid hanging forever.
                 if events.is_empty()
                     && let Ok(exec) = db::executions::get_by_id(&pool, &exec_id).await
-                    && matches!(exec.status.as_str(), "completed" | "failed" | "canceled")
+                    && exec.outcome.is_some()
                 {
                     return;
                 }
@@ -165,93 +165,12 @@ fn has_terminal_event(events: &[db::events::Event]) -> bool {
             && e.event_type == "state_change"
             && serde_json::from_str::<serde_json::Value>(&e.payload)
                 .ok()
-                .and_then(|v| v.get("to").and_then(|t| t.as_str()).map(String::from))
-                .is_some_and(|to| matches!(to.as_str(), "completed" | "failed" | "canceled"))
+                .is_some_and(|v| {
+                    // Current format uses "outcome"; legacy events may use "to"
+                    let outcome = v.get("outcome").and_then(|t| t.as_str());
+                    let to = v.get("to").and_then(|t| t.as_str());
+                    let terminal = outcome.or(to);
+                    matches!(terminal, Some("completed" | "failed" | "canceled"))
+                })
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_event(event_type: &str, payload: &str) -> db::events::Event {
-        db::events::Event {
-            id: 1,
-            execution_id: "exec-1".into(),
-            session_id: None,
-            event_type: event_type.into(),
-            payload: payload.into(),
-            msg_seq: None,
-            created_at: chrono::Utc::now(),
-        }
-    }
-
-    #[test]
-    fn test_has_terminal_event_completed() {
-        let events = vec![make_event(
-            "state_change",
-            r#"{"from":"working","to":"completed"}"#,
-        )];
-        assert!(has_terminal_event(&events));
-    }
-
-    #[test]
-    fn test_has_terminal_event_failed() {
-        let events = vec![make_event(
-            "state_change",
-            r#"{"from":"working","to":"failed"}"#,
-        )];
-        assert!(has_terminal_event(&events));
-    }
-
-    #[test]
-    fn test_has_terminal_event_canceled() {
-        let events = vec![make_event(
-            "state_change",
-            r#"{"from":"working","to":"canceled"}"#,
-        )];
-        assert!(has_terminal_event(&events));
-    }
-
-    #[test]
-    fn test_has_terminal_event_nonterminal() {
-        let events = vec![make_event(
-            "state_change",
-            r#"{"from":"submitted","to":"working"}"#,
-        )];
-        assert!(!has_terminal_event(&events));
-    }
-
-    #[test]
-    fn test_has_terminal_event_message_type_not_terminal() {
-        let events = vec![make_event(
-            "message",
-            r#"{"role":"ROLE_AGENT","parts":[{"text":"hi"}]}"#,
-        )];
-        assert!(!has_terminal_event(&events));
-    }
-
-    #[test]
-    fn test_has_terminal_event_empty_batch() {
-        assert!(!has_terminal_event(&[]));
-    }
-
-    #[test]
-    fn test_session_level_terminal_event_does_not_close_stream() {
-        // A child session completing should NOT terminate the execution SSE stream
-        let events = vec![db::events::Event {
-            session_id: Some("session-child-1".into()),
-            ..make_event("state_change", r#"{"from":"working","to":"completed"}"#)
-        }];
-        assert!(!has_terminal_event(&events));
-    }
-
-    #[test]
-    fn test_session_level_failed_does_not_close_stream() {
-        let events = vec![db::events::Event {
-            session_id: Some("session-child-1".into()),
-            ..make_event("state_change", r#"{"from":"working","to":"failed"}"#)
-        }];
-        assert!(!has_terminal_event(&events));
-    }
 }

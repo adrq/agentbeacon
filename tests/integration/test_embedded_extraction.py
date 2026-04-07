@@ -58,9 +58,8 @@ def test_worker_extracts_embedded_executors():
         assert (data_dir / "package-lock.json").exists()
         assert (data_dir / ".version").exists()
 
-        # Verify no mock files or source maps extracted
+        # Verify no source maps or type declarations extracted
         for p in executors_dir.rglob("*"):
-            assert not p.name.startswith("mock-"), f"mock file extracted: {p}"
             assert not p.name.endswith(".js.map"), f"source map extracted: {p}"
             assert not p.name.endswith(".d.ts"), f"type declaration extracted: {p}"
 

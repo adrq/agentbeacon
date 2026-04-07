@@ -4,7 +4,7 @@
   import type { Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
   import { isMessagePayload, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
   import { api } from '../api';
-  import { executionDetailQuery, sessionEventsQuery, cancelExecutionMutation, completeExecutionMutation, executionAgentsQuery, recoverSessionMutation, executionSessionsQuery, buildSessionIdentityMap } from '../queries/executions';
+  import { executionDetailQuery, sessionEventsQuery, terminateExecutionMutation, executionAgentsQuery, recoverSessionMutation, executionSessionsQuery, buildSessionIdentityMap } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { connectExecutionSSE, type SSEConnection } from '../sse';
@@ -26,8 +26,7 @@
 
   let { executionId }: Props = $props();
 
-  const terminalStatuses = new Set(['completed', 'failed', 'canceled']);
-  const cancellableStatuses = new Set(['working', 'input-required']);
+  const terminalOutcomes = new Set(['completed', 'failed', 'canceled']);
 
   const queryClient = useQueryClient();
   const agentsQ = agentsQuery();
@@ -37,8 +36,7 @@
   const poolQuery = executionAgentsQuery(() => executionId);
   const sessionsQuery = executionSessionsQuery(() => executionId);
   let sessionIdentity = $derived(buildSessionIdentityMap(sessionsQuery.data ?? []));
-  const cancelMut = cancelExecutionMutation();
-  const completeMut = completeExecutionMutation();
+  const terminateMut = terminateExecutionMutation();
   const recoverMut = recoverSessionMutation();
 
   let detail = $derived(detailQuery.data ?? null);
@@ -130,13 +128,17 @@
 
   let leadSession = $derived(detail?.sessions.find(s => !s.parent_session_id) ?? null);
   let displayTitle = $derived(detail?.execution.title ?? executionId.slice(0, 8));
-  let isTerminal = $derived(terminalStatuses.has(detail?.execution.status ?? ''));
-  let isCancellable = $derived(cancellableStatuses.has(detail?.execution.status ?? ''));
-  let isCompletable = $derived(
-    detail?.execution.status === 'working' || detail?.execution.status === 'input-required'
+  let isTerminal = $derived(
+    (detail?.execution.outcome != null) || (detail?.execution.desired === 'terminate')
   );
+  // Settled once all sessions have an outcome.
+  let isSettled = $derived(
+    isTerminal && (detail?.sessions.every(s => s.outcome != null) ?? false)
+  );
+  let isTerminable = $derived(!isTerminal);
+  let isCompletionEligible = $derived(detail?.execution.completion_eligible ?? false);
   let isRecoverable = $derived(
-    detail?.execution.status === 'failed' && leadSession?.status === 'failed' && leadSession?.agent_session_id != null
+    detail?.execution.outcome === 'failed' && leadSession?.outcome === 'failed' && leadSession?.agent_session_id != null
   );
 
   // Auto-select lead session when first opening an execution
@@ -155,12 +157,12 @@
     };
   }
 
-  // SSE connection lifecycle
+  // SSE connection lifecycle — stay live until tree is fully settled
   $effect(() => {
     const execId = executionId;
-    const terminal = isTerminal;
+    const settled = isSettled;
     const stillLoading = detailQuery.isLoading;
-    if (terminal || stillLoading) {
+    if (settled || stillLoading) {
       sseActive = false;
       return;
     }
@@ -272,15 +274,18 @@
           queryClient.invalidateQueries({ queryKey: ['execution-sessions', execId] });
           queryClient.invalidateQueries({ queryKey: ['session-diff'] });
           if (event.session_id) {
-            const p = event.payload as { to?: string };
-            if (p.to === 'working') {
+            const p = event.payload as { executor_state?: string; outcome?: string; to?: string };
+            // New format: executor_state; Legacy format: to
+            const isRunning = p.executor_state === 'running' || p.to === 'working';
+            const isTerminalEvent = p.outcome != null;
+            if (isRunning) {
               lastPersistedSeq.delete(event.session_id);
               persistedTextLen.delete(event.session_id);
               settledThinkingDurations.delete(event.session_id);
               settledThinkingDurations = new Map(settledThinkingDurations);
               ephemeralThinkingBuffers.delete(event.session_id);
               ephemeralThinkingBuffers = new Map(ephemeralThinkingBuffers);
-            } else {
+            } else if (p.executor_state === 'idle' || p.executor_state === 'crashed' || isTerminalEvent) {
               if (ephemeralBuffers.has(event.session_id)) {
                 ephemeralBuffers.delete(event.session_id);
                 persistedTextLen.delete(event.session_id);
@@ -384,7 +389,7 @@
   let activeSessionId = $derived($selectedSessionId ?? leadSession?.id ?? null);
   const eventsQuery = sessionEventsQuery(
     () => activeSessionId,
-    () => isTerminal,
+    () => isSettled,
     () => sseActive,
   );
   let events = $derived(eventsQuery.data ?? []);
@@ -424,13 +429,12 @@
     if (changed) usageBySession.set(next);
   });
 
-  // Events for the input-required session (may differ from viewed session)
   let inputSessionId = $derived(
-    detail?.sessions.find(s => s.status === 'input-required')?.id ?? activeSessionId
+    detail?.sessions.find(s => !s.parent_session_id)?.id ?? activeSessionId
   );
   const inputEventsQuery = sessionEventsQuery(
     () => inputSessionId !== activeSessionId ? inputSessionId : null,
-    () => isTerminal,
+    () => isSettled,
     () => sseActive,
   );
   let inputEvents = $derived(
@@ -442,31 +446,17 @@
     return agent?.name ?? agentId.slice(0, 8);
   }
 
-  // Cancel execution
-  let showCancelDialog = $state(false);
-  let cancelError: string | null = $state(null);
+  // Terminate execution (covers both cancel and complete)
+  let showTerminateDialog = $state(false);
+  let terminateError: string | null = $state(null);
 
-  async function handleCancel() {
-    cancelError = null;
+  async function handleTerminate() {
+    terminateError = null;
     try {
-      await cancelMut.mutateAsync(executionId);
-      showCancelDialog = false;
+      await terminateMut.mutateAsync(executionId);
+      showTerminateDialog = false;
     } catch (e) {
-      cancelError = e instanceof Error ? e.message : 'Failed to cancel';
-    }
-  }
-
-  // Complete execution
-  let showCompleteDialog = $state(false);
-  let completeError: string | null = $state(null);
-
-  async function handleComplete() {
-    completeError = null;
-    try {
-      await completeMut.mutateAsync(executionId);
-      showCompleteDialog = false;
-    } catch (e) {
-      completeError = e instanceof Error ? e.message : 'Failed to complete';
+      terminateError = e instanceof Error ? e.message : 'Failed to terminate';
     }
   }
 
@@ -528,15 +518,10 @@
   <div class="detail-view scroll-thin">
     <div class="detail-header">
       <h2 class="detail-title">{displayTitle}</h2>
-      <StatusBadge status={detail.execution.status} hasQuestions={$executionsWithQuestions.has(detail.execution.id) ? true : $noQuestionExecutions.has(detail.execution.id) ? false : detail.execution.status === 'input-required' ? undefined : false} />
-      {#if isCancellable}
-        <Button variant="destructive" size="sm" disabled={cancelMut.isPending} onclick={() => { cancelError = null; showCancelDialog = true; }}>
-          {cancelMut.isPending ? 'Canceling...' : 'Cancel'}
-        </Button>
-      {/if}
-      {#if isCompletable}
-        <Button variant="outline" size="sm" disabled={completeMut.isPending} onclick={() => { completeError = null; showCompleteDialog = true; }}>
-          {completeMut.isPending ? 'Completing...' : 'Complete'}
+      <StatusBadge status={detail.execution.status} hasQuestions={$executionsWithQuestions.has(detail.execution.id) ? true : $noQuestionExecutions.has(detail.execution.id) ? false : detail.execution.status === 'awaiting_input' ? undefined : false} />
+      {#if isTerminable}
+        <Button variant={isCompletionEligible ? 'outline' : 'destructive'} size="sm" disabled={terminateMut.isPending} onclick={() => { terminateError = null; showTerminateDialog = true; }}>
+          {terminateMut.isPending ? 'Terminating...' : isCompletionEligible ? 'Complete' : 'Cancel'}
         </Button>
       {/if}
       {#if isRecoverable}
@@ -611,42 +596,23 @@
     {/if}
   </div>
 
-  <AlertDialog.Root bind:open={showCancelDialog}>
+  <AlertDialog.Root bind:open={showTerminateDialog}>
     <AlertDialog.Portal>
       <AlertDialog.Overlay class="modal-overlay" />
       <AlertDialog.Content class="modal-content">
-        <AlertDialog.Title class="modal-title">Cancel Execution</AlertDialog.Title>
+        <AlertDialog.Title class="modal-title">{isCompletionEligible ? 'Complete' : 'Cancel'} Execution</AlertDialog.Title>
         <AlertDialog.Description class="modal-description">
-          Cancel this execution? The agent will be stopped.
+          {isCompletionEligible
+            ? 'Mark this execution as complete? All active sessions will be stopped. This cannot be undone.'
+            : 'Cancel this execution? The agent will be stopped.'}
         </AlertDialog.Description>
-        {#if cancelError}
-          <div class="modal-error">{cancelError}</div>
+        {#if terminateError}
+          <div class="modal-error">{terminateError}</div>
         {/if}
         <div class="modal-actions">
           <AlertDialog.Cancel class="alert-btn alert-btn-ghost">Keep Running</AlertDialog.Cancel>
-          <button class="alert-btn alert-btn-danger" disabled={cancelMut.isPending} onclick={handleCancel}>
-            {cancelMut.isPending ? 'Canceling...' : 'Cancel Execution'}
-          </button>
-        </div>
-      </AlertDialog.Content>
-    </AlertDialog.Portal>
-  </AlertDialog.Root>
-
-  <AlertDialog.Root bind:open={showCompleteDialog}>
-    <AlertDialog.Portal>
-      <AlertDialog.Overlay class="modal-overlay" />
-      <AlertDialog.Content class="modal-content">
-        <AlertDialog.Title class="modal-title">Complete Execution</AlertDialog.Title>
-        <AlertDialog.Description class="modal-description">
-          Mark this execution as complete? All active sessions will be stopped. This cannot be undone.
-        </AlertDialog.Description>
-        {#if completeError}
-          <div class="modal-error">{completeError}</div>
-        {/if}
-        <div class="modal-actions">
-          <AlertDialog.Cancel class="alert-btn alert-btn-ghost">Keep Running</AlertDialog.Cancel>
-          <button class="alert-btn alert-btn-primary" disabled={completeMut.isPending} onclick={handleComplete}>
-            {completeMut.isPending ? 'Completing...' : 'Complete Execution'}
+          <button class="alert-btn {isCompletionEligible ? 'alert-btn-primary' : 'alert-btn-danger'}" disabled={terminateMut.isPending} onclick={handleTerminate}>
+            {terminateMut.isPending ? 'Terminating...' : isCompletionEligible ? 'Complete Execution' : 'Cancel Execution'}
           </button>
         </div>
       </AlertDialog.Content>

@@ -340,8 +340,8 @@ async fn persist_and_enqueue(
     )
     .await?;
 
-    // Record initial state_change event
-    let state_event = json!({"from": null, "to": "submitted"});
+    // Record execution creation state_change event (normalized format)
+    let state_event = json!({"desired": "run"});
     db::events::insert(
         db_pool,
         execution_id,
@@ -365,10 +365,15 @@ async fn persist_and_enqueue(
     };
 
     // Build A2A task payload for worker dispatch
-    let agent_config: JsonValue = serde_json::from_str::<JsonValue>(&agent.config)
-        .ok()
-        .filter(|v| v.is_object())
-        .unwrap_or_else(|| json!({}));
+    let briefing_ctx = crate::services::briefing::BriefingContext {
+        role: crate::services::briefing::BriefingRole::RootLead,
+        slug: slug.clone(),
+        hierarchical_name: slug.clone(),
+        agent_config_name: agent.name.clone(),
+        parent_info: "user".to_string(),
+    };
+    let agent_config =
+        crate::services::agent_config::compose_agent_config(db_pool, agent, &briefing_ctx).await;
     let sandbox_config: JsonValue = agent
         .sandbox_config
         .as_ref()
@@ -378,16 +383,21 @@ async fn persist_and_enqueue(
     // Wrap parts in A2A message format for task_payload
     let a2a_message = common::a2a::message_payload(common::a2a::role::USER, parts.to_vec());
 
+    let is_sdk = agent.agent_type == "claude_sdk" || agent.agent_type == "copilot_sdk";
     let mut task_payload = json!({
         "agent_id": agent.id,
         "driver": {
             "platform": agent.agent_type,
             "config": sandbox_config,
         },
-        "agent_config": agent_config,
         "message": a2a_message,
         "cwd": session_cwd,
     });
+    // SDK sessions get agent_config exclusively from Assign.agent_config —
+    // do not duplicate it in the queued payload. ACP agents may still read it.
+    if !is_sdk {
+        task_payload["agent_config"] = agent_config;
+    }
     if let Some(pid) = project_id {
         task_payload["project_id"] = JsonValue::String(pid.to_string());
     }
@@ -404,21 +414,6 @@ async fn persist_and_enqueue(
     // Populate execution_agents junction before enqueue so the relationship
     // is committed before the worker can pick up the task.
     db::execution_agents::insert_batch(db_pool, execution_id, agent_ids).await?;
-
-    // Build environment briefing for the root lead session.
-    let briefing_ctx = crate::services::briefing::BriefingContext {
-        role: crate::services::briefing::BriefingRole::RootLead,
-        slug: slug.clone(),
-        hierarchical_name: slug.clone(),
-        agent_config_name: agent.name.clone(),
-        parent_info: "user".to_string(),
-    };
-    let briefing =
-        crate::services::briefing::build_environment_briefing(db_pool, &briefing_ctx).await;
-
-    let existing_prompt = agent.system_prompt.as_deref().unwrap_or("");
-    let combined = crate::services::briefing::prepend_briefing(&briefing, existing_prompt);
-    task_payload["agent_config"]["system_prompt"] = JsonValue::String(combined);
 
     // Fetch the created execution before enqueue — if this read fails,
     // cleanup is safe because nothing has been queued yet.

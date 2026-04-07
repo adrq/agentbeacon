@@ -64,24 +64,19 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parse CLI arguments
     let cli = Cli::parse();
 
-    // Setup mode: delegate to worker binary, then exit
     if cli.setup {
         return run_scheduler_setup(&cli);
     }
 
-    // Initialize telemetry (JSON-formatted logs)
     telemetry::init_telemetry();
 
-    // Register SQLx Any drivers (required for SQLx 0.8+ with Pool<Any>)
     sqlx::any::install_default_drivers();
 
     info!("AgentBeacon starting...");
     info!("Configuration: port={}, workers={}", cli.port, cli.workers);
 
-    // Run bootstrap and startup flow
     bootstrap(cli).await
 }
 
@@ -109,35 +104,29 @@ fn run_scheduler_setup(cli: &Cli) -> Result<()> {
 }
 
 async fn bootstrap(cli: Cli) -> Result<()> {
-    // Check for development mode
     let dev_mode = std::env::var("DEV_MODE").map(|v| v == "1").unwrap_or(false);
 
-    // Resolve db_url: explicit value or port-derived default
     let db_url = cli
         .db_url
         .unwrap_or_else(|| format!("sqlite://scheduler-{}.db", cli.port));
 
-    // Connect to database
     info!("Connecting to database: {}", db_url);
     let db_pool = db::pool::create(&db_url)
         .await
         .context("Failed to create database pool")?;
 
-    // Verify database connection with health check query
     sqlx::query("SELECT 1")
         .fetch_one(db_pool.as_ref())
         .await
         .context("Database connection health check failed - verify database is accessible")?;
     info!("Database connection established and verified");
 
-    // Run migrations
     info!("Running database migrations...");
     db::migrations::run(&db_pool, &db_url)
         .await
         .context("Failed to run database migrations")?;
     info!("Database migrations completed successfully");
 
-    // Create task queue (database-only, no rebuild needed)
     info!("Initializing task queue...");
     let task_queue = Arc::new(TaskQueue::new(db_pool.clone()));
     let queue_len = task_queue
@@ -146,10 +135,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .context("Failed to get task queue length")?;
     info!("Task queue initialized with {queue_len} pending tasks");
 
-    // Build base URL for agent card
     let base_url = format!("http://localhost:{}", cli.port);
 
-    // Parse public URL from environment (for load balancer/reverse proxy scenarios)
     let public_url = std::env::var("PUBLIC_URL").ok().and_then(|url| {
         let trimmed = url.trim();
         if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -167,7 +154,6 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         info!(public_url = %url, "Using PUBLIC_URL for agent card");
     }
 
-    // Build wiki search index and rebuild from DB
     let wiki_index_dir = cli
         .wiki_index_dir
         .unwrap_or_else(|| format!("wiki-index-{}", cli.port));
@@ -195,30 +181,20 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         "Wiki search index rebuild complete"
     );
 
-    // Create event broadcast channel (needed by recovery + AppState)
     let (event_broadcast, _) = broadcast::channel::<EventNotification>(256);
 
-    // Record startup time for recovery orphan detection
-    let startup_time = chrono::Utc::now();
-
-    // Read recovery config
-    let max_recovery_attempts = std::env::var("AGENTBEACON_MAX_RECOVERY_ATTEMPTS")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(2);
     let recovery_grace_secs = std::env::var("AGENTBEACON_RECOVERY_GRACE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(30)
-        .max(3); // Floor: grace period must exceed SQLite's second-precision window
+        .max(3);
 
     let liveness_interval_secs = std::env::var("AGENTBEACON_LIVENESS_INTERVAL_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(90)
-        .max(60); // Floor: must exceed long-poll timeout (30s) with margin for jitter
+        .max(60);
 
-    // Build application state and router
     let app_state = AppState::new(
         db_pool,
         task_queue,
@@ -231,7 +207,6 @@ async fn bootstrap(cli: Cli) -> Result<()> {
     let vite_dev_port = app_state.vite_dev_port;
     let app = create_router(app_state.clone(), dev_mode, cli.port);
 
-    // Bind to port
     let addr = SocketAddr::from(([0, 0, 0, 0], cli.port));
     info!("Binding to {}", addr);
 
@@ -251,69 +226,119 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         );
     }
 
-    // Spawn periodic liveness scan (replaces one-shot startup recovery)
     info!(
         liveness_interval_secs,
-        recovery_grace_secs, max_recovery_attempts, "Liveness detection configured"
+        recovery_grace_secs, "Liveness check configured"
     );
-    let recovery_pool = app_state.db_pool.clone();
-    let recovery_queue = app_state.task_queue.clone();
-    let recovery_broadcast = event_broadcast.clone();
+    let reconciler_pool = app_state.db_pool.clone();
+    let tick_task_queue = app_state.task_queue.clone();
+    let tick_heartbeats = app_state.worker_heartbeats.clone();
+    let tick_hb_timeout = std::time::Duration::from_secs(app_state.heartbeat_timeout_secs);
+    let tick_event_broadcast = event_broadcast.clone();
     tokio::spawn(async move {
-        // Initial grace period — let workers reconnect after restart
         tokio::time::sleep(Duration::from_secs(recovery_grace_secs)).await;
 
-        // First scan uses startup_time as cutoff (preserving grace-period semantics)
-        info!(
-            "Running initial liveness scan (grace period {}s elapsed)...",
-            recovery_grace_secs
-        );
-        let stats = services::recovery::run_liveness_scan(
-            &recovery_pool,
-            &recovery_queue,
-            &recovery_broadcast,
-            max_recovery_attempts,
-            startup_time,
-        )
-        .await;
-        if stats.recovered > 0 || stats.failed > 0 || stats.non_resumable_failed > 0 {
-            info!(
-                recovered = stats.recovered,
-                failed = stats.failed,
-                skipped = stats.skipped,
-                non_resumable_failed = stats.non_resumable_failed,
-                "Initial liveness scan complete"
-            );
-        }
-
-        // Periodic loop — detect stale sessions from crashed/hung workers
         let interval = Duration::from_secs(liveness_interval_secs);
         loop {
             tokio::time::sleep(interval).await;
 
-            let cutoff =
-                chrono::Utc::now() - chrono::Duration::seconds(liveness_interval_secs as i64);
-            let stats = services::recovery::run_liveness_scan(
-                &recovery_pool,
-                &recovery_queue,
-                &recovery_broadcast,
-                max_recovery_attempts,
-                cutoff,
-            )
-            .await;
-            if stats.recovered > 0 || stats.failed > 0 || stats.non_resumable_failed > 0 {
-                info!(
-                    recovered = stats.recovered,
-                    failed = stats.failed,
-                    skipped = stats.skipped,
-                    non_resumable_failed = stats.non_resumable_failed,
-                    "Periodic liveness scan complete"
-                );
+            let sessions = match db::sessions::find_reconcilable(&reconciler_pool).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Reconciler tick: list sessions failed");
+                    continue;
+                }
+            };
+
+            let mut mutated = 0u64;
+            let heartbeats = tick_heartbeats.read().unwrap().clone();
+            for session in &sessions {
+                if let Some(ref wid) = session.worker_id {
+                    let expired = match heartbeats.get(wid.as_str()) {
+                        Some(last_seen) => last_seen.elapsed() > tick_hb_timeout,
+                        None => true,
+                    };
+                    if expired {
+                        if session.command_has_payload {
+                            let event_payload = serde_json::json!({
+                                "message": "Agent recovered from a crash. A message may have been lost."
+                            });
+                            let _ = crate::db::events::insert(
+                                &reconciler_pool,
+                                &session.execution_id,
+                                Some(&session.id),
+                                "platform",
+                                &serde_json::to_string(&event_payload).unwrap_or_default(),
+                            )
+                            .await;
+                        }
+                        let _ = services::transition::transition(
+                            &reconciler_pool,
+                            &session.execution_id,
+                            &session.id,
+                            services::transition::Action::DetectCrash,
+                        )
+                        .await;
+                        mutated += 1;
+                        continue;
+                    }
+                }
+
+                if session.outcome.is_none()
+                    && session.desired != "terminate"
+                    && session.executor_state != "crashed"
+                    && session.command_token.is_none()
+                {
+                    continue;
+                }
+
+                let pending = db::sessions::count_pending_turns(&reconciler_pool, &session.id)
+                    .await
+                    .unwrap_or(0);
+                let execution = match db::executions::get_by_id(
+                    &reconciler_pool,
+                    &session.execution_id,
+                )
+                .await
+                {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                match services::reconciler::reconcile(
+                    &reconciler_pool,
+                    session,
+                    pending,
+                    &execution,
+                    false,
+                    None,
+                )
+                .await
+                {
+                    Ok(services::reconciler::ReconcilerAction::Mutated) => {
+                        mutated += 1;
+                        let _ = tick_event_broadcast.send(EventNotification::persisted(
+                            session.execution_id.clone(),
+                            0,
+                        ));
+                    }
+                    Ok(services::reconciler::ReconcilerAction::Repaired) => {
+                        mutated += 1;
+                        let _ = tick_event_broadcast.send(EventNotification::persisted(
+                            session.execution_id.clone(),
+                            0,
+                        ));
+                    }
+                    Ok(services::reconciler::ReconcilerAction::SendCommand { .. }) => mutated += 1,
+                    _ => {}
+                }
+            }
+            if mutated > 0 {
+                tick_task_queue.wake_waiters();
+                info!(mutated, "Liveness check complete");
             }
         }
     });
 
-    // Create supervisor (if workers requested) but don't start yet
     let supervisor = if cli.workers > 0 {
         Some(Supervisor::new(
             cli.workers,
@@ -324,12 +349,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         None
     };
 
-    // Create shutdown channel for Axum graceful shutdown
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // Spawn server task — begins accepting once the executor polls it.
-    // Workers take seconds to start (process spawn, binary load, CLI parse),
-    // so the server will be accepting before any worker's first HTTP poll.
     let mut shutdown_watch = shutdown_rx;
     let mut server_handle = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -339,7 +360,6 @@ async fn bootstrap(cli: Cli) -> Result<()> {
             .await
     });
 
-    // Start workers AFTER server is scheduled
     if let Some(ref sup) = supervisor {
         sup.start_workers().await?;
         info!(
@@ -348,10 +368,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         );
     }
 
-    // Wait for EITHER a shutdown signal OR the server exiting unexpectedly.
     let server_error = tokio::select! {
         _ = wait_for_signal() => {
-            // Normal shutdown path
             None
         }
         result = &mut server_handle => {
@@ -360,8 +378,6 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         }
     };
 
-    // Shutdown ordering: workers first (they are HTTP clients of the scheduler),
-    // then drain Axum.
     if let Some(sup) = supervisor
         && let Err(e) = sup.shutdown().await
     {
@@ -369,10 +385,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
     }
 
     if let Some(result) = server_error {
-        // Server already exited — propagate its error
         result??;
     } else {
-        // Normal path — trigger Axum graceful shutdown, wait for drain
         let _ = shutdown_tx.send(true);
         server_handle.await??;
     }

@@ -205,8 +205,8 @@ def test_installed_agentbeacon_runs(installed_venv):
 @skip_no_host_musl
 def test_installed_python_m_agentbeacon(tmp_path, installed_venv):
     """After install, python -m agentbeacon --version works."""
-    # Run from tmp_path to avoid CWD's agentbeacon/ (mock agent) shadowing
-    # the installed package.
+    # Run from tmp_path to avoid CWD's agentbeacon/ package shadowing
+    # the installed one.
     result = subprocess.run(
         [str(installed_venv / "bin" / "python"), "-m", "agentbeacon", "--version"],
         capture_output=True,

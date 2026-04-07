@@ -22,25 +22,22 @@
 
   let { execution, projectName = null, sessions, agents, selectedSessionId, usageBySession, poolAgents, isTerminal = false, sessionIdentity, onselectsession, onstatuschange }: Props = $props();
 
-  const activeStatuses = new Set(['working', 'input-required', 'submitted']);
-
   let selected = $derived($selectedExecutionId === execution.id);
-  let needsInput = $derived(execution.status === 'input-required');
+  let needsInput = $derived(execution.status === 'awaiting_input');
   let hasQuestions = $derived(
     $executionsWithQuestions.has(execution.id) ? true
     : $noQuestionExecutions.has(execution.id) ? false
     : needsInput ? undefined
     : false
   );
-  let isActive = $derived(activeStatuses.has(execution.status));
+  let isActive = $derived(execution.outcome == null && execution.desired !== 'terminate');
   let displayTitle = $derived(execution.title ?? execution.id.slice(0, 8));
-  let statusText = $derived(needsInput && hasQuestions === false ? 'turn complete'
-    : needsInput ? 'awaiting input'
+  let statusText = $derived(needsInput ? 'turn complete'
     : execution.status === 'working' ? 'working'
-    : execution.status === 'submitted' ? 'submitted'
     : execution.status === 'completed' ? 'completed'
     : execution.status === 'failed' ? 'failed'
-    : 'canceled');
+    : execution.status === 'canceled' ? 'canceled'
+    : execution.status);
 
   let showTree = $derived(selected && sessions && sessions.length > 0);
 
@@ -65,13 +62,13 @@
   <button
     class="exec-item"
     class:selected
-    class:needs-input={needsInput && hasQuestions}
+    class:needs-input={hasQuestions}
     onclick={handleClick}
     aria-current={selected || undefined}
   >
     <div class="exec-item-top">
-      <span class="status-indicator" class:working={execution.status === 'working'} class:completed={execution.status === 'completed'} class:failed={execution.status === 'failed'} class:input-required={needsInput && hasQuestions} class:turn-complete={needsInput && hasQuestions === false} class:submitted={execution.status === 'submitted'} class:canceled={execution.status === 'canceled'}>
-        {#if needsInput && hasQuestions}!{/if}
+      <span class="status-indicator" class:working={execution.status === 'working'} class:completed={execution.status === 'completed'} class:failed={execution.status === 'failed'} class:awaiting-input={hasQuestions} class:turn-complete={needsInput && hasQuestions === false} class:canceled={execution.status === 'canceled'}>
+        {#if hasQuestions}!{/if}
       </span>
       <span class="exec-title">{displayTitle}</span>
       <span class="exec-time">
@@ -169,10 +166,9 @@
   }
   .status-indicator.completed { background: hsl(var(--status-success)); }
   .status-indicator.failed { background: hsl(var(--status-danger)); }
-  .status-indicator.submitted { background: hsl(var(--muted-foreground)); }
   .status-indicator.canceled { background: hsl(var(--muted-foreground)); }
 
-  .status-indicator.input-required {
+  .status-indicator.awaiting-input {
     background: hsl(var(--status-attention));
     width: 1rem;
     height: 1rem;

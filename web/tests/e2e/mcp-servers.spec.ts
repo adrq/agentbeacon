@@ -1,13 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { apiGet, apiPost, apiDelete, waitForWorkerIdle } from './helpers';
-
-test.beforeAll(async () => {
-  await waitForWorkerIdle();
-});
-
-test.afterEach(async () => {
-  await waitForWorkerIdle();
-});
+import { apiGet, apiPost, apiDelete } from './helpers';
 
 test('create MCP server via JSON textarea', async ({ page }) => {
   // Navigate to settings page

@@ -1,5 +1,5 @@
 import { createQuery, createMutation, useQueryClient } from '@tanstack/svelte-query';
-import { api } from '../api';
+import { api, ApiError } from '../api';
 import type { PutWikiPageRequest } from '../types';
 
 export function wikiPagesQuery(projectId: () => string | null, query?: () => string | undefined) {
@@ -15,6 +15,10 @@ export function wikiPageQuery(projectId: () => string | null, slug: () => string
     queryKey: ['wiki-page', projectId(), slug()],
     queryFn: () => api.getWikiPage(projectId()!, slug()!),
     enabled: !!projectId() && !!slug(),
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
+      return failureCount < 3;
+    },
   }));
 }
 

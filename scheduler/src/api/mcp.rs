@@ -16,13 +16,6 @@ pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Validate transport-level headers per MCP 2025-11-25 spec.
 /// Runs before auth extraction so DNS rebinding attacks are blocked early.
-///
-/// **Design note (intentional deviation):** The MCP spec uses MCP-Session-Id as
-/// the primary session identity mechanism. We use Bearer token auth instead,
-/// where the token IS the session UUID. This is simpler and sufficient for our
-/// architecture where the scheduler controls session creation and token issuance.
-/// As an interop safety measure, if a client sends MCP-Session-Id and it doesn't
-/// match the Bearer token, we reject with 400 to catch misconfigured clients.
 async fn validate_mcp_transport(request: Request, next: Next) -> Response {
     // Origin validation: MUST reject invalid origins with 403
     if let Some(origin) = request.headers().get("origin") {

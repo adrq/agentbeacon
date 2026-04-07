@@ -66,6 +66,29 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Driver, SchedulerError
     parse_driver_row(row)
 }
 
+pub async fn get_by_id_in_tx(
+    pool: &DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    id: &str,
+) -> Result<Driver, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
+
+    let sql = format!(
+        "SELECT id, name, platform, config, {} as created_at, {} as updated_at FROM drivers WHERE id = ?",
+        created_fmt, updated_fmt
+    );
+    let query = pool.prepare_query(&sql);
+
+    let row = sqlx::query(&query)
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| map_db_error("driver", id, e))?;
+
+    parse_driver_row(row)
+}
+
 pub async fn get_by_name(pool: &DbPool, name: &str) -> Result<Driver, SchedulerError> {
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);

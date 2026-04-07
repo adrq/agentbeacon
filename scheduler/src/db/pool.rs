@@ -22,7 +22,8 @@ pub enum TimestampColumn {
     UpdatedAt,
     CompletedAt,
     Timestamp,
-    LastProgressAt,
+    DesiredAt,
+    CommandAt,
 }
 
 impl TimestampColumn {
@@ -33,7 +34,8 @@ impl TimestampColumn {
             Self::UpdatedAt => "updated_at",
             Self::CompletedAt => "completed_at",
             Self::Timestamp => "timestamp",
-            Self::LastProgressAt => "last_progress_at",
+            Self::DesiredAt => "desired_at",
+            Self::CommandAt => "command_at",
         }
     }
 }
@@ -63,7 +65,7 @@ impl DbPool {
         matches!(*self.db_type, DbType::Postgres)
     }
 
-    /// Convert ? placeholders to $N for PostgreSQL (T017 requirement)
+    /// Convert ? placeholders to $N for PostgreSQL.
     ///
     /// This enables a single query codebase for both SQLite and PostgreSQL.
     /// All queries are written with ? placeholders, then converted at runtime.
@@ -397,6 +399,8 @@ mod tests {
         assert_eq!(TimestampColumn::UpdatedAt.as_str(), "updated_at");
         assert_eq!(TimestampColumn::CompletedAt.as_str(), "completed_at");
         assert_eq!(TimestampColumn::Timestamp.as_str(), "timestamp");
+        assert_eq!(TimestampColumn::DesiredAt.as_str(), "desired_at");
+        assert_eq!(TimestampColumn::CommandAt.as_str(), "command_at");
     }
 
     #[test]

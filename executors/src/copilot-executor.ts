@@ -22,16 +22,13 @@ import type {
   SessionEventPayload,
 } from "@github/copilot-sdk";
 
-const { CopilotClient } = (
-  process.env.AGENTBEACON_MOCK_SDK === "1"
-    ? await import("./mock-copilot-sdk.js")
-    : await import("@github/copilot-sdk")
-) as { CopilotClient: typeof CopilotClientType };
+const { CopilotClient } = (await import("@github/copilot-sdk")) as {
+  CopilotClient: typeof CopilotClientType;
+};
 import { emit } from "./common/stdio-bridge.js";
 
 // Orchestration tools that bypass AgentBeacon's coordination layer.
 // Blocked via excludedTools in createSession/resumeSession config.
-// See: kb/research/119-copilot-sdk-orchestration-tools-deep-dive.md
 const EXCLUDED_ORCHESTRATION_TOOLS: string[] = [
   "task", // Subagent spawning
   "read_agent", // Delegate to named agents
@@ -54,6 +51,8 @@ function hasQueuedTurnCommand(): boolean {
     (cmd) => cmd.type === "start" || cmd.type === "prompt",
   );
 }
+
+let shutdownRequested = false;
 
 function discardQueuedTurnCommands(): void {
   const retained = commandQueue.filter(
@@ -86,13 +85,20 @@ rl.on("line", (line) => {
     process.stderr.write(`ignoring malformed stdin line, len=${line.length}\n`);
     return;
   }
-  if (cmd.type === "cancel" && currentSession) {
+  if (cmd.type === "cancel" && currentSession && turnState !== "idle") {
     aborted = true;
     currentSession.abort();
+  } else if (cmd.type === "cancel") {
+    // Cancel received while idle — shut down cleanly.
+    shutdownRequested = true;
+    discardQueuedTurnCommands();
+    commandQueue.push({ type: "stop" } as Command);
+    if (queueResolve) {
+      queueResolve();
+      queueResolve = null;
+    }
   } else if (cmd.type === "stop_turn") {
-    // Known limitation: the worker only starts scheduler long-poll after init,
-    // so this local buffering only helps once stop_turn has actually reached
-    // the executor. True end-to-end pre-init stop delivery remains worker-side.
+    // Buffered locally until the worker can deliver it.
     if (currentSession && turnState !== "idle") {
       stoppedByUser = true;
       aborted = true;
@@ -130,22 +136,13 @@ async function nextCommand(): Promise<Command> {
 
 // --- Session runner ---
 
-// Errors that mean the session is dead and session.idle will never arrive.
-// Everything else (permission_denied, model_call_failed, rate limiting, etc.)
-// is recoverable — the agent adjusts and the session reaches session.idle.
-// Unknown error types are treated as recoverable; the Rust inactivity timer
-// is the safety net if session.idle never fires.
+// Errors that mean the session cannot continue.
 const FATAL_ERROR_TYPES = new Set(["connection_closed", "auth_failure"]);
 
 /**
  * Wait for the session to become idle (turn complete).
- *
- * The SDK's sendAndWait() rejects on ALL session.error events, but we
- * intentionally distinguish fatal from recoverable: fatal errors (connection
- * loss, auth failure) reject immediately so the error message is preserved;
- * recoverable errors are logged and we keep waiting for session.idle.
- *
- * No JS-side timeout — the Rust inactivity timer handles stalled sessions.
+ * Only fatal errors (connection loss, auth failure) reject early;
+ * recoverable errors are logged while we keep waiting.
  */
 function waitForIdle(session: CopilotSession): {
   promise: Promise<void>;
@@ -487,11 +484,15 @@ async function runSession(startCmd: StartCommand): Promise<void> {
       }
     }
 
-    await session.disconnect();
+    try {
+      await session.disconnect();
+    } catch {}
   } finally {
     turnState = "idle";
     currentSession = null;
-    await client.stop();
+    try {
+      await client.stop();
+    } catch {}
   }
 }
 
@@ -563,10 +564,20 @@ async function main(): Promise<void> {
     } catch (e: unknown) {
       emit({ type: "error", message: String(e) });
     }
+    if (shutdownRequested) break;
+  }
+
+  // Emit terminal result so the scheduler knows this session is done.
+  if (shutdownRequested) {
+    emit({ type: "result", subtype: "cancelled" });
   }
 }
 
-main().catch((e) => {
-  process.stderr.write(`fatal: ${e}\n`);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    rl.close();
+  })
+  .catch((e) => {
+    process.stderr.write(`fatal: ${e}\n`);
+    process.exit(1);
+  });

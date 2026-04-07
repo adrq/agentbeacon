@@ -10,12 +10,17 @@ pub struct Args {
     #[arg(long, env = "SCHEDULER_URL", required_unless_present = "setup")]
     pub scheduler_url: Option<String>,
 
+    /// Worker identity (UUID assigned by supervisor)
+    #[arg(long, env = "WORKER_ID")]
+    pub worker_id: Option<String>,
+
     /// Sync polling interval (e.g., "5s", "100ms")
     #[arg(long, default_value = "5s", value_parser = parse_duration)]
     pub interval: Duration,
 
-    /// HTTP request timeout (e.g., "30s", "1m")
-    #[arg(long, default_value = "30s", value_parser = parse_duration)]
+    /// HTTP request timeout (e.g., "90s", "1m"). Must exceed server-side
+    /// long-poll hold time (30s) with margin.
+    #[arg(long, default_value = "90s", value_parser = parse_duration)]
     pub http_timeout: Duration,
 
     /// Long-poll timeout for waiting_for_event syncs (e.g., "40s")

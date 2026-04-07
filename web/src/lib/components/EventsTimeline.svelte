@@ -4,6 +4,7 @@
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
   import { normalizeDataPart } from '../normalize';
   import { EVENT_FILTER_GROUPS, EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
+  import { api } from '../api';
 
   interface Props {
     events: Event[];
@@ -61,15 +62,75 @@
 
     if (isStateChangePayload(ev.payload)) {
       const p = ev.payload;
-      const isFailed = p.to === 'failed';
+      const isFailed = p.outcome === 'failed' || p.to === 'failed';
+      // Build state transition text
+      let stateText: string;
+      if (p.executor_state) {
+        stateText = `executor: ${p.executor_state}`;
+      } else if (p.desired && p.outcome) {
+        stateText = `${p.desired} \u2192 ${p.outcome}`;
+      } else if (p.desired) {
+        stateText = `desired: ${p.desired}`;
+      } else if (p.from !== undefined) {
+        stateText = p.from ? `${p.from} \u2192 ${p.to}` : `started \u2192 ${p.to}`;
+      } else {
+        stateText = JSON.stringify(p);
+      }
       return [{
         key: `${ev.id}`,
         time,
         icon: isFailed ? '\u2716' : '\u25CF',
         iconClass: isFailed ? 'error' : 'state-change',
-        text: p.from ? `${p.from} \u2192 ${p.to}` : `started \u2192 ${p.to}`,
+        text: stateText,
         entryType: isFailed ? 'error' : 'state',
       }];
+    }
+
+    // Platform events with structured parts (turn_complete, delegate, escalate, etc.)
+    if (ev.event_type === 'platform' && ev.payload && 'parts' in ev.payload && !('role' in ev.payload)) {
+      const entries: ParsedEvent[] = [];
+      const parts = (ev.payload as { parts: Array<Record<string, unknown>> }).parts ?? [];
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        const key = `${ev.id}-${i}`;
+        if ('data' in part) {
+          const d = part.data as Record<string, unknown>;
+          if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
+            const tc = d as unknown as import('../types').TurnCompleteData;
+            if (tc.child_session_id && tc.child_session_id === ev.session_id) {
+              entries.push({ key, time, icon: '\u25CB', iconClass: 'state-change', text: 'Turn complete', entryType: 'state' });
+              continue;
+            }
+            const childSession = sessions.find(s => s.id === tc.child_session_id);
+            const childAgentName = agents.find(a => a.id === childSession?.agent_id)?.name ?? 'Child';
+            const msg = `${childAgentName} turn complete`;
+            entries.push({ key, time, icon: '\u21A9', iconClass: 'turn-complete', text: `Child reported: "${truncate(msg, 80)}"`, entryType: 'child_response' });
+          } else if (isDelegateData(d as unknown as import('../types').DataPartPayload)) {
+            const del = d as unknown as import('../types').DelegateData;
+            entries.push({ key, time, icon: '\u2192', iconClass: 'delegate', text: `Delegated to ${del.agent}`, entryType: 'tool' });
+          } else if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
+            const ask = d as unknown as import('../types').EscalateData;
+            if (ask.batch_index === 0) {
+              if (ask.importance === 'fyi') {
+                entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(ask.question, 80)}`, entryType: 'fyi' });
+              } else {
+                entries.push({ key, time, icon: '\u26A0', iconClass: 'question', text: `Asked: "${truncate(ask.question, 80)}"`, entryType: 'tool' });
+              }
+            }
+          }
+        }
+      }
+      if (entries.length > 0) return entries;
+      return [{ key: `${ev.id}`, time, icon: '\u25CB', iconClass: 'state-change', text: 'platform event', entryType: 'state' }];
+    }
+
+    // Bare-object platform events (crash/message-loss warnings)
+    if (ev.event_type === 'platform' && ev.payload && !('parts' in ev.payload) && !('role' in ev.payload)) {
+      const p = ev.payload as Record<string, unknown>;
+      if (p.type === 'message_delivered' || p.type === 'child_continued') return [];
+      const msg = p.message as string | undefined;
+      if (!msg) return [];
+      return [{ key: `${ev.id}`, time, icon: '\u26A0', iconClass: 'warning', text: msg, entryType: 'state' }];
     }
 
     if (isMessagePayload(ev.payload)) {
@@ -116,7 +177,14 @@
           }
           if (isTurnCompleteData(d as unknown as import('../types').DataPartPayload)) {
             const tc = d as unknown as import('../types').TurnCompleteData;
-            entries.push({ key, time, icon: '\u21A9', iconClass: 'turn-complete', text: `Child reported: "${truncate(tc.message, 80)}"`, entryType: 'child_response' });
+            if (tc.child_session_id && tc.child_session_id === ev.session_id) {
+              entries.push({ key, time, icon: '\u25CB', iconClass: 'state-change', text: 'Turn complete', entryType: 'state' });
+              continue;
+            }
+            const childSession = sessions.find(s => s.id === tc.child_session_id);
+            const childAgentName = agents.find(a => a.id === childSession?.agent_id)?.name ?? 'Child';
+            const msg = `${childAgentName} turn complete`;
+            entries.push({ key, time, icon: '\u21A9', iconClass: 'turn-complete', text: `Child reported: "${truncate(msg, 80)}"`, entryType: 'child_response' });
             continue;
           }
 

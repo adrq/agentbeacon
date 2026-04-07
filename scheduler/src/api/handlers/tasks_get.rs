@@ -11,10 +11,5 @@ pub async fn handle_tasks_get(
     _params: JsonValue,
     id: Option<JsonValue>,
 ) -> JsonRpcResponse {
-    JsonRpcResponse::error(
-        id,
-        JsonRpcError::internal_error(
-            "not implemented — tasks/get being redesigned for session model",
-        ),
-    )
+    JsonRpcResponse::error(id, JsonRpcError::internal_error("not implemented"))
 }

@@ -1,8 +1,28 @@
-export type ExecutionStatus =
-  | 'submitted' | 'working' | 'input-required'
-  | 'completed' | 'failed' | 'canceled';
 
-export type SessionStatus = ExecutionStatus;
+/** Intent field on executions and sessions */
+export type ExecutionDesired = 'run' | 'terminate';
+export type SessionDesired = 'run' | 'stop' | 'terminate';
+
+/** Executor state (session only) */
+export type ExecutorState = 'unassigned' | 'running' | 'idle' | 'crashed';
+
+/** Terminal outcome — null while still active */
+export type Outcome = 'completed' | 'canceled' | 'failed';
+
+/** Computed display status for executions */
+export type ExecutionDisplayStatus =
+  | 'working' | 'awaiting_input'
+  | 'completed' | 'canceled' | 'failed';
+
+/** Computed display status for sessions */
+export type SessionDisplayStatus =
+  | 'working' | 'idle' | 'stopped' | 'unassigned' | 'crashed'
+  | 'completed' | 'canceled' | 'failed';
+
+// Keep legacy aliases — many components use these as the prop type
+export type ExecutionStatus = ExecutionDisplayStatus;
+export type SessionStatus = SessionDisplayStatus;
+
 export type EventType = 'message' | 'state_change' | 'platform';
 export type Theme = 'light' | 'dark';
 export type RouteMode = 'view' | 'new' | 'edit';
@@ -47,7 +67,10 @@ export interface Execution {
   project_id: string | null;
   parent_execution_id: string | null;
   context_id: string;
-  status: ExecutionStatus;
+  desired: ExecutionDesired;
+  outcome: Outcome | null;
+  status: ExecutionDisplayStatus;
+  completion_eligible: boolean;
   title: string | null;
   metadata: Record<string, unknown>;
   max_depth: number;
@@ -72,7 +95,15 @@ export interface SessionSummary {
   agent_session_id: string | null;
   cwd: string | null;
   worktree_path: string | null;
-  status: SessionStatus;
+  base_commit_sha: string | null;
+  desired: SessionDesired;
+  executor_state: ExecutorState;
+  outcome: Outcome | null;
+  status: SessionDisplayStatus;
+  desired_by: string | null;
+  worker_id: string | null;
+  command_type: string | null;
+  parent_notified: boolean;
   recovery_attempts: number;
   metadata: Record<string, unknown>;
   created_at: string;
@@ -276,10 +307,15 @@ export interface UsageState {
 }
 
 export interface StateChangePayload {
-  from: string | null;
-  to: string;
+  desired?: string;
+  executor_state?: string;
+  outcome?: string;
+  desired_by?: string;
   error?: string;
+  error_kind?: string;
   stderr?: string;
+  from?: string | null;
+  to?: string;
 }
 
 // Prefill data for re-running or pre-filling execution form
@@ -299,6 +335,10 @@ export interface CreateExecutionResponse {
   warning?: string;
 }
 
+export interface ContinueSessionResponse {
+  session_id: string;
+}
+
 export interface PostMessageResponse {
   event_id: number;
   session_status: string;
@@ -311,7 +351,12 @@ export function isMessagePayload(p: MessagePayload | StateChangePayload): p is M
 }
 
 export function isStateChangePayload(p: MessagePayload | StateChangePayload): p is StateChangePayload {
-  return 'to' in p && !('role' in p);
+  if ('role' in p) return false;
+  // New format: has desired, executor_state, or outcome (but NOT role)
+  if ('desired' in p || 'executor_state' in p || 'outcome' in p) return true;
+  // Legacy format: has 'to' field
+  if ('to' in p) return true;
+  return false;
 }
 
 export function isEscalateData(d: DataPartPayload): d is EscalateData {

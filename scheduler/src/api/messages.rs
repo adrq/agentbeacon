@@ -49,6 +49,13 @@ async fn send_message(
     State(state): State<AppState>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
+    // Stopped sessions cannot send messages.
+    if auth.desired != "run" {
+        return Err(SchedulerError::Conflict(
+            "sender session is stopped or terminated — cannot send messages".to_string(),
+        ));
+    }
+
     if req.parts.is_empty() {
         return Err(SchedulerError::ValidationFailed(
             "parts must be non-empty".to_string(),

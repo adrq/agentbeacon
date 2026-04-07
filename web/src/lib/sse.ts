@@ -11,7 +11,7 @@ const MAX_BACKOFF_MS = 30_000;
 
 /**
  * Connect to the per-execution SSE stream.
- * Gracefully falls back to polling if endpoint returns 404 (Track A not deployed).
+ * Gracefully falls back to polling if endpoint returns 404.
  * After BACKOFF_THRESHOLD consecutive errors, uses exponential backoff for reconnection.
  * After MAX_CONSECUTIVE_ERRORS, closes permanently and calls onDisconnected.
  * Handles visibility changes (laptop sleep/wake) to reconnect immediately.

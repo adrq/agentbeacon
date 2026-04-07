@@ -3,6 +3,7 @@ use std::sync::LazyLock;
 use jsonschema::Validator;
 use serde_json::{Value as JsonValue, json};
 use sqlx::Row;
+
 use uuid::Uuid;
 
 use crate::api::auth::{McpRole, McpSession};
@@ -34,7 +35,7 @@ fn validate_tool_args(validator: &Validator, args: &JsonValue) -> Result<(), Jso
     })
 }
 
-/// Handle tools/list — returns role-filtered tool schemas per D18 table
+/// Handle tools/list — returns role-filtered tool schemas.
 pub fn handle_tools_list(auth: &McpSession, id: Option<JsonValue>) -> JsonRpcResponse {
     let at_max_depth = auth.depth >= auth.max_depth;
     let tools = match (&auth.role, at_max_depth) {
@@ -63,14 +64,12 @@ pub async fn handle_tools_call(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    // Leaf: no tools available
     if auth.role == McpRole::Leaf {
         return Err(JsonRpcError::invalid_request(
             "no tools available for this session role",
         ));
     }
 
-    // delegate/release: requires not at max depth
     if matches!(tool_name, "delegate" | "release") && auth.depth >= auth.max_depth {
         return Err(JsonRpcError::invalid_request(&format!(
             "Cannot {}: maximum hierarchy depth ({}) reached. Handle this work directly.",
@@ -78,7 +77,6 @@ pub async fn handle_tools_call(
         )));
     }
 
-    // escalate: root-lead-only
     if tool_name == "escalate" && auth.role != McpRole::RootLead {
         return Err(JsonRpcError::invalid_request(
             "escalate is only available to the root lead agent",
@@ -105,7 +103,28 @@ async fn handle_delegate(
     let prompt = args["prompt"].as_str().unwrap();
     let explicit_cwd = args.get("cwd").and_then(|v| v.as_str());
 
-    // Look up agent by name
+    if auth.desired == "stop" {
+        return Ok(json!({
+            "content": [{"type": "text", "text": "session is stopped — cannot delegate while stop is in effect"}],
+            "isError": true
+        }));
+    }
+
+    let execution = db::executions::get_by_id(&state.db_pool, &auth.execution_id)
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    if execution.desired == "terminate" || execution.outcome.is_some() {
+        let reason = if execution.outcome.is_some() {
+            "execution is already terminal"
+        } else {
+            "execution is terminating"
+        };
+        return Ok(json!({
+            "content": [{"type": "text", "text": reason}],
+            "isError": true
+        }));
+    }
+
     let agent = db::agents::get_by_name(&state.db_pool, agent_name)
         .await
         .map_err(|e| match e {
@@ -121,7 +140,6 @@ async fn handle_delegate(
         )));
     }
 
-    // Validate agent is in this execution's pool
     let pool_agent_ids =
         db::execution_agents::list_by_execution(&state.db_pool, &auth.execution_id)
             .await
@@ -134,12 +152,10 @@ async fn handle_delegate(
         )));
     }
 
-    // Resolve child cwd: explicit > parent session's cwd
     let parent_session = db::sessions::get_by_id(&state.db_pool, &auth.session_id)
         .await
         .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
-    // Validate explicit cwd is an absolute path before canonicalize
     if let Some(cwd) = explicit_cwd
         && !std::path::Path::new(cwd).is_absolute()
     {
@@ -154,8 +170,6 @@ async fn handle_delegate(
         parent_session.cwd.clone()
     };
 
-    // Security: validate child cwd is subdirectory of lead session's cwd
-    // Fail closed: if explicit cwd is provided but lead has no cwd, reject
     if let Some(ref child_dir) = child_cwd
         && explicit_cwd.is_some()
     {
@@ -181,7 +195,6 @@ async fn handle_delegate(
         }
     }
 
-    // Atomic width-guarded creation with slug collision retry.
     let new_id = Uuid::new_v4().to_string();
     let mut existing_slugs = db::sessions::sibling_slugs(&state.db_pool, &auth.session_id)
         .await
@@ -196,7 +209,7 @@ async fn handle_delegate(
             &agent.id,
             &auth.session_id,
             child_cwd.as_deref(),
-            None, // worktree_path (None for child MVP)
+            None,
             auth.max_width,
             &slug,
         )
@@ -207,7 +220,6 @@ async fn handle_delegate(
                 break;
             }
             Ok(false) => {
-                // Width limit reached — no retry will help
                 return Err(JsonRpcError::invalid_params(&format!(
                     "Cannot delegate: maximum active children ({}) reached. \
                      Release idle children or wait for completions.",
@@ -218,7 +230,6 @@ async fn handle_delegate(
                 if msg.to_lowercase().contains("unique")
                     || msg.to_lowercase().contains("duplicate key") =>
             {
-                // Slug collision — regenerate and retry
                 existing_slugs = db::sessions::sibling_slugs(&state.db_pool, &auth.session_id)
                     .await
                     .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
@@ -234,7 +245,6 @@ async fn handle_delegate(
     }
     let (child_session_id, child_slug) = (new_id, slug);
 
-    // Determine child's role based on depth
     let child_depth = auth.depth + 1;
     let child_role = if child_depth >= auth.max_depth {
         crate::services::briefing::BriefingRole::Leaf
@@ -242,7 +252,6 @@ async fn handle_delegate(
         crate::services::briefing::BriefingRole::SubLead
     };
 
-    // Compute parent's hierarchical name — O(depth), not O(N sessions)
     let parent_hier_name =
         crate::services::messaging::hierarchical_name_for_session(&state.db_pool, &auth.session_id)
             .await
@@ -257,27 +266,15 @@ async fn handle_delegate(
         agent_config_name: agent.name.clone(),
         parent_info: parent_hier_name.clone(),
     };
-    let briefing =
-        crate::services::briefing::build_environment_briefing(&state.db_pool, &briefing_ctx).await;
-
-    // Parse agent config for task payload
-    let mut agent_config: JsonValue = serde_json::from_str::<JsonValue>(&agent.config)
-        .ok()
-        .filter(|v| v.is_object())
-        .unwrap_or_else(|| json!({}));
+    let agent_config =
+        crate::services::agent_config::compose_agent_config(&state.db_pool, &agent, &briefing_ctx)
+            .await;
     let sandbox_config: JsonValue = agent
         .sandbox_config
         .as_ref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(JsonValue::Null);
 
-    // Prepend briefing to existing system_prompt (from agent column, not config JSON)
-    let existing_prompt = agent.system_prompt.as_deref().unwrap_or("");
-    let combined = crate::services::briefing::prepend_briefing(&briefing, existing_prompt);
-    agent_config["system_prompt"] = JsonValue::String(combined);
-
-    // Record delegation event + child prompt atomically so observers never
-    // see a partial delegation (event without prompt or vice versa).
     let delegate_event_str = serde_json::to_string(&json!({
         "role": "ROLE_AGENT",
         "parts": [{"data": {
@@ -301,26 +298,27 @@ async fn handle_delegate(
     }))
     .unwrap();
 
-    // Build task payload before the transaction so all values are ready.
+    let is_sdk = agent.agent_type == "claude_sdk" || agent.agent_type == "copilot_sdk";
     let mut task_payload = json!({
         "agent_id": agent.id,
         "driver": {
             "platform": agent.agent_type,
             "config": sandbox_config,
         },
-        "agent_config": agent_config,
         "message": {
             "role": "ROLE_USER",
             "parts": [{"text": prompt}]
         },
     });
+    if !is_sdk {
+        task_payload["agent_config"] = agent_config;
+    }
     if let Some(ref dir) = child_cwd {
         task_payload["cwd"] = JsonValue::String(dir.clone());
     }
     if let Some(ref pid) = auth.project_id {
         task_payload["project_id"] = JsonValue::String(pid.clone());
     }
-    // Inject project MCP servers into task payload
     if let Some(ref pid) = auth.project_id {
         let mcp_servers = db::project_mcp_servers::list_by_project(&state.db_pool, pid)
             .await
@@ -334,19 +332,56 @@ async fn handle_delegate(
         JsonRpcError::internal_error(&format!("serialize task_payload failed: {e}"))
     })?;
 
-    // Single transaction: delegation event + child prompt + task queue entry.
-    // If any insert fails the whole thing rolls back — no orphaned state.
     let insert_event_sql = state.db_pool.prepare_query(
         "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, ?, ?) RETURNING id",
     );
     let insert_task_sql = state.db_pool.prepare_query(
         "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
     );
-    let mut tx = state
-        .db_pool
-        .begin()
+    let mut tx = db::executions::begin_execution_tx(&state.db_pool, &auth.execution_id)
         .await
         .map_err(|e| JsonRpcError::internal_error(&format!("begin transaction failed: {e}")))?;
+
+    let tx_exec = db::executions::get_in_tx(&state.db_pool, &mut tx, &auth.execution_id)
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&format!("recheck execution: {e}")))?;
+    if tx_exec.desired == "terminate" || tx_exec.outcome.is_some() {
+        let _ = tx.rollback().await;
+        let delete_sql = state
+            .db_pool
+            .prepare_query("DELETE FROM sessions WHERE id = ?");
+        let _ = sqlx::query(&delete_sql)
+            .bind(&child_session_id)
+            .execute(state.db_pool.as_ref())
+            .await;
+        return Ok(json!({
+            "content": [{"type": "text", "text": "execution is terminating (concurrent race)"}],
+            "isError": true
+        }));
+    }
+
+    let tx_parent = db::sessions::get_in_tx(&state.db_pool, &mut tx, &auth.session_id)
+        .await
+        .map_err(|e| JsonRpcError::internal_error(&format!("recheck parent session: {e}")))?;
+    if tx_parent.desired != "run" || tx_parent.outcome.is_some() {
+        let _ = tx.rollback().await;
+        let delete_sql = state
+            .db_pool
+            .prepare_query("DELETE FROM sessions WHERE id = ?");
+        let _ = sqlx::query(&delete_sql)
+            .bind(&child_session_id)
+            .execute(state.db_pool.as_ref())
+            .await;
+        let reason = if tx_parent.outcome.is_some() {
+            "parent session is terminal (concurrent race)"
+        } else {
+            "parent session is stopped (concurrent race)"
+        };
+        return Ok(json!({
+            "content": [{"type": "text", "text": reason}],
+            "isError": true
+        }));
+    }
 
     let event_id: i64 = sqlx::query(&insert_event_sql)
         .bind(&auth.execution_id)
@@ -382,7 +417,6 @@ async fn handle_delegate(
         .await
         .map_err(|e| JsonRpcError::internal_error(&format!("commit transaction failed: {e}")))?;
 
-    // Broadcast SSE + wake workers after commit
     let _ = state.event_broadcast.send(EventNotification::persisted(
         auth.execution_id.clone(),
         event_id,
@@ -408,7 +442,6 @@ async fn handle_release(
     validate_tool_args(&RELEASE_VALIDATOR, &args)?;
     let target_session_id = args["session_id"].as_str().unwrap();
 
-    // Look up target session
     let target = db::sessions::get_by_id(&state.db_pool, target_session_id)
         .await
         .map_err(|e| match e {
@@ -418,68 +451,48 @@ async fn handle_release(
             _ => JsonRpcError::internal_error(&e.to_string()),
         })?;
 
-    // Defense-in-depth: verify same execution
     if target.execution_id != auth.execution_id {
         return Err(JsonRpcError::invalid_params(
             "session does not belong to this execution",
         ));
     }
 
-    // Authority: caller must be parent of target
     if target.parent_session_id.as_deref() != Some(&auth.session_id) {
         return Err(JsonRpcError::invalid_params(
             "session is not a child of this session",
         ));
     }
 
-    // Skip if already terminal
-    if matches!(target.status.as_str(), "completed" | "failed" | "canceled") {
-        return Err(JsonRpcError::invalid_params(&format!(
-            "session is already in terminal state '{}'",
-            target.status
-        )));
+    use crate::services::{reconciler, transition};
+    match transition::transition(
+        &state.db_pool,
+        &target.execution_id,
+        target_session_id,
+        transition::Action::SetDesired(transition::Desired::Terminate, "agent:release".to_string()),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(transition::Rejected::Ratchet) => {}
+        Err(e) => {
+            return Err(JsonRpcError::internal_error(&format!(
+                "release transition failed: {e:?}"
+            )));
+        }
     }
 
-    // Cascade terminate the target and its subtree
-    use crate::services::cascade::{CascadeMode, terminate_subtree};
+    if let Ok(fresh) = db::sessions::get_by_id(&state.db_pool, target_session_id).await {
+        let _ = reconciler::cascade_children(&state.db_pool, &fresh).await;
+    }
 
-    let result = terminate_subtree(
-        &state.db_pool,
-        target_session_id,
-        true, // include root — target transitions per CascadeMode::Release rules
-        CascadeMode::Release,
-        &state.event_broadcast,
-        &state.task_queue,
-    )
-    .await
-    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    state.task_queue.wake_waiters();
 
-    // Log release event on the parent (caller) session
-    let release_event = json!({
-        "role": "ROLE_AGENT",
-        "parts": [{"data": {
-            "type": "release",
-            "target_session_id": target_session_id,
-            "sessions_terminated": result.sessions_terminated
-        }}]
-    });
-    let event_id = db::events::insert(
-        &state.db_pool,
-        &auth.execution_id,
-        Some(&auth.session_id),
-        "platform",
-        &serde_json::to_string(&release_event).unwrap(),
-    )
-    .await
-    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-    let _ = state.event_broadcast.send(EventNotification::persisted(
-        auth.execution_id.clone(),
-        event_id,
-    ));
+    let _ = state
+        .event_broadcast
+        .send(EventNotification::persisted(auth.execution_id.clone(), 0));
 
     let result_text = serde_json::to_string(&json!({
-        "released": true,
-        "sessions_terminated": result.sessions_terminated
+        "released": true
     }))
     .unwrap();
 
@@ -541,7 +554,6 @@ async fn handle_escalate(
     let batch_size = questions.len();
     let mut question_ids = Vec::with_capacity(batch_size);
 
-    // Create one event per question
     for (batch_index, q) in questions.iter().enumerate() {
         let question = q["question"].as_str().unwrap();
         let options = q.get("options").cloned();
@@ -581,69 +593,6 @@ async fn handle_escalate(
         ));
 
         question_ids.push(event_id);
-    }
-
-    // State transitions once after all events (only if blocking)
-    if importance == "blocking" {
-        db::sessions::update_status(&state.db_pool, &auth.session_id, "input-required")
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-
-        let session_state_event = json!({"from": auth.status, "to": "input-required"});
-        let event_id = db::events::insert(
-            &state.db_pool,
-            &auth.execution_id,
-            Some(&auth.session_id),
-            "state_change",
-            &serde_json::to_string(&session_state_event).unwrap(),
-        )
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-        let _ = state.event_broadcast.send(EventNotification::persisted(
-            auth.execution_id.clone(),
-            event_id,
-        ));
-
-        if auth.role == McpRole::RootLead {
-            use db::executions::CasResult;
-            match db::executions::update_status_cas(
-                &state.db_pool,
-                &auth.execution_id,
-                "input-required",
-                &["working"],
-            )
-            .await
-            .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?
-            {
-                CasResult::Applied => {
-                    let exec_state_event = json!({"from": "working", "to": "input-required"});
-                    let event_id = db::events::insert(
-                        &state.db_pool,
-                        &auth.execution_id,
-                        None,
-                        "state_change",
-                        &serde_json::to_string(&exec_state_event).unwrap(),
-                    )
-                    .await
-                    .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-                    let _ = state.event_broadcast.send(EventNotification::persisted(
-                        auth.execution_id.clone(),
-                        event_id,
-                    ));
-                }
-                CasResult::Conflict => {
-                    tracing::debug!(
-                        execution_id = %auth.execution_id,
-                        "execution no longer working — skipping input-required transition"
-                    );
-                }
-                CasResult::NotFound => {
-                    return Err(JsonRpcError::internal_error(
-                        "execution row missing — data integrity issue",
-                    ));
-                }
-            }
-        }
     }
 
     let result_text =

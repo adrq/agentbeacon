@@ -196,7 +196,7 @@ def test_cors_actual_api_request_respects_origin(test_database):
 
         response = requests.post(
             f"{scheduler_url}/api/worker/sync",
-            json={"status": "idle"},
+            json={"worker_id": "test-worker-cors"},
             headers=headers,
             timeout=5,
         )
@@ -210,7 +210,7 @@ def test_cors_actual_api_request_respects_origin(test_database):
         headers["Origin"] = "http://evil.example.com"
         response = requests.post(
             f"{scheduler_url}/api/worker/sync",
-            json={"status": "idle"},
+            json={"worker_id": "test-worker-cors"},
             headers=headers,
             timeout=5,
         )

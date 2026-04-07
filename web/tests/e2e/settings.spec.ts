@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { apiGet, apiPost, ensureDirectAgent, waitForWorkerIdle } from './helpers';
+import { apiGet, apiPost, ensureDriver } from './helpers';
 
 // Track config keys created by tests so we can clean them up.
 // There is no DELETE endpoint for config; we zero out the value instead.
@@ -12,16 +12,8 @@ async function cleanupTestConfig() {
   testCreatedConfigKeys.clear();
 }
 
-test.beforeAll(async () => {
-  await waitForWorkerIdle();
-});
-
 test.afterAll(async () => {
   await cleanupTestConfig();
-});
-
-test.afterEach(async () => {
-  await waitForWorkerIdle();
 });
 
 test('settings gear visible in NavRail (not in header)', async ({ page }) => {
@@ -251,10 +243,20 @@ test('navigation guard fires dialog when navigating away with unsaved edits', as
 });
 
 test('agent system_prompt field in form', async ({ page }) => {
-  const agent = await ensureDirectAgent();
+  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  let agent = agents.find(a => a.name === 'System Prompt Test Agent');
+  if (!agent) {
+    const driverId = await ensureDriver('acp');
+    agent = await apiPost('/api/agents', {
+      name: 'System Prompt Test Agent',
+      driver_id: driverId,
+      description: 'Agent for testing system_prompt form field',
+      config: { command: 'echo', args: ['noop'], timeout: 60 },
+    });
+  }
 
-  await page.goto(`/#/agents/${agent.id}`);
-  await expect(page.getByRole('heading', { name: agent.name })).toBeVisible({ timeout: 10000 });
+  await page.goto(`/#/agents/${agent!.id}`);
+  await expect(page.getByRole('heading', { name: agent!.name })).toBeVisible({ timeout: 10000 });
 
   // Click Edit
   await page.getByRole('button', { name: 'Edit' }).click();

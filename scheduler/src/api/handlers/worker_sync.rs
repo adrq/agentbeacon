@@ -1,1011 +1,824 @@
-use std::time::Duration;
+//! Worker sync handler.
 
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
-use tokio::time::Instant;
 
-use serde_json::json;
-
-use crate::app::{AppState, EphemeralPayload, EventNotification};
+use crate::app::AppState;
 use crate::db;
-use crate::error::SchedulerError;
-use crate::queue::TaskAssignment;
+use crate::services::reconciler::{self, CommandAction, ReconcilerAction};
+use crate::services::transition::{self, ExState};
 
-const LONG_POLL_TIMEOUT_SECS: u64 = 30;
-
-/// Worker sync request — session-based protocol
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct WorkerSyncRequest {
+    pub worker_id: String,
     #[serde(default)]
-    pub session_state: Option<SessionState>,
+    pub executor_report: Option<ExecutorReport>,
     #[serde(default)]
-    pub session_result: Option<SessionResult>,
+    pub turn_result: Option<TurnResult>,
+    #[serde(default)]
+    pub command_ack: Option<String>,
 }
 
-/// Heartbeat / event-poll from a worker that owns a session
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionState {
+pub struct ExecutorReport {
     pub session_id: String,
-    pub status: String, // "running" | "waiting_for_event" | "fetch_task"
+    pub executor_state: String,
     #[serde(default)]
     pub agent_session_id: Option<String>,
 }
 
-/// A single turn message with dedup sequence number
+/// A single turn message with optional dedup sequence number
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TurnMessagePayload {
-    pub msg_seq: i64,
+    #[serde(default)]
+    pub msg_seq: Option<i64>,
+    #[serde(flatten)]
     pub payload: serde_json::Value,
 }
 
-/// Worker reporting a just-finished agent turn with the agent's native session ID
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionResult {
+pub struct TurnResult {
     pub session_id: String,
     #[serde(default)]
-    pub agent_session_id: Option<String>,
-    #[serde(default)]
-    pub turn_messages: Vec<TurnMessagePayload>,
+    pub messages: Vec<TurnMessagePayload>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
     pub error_kind: Option<String>,
     #[serde(default)]
     pub stderr: Option<String>,
-    #[serde(default)]
-    pub has_pending_turn: bool,
 }
 
-/// Worker sync response — tagged union
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum WorkerSyncResponse {
     NoAction,
-    SessionAssigned {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        task: TaskAssignment,
-    },
-    PromptDelivery {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        task: TaskAssignment,
-    },
-    TaskAvailable {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-    },
-    SessionComplete {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-    },
     Command {
-        command: String,
+        token: String,
+        action: CommandAction,
     },
 }
 
-/// Handle worker sync endpoint — session-based protocol
-pub async fn handle_worker_sync(
+pub async fn worker_sync(
     State(state): State<AppState>,
-    Json(request): Json<WorkerSyncRequest>,
-) -> Result<Json<WorkerSyncResponse>, StatusCode> {
-    // Step 1: Process session_result if present
-    if let Some(ref result) = request.session_result {
-        if let Some(ref agent_session_id) = result.agent_session_id {
-            match db::sessions::update_agent_session_id(
-                &state.db_pool,
-                &result.session_id,
-                agent_session_id,
-            )
-            .await
-            {
-                Ok(()) => {}
-                Err(crate::error::SchedulerError::NotFound(msg)) => {
-                    tracing::warn!(
-                        session_id = %result.session_id,
-                        "session_result for unknown session: {msg}"
-                    );
-                }
-                Err(e) => {
-                    tracing::error!("update_agent_session_id failed: {e}");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-            }
-        }
+    Json(req): Json<WorkerSyncRequest>,
+) -> Result<Json<WorkerSyncResponse>, (StatusCode, String)> {
+    let pool = &state.db_pool;
+    let worker_id = &req.worker_id;
 
-        // Insert turn messages with dedup (mid-turn POSTs may have already inserted some)
-        if !result.turn_messages.is_empty() {
-            match db::sessions::get_by_id(&state.db_pool, &result.session_id).await {
-                Ok(session) => {
-                    for msg in &result.turn_messages {
-                        let payload_str = serde_json::to_string(&msg.payload).unwrap();
-                        match db::events::insert_with_dedup(
-                            &state.db_pool,
-                            &session.execution_id,
-                            &result.session_id,
-                            "message",
-                            &payload_str,
-                            msg.msg_seq,
-                        )
-                        .await
-                        {
-                            Ok(Some(event_id)) => {
-                                let _ = state.event_broadcast.send(EventNotification::persisted(
-                                    session.execution_id.clone(),
-                                    event_id,
-                                ));
-                            }
-                            Ok(None) => {
-                                // Already delivered via mid-turn POST — skip broadcast
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    session_id = %result.session_id,
-                                    execution_id = %session.execution_id,
-                                    msg_seq = msg.msg_seq,
-                                    error = %e,
-                                    "failed to insert agent message event"
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("failed to emit agent message events: {e}");
-                }
-            }
-        }
-
-        // Handle error_kind (checked BEFORE error field for correct cancelled handling)
-        if let Some(ref ek) = result.error_kind {
-            match ek.as_str() {
-                "cancelled" => {
-                    // Cancellation confirmed — cascade was already performed by the
-                    // cancel initiator (session cancel or execution cancel endpoint).
-                    tracing::info!(
-                        session_id = %result.session_id,
-                        "Worker reported session cancelled"
-                    );
-                    if let Ok(session) =
-                        db::sessions::get_by_id(&state.db_pool, &result.session_id).await
-                        && !matches!(session.status.as_str(), "completed" | "failed" | "canceled")
-                    {
-                        if let Err(e) = db::sessions::update_status(
-                            &state.db_pool,
-                            &result.session_id,
-                            "canceled",
-                        )
-                        .await
-                        {
-                            tracing::error!(
-                                session_id = %result.session_id,
-                                error = %e,
-                                "failed to transition session to canceled"
-                            );
-                        } else {
-                            let event_payload = json!({
-                                "from": session.status,
-                                "to": "canceled",
-                            });
-                            if let Ok(event_id) = db::events::insert(
-                                &state.db_pool,
-                                &session.execution_id,
-                                Some(&result.session_id),
-                                "state_change",
-                                &serde_json::to_string(&event_payload).unwrap(),
-                            )
-                            .await
-                            {
-                                let _ = state.event_broadcast.send(EventNotification::persisted(
-                                    session.execution_id.clone(),
-                                    event_id,
-                                ));
-                            }
-                        }
-                    }
-                    // Clean up any pending stop_turn command (prevents unbounded HashMap growth)
-                    {
-                        let mut intents = state.stop_turn_intents.write().unwrap();
-                        intents.remove(&result.session_id);
-                    }
-                }
-                "stopped_by_user" => {
-                    // User-initiated stop confirmed — transition to input-required
-                    // (NOT canceled — session remains usable)
-                    tracing::info!(
-                        session_id = %result.session_id,
-                        "Worker reported session stopped by user"
-                    );
-                    let has_stop_intent = {
-                        let intents = state.stop_turn_intents.read().unwrap();
-                        intents.contains(&result.session_id)
-                    };
-
-                    if !has_stop_intent {
-                        tracing::info!(
-                            session_id = %result.session_id,
-                            "Ignoring stale stopped_by_user acknowledgement"
-                        );
-                    } else if let Ok(session) =
-                        db::sessions::get_by_id(&state.db_pool, &result.session_id).await
-                        && !matches!(session.status.as_str(), "completed" | "failed" | "canceled")
-                    {
-                        let target_status = "input-required";
-                        let mut session_now_input_required = session.status == target_status;
-                        if session.status != target_status {
-                            if let Err(e) = db::sessions::update_status(
-                                &state.db_pool,
-                                &result.session_id,
-                                target_status,
-                            )
-                            .await
-                            {
-                                tracing::error!(
-                                    session_id = %result.session_id,
-                                    error = %e,
-                                    "failed to transition session to input-required after stop"
-                                );
-                            } else {
-                                session_now_input_required = true;
-                                let event_payload = json!({
-                                    "from": session.status,
-                                    "to": target_status,
-                                });
-                                if let Ok(event_id) = db::events::insert(
-                                    &state.db_pool,
-                                    &session.execution_id,
-                                    Some(&result.session_id),
-                                    "state_change",
-                                    &serde_json::to_string(&event_payload).unwrap(),
-                                )
-                                .await
-                                {
-                                    let _ =
-                                        state.event_broadcast.send(EventNotification::persisted(
-                                            session.execution_id.clone(),
-                                            event_id,
-                                        ));
-                                }
-                            }
-                        }
-
-                        // Also transition execution to input-required if this is the lead session.
-                        // This stays safe even when the session was already input-required.
-                        if session.parent_session_id.is_none() && session_now_input_required {
-                            use db::executions::CasResult;
-                            match db::executions::update_status_cas(
-                                &state.db_pool,
-                                &session.execution_id,
-                                "input-required",
-                                &["working"],
-                            )
-                            .await
-                            {
-                                Ok(CasResult::Applied) => {
-                                    let exec_event = json!({
-                                        "from": "working",
-                                        "to": "input-required",
-                                    });
-                                    if let Ok(event_id) = db::events::insert(
-                                        &state.db_pool,
-                                        &session.execution_id,
-                                        None,
-                                        "state_change",
-                                        &serde_json::to_string(&exec_event).unwrap(),
-                                    )
-                                    .await
-                                    {
-                                        let _ = state.event_broadcast.send(
-                                            EventNotification::persisted(
-                                                session.execution_id.clone(),
-                                                event_id,
-                                            ),
-                                        );
-                                    }
-                                }
-                                Ok(_) => {} // Conflict or NotFound — expected in some cases
-                                Err(e) => {
-                                    tracing::error!(
-                                        execution_id = %session.execution_id,
-                                        error = %e,
-                                        "failed to transition execution to input-required after stop"
-                                    );
-                                }
-                            }
-                        }
-
-                        // First matching ack wins; later retries are ignored.
-                        let mut intents = state.stop_turn_intents.write().unwrap();
-                        intents.remove(&result.session_id);
-                    }
-                }
-                _ => {
-                    tracing::warn!(
-                        session_id = %result.session_id,
-                        error_kind = %ek,
-                        error = ?result.error,
-                        "Worker reported session failure"
-                    );
-                    crate::services::crash::handle_session_failure(
-                        &state.db_pool,
-                        &state.task_queue,
-                        &state.event_broadcast,
-                        &result.session_id,
-                        Some(ek.as_str()),
-                        result.error.as_deref(),
-                        result.stderr.as_deref(),
-                    )
-                    .await;
-                    // Clean up any pending stop_turn command (prevents unbounded HashMap growth)
-                    {
-                        let mut intents = state.stop_turn_intents.write().unwrap();
-                        intents.remove(&result.session_id);
-                    }
-                }
-            }
-        } else if result.error.is_some() {
-            // No error_kind but error present — fail closed rather than leaving
-            // the session stuck in working.
-            tracing::warn!(
-                session_id = %result.session_id,
-                error = ?result.error,
-                "Worker reported error without error_kind — treating as failure"
-            );
-            crate::services::crash::handle_session_failure(
-                &state.db_pool,
-                &state.task_queue,
-                &state.event_broadcast,
-                &result.session_id,
-                None,
-                result.error.as_deref(),
-                result.stderr.as_deref(),
-            )
-            .await;
-        }
+    {
+        let mut heartbeats = state.worker_heartbeats.write().unwrap();
+        heartbeats.insert(worker_id.clone(), std::time::Instant::now());
     }
 
-    // Step 1b: After processing a successful result, handle turn completion
-    // BEFORE checking for queued tasks. This ensures deliver_to_parent runs
-    // even when tasks are queued.
-    if let Some(ref result) = request.session_result {
-        let has_error = result.error_kind.is_some() || result.error.is_some();
-
-        if !has_error
-            && let Ok(session) = db::sessions::get_by_id(&state.db_pool, &result.session_id).await
-            && matches!(session.status.as_str(), "working" | "input-required")
-        {
-            // Touch last_progress_at on every turn result (real progress signal).
-            // Unconditional — tracks progress even when has_pending_turn=true.
-            let _ = db::sessions::touch_last_progress_at(&state.db_pool, &result.session_id).await;
-
-            // Deliver child output to parent unconditionally — parent needs
-            // the notification regardless of whether the child has local turns.
-            if session.parent_session_id.is_some()
-                && let Some(output_text) =
-                    crate::services::notification::extract_turn_output(&result.turn_messages)
-                && let Err(e) = crate::services::notification::deliver_to_parent(
-                    &state.db_pool,
-                    &state.task_queue,
-                    &state.event_broadcast,
-                    &state.stop_turn_intents,
-                    &result.session_id,
-                    &output_text,
-                )
-                .await
-            {
-                tracing::error!(
-                    session_id = %result.session_id,
-                    error = %e,
-                    "failed to deliver turn-complete to parent"
-                );
-            }
-
-            // Only transition to input-required when the worker has no
-            // pending local turns. When has_pending_turn=true, the worker
-            // is already executing the next turn — emitting input-required
-            // would disrupt the frontend's streaming state machine.
-            // If has_pending_turn was incorrectly reported (no follow-up
-            // turn arrives), the idle-root reconciler catches it within ~90s.
-            if !result.has_pending_turn {
-                if session.status == "working" {
-                    if let Err(e) = db::sessions::update_status(
-                        &state.db_pool,
-                        &result.session_id,
-                        "input-required",
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            session_id = %result.session_id,
-                            error = %e,
-                            "failed to transition session to input-required"
-                        );
-                    } else {
-                        let event_payload = json!({
-                            "from": "working",
-                            "to": "input-required",
-                        });
-                        match db::events::insert(
-                            &state.db_pool,
-                            &session.execution_id,
-                            Some(&result.session_id),
-                            "state_change",
-                            &serde_json::to_string(&event_payload).unwrap(),
-                        )
-                        .await
-                        {
-                            Ok(event_id) => {
-                                let _ = state.event_broadcast.send(EventNotification::persisted(
-                                    session.execution_id.clone(),
-                                    event_id,
-                                ));
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    session_id = %result.session_id,
-                                    error = %e,
-                                    "failed to insert input-required state_change event"
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Child sessions: check queue and return TaskAvailable or NoAction
-                if session.parent_session_id.is_some() {
-                    if state
-                        .task_queue
-                        .has_task_for_session(&result.session_id)
-                        .await
-                        .map_err(|e| {
-                            tracing::error!("post-turn has_task_for_session failed: {e}");
-                            StatusCode::INTERNAL_SERVER_ERROR
-                        })?
-                    {
-                        return Ok(Json(WorkerSyncResponse::TaskAvailable {
-                            session_id: result.session_id.clone(),
-                        }));
-                    } else {
-                        return Ok(Json(WorkerSyncResponse::NoAction));
-                    }
-                }
-
-                // Propagate to execution for lead sessions
-                if session.parent_session_id.is_none() {
-                    use db::executions::CasResult;
-                    match db::executions::update_status_cas(
-                        &state.db_pool,
-                        &session.execution_id,
-                        "input-required",
-                        &["working"],
-                    )
-                    .await
-                    {
-                        Ok(CasResult::Applied) => {
-                            let exec_event = json!({
-                                "from": "working",
-                                "to": "input-required",
-                            });
-                            match db::events::insert(
-                                &state.db_pool,
-                                &session.execution_id,
-                                None,
-                                "state_change",
-                                &serde_json::to_string(&exec_event).unwrap(),
-                            )
-                            .await
-                            {
-                                Ok(event_id) => {
-                                    let _ =
-                                        state.event_broadcast.send(EventNotification::persisted(
-                                            session.execution_id.clone(),
-                                            event_id,
-                                        ));
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        execution_id = %session.execution_id,
-                                        error = %e,
-                                        "failed to insert execution input-required state_change event"
-                                    );
-                                }
-                            }
-                        }
-                        Ok(CasResult::Conflict) => {
-                            tracing::debug!(
-                                execution_id = %session.execution_id,
-                                "execution already transitioned from working — CAS conflict (expected)"
-                            );
-                        }
-                        Ok(CasResult::NotFound) => {
-                            tracing::error!(
-                                execution_id = %session.execution_id,
-                                "execution row missing — data integrity issue"
-                            );
-                            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                execution_id = %session.execution_id,
-                                error = %e,
-                                "failed to transition execution to input-required"
-                            );
-                            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                        }
-                    }
-
-                    // Check queue for root lead sessions too
-                    if state
-                        .task_queue
-                        .has_task_for_session(&result.session_id)
-                        .await
-                        .map_err(|e| {
-                            tracing::error!("post-turn has_task_for_session failed: {e}");
-                            StatusCode::INTERNAL_SERVER_ERROR
-                        })?
-                    {
-                        return Ok(Json(WorkerSyncResponse::TaskAvailable {
-                            session_id: result.session_id.clone(),
-                        }));
-                    }
-                }
-            }
-
-            // Fallback queue check: when has_pending_turn=true, the status
-            // transition was skipped but the parent may have queued work.
-            if result.has_pending_turn
-                && state
-                    .task_queue
-                    .has_task_for_session(&result.session_id)
-                    .await
-                    .map_err(|e| {
-                        tracing::error!("post-result has_task_for_session failed: {e}");
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?
-            {
-                return Ok(Json(WorkerSyncResponse::TaskAvailable {
-                    session_id: result.session_id.clone(),
-                }));
-            }
-        }
-    }
-
-    // Step 2: Handle session_state if present
-    if let Some(ref session_state) = request.session_state {
-        // Heartbeat: touch updated_at so recovery scan knows this worker is alive
-        if let Err(e) =
-            db::sessions::touch_updated_at(&state.db_pool, &session_state.session_id).await
-        {
-            tracing::warn!(error = %e, session_id = %session_state.session_id, "heartbeat touch failed");
-        }
-
-        // Active-turn heartbeats ("running") touch last_progress_at.
-        // Idle heartbeats ("waiting_for_event") do NOT — that distinction is
-        // what lets the liveness scan detect stuck-idle sessions.
-        //
-        // Trade-off: a hung executor (alive but wedged) will still mask itself
-        // via running heartbeats, same as the old updated_at behavior. We accept
-        // this because the alternative — not touching last_progress_at here —
-        // would falsely recover healthy quiet turns (long tool executions, slow
-        // API calls with no mid-turn output). Hung executor detection requires
-        // a turn-level watchdog in the worker, not a scheduler-side timestamp.
-        if session_state.status == "running" {
-            let _ = db::sessions::touch_last_progress_at(&state.db_pool, &session_state.session_id)
-                .await;
-        }
-
-        // If a session_result was included in this request, it was already
-        // processed in Step 1. Don't enter long-poll — the result submission
-        // must return immediately. Long-poll is only for standalone
-        // heartbeat/poll requests (e.g., start_active_turn_poll, start_long_poll).
-        if request.session_result.is_some() {
-            return Ok(Json(WorkerSyncResponse::NoAction));
-        }
-
-        return match session_state.status.as_str() {
-            // Both "waiting_for_event" (idle) and "running" (active turn) use
-            // long-poll so mid-turn commands (stop_turn, cancel) can be delivered.
-            // The distinction is progress tracking: "running" touches
-            // last_progress_at (above), "waiting_for_event" does not.
-            "waiting_for_event" | "running" => {
-                long_poll_session(&state, &session_state.session_id).await
-            }
-            "fetch_task" => fetch_task(&state, &session_state.session_id).await,
-            // Any other status — heartbeat ack
-            _ => Ok(Json(WorkerSyncResponse::NoAction)),
+    let mut skip_reconciler = false;
+    let mut executor_report_succeeded = false;
+    if let Some(report) = &req.executor_report {
+        let crash_meta = if report.executor_state == "crashed" {
+            req.turn_result
+                .as_ref()
+                .filter(|tr| tr.session_id == report.session_id)
+                .map(|tr| transition::CrashMeta {
+                    error: tr.error.clone(),
+                    error_kind: tr.error_kind.clone(),
+                    stderr: tr.stderr.clone(),
+                })
+        } else {
+            None
         };
-    }
-
-    // Step 3: Handle idle worker (no session_state, session_result already processed)
-    handle_idle_worker(&state).await
-}
-
-/// Long-poll loop: wait for a task in the session inbox or terminal status
-async fn long_poll_session(
-    state: &AppState,
-    session_id: &str,
-) -> Result<Json<WorkerSyncResponse>, StatusCode> {
-    let deadline = Instant::now() + Duration::from_secs(LONG_POLL_TIMEOUT_SECS);
-
-    loop {
-        let notified = state.task_queue.notified();
-
-        // Re-check terminal status every iteration
-        let session = match db::sessions::get_by_id(&state.db_pool, session_id).await {
-            Ok(s) => s,
-            Err(crate::error::SchedulerError::NotFound(_)) => {
-                tracing::warn!(
-                    session_id,
-                    "long-poll for unknown session, releasing worker"
-                );
-                return Ok(Json(WorkerSyncResponse::SessionComplete {
-                    session_id: session_id.to_string(),
-                }));
+        match process_executor_report(pool, worker_id, report, crash_meta).await {
+            Ok(applied) => {
+                executor_report_succeeded = applied;
+                if !applied || report.executor_state == "crashed" {
+                    skip_reconciler = true;
+                }
             }
             Err(e) => {
-                tracing::error!("long-poll get_by_id failed: {e}");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        };
+                tracing::warn!("executor_report error for {}: {e}", report.session_id);
 
-        if matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
-            return Ok(Json(WorkerSyncResponse::SessionComplete {
-                session_id: session_id.to_string(),
-            }));
-        }
-
-        // Check per-session command slot BEFORE checking task queue.
-        // This ensures stop_turn is delivered immediately, bypassing queued tasks.
-        {
-            let intents = state.stop_turn_intents.read().unwrap();
-            if intents.contains(session_id) {
-                return Ok(Json(WorkerSyncResponse::Command {
-                    command: "stop_turn".to_string(),
-                }));
-            }
-        }
-
-        if state
-            .task_queue
-            .has_task_for_session(session_id)
-            .await
-            .map_err(|e| {
-                tracing::error!("long-poll has_task_for_session failed: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
-        {
-            return Ok(Json(WorkerSyncResponse::TaskAvailable {
-                session_id: session_id.to_string(),
-            }));
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(Json(WorkerSyncResponse::NoAction));
-        }
-
-        tokio::select! {
-            _ = notified => continue,
-            _ = tokio::time::sleep(remaining) => {}
-        }
-    }
-}
-
-/// Pop next task for a session — worker-initiated after TaskAvailable wake.
-/// This is the only long-poll-adjacent path that performs a destructive pop.
-/// Safe because the worker actively awaits this response (no biased select race).
-async fn fetch_task(
-    state: &AppState,
-    session_id: &str,
-) -> Result<Json<WorkerSyncResponse>, StatusCode> {
-    match db::sessions::get_by_id(&state.db_pool, session_id).await {
-        Ok(s) if matches!(s.status.as_str(), "completed" | "failed" | "canceled") => {
-            return Ok(Json(WorkerSyncResponse::SessionComplete {
-                session_id: session_id.to_string(),
-            }));
-        }
-        Err(crate::error::SchedulerError::NotFound(_)) => {
-            return Ok(Json(WorkerSyncResponse::SessionComplete {
-                session_id: session_id.to_string(),
-            }));
-        }
-        Err(e) => {
-            tracing::error!("fetch_task get_by_id failed: {e}");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-        Ok(_) => {} // Session exists and is non-terminal; proceed to pop
-    }
-
-    // Defensive re-check: long-poll normally returns stop_turn before task_available,
-    // but a stop can land after task_available is observed and before fetch_task runs.
-    {
-        let intents = state.stop_turn_intents.read().unwrap();
-        if intents.contains(session_id) {
-            return Ok(Json(WorkerSyncResponse::Command {
-                command: "stop_turn".to_string(),
-            }));
-        }
-    }
-
-    // Destructive pop — no biased-select race (worker actively awaits within
-    // a single select arm). Residual risk: HTTP response loss after server
-    // commits DELETE would still lose the task (microsecond window).
-    if let Some(task) = state
-        .task_queue
-        .pop_by_session(session_id)
-        .await
-        .map_err(|e| {
-            tracing::error!("fetch_task pop_by_session failed: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-    {
-        // Test-only failpoint to make the post-pop stop race deterministic in
-        // contract tests. When unset, this adds no overhead to production paths.
-        if let Ok(delay_ms) = std::env::var("AGENTBEACON_TEST_FETCH_TASK_POST_POP_DELAY_MS")
-            && let Ok(ms) = delay_ms.parse::<u64>()
-            && ms > 0
-        {
-            tokio::time::sleep(Duration::from_millis(ms)).await;
-        }
-
-        // Re-fetch session to avoid stale snapshot (concurrent cancel could have
-        // changed status between initial fetch and pop_by_session).
-        // On re-fetch failure, skip the transition entirely — don't use stale data
-        // that could resurrect a canceled session. The widened guard in the
-        // turn-completion block (Change 1) handles cleanup on the next sync.
-        if let Ok(fresh_session) = db::sessions::get_by_id(&state.db_pool, session_id).await {
-            if matches!(
-                fresh_session.status.as_str(),
-                "completed" | "failed" | "canceled"
-            ) {
-                // Session became terminal after pop — task is already consumed,
-                // tell worker the session is done instead of delivering stale work.
-                tracing::warn!(
-                    session_id = %session_id,
-                    status = %fresh_session.status,
-                    "fetch_task: session became terminal after pop, discarding task"
-                );
-                return Ok(Json(WorkerSyncResponse::SessionComplete {
-                    session_id: session_id.to_string(),
-                }));
-            }
-
-            // A fresh stop can arrive after task_available woke the worker but before
-            // this destructive pop completed. In that case the popped task is exactly
-            // the work stop intended to suppress, so drop it instead of delivering it.
-            {
-                let intents = state.stop_turn_intents.read().unwrap();
-                if intents.contains(session_id) {
-                    tracing::info!(
-                        session_id = %session_id,
-                        "fetch_task: discarding popped task because stop_turn arrived after task_available"
-                    );
-                    return Ok(Json(WorkerSyncResponse::Command {
-                        command: "stop_turn".to_string(),
-                    }));
+                if report.executor_state == "crashed" {
+                    skip_reconciler = true;
+                } else {
+                    if let Ok(session) = db::sessions::get_by_id(pool, &report.session_id).await {
+                        if session.executor_state != report.executor_state {
+                            skip_reconciler = true;
+                        }
+                    } else {
+                        skip_reconciler = true;
+                    }
                 }
             }
+        }
+    }
 
-            if fresh_session.status == "input-required"
-                && let Err(e) = crate::services::messaging::transition_to_working(
-                    &state.db_pool,
-                    &state.event_broadcast,
-                    &fresh_session,
-                )
+    let needs_phase2 = req.turn_result.is_some() || req.command_ack.is_some();
+    let mut turn_result_session: Option<db::sessions::Session> = None;
+    let mut was_terminal_cancel = false;
+    let should_notify = req
+        .executor_report
+        .as_ref()
+        .is_some_and(|r| r.executor_state == "idle")
+        && req.executor_report.as_ref().map(|r| &r.session_id)
+            == req.turn_result.as_ref().map(|r| &r.session_id)
+        && req
+            .turn_result
+            .as_ref()
+            .is_some_and(|r| !r.messages.is_empty());
+
+    let mut notify_parent: Option<db::sessions::Session> = None;
+
+    if needs_phase2 {
+        if let Some(result) = &req.turn_result
+            && let Ok(session) = db::sessions::get_by_id(pool, &result.session_id).await
+            && session.worker_id.as_deref() == Some(worker_id)
+        {
+            turn_result_session = Some(session);
+        }
+
+        if should_notify
+            && let Some(ref session) = turn_result_session
+            && session.outcome.is_none()
+            && session.desired == "run"
+            && let Some(ref parent_id) = session.parent_session_id
+            && let Ok(parent) = db::sessions::get_by_id(pool, parent_id).await
+            && parent.outcome.is_none()
+            && let Ok(exec) = db::executions::get_by_id(pool, &session.execution_id).await
+            && exec.desired != "terminate"
+            && exec.outcome.is_none()
+        {
+            notify_parent = Some(parent);
+        }
+
+        let mut phase2_execution_id = turn_result_session.as_ref().map(|s| s.execution_id.clone());
+
+        if phase2_execution_id.is_none()
+            && let Some(ref ack_token) = req.command_ack
+        {
+            let ack_sql =
+                pool.prepare_query("SELECT execution_id FROM sessions WHERE command_token = ?");
+            if let Ok(Some(row)) = sqlx::query(&ack_sql)
+                .bind(ack_token.as_str())
+                .fetch_optional(pool.as_ref())
                 .await
             {
-                tracing::warn!(
-                    session_id = %session_id,
-                    error = %e,
-                    "fetch_task: transition_to_working failed (non-fatal)"
-                );
-            }
-        } else {
-            tracing::warn!(
-                session_id = %session_id,
-                "fetch_task: re-fetch failed, skipping transition (non-fatal)"
-            );
-        }
-
-        Ok(Json(WorkerSyncResponse::PromptDelivery {
-            session_id: session_id.to_string(),
-            task,
-        }))
-    } else {
-        // Task was consumed between wake and fetch (shouldn't happen
-        // for single-worker-per-session, but defensive)
-        Ok(Json(WorkerSyncResponse::NoAction))
-    }
-}
-
-/// Idle worker: find and claim an assignable session
-async fn handle_idle_worker(state: &AppState) -> Result<Json<WorkerSyncResponse>, StatusCode> {
-    // Try up to 2 times (handles race where another worker claims first)
-    for _ in 0..2 {
-        let session = db::sessions::find_assignable(&state.db_pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("find_assignable failed: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-        let session = match session {
-            Some(s) => s,
-            None => return Ok(Json(WorkerSyncResponse::NoAction)),
-        };
-
-        let claimed = db::sessions::claim_assignable(&state.db_pool, &session.id)
-            .await
-            .map_err(|e| {
-                tracing::error!("claim_assignable failed: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-        if !claimed {
-            // Someone else claimed it — retry
-            continue;
-        }
-
-        // Emit session state_change event
-        let session_state_event = json!({"from": "submitted", "to": "working"});
-        let event_id = db::events::insert(
-            &state.db_pool,
-            &session.execution_id,
-            Some(&session.id),
-            "state_change",
-            &serde_json::to_string(&session_state_event).unwrap(),
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("session state_change event failed: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-        let _ = state.event_broadcast.send(EventNotification::persisted(
-            session.execution_id.clone(),
-            event_id,
-        ));
-
-        // Transition execution submitted → working (only on first session claim)
-        let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id)
-            .await
-            .map_err(|e| {
-                tracing::error!("get execution after claim failed: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-        if execution.status == "submitted" {
-            use db::executions::CasResult;
-            match db::executions::update_status_cas(
-                &state.db_pool,
-                &session.execution_id,
-                "working",
-                &["submitted"],
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!("execution submitted→working failed: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })? {
-                CasResult::Applied => {
-                    let exec_state_event = json!({"from": "submitted", "to": "working"});
-                    let event_id = db::events::insert(
-                        &state.db_pool,
-                        &session.execution_id,
-                        None,
-                        "state_change",
-                        &serde_json::to_string(&exec_state_event).unwrap(),
-                    )
-                    .await
-                    .map_err(|e| {
-                        tracing::error!("execution state_change event failed: {e}");
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?;
-                    let _ = state.event_broadcast.send(EventNotification::persisted(
-                        session.execution_id.clone(),
-                        event_id,
-                    ));
-                }
-                CasResult::Conflict => {
-                    tracing::debug!(
-                        execution_id = %session.execution_id,
-                        "execution no longer submitted — skipping working transition"
-                    );
-                }
-                CasResult::NotFound => {
-                    tracing::error!(
-                        execution_id = %session.execution_id,
-                        "execution row missing — data integrity issue"
-                    );
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
+                phase2_execution_id = Some(row.get::<String, _>("execution_id"));
             }
         }
 
-        // Claimed successfully — try to pop initial task
-        if let Some(task) = state
-            .task_queue
-            .pop_by_session(&session.id)
-            .await
-            .map_err(|e| {
-                tracing::error!("pop_by_session after claim failed: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
-        {
-            return Ok(Json(WorkerSyncResponse::SessionAssigned {
-                session_id: session.id,
-                task,
-            }));
-        }
-
-        // Task not immediately available — wait briefly for it
-        // (can happen if push notification races with find_assignable)
-        let wait_deadline = Instant::now() + Duration::from_secs(LONG_POLL_TIMEOUT_SECS);
-        loop {
-            let notified = state.task_queue.notified();
-
-            // Check terminal status (session may have been cancelled since claim).
-            // Return NoAction (not SessionComplete) — the idle worker loop doesn't
-            // handle SessionComplete and would log a noisy "unexpected response" warning.
-            // NoAction means "nothing to assign, try again" which is correct here.
-            if let Ok(s) = db::sessions::get_by_id(&state.db_pool, &session.id).await
-                && matches!(s.status.as_str(), "completed" | "failed" | "canceled")
-            {
-                return Ok(Json(WorkerSyncResponse::NoAction));
-            }
-
-            if let Some(task) = state
-                .task_queue
-                .pop_by_session(&session.id)
+        let mut tx = if let Some(ref exec_id) = phase2_execution_id {
+            db::executions::begin_execution_tx(pool, exec_id)
                 .await
                 .map_err(|e| {
-                    tracing::error!("idle worker retry pop_by_session failed: {e}");
-                    StatusCode::INTERNAL_SERVER_ERROR
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("begin execution tx: {e}"),
+                    )
                 })?
-            {
-                return Ok(Json(WorkerSyncResponse::SessionAssigned {
-                    session_id: session.id,
-                    task,
-                }));
-            }
+        } else {
+            pool.begin()
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("begin tx: {e}")))?
+        };
 
-            let remaining = wait_deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                tracing::warn!(
-                    session_id = %session.id,
-                    "claimed session but initial task never arrived — unclaiming"
-                );
-                // Reset session to "submitted" so it can be re-assigned on next idle poll.
-                // Without this, session stays "working" with no worker — effectively orphaned
-                // until crash recovery detects staleness (minutes).
-                // Note: does not reconcile execution status (see KI-74).
-                if let Err(e) =
-                    db::sessions::update_status(&state.db_pool, &session.id, "submitted").await
-                {
-                    tracing::error!(session_id = %session.id, error = %e,
-                        "failed to unclaim session after idle timeout");
+        let mut tx_child_session: Option<db::sessions::Session> = None;
+        if let Some(result) = &req.turn_result
+            && turn_result_session.is_some()
+        {
+            match db::sessions::get_in_tx(pool, &mut tx, &result.session_id).await {
+                Ok(s) if s.worker_id.as_deref() == Some(worker_id) => {
+                    process_turn_result_in_tx(pool, &mut tx, &s, result)
+                        .await
+                        .map_err(|e| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("turn_result persist failed: {e}"),
+                            )
+                        })?;
+                    tx_child_session = Some(s);
                 }
+                Ok(_) => {
+                    tracing::debug!(
+                        "turn_result dropped: worker_id changed inside tx for session {}",
+                        result.session_id
+                    );
+                    turn_result_session = None;
+                }
+                Err(_) => {
+                    turn_result_session = None;
+                }
+            }
+        }
+
+        if should_notify && turn_result_session.is_some() {
+            let child_ok = tx_child_session
+                .as_ref()
+                .is_some_and(|s| s.desired == "run" && s.outcome.is_none());
+
+            let mut tx_parent_session: Option<db::sessions::Session> = None;
+            let notify_still_valid = if !child_ok {
+                false
+            } else if notify_parent.is_some() {
+                let tx_exec = db::executions::get_in_tx(
+                    pool,
+                    &mut tx,
+                    &tx_child_session.as_ref().unwrap().execution_id,
+                )
+                .await;
+                let exec_ok = tx_exec
+                    .as_ref()
+                    .is_ok_and(|e| e.desired != "terminate" && e.outcome.is_none());
+
+                let parent_ok = if exec_ok {
+                    let tx_parent =
+                        db::sessions::get_in_tx(pool, &mut tx, &notify_parent.as_ref().unwrap().id)
+                            .await;
+                    let ok = tx_parent
+                        .as_ref()
+                        .is_ok_and(|p| p.outcome.is_none() && p.desired != "terminate");
+                    if ok {
+                        tx_parent_session = tx_parent.ok();
+                    }
+                    ok
+                } else {
+                    false
+                };
+                exec_ok && parent_ok
+            } else {
+                true
+            };
+
+            if notify_still_valid && let Some(ref session) = turn_result_session {
+                let notification_data = serde_json::json!({
+                    "type": "turn_complete",
+                    "child_session_id": &session.id,
+                });
+
+                if let Some(ref parent) = notify_parent {
+                    let parent_id = &parent.id;
+
+                    let parent_is_stopped = tx_parent_session
+                        .as_ref()
+                        .is_some_and(|p| p.desired == "stop");
+                    if parent_is_stopped {
+                        let resume_sql = pool.prepare_query(
+                            "UPDATE sessions SET desired = 'run', desired_by = 'system:turn_complete_notify', \
+                             desired_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
+                             WHERE id = ? AND desired = 'stop'",
+                        );
+                        sqlx::query(&resume_sql)
+                            .bind(parent_id)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("auto-resume parent failed: {e}"),
+                                )
+                            })?;
+                    }
+
+                    let notif_text = format!("Child session {} turn complete.", session.id);
+                    let notification = serde_json::json!({
+                        "message": {
+                            "role": "ROLE_USER",
+                            "parts": [
+                                {"text": notif_text},
+                                {"data": {
+                                    "type": "turn_complete",
+                                    "child_session_id": &session.id,
+                                }}
+                            ]
+                        }
+                    });
+                    let payload_json = serde_json::to_string(&notification).unwrap_or_default();
+                    let source = format!("child_result:{}", session.id);
+                    let insert_sql = pool.prepare_query(
+                        "INSERT INTO task_queue (execution_id, session_id, task_payload, source) VALUES (?, ?, ?, ?)",
+                    );
+                    sqlx::query(&insert_sql)
+                        .bind(&session.execution_id)
+                        .bind(parent_id)
+                        .bind(&payload_json)
+                        .bind(&source)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("turn-complete notification enqueue failed: {e}"),
+                            )
+                        })?;
+
+                    let platform_payload = serde_json::json!({
+                        "parts": [{"data": notification_data}]
+                    });
+                    let platform_str = serde_json::to_string(&platform_payload).unwrap_or_default();
+                    let event_sql = pool.prepare_query(
+                        "INSERT INTO events (execution_id, session_id, event_type, payload) \
+                         VALUES (?, ?, 'platform', ?) RETURNING id",
+                    );
+                    sqlx::query(&event_sql)
+                        .bind(&session.execution_id)
+                        .bind(parent_id)
+                        .bind(&platform_str)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("turn-complete platform event failed: {e}"),
+                            )
+                        })?;
+                } else if session.parent_session_id.is_none() {
+                    let platform_payload = serde_json::json!({
+                        "parts": [{"data": notification_data}]
+                    });
+                    let platform_str = serde_json::to_string(&platform_payload).unwrap_or_default();
+                    let event_sql = pool.prepare_query(
+                        "INSERT INTO events (execution_id, session_id, event_type, payload) \
+                         VALUES (?, ?, 'platform', ?) RETURNING id",
+                    );
+                    let _ = sqlx::query(&event_sql)
+                        .bind(&session.execution_id)
+                        .bind(&session.id)
+                        .bind(&platform_str)
+                        .execute(&mut *tx)
+                        .await;
+                }
+            }
+        }
+
+        if let Some(ack_token) = &req.command_ack {
+            match process_command_ack_in_tx(pool, &mut tx, worker_id, ack_token).await {
+                Ok(terminal) => was_terminal_cancel = terminal,
+                Err(e) => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("command_ack failed: {e}"),
+                    ));
+                }
+            }
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("commit tx: {e}")))?;
+
+        if let Some(ref session) = turn_result_session {
+            let _ = state
+                .event_broadcast
+                .send(crate::app::EventNotification::persisted(
+                    session.execution_id.clone(),
+                    0,
+                ));
+        }
+    }
+
+    if executor_report_succeeded
+        && turn_result_session.is_none()
+        && let Some(report) = &req.executor_report
+        && let Ok(s) = db::sessions::get_by_id(pool, &report.session_id).await
+    {
+        let _ = state
+            .event_broadcast
+            .send(crate::app::EventNotification::persisted(s.execution_id, 0));
+    }
+
+    if was_terminal_cancel {
+        skip_reconciler = true;
+    }
+
+    if needs_phase2 {
+        state.task_queue.wake_waiters();
+    }
+
+    if skip_reconciler {
+        return Ok(Json(WorkerSyncResponse::NoAction));
+    }
+
+    match run_reconciler_for_worker(pool, worker_id, &state).await {
+        ReconcilerResult::Command(resp) => Ok(Json(resp)),
+        ReconcilerResult::NoAction | ReconcilerResult::NothingFound => {
+            let timeout_secs = state.long_poll_timeout_secs;
+            if timeout_secs == 0 {
                 return Ok(Json(WorkerSyncResponse::NoAction));
             }
 
-            tokio::select! {
-                _ = notified => continue,
-                _ = tokio::time::sleep(remaining) => {}
+            let notified = state.task_queue.notified();
+
+            if let ReconcilerResult::Command(resp) =
+                run_reconciler_for_worker(pool, worker_id, &state).await
+            {
+                return Ok(Json(resp));
+            }
+
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), notified).await;
+
+            {
+                let mut heartbeats = state.worker_heartbeats.write().unwrap();
+                heartbeats.insert(worker_id.to_string(), std::time::Instant::now());
+            }
+
+            if let ReconcilerResult::Command(resp) =
+                run_reconciler_for_worker(pool, worker_id, &state).await
+            {
+                return Ok(Json(resp));
+            }
+
+            Ok(Json(WorkerSyncResponse::NoAction))
+        }
+    }
+}
+
+/// Process an executor report: update session state via transition function.
+/// Returns Ok(true) if the report was applied, Ok(false) if it was dropped (stale).
+async fn process_executor_report(
+    pool: &db::DbPool,
+    worker_id: &str,
+    report: &ExecutorReport,
+    crash_meta: Option<transition::CrashMeta>,
+) -> Result<bool, String> {
+    let session = db::sessions::get_by_id(pool, &report.session_id)
+        .await
+        .map_err(|e| format!("session not found: {e}"))?;
+
+    if session.worker_id.as_deref() != Some(worker_id) {
+        tracing::debug!(
+            "stale worker report dropped: session {} owned by {:?}, report from {}",
+            session.id,
+            session.worker_id,
+            worker_id
+        );
+        return Ok(false);
+    }
+
+    let state = match report.executor_state.as_str() {
+        "running" => ExState::Running,
+        "idle" => ExState::Idle,
+        "crashed" => ExState::Crashed,
+        other => return Err(format!("unknown executor_state: {other}")),
+    };
+
+    if let Some(ref asid) = report.agent_session_id {
+        db::sessions::update_agent_session_id(pool, &session.id, asid, worker_id)
+            .await
+            .map_err(|e| format!("update agent_session_id failed: {e}"))?;
+    }
+
+    transition::transition(
+        pool,
+        &session.execution_id,
+        &session.id,
+        transition::Action::SetExecutorState(state, worker_id.to_string(), crash_meta),
+    )
+    .await
+    .map_err(|e| format!("transition failed: {e}"))?;
+
+    Ok(true)
+}
+
+/// Process turn result inside caller's transaction.
+/// Caller pre-fetches session and validates worker ownership.
+/// SSE broadcast is caller's responsibility post-commit.
+async fn process_turn_result_in_tx(
+    pool: &db::DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    session: &db::sessions::Session,
+    result: &TurnResult,
+) -> Result<(), String> {
+    if !result.messages.is_empty() || result.error.is_some() {
+        for msg in &result.messages {
+            let payload_str = serde_json::to_string(&msg.payload)
+                .map_err(|e| format!("serialize message failed: {e}"))?;
+
+            if let Some(seq) = msg.msg_seq {
+                let sql = pool.prepare_query(
+                    "INSERT INTO events (execution_id, session_id, event_type, payload, msg_seq) \
+                     VALUES (?, ?, 'message', ?, ?) \
+                     ON CONFLICT (session_id, msg_seq) DO NOTHING",
+                );
+                sqlx::query(&sql)
+                    .bind(&session.execution_id)
+                    .bind(&session.id)
+                    .bind(&payload_str)
+                    .bind(seq)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| format!("insert message event failed: {e}"))?;
+            } else {
+                let sql = pool.prepare_query(
+                    "INSERT INTO events (execution_id, session_id, event_type, payload) \
+                     VALUES (?, ?, 'message', ?)",
+                );
+                sqlx::query(&sql)
+                    .bind(&session.execution_id)
+                    .bind(&session.id)
+                    .bind(&payload_str)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| format!("insert message event failed: {e}"))?;
+            }
+        }
+
+        if let Some(ref error) = result.error {
+            let error_payload = serde_json::json!({
+                "error": error,
+                "error_kind": result.error_kind,
+            });
+            let payload_str = serde_json::to_string(&error_payload).unwrap_or_default();
+            let sql = pool.prepare_query(
+                "INSERT INTO events (execution_id, session_id, event_type, payload) \
+                 VALUES (?, ?, 'platform', ?)",
+            );
+            let _ = sqlx::query(&sql)
+                .bind(&session.execution_id)
+                .bind(&session.id)
+                .bind(&payload_str)
+                .execute(&mut **tx)
+                .await;
+        }
+    }
+
+    Ok(())
+}
+
+/// Process command acknowledgment inside caller's transaction.
+async fn process_command_ack_in_tx(
+    pool: &db::DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    worker_id: &str,
+    ack_token: &str,
+) -> Result<bool, String> {
+    let sql = pool.prepare_query(
+        "SELECT id, execution_id, worker_id, command_type, outcome FROM sessions WHERE command_token = ?",
+    );
+    let row = sqlx::query(&sql)
+        .bind(ack_token)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| format!("query command_token failed: {e}"))?;
+
+    let Some(row) = row else {
+        tracing::debug!(ack_token, worker_id, "ack: token not found (stale)");
+        return Ok(false);
+    };
+
+    let session_id: String = row.get("id");
+    let session_worker_id: Option<String> = row.get("worker_id");
+    let command_type: Option<String> = row.get("command_type");
+
+    if session_worker_id.as_deref() != Some(worker_id) {
+        tracing::debug!(
+            ack_token,
+            worker_id,
+            ?session_worker_id,
+            "ack: stale worker, dropping"
+        );
+        return Ok(false);
+    }
+
+    let session_outcome: Option<String> = row.get("outcome");
+    let is_terminal_cancel = command_type.as_deref() == Some("cancel") && session_outcome.is_some();
+    let clear_sql = if is_terminal_cancel {
+        pool.prepare_query(
+            "UPDATE sessions SET command_token = NULL, command_type = NULL, \
+             command_at = NULL, command_has_payload = FALSE, worker_id = NULL, \
+             executor_state = CASE WHEN executor_state NOT IN ('idle', 'crashed') \
+               THEN 'crashed' ELSE executor_state END, \
+             updated_at = CURRENT_TIMESTAMP WHERE id = ? AND command_token = ?",
+        )
+    } else {
+        pool.prepare_query(
+            "UPDATE sessions SET command_token = NULL, command_type = NULL, \
+             command_at = NULL, command_has_payload = FALSE, \
+             updated_at = CURRENT_TIMESTAMP WHERE id = ? AND command_token = ?",
+        )
+    };
+
+    let ack_result = sqlx::query(&clear_sql)
+        .bind(&session_id)
+        .bind(ack_token)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("clear command fields failed: {e}"))?;
+
+    if ack_result.rows_affected() == 0 {
+        tracing::debug!(
+            session_id = %session_id,
+            ack_token,
+            "ack: command_token already cleared (stale)"
+        );
+        return Ok(false);
+    }
+
+    tracing::info!(
+        session_id = %session_id,
+        ack_token,
+        command_type = ?command_type,
+        is_terminal_cancel,
+        "ack processed"
+    );
+
+    Ok(is_terminal_cancel)
+}
+
+use sqlx::Row;
+
+#[allow(clippy::large_enum_variant)]
+enum ReconcilerResult {
+    /// Reconciler produced a command to send.
+    Command(WorkerSyncResponse),
+    /// Reconciler ran on assigned sessions, no command needed.
+    NoAction,
+    /// No sessions found for this worker, no unassigned work — caller should long-poll.
+    NothingFound,
+}
+
+/// Evaluate sessions and produce commands for this worker.
+async fn run_reconciler_for_worker(
+    pool: &db::DbPool,
+    worker_id: &str,
+    state: &AppState,
+) -> ReconcilerResult {
+    let sessions = match db::sessions::find_sessions_for_worker(pool, worker_id).await {
+        Ok(s) => s,
+        Err(_) => return ReconcilerResult::NothingFound,
+    };
+
+    if !sessions.is_empty() {
+        let mut sessions_mutated = false;
+        for _pass in 0..2 {
+            let fresh = match db::sessions::find_sessions_for_worker(pool, worker_id).await {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let mut any_repaired = false;
+            for session in &fresh {
+                let pending = db::sessions::count_pending_turns(pool, &session.id)
+                    .await
+                    .unwrap_or(0);
+                let execution = match db::executions::get_by_id(pool, &session.execution_id).await {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+
+                match reconciler::reconcile(
+                    pool,
+                    session,
+                    pending,
+                    &execution,
+                    true,
+                    Some(worker_id),
+                )
+                .await
+                {
+                    Ok(ReconcilerAction::SendCommand { token, action }) => {
+                        return ReconcilerResult::Command(WorkerSyncResponse::Command {
+                            token,
+                            action,
+                        });
+                    }
+                    Ok(ReconcilerAction::Repaired) => {
+                        any_repaired = true;
+                        sessions_mutated = true;
+                    }
+                    Ok(ReconcilerAction::Mutated) => {
+                        sessions_mutated = true;
+                    }
+                    Ok(ReconcilerAction::NoAction) => {}
+                    Err(e) => {
+                        tracing::warn!("reconciler error for session {}: {e}", session.id);
+                    }
+                }
+            }
+            if !any_repaired {
+                break;
+            }
+        }
+        if sessions_mutated {
+            state.task_queue.wake_waiters();
+        }
+        return ReconcilerResult::NoAction;
+    }
+
+    if let Ok(Some(session)) = db::sessions::find_unassigned_with_work(pool).await {
+        let pending = db::sessions::count_pending_turns(pool, &session.id)
+            .await
+            .unwrap_or(0);
+        if let Ok(execution) = db::executions::get_by_id(pool, &session.execution_id).await
+            && let Ok(ReconcilerAction::SendCommand { token, action }) =
+                reconciler::reconcile(pool, &session, pending, &execution, true, Some(worker_id))
+                    .await
+        {
+            return ReconcilerResult::Command(WorkerSyncResponse::Command { token, action });
+        }
+    }
+
+    let mut global_mutated = false;
+    if let Ok(all_sessions) = db::sessions::find_reconcilable(pool).await {
+        let heartbeats = state.worker_heartbeats.read().unwrap().clone();
+        let hb_timeout = std::time::Duration::from_secs(state.heartbeat_timeout_secs);
+
+        for session in &all_sessions {
+            if session.worker_id.as_deref() == Some(worker_id) {
+                continue;
+            }
+
+            if let Some(ref sess_worker_id) = session.worker_id {
+                let expired = match heartbeats.get(sess_worker_id.as_str()) {
+                    Some(last_seen) => last_seen.elapsed() > hb_timeout,
+                    None => state.scheduler_started_at.elapsed() > hb_timeout,
+                };
+                if expired {
+                    if session.command_has_payload {
+                        let event_payload = serde_json::json!({
+                            "message": "Agent recovered from a crash. A message may have been lost."
+                        });
+                        let _ = db::events::insert(
+                            pool,
+                            &session.execution_id,
+                            Some(&session.id),
+                            "platform",
+                            &serde_json::to_string(&event_payload).unwrap_or_default(),
+                        )
+                        .await;
+                    }
+                    let _ = transition::transition(
+                        pool,
+                        &session.execution_id,
+                        &session.id,
+                        transition::Action::DetectCrash,
+                    )
+                    .await;
+                    global_mutated = true;
+                    continue;
+                }
+
+                if session.outcome.is_none() {
+                    let needs_global_reconciliation = session.command_token.is_some()
+                        || session.desired == "terminate"
+                        || session.executor_state == "crashed";
+                    if !needs_global_reconciliation {
+                        continue;
+                    }
+                }
+            }
+
+            if session.worker_id.is_none()
+                && session.outcome.is_none()
+                && session.desired != "terminate"
+                && session.executor_state != "crashed"
+            {
+                continue;
+            }
+
+            let pending = db::sessions::count_pending_turns(pool, &session.id)
+                .await
+                .unwrap_or(0);
+            if let Ok(execution) = db::executions::get_by_id(pool, &session.execution_id).await {
+                match reconciler::reconcile(pool, session, pending, &execution, false, None).await {
+                    Ok(ReconcilerAction::Mutated) => {
+                        global_mutated = true;
+                        let _ =
+                            state
+                                .event_broadcast
+                                .send(crate::app::EventNotification::persisted(
+                                    session.execution_id.clone(),
+                                    0,
+                                ));
+                    }
+                    Ok(ReconcilerAction::Repaired) => {
+                        global_mutated = true;
+                        let _ =
+                            state
+                                .event_broadcast
+                                .send(crate::app::EventNotification::persisted(
+                                    session.execution_id.clone(),
+                                    0,
+                                ));
+                    }
+                    _ => {}
+                }
             }
         }
     }
 
-    Ok(Json(WorkerSyncResponse::NoAction))
+    if global_mutated {
+        state.task_queue.wake_waiters();
+        return ReconcilerResult::NoAction;
+    }
+
+    ReconcilerResult::NothingFound
 }
 
-// --- Mid-turn message event endpoint ---
-
+/// Request body for POST /api/worker/events (mid-turn message forwarding).
+/// The worker sends incremental agent output here for live streaming / SSE.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerMessageRequest {
+    pub worker_id: String,
     pub session_id: String,
     pub execution_id: String,
     pub msg_seq: i64,
@@ -1014,56 +827,69 @@ pub struct WorkerMessageRequest {
     pub ephemeral: bool,
 }
 
-/// Handle mid-turn message events POSTed by the worker during an active turn.
-pub async fn handle_worker_event(
+/// Handle POST /api/worker/events — persist mid-turn message and broadcast via SSE.
+pub async fn worker_event(
     State(state): State<AppState>,
     Json(request): Json<WorkerMessageRequest>,
-) -> Result<StatusCode, SchedulerError> {
-    // Resolve execution_id server-side to prevent misattribution.
-    // The dedup index is (session_id, msg_seq) — a wrong execution_id would
-    // win the race and block the correct sync-path insert.
-    let session = db::sessions::get_by_id(&state.db_pool, &request.session_id).await?;
+) -> Result<StatusCode, (StatusCode, String)> {
+    let session = db::sessions::get_by_id(&state.db_pool, &request.session_id)
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, "session not found".to_string()))?;
+    if session.worker_id.as_deref() != Some(&request.worker_id) {
+        tracing::debug!(
+            "stale worker_event dropped: session {} owned by {:?}, event from {}",
+            request.session_id,
+            session.worker_id,
+            request.worker_id
+        );
+        return Ok(StatusCode::OK);
+    }
 
-    if session.execution_id != request.execution_id {
+    let payload_str = serde_json::to_string(&request.payload)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid payload: {e}")))?;
+
+    let execution_id = session.execution_id.clone();
+    if request.execution_id != execution_id {
         tracing::warn!(
-            session_id = %request.session_id,
-            expected_execution_id = %session.execution_id,
-            received_execution_id = %request.execution_id,
-            "worker event execution_id mismatch, using server value"
+            "worker_event: client execution_id {} != session.execution_id {} for session {}",
+            request.execution_id,
+            execution_id,
+            request.session_id
         );
     }
 
     if request.ephemeral {
-        // Ephemeral: broadcast to SSE directly, skip DB persistence
-        let _ = state.event_broadcast.send(EventNotification::ephemeral(
-            session.execution_id,
-            EphemeralPayload {
-                session_id: request.session_id,
-                msg_seq: request.msg_seq,
-                payload: request.payload,
-            },
-        ));
+        let _ = state
+            .event_broadcast
+            .send(crate::app::EventNotification::ephemeral(
+                execution_id,
+                crate::app::EphemeralPayload {
+                    session_id: request.session_id,
+                    msg_seq: request.msg_seq,
+                    payload: request.payload,
+                },
+            ));
     } else {
-        let payload_str = serde_json::to_string(&request.payload)
-            .map_err(|e| SchedulerError::ValidationFailed(format!("invalid payload: {e}")))?;
-
-        if let Some(event_id) = db::events::insert_with_dedup(
+        let event_id = db::events::insert_with_dedup(
             &state.db_pool,
-            &session.execution_id,
+            &execution_id,
             &request.session_id,
             "message",
             &payload_str,
             request.msg_seq,
         )
-        .await?
-        {
-            // Persisted mid-turn event = real progress. Touch last_progress_at
-            // so the liveness scan doesn't falsely recover active turns.
-            let _ = db::sessions::touch_last_progress_at(&state.db_pool, &request.session_id).await;
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("insert event: {e}"),
+            )
+        })?;
 
+        if let Some(eid) = event_id {
             let _ = state
                 .event_broadcast
-                .send(EventNotification::persisted(session.execution_id, event_id));
+                .send(crate::app::EventNotification::persisted(execution_id, eid));
         }
     }
 

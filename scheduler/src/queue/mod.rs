@@ -36,7 +36,7 @@ impl TaskQueue {
 
     /// Push task to queue (persisted to database), then wake all waiters
     pub async fn push(&self, task: TaskAssignment) -> Result<(), SchedulerError> {
-        crate::db::task_queue::insert(&self.db_pool, &task).await?;
+        crate::db::task_queue::insert(&self.db_pool, &task, None).await?;
         self.notify.notify_waiters();
         Ok(())
     }
@@ -125,21 +125,19 @@ mod tests {
         .await
         .expect("Failed to create agent");
 
-        sqlx::query("INSERT INTO executions (id, context_id, status) VALUES (?, ?, 'submitted')")
+        sqlx::query("INSERT INTO executions (id, context_id) VALUES (?, ?)")
             .bind(execution_id)
             .bind(execution_id)
             .execute(pool.as_ref())
             .await
             .expect("Failed to create execution");
 
-        sqlx::query(
-            "INSERT INTO sessions (id, execution_id, agent_id, status, last_progress_at) VALUES (?, ?, 'agent-1', 'submitted', CURRENT_TIMESTAMP)"
-        )
-        .bind(session_id)
-        .bind(execution_id)
-        .execute(pool.as_ref())
-        .await
-        .expect("Failed to create session");
+        sqlx::query("INSERT INTO sessions (id, execution_id, agent_id) VALUES (?, ?, 'agent-1')")
+            .bind(session_id)
+            .bind(execution_id)
+            .execute(pool.as_ref())
+            .await
+            .expect("Failed to create session");
     }
 
     fn create_test_task(execution_id: &str, session_id: &str) -> TaskAssignment {

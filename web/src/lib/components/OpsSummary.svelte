@@ -14,9 +14,9 @@
 
   let running = $derived(executions.filter(e => e.status === 'working').length);
 
-  let waiting = $derived(
+  let questions = $derived(
     executions.filter(e =>
-      e.status === 'input-required' && $executionsWithQuestions.has(e.id)
+      !e.outcome && e.desired !== 'terminate' && $executionsWithQuestions.has(e.id)
     ).length
   );
 
@@ -37,7 +37,7 @@
   function handleTileClick(filter: HomeFeedFilter) {
     const wasActive = get(homeFeedFilter) === filter;
     homeFeedFilter.update(current => current === filter ? null : filter);
-    if (filter === 'waiting' && waiting > 0 && !wasActive) {
+    if (filter === 'waiting' && questions > 0 && !wasActive) {
       actionPanelCollapsed.set(false);
       userExplicitlyCollapsed.set(false);
     }
@@ -45,7 +45,7 @@
 
   let tiles = $derived([
     { key: 'running' as const, count: running, label: 'Running', icon: '\u25CF' },
-    { key: 'waiting' as const, count: waiting, label: 'Waiting', icon: '\u25C9' },
+    { key: 'waiting' as const, count: questions, label: 'Questions', icon: '\u25C9' },
     { key: 'completed' as const, count: completed24h, label: 'Done 24h', icon: '\u2713' },
     { key: 'failed' as const, count: failed24h, label: 'Failed 24h', icon: '\u2717' },
   ]);

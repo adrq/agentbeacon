@@ -20,11 +20,19 @@ use crate::executor::{
     AgentCommand, AgentEvent, ExecutorHandle, SessionConfig, extract_parts, start_executor,
 };
 use crate::sync::{
-    RetryConfig, SyncRequest, SyncResponse, TurnMessage, WorkerMessageEvent, perform_sync,
-    perform_sync_long_poll, perform_sync_with_retry, post_worker_message,
+    CommandAction, ExecutorReport, RetryConfig, SyncRequest, SyncResponse, TurnMessage, TurnResult,
+    WorkerMessageEvent, perform_sync_long_poll, perform_sync_with_retry, post_worker_message,
 };
 
+/// Time to wait for executor response to a control command (cancel/stop_turn)
+/// before escalating to SIGINT.
+const CONTROL_CMD_SDK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Time to wait after SIGINT before escalating to SIGKILL.
+const CONTROL_CMD_SIGINT_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// How a session exited — lets the caller distinguish normal completion from shutdown.
+#[allow(dead_code)]
 enum SessionExit {
     Done,
     ShutdownRequested,
@@ -38,17 +46,19 @@ async fn main() -> Result<()> {
 
     let mut args = Args::parse();
 
-    // Setup mode: extract executors + install SDK dependencies, then exit
     if args.setup {
         return run_setup(&args);
     }
 
-    // Daemon mode: scheduler_url is guaranteed present by clap's required_unless_present
     let scheduler_url = args.scheduler_url.take().expect(
         "scheduler_url must be set in daemon mode (enforced by clap required_unless_present)",
     );
 
-    // Resolve executor directory: CLI/env override → embedded extraction
+    let worker_id = args
+        .worker_id
+        .take()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     if args.executors_dir.is_none() && std::env::var("AGENTBEACON_EXECUTORS_DIR").is_err() {
         let data_dir = embedded_executors::resolve_data_dir();
         let dir = embedded_executors::extract_if_needed(&data_dir)
@@ -66,12 +76,13 @@ async fn main() -> Result<()> {
 
     tracing::info!(
         scheduler_url = %scheduler_url,
+        worker_id = %worker_id,
         interval = ?args.interval,
         "Worker started"
     );
 
     tokio::select! {
-        result = run_worker_loop(&scheduler_url, &args, &client) => result,
+        result = run_worker_loop(&scheduler_url, &worker_id, &args, &client) => result,
         _ = shutdown_signal() => {
             tracing::info!("Received shutdown signal, exiting gracefully");
             Ok(())
@@ -160,7 +171,12 @@ async fn validate_startup(scheduler_url: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_worker_loop(scheduler_url: &str, args: &Args, client: &reqwest::Client) -> Result<()> {
+async fn run_worker_loop(
+    scheduler_url: &str,
+    worker_id: &str,
+    args: &Args,
+    client: &reqwest::Client,
+) -> Result<()> {
     let retry_config = RetryConfig {
         startup_max_attempts: args.startup_max_attempts,
         reconnect_max_attempts: args.reconnect_max_attempts,
@@ -169,13 +185,13 @@ async fn run_worker_loop(scheduler_url: &str, args: &Args, client: &reqwest::Cli
 
     let mut has_connected = false;
 
-    tracing::info!("Starting worker loop, syncing every {:?}", args.interval);
+    tracing::info!("Starting worker loop (long-poll)");
 
     loop {
         let response = perform_sync_with_retry(
             client,
             scheduler_url,
-            &SyncRequest::idle(),
+            &SyncRequest::empty(worker_id),
             has_connected,
             &retry_config,
         )
@@ -184,98 +200,71 @@ async fn run_worker_loop(scheduler_url: &str, args: &Args, client: &reqwest::Cli
         has_connected = true;
 
         match response {
-            SyncResponse::NoAction => {
-                tokio::time::sleep(args.interval).await;
-            }
-            SyncResponse::SessionAssigned { session_id, task } => {
-                tracing::info!(
-                    session_id = %session_id,
-                    execution_id = %task.execution_id,
-                    "Session assigned"
-                );
+            SyncResponse::NoAction => {}
+            SyncResponse::Command { token, action } => match action {
+                CommandAction::Assign {
+                    session_id,
+                    execution_id,
+                    payload,
+                    resume,
+                    cwd,
+                    driver,
+                    agent_config: cmd_agent_config,
+                    agent_session_id,
+                    project_id,
+                    mcp_servers,
+                    next_msg_seq,
+                } => {
+                    tracing::info!(
+                        session_id = %session_id,
+                        resume = resume,
+                        "Session assigned"
+                    );
 
-                match run_session(
-                    scheduler_url,
-                    args,
-                    client,
-                    &retry_config,
-                    &session_id,
-                    task,
-                )
-                .await
-                {
-                    Ok(SessionExit::Done) => {}
-                    Ok(SessionExit::ShutdownRequested) => {
-                        tracing::info!("Received shutdown command during session");
-                        return Ok(());
+                    match run_session(
+                        scheduler_url,
+                        worker_id,
+                        args,
+                        client,
+                        &retry_config,
+                        &session_id,
+                        &execution_id,
+                        &token,
+                        payload,
+                        resume,
+                        cwd,
+                        driver,
+                        cmd_agent_config,
+                        agent_session_id,
+                        project_id,
+                        mcp_servers,
+                        next_msg_seq,
+                    )
+                    .await
+                    {
+                        Ok(SessionExit::Done) => {}
+                        Ok(SessionExit::ShutdownRequested) => {
+                            tracing::info!("Shutdown requested during session");
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                session_id = %session_id,
+                                error = %e,
+                                "Session failed"
+                            );
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!(
-                            session_id = %session_id,
-                            error = %e,
-                            "Session failed"
-                        );
-                    }
-                }
-                // Return to idle after session ends
-            }
-            SyncResponse::Command { command } => match command.as_str() {
-                "shutdown" => {
-                    tracing::info!("Received shutdown command");
-                    return Ok(());
-                }
-                "cancel" => {
-                    tracing::debug!("Received cancel while idle, ignoring");
-                    tokio::time::sleep(args.interval).await;
                 }
                 other => {
-                    tracing::warn!(command = other, "Unknown command while idle");
-                    tokio::time::sleep(args.interval).await;
+                    tracing::warn!("Unexpected command while idle: {:?}", other);
                 }
             },
-            other => {
-                tracing::warn!("Unexpected response while idle: {:?}", other);
-                tokio::time::sleep(args.interval).await;
-            }
         }
     }
 }
 
-/// Create a long-poll future that owns its SyncRequest.
-///
-/// `perform_sync_long_poll` borrows its `&SyncRequest`, so we can't pass a
-/// temporary directly into `Box::pin(...)` — the temporary would be dropped
-/// before the future runs. This helper moves the owned request into the
-/// async block.
-fn start_long_poll<'a>(
-    client: &'a reqwest::Client,
-    scheduler_url: &'a str,
-    session_id: &str,
-    long_poll_timeout: Duration,
-) -> Pin<Box<dyn Future<Output = Result<SyncResponse>> + Send + 'a>> {
-    let request = SyncRequest::waiting_for_event(session_id);
-    Box::pin(async move {
-        perform_sync_long_poll(client, scheduler_url, &request, long_poll_timeout).await
-    })
-}
-
-/// Long-poll variant that signals the scheduler that a turn is actively executing.
-/// The scheduler treats "running" heartbeats as proof of progress, preventing
-/// false recovery of long-running turns.
-fn start_active_turn_poll<'a>(
-    client: &'a reqwest::Client,
-    scheduler_url: &'a str,
-    session_id: &str,
-    long_poll_timeout: Duration,
-) -> Pin<Box<dyn Future<Output = Result<SyncResponse>> + Send + 'a>> {
-    let request = SyncRequest::running(session_id);
-    Box::pin(async move {
-        perform_sync_long_poll(client, scheduler_url, &request, long_poll_timeout).await
-    })
-}
-
 /// Drains mid-turn message events from the channel and POSTs them to the scheduler.
-/// Serializes delivery to prevent burst-induced resource exhaustion.
 async fn message_sender_task(
     client: reqwest::Client,
     scheduler_url: String,
@@ -288,110 +277,108 @@ async fn message_sender_task(
     }
 }
 
-async fn acknowledge_stop_without_active_turn(
-    client: &reqwest::Client,
-    scheduler_url: &str,
-    retry_config: &RetryConfig,
-    session_id: &str,
-    agent_session_id: Option<String>,
-) -> Result<SyncResponse> {
-    perform_sync_with_retry(
-        client,
-        scheduler_url,
-        &SyncRequest::with_result(
-            session_id,
-            agent_session_id,
-            Vec::new(),
-            None,
-            Some("stopped_by_user".to_string()),
-            None,
-            false,
-        ),
-        true,
-        retry_config,
-    )
-    .await
+/// Create a long-poll future that owns its SyncRequest.
+fn start_long_poll<'a>(
+    client: &'a reqwest::Client,
+    scheduler_url: &'a str,
+    worker_id: &str,
+    report: Option<ExecutorReport>,
+    ack_token: Option<String>,
+    long_poll_timeout: Duration,
+) -> Pin<Box<dyn Future<Output = Result<SyncResponse>> + Send + 'a>> {
+    let mut request = SyncRequest::empty(worker_id);
+    request.executor_report = report;
+    request.command_ack = ack_token;
+    Box::pin(async move {
+        perform_sync_long_poll(client, scheduler_url, &request, long_poll_timeout).await
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_session(
     scheduler_url: &str,
+    worker_id: &str,
     args: &Args,
     client: &reqwest::Client,
     retry_config: &RetryConfig,
     session_id: &str,
-    initial_task: crate::sync::TaskAssignment,
+    execution_id: &str,
+    initial_token: &str,
+    initial_payload: Option<serde_json::Value>,
+    resume: bool,
+    cwd: Option<String>,
+    driver: serde_json::Value,
+    cmd_agent_config: serde_json::Value,
+    initial_agent_session_id: Option<String>,
+    cmd_project_id: Option<String>,
+    cmd_mcp_servers: Option<serde_json::Value>,
+    next_msg_seq: i64,
 ) -> Result<SessionExit> {
-    let task_payload = &initial_task.task_payload;
-
-    let driver = task_payload
-        .get("driver")
-        .unwrap_or(&serde_json::Value::Null);
-
-    let agent_type = match driver.get("platform").and_then(|v| v.as_str()) {
-        Some(p) => p.to_string(),
-        None => {
-            let e =
-                anyhow::anyhow!("task_payload missing driver.platform — cannot select executor");
-            tracing::error!(error = %e, "Invalid task payload");
-            let _ = perform_sync_with_retry(
-                client,
-                scheduler_url,
-                &SyncRequest::with_result(
-                    session_id,
-                    None,
-                    Vec::new(),
-                    Some(format!("{e:#}")),
-                    Some("executor_failed".into()),
-                    None,
-                    false,
-                ),
-                true,
-                retry_config,
-            )
-            .await;
-            return Err(e);
-        }
-    };
-
-    let agent_config = task_payload
-        .get("agent_config")
-        .cloned()
-        .unwrap_or_default();
-
-    let sandbox_config = driver.get("config").cloned().unwrap_or_default();
-
-    let cwd = task_payload
-        .get("cwd")
+    let agent_type = driver
+        .get("platform")
         .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "current_dir() failed, falling back to /tmp");
-                    std::path::PathBuf::from("/tmp")
-                })
-                .to_string_lossy()
-                .to_string()
-        });
+        .unwrap_or("unknown")
+        .to_string();
 
-    let project_id = task_payload
-        .get("project_id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let agent_config =
+        resolve_agent_config(cmd_agent_config, &initial_payload, &driver, &agent_type)?;
 
-    let user_mcp_servers = task_payload
-        .get("mcp_servers")
+    let sandbox_config = driver
+        .get("config")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
+    let project_id = cmd_project_id.or_else(|| {
+        initial_payload
+            .as_ref()
+            .and_then(|p| p.get("project_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    });
+
+    let user_mcp_servers = cmd_mcp_servers.unwrap_or_else(|| {
+        initial_payload
+            .as_ref()
+            .and_then(|p| p.get("mcp_servers").cloned())
+            .unwrap_or(serde_json::Value::Null)
+    });
+
+    let resolved_cwd = cwd.unwrap_or_else(|| {
+        std::env::current_dir()
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "current_dir() failed, falling back to /tmp");
+                std::path::PathBuf::from("/tmp")
+            })
+            .to_string_lossy()
+            .to_string()
+    });
+
+    let task_payload = {
+        let mut p = if resume && initial_payload.is_none() {
+            serde_json::json!({
+                "message": {
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "[System] Session recovered after interruption. Resume where you left off."}]
+                }
+            })
+        } else {
+            initial_payload
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({}))
+        };
+        if resume && let Some(ref asid) = initial_agent_session_id {
+            p["resumeSessionId"] = serde_json::json!(asid);
+        }
+        p
+    };
+
     let config = SessionConfig {
         session_id: session_id.to_string(),
-        execution_id: initial_task.execution_id.clone(),
+        execution_id: execution_id.to_string(),
         agent_type,
         agent_config,
         sandbox_config,
-        cwd,
+        cwd: resolved_cwd,
         scheduler_url: scheduler_url.to_string(),
         node_path: args.node_path.clone(),
         executors_dir: args.executors_dir.clone(),
@@ -401,23 +388,21 @@ async fn run_session(
         user_mcp_servers,
     };
 
-    // Start executor
     let executor = match start_executor(config).await {
         Ok(h) => h,
         Err(e) => {
             tracing::error!(error = %e, "Failed to start executor");
-            // Report failure so scheduler can transition session to failed
             let _ = perform_sync_with_retry(
                 client,
                 scheduler_url,
-                &SyncRequest::with_result(
-                    session_id,
-                    None,
-                    Vec::new(),
-                    Some(format!("{e:#}")),
-                    Some("executor_failed".into()),
-                    None,
-                    false,
+                &SyncRequest::with_report_and_ack(
+                    worker_id,
+                    ExecutorReport {
+                        session_id: session_id.to_string(),
+                        executor_state: "crashed".to_string(),
+                        agent_session_id: None,
+                    },
+                    initial_token,
                 ),
                 true,
                 retry_config,
@@ -431,9 +416,9 @@ async fn run_session(
         cmd_tx,
         mut event_rx,
         task_handle,
+        child_pid,
     } = executor;
 
-    // Mid-turn message forwarding channel + sender task
     let (msg_fwd_tx, msg_fwd_rx) = tokio::sync::mpsc::unbounded_channel::<WorkerMessageEvent>();
     let sender_client = client.clone();
     let sender_url = scheduler_url.to_string();
@@ -441,197 +426,127 @@ async fn run_session(
         message_sender_task(sender_client, sender_url, msg_fwd_rx).await;
     });
 
-    // Start the agent with the initial task payload
-    let _ = cmd_tx.send(AgentCommand::Start(initial_task.task_payload.clone()));
+    let _ = cmd_tx.send(AgentCommand::Start(task_payload));
 
-    // Long-poll is NOT started yet — defer until agent is initialized (Init event)
-    // or the first TurnComplete. This prevents premature task delivery before the
-    // agent has processed its initial prompt.
-    let mut poll_fut: Option<Pin<Box<dyn Future<Output = Result<SyncResponse>> + Send>>> = None;
-
-    let mut agent_session_id: Option<String> = None;
-    let mut turns_in_flight: usize = 1; // starts at 1 — processing initial prompt
-    let mut cancelling = false;
-    let mut completing = false;
-    let mut stopping = false; // user-initiated stop in progress
-    let mut msg_seq: i64 = 0;
+    let mut agent_session_id: Option<String> = initial_agent_session_id;
+    let mut msg_seq: i64 = next_msg_seq;
     let mut turn_messages: Vec<TurnMessage> = Vec::new();
+    let mut last_ack: Option<String> = Some(initial_token.to_string());
+    let mut agent_busy = true;
+    let mut cancel_ack_pending = false;
+    let mut pending_stop_token: Option<String> = None;
+
+    let mut escalation_deadline: Option<tokio::time::Instant> = None;
+    let mut escalation_stage: u8 = 0;
+
+    let mut poll_fut: Option<Pin<Box<dyn Future<Output = Result<SyncResponse>> + Send>>> = None;
 
     let exit = loop {
         tokio::select! {
-            biased; // prefer agent events (drain before checking scheduler)
+            biased;
 
-            // Branch A: Agent event
             event = event_rx.recv() => {
                 match event {
                     Some(AgentEvent::TurnComplete(result)) => {
-                        turns_in_flight = turns_in_flight.saturating_sub(1);
+                        agent_busy = false;
                         agent_session_id = result.agent_session_id.clone()
                             .or(agent_session_id);
 
-                        let is_cancelled = cancelling
-                            || result.error_kind.as_ref()
-                                .is_some_and(|ek| ek.as_str() == "cancelled");
-
-                        // Stop is authoritative for downstream orchestration semantics.
-                        // Once the user requests stop on a session, we intentionally
-                        // report this turn as stopped_by_user so the scheduler suppresses
-                        // normal turn-complete side effects such as parent notification.
-                        // This matches the UX requirement that a child stop should prevent
-                        // its result from propagating upward even in tight completion races.
-                        let is_stopped = stopping
-                            || result.error_kind.as_ref()
-                                .is_some_and(|ek| ek.as_str() == "stopped_by_user");
-
                         let mut messages_for_sync = std::mem::take(&mut turn_messages);
 
-                        // Fallback: if no mid-turn messages were streamed but the
-                        // executor produced a final output, synthesize one entry so
-                        // the result isn't silently dropped.
                         if messages_for_sync.is_empty()
-                            && let Some(output) = result.output.clone()
-                        {
-                            msg_seq += 1;
-                            messages_for_sync.push(TurnMessage { msg_seq, payload: output });
-                        }
+                            && let Some(output) = result.output.clone() {
+                                msg_seq += 1;
+                                messages_for_sync.push(TurnMessage { msg_seq, payload: output });
+                            }
 
-                        // Drop any in-flight long-poll future before sending
-                        // sync-with-result (side-effect: cancels the request).
                         drop(poll_fut.take());
 
-                        // Report result to scheduler
-                        let response = match perform_sync_with_retry(client, scheduler_url,
-                            &SyncRequest::with_result(session_id,
-                                agent_session_id.clone(),
-                                messages_for_sync, result.error,
-                                if is_stopped {
-                                    Some("stopped_by_user".to_string())
-                                } else {
-                                    result.error_kind.map(|ek| ek.as_str().to_string())
-                                },
-                                result.stderr,
-                                turns_in_flight > 0,
-                            ), true, retry_config,
+                        let report = ExecutorReport {
+                            session_id: session_id.to_string(),
+                            executor_state: "idle".to_string(),
+                            agent_session_id: agent_session_id.clone(),
+                        };
+                        let turn_result = TurnResult {
+                            session_id: session_id.to_string(),
+                            messages: messages_for_sync,
+                            error: result.error,
+                            error_kind: result.error_kind.map(|ek| ek.as_str().to_string()),
+                            stderr: result.stderr,
+                        };
+
+                        let mut req = SyncRequest::with_report_and_result(
+                            worker_id, report, turn_result,
+                        );
+                        if cancel_ack_pending {
+                            req.command_ack = last_ack.take();
+                        } else if let Some(stop_token) = pending_stop_token.take() {
+                            req.command_ack = Some(stop_token);
+                        } else {
+                            req.command_ack = last_ack.take();
+                        }
+
+                        let response = match perform_sync_with_retry(
+                            client, scheduler_url, &req, true, retry_config,
                         ).await {
                             Ok(r) => r,
                             Err(e) => {
-                                tracing::error!(error = %e, "failed to report result to scheduler");
+                                tracing::error!(error = %e, "failed to report turn result");
                                 let _ = cmd_tx.send(AgentCommand::Stop);
                                 break SessionExit::Done;
                             }
                         };
 
-                        if is_cancelled || completing {
-                            let _ = cmd_tx.send(AgentCommand::Stop);
-                            break SessionExit::Done;
-                        }
-
-                        // Reset stopping flag — stop-turn is complete, session continues
-                        if is_stopped {
-                            stopping = false;
-                            // Fall through to normal response handling (restart long-poll etc.)
-                        }
+                        let was_cancel_ack = cancel_ack_pending;
+                        cancel_ack_pending = false;
+                        escalation_deadline = None;
+                        escalation_stage = 0;
 
                         match response {
-                            SyncResponse::TaskAvailable { .. } => {
-                                // Task available — start long-poll, which will immediately
-                                // return TaskAvailable, then Branch B handles the fetch_task
-                                let poll_fn = if turns_in_flight > 0 {
-                                    start_active_turn_poll
-                                } else {
-                                    start_long_poll
-                                };
-                                poll_fut = Some(poll_fn(
-                                    client, scheduler_url,
-                                    session_id, args.long_poll_timeout,
+                            SyncResponse::Command { token, action } => {
+                                if was_cancel_ack {
+                                    break SessionExit::Done;
+                                }
+                                if let Some(exit) = handle_command(
+                                    &cmd_tx, &token, &action, session_id,
+                                    &mut agent_busy, &mut last_ack,
+                                    &mut cancel_ack_pending, &mut pending_stop_token,
+                                ) {
+                                    break exit;
+                                }
+                                if cancel_ack_pending || pending_stop_token.is_some() {
+                                    escalation_deadline = Some(tokio::time::Instant::now() + CONTROL_CMD_SDK_TIMEOUT);
+                                    escalation_stage = 0;
+                                }
+                                let ack_for_poll = if pending_stop_token.is_some() { None } else { last_ack.clone() };
+                                poll_fut = Some(start_long_poll(
+                                    client, scheduler_url, worker_id,
+                                    None, ack_for_poll, args.long_poll_timeout,
                                 ));
                             }
-                            SyncResponse::SessionComplete { .. } => {
-                                let _ = cmd_tx.send(AgentCommand::Stop);
-                                break SessionExit::Done;
-                            }
-                            SyncResponse::Command { command } if command == "cancel" => {
-                                let _ = cmd_tx.send(AgentCommand::Cancel);
-                                break SessionExit::Done;
-                            }
-                            SyncResponse::Command { command } if command == "stop_turn" => {
-                                if turns_in_flight > 0 {
-                                    let _ = cmd_tx.send(AgentCommand::StopTurn);
-                                    // SDK/ACP executors drop buffered follow-up prompts on stop,
-                                    // so only the currently running turn can still complete.
-                                    turns_in_flight = 1;
-                                    stopping = true;
-                                    // Don't restart long-poll — wait for TurnComplete
-                                } else {
-                                    match acknowledge_stop_without_active_turn(
-                                        client,
-                                        scheduler_url,
-                                        retry_config,
-                                        session_id,
-                                        agent_session_id.clone(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(SyncResponse::SessionComplete { .. }) => {
-                                            let _ = cmd_tx.send(AgentCommand::Stop);
-                                            break SessionExit::Done;
-                                        }
-                                        Ok(SyncResponse::Command { command }) if command == "cancel" => {
-                                            let _ = cmd_tx.send(AgentCommand::Stop);
-                                            break SessionExit::Done;
-                                        }
-                                        Ok(SyncResponse::Command { command }) if command == "shutdown" => {
-                                            let _ = cmd_tx.send(AgentCommand::Stop);
-                                            break SessionExit::ShutdownRequested;
-                                        }
-                                        Ok(_) => {
-                                            poll_fut = Some(start_long_poll(
-                                                client,
-                                                scheduler_url,
-                                                session_id,
-                                                args.long_poll_timeout,
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                error = %e,
-                                                "failed to acknowledge stop without active turn"
-                                            );
-                                            let _ = cmd_tx.send(AgentCommand::Stop);
-                                            break SessionExit::Done;
-                                        }
-                                    }
+                            SyncResponse::NoAction => {
+                                if was_cancel_ack {
+                                    break SessionExit::Done;
                                 }
-                            }
-                            SyncResponse::Command { command } if command == "shutdown" => {
-                                let _ = cmd_tx.send(AgentCommand::Stop);
-                                break SessionExit::ShutdownRequested;
-                            }
-                            _ => {
-                                // NoAction — start appropriate long-poll. Use
-                                // active-turn poll while turns are in flight so
-                                // last_progress_at stays fresh for quiet turns.
-                                let poll_fn = if turns_in_flight > 0 {
-                                    start_active_turn_poll
-                                } else {
-                                    start_long_poll
-                                };
-                                poll_fut = Some(poll_fn(
-                                    client, scheduler_url,
-                                    session_id, args.long_poll_timeout,
+                                poll_fut = Some(start_long_poll(
+                                    client, scheduler_url, worker_id,
+                                    None, last_ack.clone(), args.long_poll_timeout,
                                 ));
                             }
                         }
                     }
                     Some(AgentEvent::Init { session_id: sid }) => {
                         agent_session_id = Some(sid);
-                        // Agent is initialized and processing the initial prompt.
-                        // Start active-turn poll so mid-turn messages can be delivered
-                        // and the scheduler knows a turn is in progress.
                         if poll_fut.is_none() {
-                            poll_fut = Some(start_active_turn_poll(
-                                client, scheduler_url,
-                                session_id, args.long_poll_timeout,
+                            let report = ExecutorReport {
+                                session_id: session_id.to_string(),
+                                executor_state: "running".to_string(),
+                                agent_session_id: agent_session_id.clone(),
+                            };
+                            poll_fut = Some(start_long_poll(
+                                client, scheduler_url, worker_id,
+                                Some(report), last_ack.clone(),
+                                args.long_poll_timeout,
                             ));
                         }
                     }
@@ -641,239 +556,235 @@ async fn run_session(
                             turn_messages.push(TurnMessage { msg_seq, payload: output.clone() });
                         }
                         let _ = msg_fwd_tx.send(WorkerMessageEvent {
+                            worker_id: worker_id.to_string(),
                             session_id: session_id.to_string(),
-                            execution_id: initial_task.execution_id.clone(),
+                            execution_id: execution_id.to_string(),
                             msg_seq,
                             payload: output,
                             ephemeral,
                         });
                     }
                     Some(AgentEvent::ProcessDied { error, stderr }) => {
-                        let messages_for_sync = std::mem::take(&mut turn_messages);
-                        let _ = perform_sync_with_retry(client, scheduler_url,
-                            &SyncRequest::with_result(session_id, agent_session_id.clone(),
-                                messages_for_sync, Some(error), Some("executor_failed".into()),
-                                stderr, false),
-                            true, retry_config).await;
+                        let report = ExecutorReport {
+                            session_id: session_id.to_string(),
+                            executor_state: "crashed".to_string(),
+                            agent_session_id: agent_session_id.clone(),
+                        };
+                        let turn_result = TurnResult {
+                            session_id: session_id.to_string(),
+                            messages: std::mem::take(&mut turn_messages),
+                            error: Some(error),
+                            error_kind: Some("executor_failed".to_string()),
+                            stderr,
+                        };
+                        let mut req = SyncRequest::with_report_and_result(
+                            worker_id, report, turn_result,
+                        );
+                        if cancel_ack_pending {
+                            req.command_ack = last_ack.take();
+                        } else if let Some(stop_token) = pending_stop_token.take() {
+                            req.command_ack = Some(stop_token);
+                        } else {
+                            req.command_ack = last_ack.take();
+                        }
+                        let _ = perform_sync_with_retry(
+                            client, scheduler_url, &req, true, retry_config,
+                        ).await;
                         break SessionExit::Done;
                     }
                     None => {
-                        // Channel closed — executor task exited
+                        let pending_ack = if cancel_ack_pending {
+                            last_ack.take()
+                        } else {
+                            pending_stop_token.take().or_else(|| last_ack.take())
+                        };
+                        if let Some(ack) = pending_ack {
+                            let mut req = SyncRequest::empty(worker_id);
+                            req.command_ack = Some(ack);
+                            let _ = perform_sync_with_retry(
+                                client, scheduler_url, &req, true, retry_config,
+                            ).await;
+                        }
                         break SessionExit::Done;
                     }
                 }
             }
 
-            // Branch B: Scheduler long-poll (only active when poll_fut is Some)
             response = async {
                 match poll_fut.as_mut() {
                     Some(f) => f.await,
                     None => std::future::pending().await,
                 }
             }, if poll_fut.is_some() => {
-                // poll_fut was consumed, clear it before processing
                 poll_fut = None;
+                let _ = &poll_fut;
 
                 match response {
-                    Ok(SyncResponse::TaskAvailable { .. }) => {
-                        if cancelling || completing {
-                            // During cancel/complete, don't fetch new tasks or restart long-poll.
-                            // Agent will fire TurnComplete soon; Branch A handles it.
-                            continue;
+                    Ok(SyncResponse::Command { token, action }) => {
+                        if !cancel_ack_pending {
+                            last_ack = None;
                         }
-                        // Task is available in queue — fetch it via single-attempt sync
-                        // (destructive pop happens here, in a request we actively await).
-                        match perform_sync(
-                            client,
-                            scheduler_url,
-                            &SyncRequest::fetch_task(session_id),
-                        )
-                        .await
-                        {
-                            Ok(SyncResponse::PromptDelivery { task, .. }) => {
-                                match extract_parts(&task.task_payload) {
-                                    Ok(parts) => {
-                                        turns_in_flight += 1;
-                                        let _ = cmd_tx.send(AgentCommand::Prompt(parts));
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(error = %e, "bad task payload from fetch_task");
-                                        let _ = perform_sync_with_retry(client,
-                                            scheduler_url,
-                                            &SyncRequest::with_result(session_id,
-                                                agent_session_id.clone(),
-                                                Vec::new(), Some(format!("Bad task payload: {e}")),
-                                                Some("internal_error".into()),
-                                                None, false),
-                                            true, retry_config).await;
-                                    }
-                                }
-                            }
-                            Ok(SyncResponse::SessionComplete { .. }) => {
-                                if turns_in_flight > 0 {
-                                    let _ = cmd_tx.send(AgentCommand::Cancel);
-                                    completing = true;
-                                    continue;
-                                } else {
-                                    let _ = cmd_tx.send(AgentCommand::Stop);
-                                    break SessionExit::Done;
-                                }
-                            }
-                            Ok(SyncResponse::Command { command }) if command == "cancel" => {
-                                let _ = cmd_tx.send(AgentCommand::Cancel);
-                                cancelling = true;
-                                continue;
-                            }
-                            Ok(SyncResponse::Command { command }) if command == "stop_turn" => {
-                                if turns_in_flight > 0 {
-                                    let _ = cmd_tx.send(AgentCommand::StopTurn);
-                                    // SDK/ACP executors drop buffered follow-up prompts on stop,
-                                    // so only the currently running turn can still complete.
-                                    turns_in_flight = 1;
-                                    stopping = true;
-                                    continue;
-                                }
-                                match acknowledge_stop_without_active_turn(
-                                    client,
-                                    scheduler_url,
-                                    retry_config,
-                                    session_id,
-                                    agent_session_id.clone(),
-                                )
-                                .await
-                                {
-                                    Ok(SyncResponse::SessionComplete { .. }) => {
-                                        let _ = cmd_tx.send(AgentCommand::Stop);
-                                        break SessionExit::Done;
-                                    }
-                                    Ok(SyncResponse::Command { command }) if command == "cancel" => {
-                                        let _ = cmd_tx.send(AgentCommand::Stop);
-                                        break SessionExit::Done;
-                                    }
-                                    Ok(SyncResponse::Command { command }) if command == "shutdown" => {
-                                        let _ = cmd_tx.send(AgentCommand::Stop);
-                                        break SessionExit::ShutdownRequested;
-                                    }
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        tracing::error!(
-                                            error = %e,
-                                            "failed to acknowledge stop without active turn"
-                                        );
-                                        let _ = cmd_tx.send(AgentCommand::Stop);
-                                        break SessionExit::Done;
-                                    }
-                                }
-                            }
-                            Ok(SyncResponse::Command { command }) if command == "shutdown" => {
-                                let _ = cmd_tx.send(AgentCommand::Stop);
-                                break SessionExit::ShutdownRequested;
-                            }
-                            Ok(_) => {
-                                // NoAction — task was consumed (shouldn't happen for
-                                // single-worker-per-session, but defensive).
-                                // Falls through to restart long-poll.
-                            }
-                            Err(e) => {
-                                // Single attempt failed — task stays in queue.
-                                // Fall through to restart long-poll, which will
-                                // rediscover the task via has_task_for_session.
-                                tracing::warn!(error = %e, "fetch_task failed, will retry via long-poll");
-                            }
+
+                        if let Some(exit) = handle_command(
+                            &cmd_tx, &token, &action, session_id,
+                            &mut agent_busy, &mut last_ack,
+                            &mut cancel_ack_pending, &mut pending_stop_token,
+                        ) {
+                            break exit;
+                        }
+                        if cancel_ack_pending || pending_stop_token.is_some() {
+                            escalation_deadline = Some(tokio::time::Instant::now() + CONTROL_CMD_SDK_TIMEOUT);
+                            escalation_stage = 0;
                         }
                     }
-                    Ok(SyncResponse::Command { command }) if command == "cancel" => {
-                        let _ = cmd_tx.send(AgentCommand::Cancel);
-                        cancelling = true;
-                        // Don't restart the long-poll — only listen for TurnComplete/ProcessDied
-                        continue;
-                    }
-                    Ok(SyncResponse::Command { command }) if command == "stop_turn" => {
-                        if turns_in_flight > 0 {
-                            let _ = cmd_tx.send(AgentCommand::StopTurn);
-                            // SDK/ACP executors drop buffered follow-up prompts on stop,
-                            // so only the currently running turn can still complete.
-                            turns_in_flight = 1;
-                            stopping = true;
-                            // Don't restart the long-poll — wait for TurnComplete from executor
-                            continue;
+                    Ok(SyncResponse::NoAction) => {
+                        if !cancel_ack_pending {
+                            last_ack = None;
                         }
-                        match acknowledge_stop_without_active_turn(
-                            client,
-                            scheduler_url,
-                            retry_config,
-                            session_id,
-                            agent_session_id.clone(),
-                        )
-                        .await
-                        {
-                            Ok(SyncResponse::SessionComplete { .. }) => {
-                                let _ = cmd_tx.send(AgentCommand::Stop);
-                                break SessionExit::Done;
-                            }
-                            Ok(SyncResponse::Command { command }) if command == "cancel" => {
-                                let _ = cmd_tx.send(AgentCommand::Stop);
-                                break SessionExit::Done;
-                            }
-                            Ok(SyncResponse::Command { command }) if command == "shutdown" => {
-                                let _ = cmd_tx.send(AgentCommand::Stop);
-                                break SessionExit::ShutdownRequested;
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                tracing::error!(
-                                    error = %e,
-                                    "failed to acknowledge stop without active turn"
-                                );
-                                let _ = cmd_tx.send(AgentCommand::Stop);
-                                break SessionExit::Done;
-                            }
-                        }
-                    }
-                    Ok(SyncResponse::Command { command }) if command == "shutdown" => {
-                        let _ = cmd_tx.send(AgentCommand::Stop);
-                        break SessionExit::ShutdownRequested;
-                    }
-                    Ok(SyncResponse::SessionComplete { .. }) => {
-                        if turns_in_flight > 0 {
-                            // Cancel the in-progress turn so the executor can SIGTERM the subprocess
-                            let _ = cmd_tx.send(AgentCommand::Cancel);
-                            completing = true;
-                            continue;
-                        } else {
-                            let _ = cmd_tx.send(AgentCommand::Stop);
-                            break SessionExit::Done;
-                        }
-                    }
-                    Ok(_) => {
-                        // NoAction — normal, will restart long-poll below
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "long-poll error");
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }
-                // Restart the long-poll (cancel path skips this via `continue`).
-                // Use active-turn poll while a turn is executing so the scheduler
-                // knows the session is making progress (prevents false recovery).
-                let poll_fn = if turns_in_flight > 0 {
-                    start_active_turn_poll
-                } else {
-                    start_long_poll
+
+                let state = if agent_busy { "running" } else { "idle" };
+                let report = ExecutorReport {
+                    session_id: session_id.to_string(),
+                    executor_state: state.to_string(),
+                    agent_session_id: agent_session_id.clone(),
                 };
-                poll_fut = Some(poll_fn(
-                    client, scheduler_url,
-                    session_id, args.long_poll_timeout,
+                let ack_for_poll = if cancel_ack_pending || pending_stop_token.is_some() {
+                    None
+                } else {
+                    last_ack.clone()
+                };
+                poll_fut = Some(start_long_poll(
+                    client, scheduler_url, worker_id,
+                    Some(report), ack_for_poll,
+                    args.long_poll_timeout,
                 ));
+            }
+
+            _ = async {
+                match escalation_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            }, if escalation_deadline.is_some() => {
+                escalation_stage += 1;
+                match escalation_stage {
+                    1 => {
+                        tracing::warn!("Escalation: executor did not respond to control command, sending SIGINT");
+                        if let Some(pid) = child_pid {
+                            let _ = nix::sys::signal::kill(
+                                nix::unistd::Pid::from_raw(pid as i32),
+                                nix::sys::signal::Signal::SIGINT,
+                            );
+                        }
+                        escalation_deadline = Some(tokio::time::Instant::now() + CONTROL_CMD_SIGINT_TIMEOUT);
+                    }
+                    _ => {
+                        tracing::warn!("Escalation: SIGINT timed out, sending SIGKILL");
+                        if let Some(pid) = child_pid {
+                            let _ = nix::sys::signal::kill(
+                                nix::unistd::Pid::from_raw(pid as i32),
+                                nix::sys::signal::Signal::SIGKILL,
+                            );
+                        }
+                        escalation_deadline = None;
+                    }
+                }
             }
         }
     };
 
-    // Graceful shutdown: drop channels to signal background tasks, await them
     drop(cmd_tx);
     drop(msg_fwd_tx);
     let _ = task_handle.await;
     let _ = sender_handle.await;
 
     Ok(exit)
+}
+
+/// Handle a command from the scheduler. Returns Some(SessionExit) if the session should end.
+#[allow(clippy::too_many_arguments)]
+fn handle_command(
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<AgentCommand>,
+    token: &str,
+    action: &CommandAction,
+    session_id: &str,
+    agent_busy: &mut bool,
+    last_ack: &mut Option<String>,
+    cancel_ack_pending: &mut bool,
+    pending_stop_token: &mut Option<String>,
+) -> Option<SessionExit> {
+    match action {
+        CommandAction::FeedTurn { payload, .. } => {
+            match extract_parts(payload) {
+                Ok(parts) => {
+                    *agent_busy = true;
+                    let _ = cmd_tx.send(AgentCommand::Prompt(parts));
+                    *last_ack = Some(token.to_string());
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "bad feed_turn payload, withholding ack");
+                }
+            }
+            None
+        }
+        CommandAction::StopTurn { .. } => {
+            if *agent_busy {
+                let _ = cmd_tx.send(AgentCommand::StopTurn);
+                *pending_stop_token = Some(token.to_string());
+            } else {
+                *last_ack = Some(token.to_string());
+            }
+            None
+        }
+        CommandAction::Cancel { .. } => {
+            let _ = cmd_tx.send(AgentCommand::Cancel);
+            *pending_stop_token = None;
+            *last_ack = Some(token.to_string());
+            *cancel_ack_pending = true;
+            None
+        }
+        CommandAction::Assign { .. } => {
+            tracing::warn!("unexpected assign command during session {session_id}");
+            None
+        }
+    }
+}
+
+fn is_sdk_agent(agent_type: &str) -> bool {
+    matches!(agent_type, "claude_sdk" | "copilot_sdk")
+}
+
+/// Resolve agent_config from the assign command, with fallback for non-SDK agents.
+fn resolve_agent_config(
+    cmd_agent_config: serde_json::Value,
+    initial_payload: &Option<serde_json::Value>,
+    driver: &serde_json::Value,
+    agent_type: &str,
+) -> Result<serde_json::Value> {
+    if cmd_agent_config.is_object() {
+        return Ok(cmd_agent_config);
+    }
+
+    if is_sdk_agent(agent_type) {
+        anyhow::bail!("missing required agent_config (agent_type={agent_type})");
+    }
+
+    if let Some(payload_ac) = initial_payload
+        .as_ref()
+        .and_then(|p| p.get("agent_config"))
+        .filter(|v| v.is_object())
+    {
+        Ok(payload_ac.clone())
+    } else {
+        Ok(driver
+            .get("config")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
+    }
 }

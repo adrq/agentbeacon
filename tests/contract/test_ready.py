@@ -1,5 +1,5 @@
 """
-T007: Contract test for Scheduler GET /api/ready endpoint.
+Contract test for Scheduler GET /api/ready endpoint.
 
 This test verifies that the scheduler binary serves the ready endpoint correctly:
 - Start scheduler binary directly

@@ -9,15 +9,12 @@
   import { useQueryClient } from '@tanstack/svelte-query';
 
   const statusOrder: Record<string, number> = {
-    'input-required': 0,
+    'awaiting_input': 0,
     'working': 1,
-    'submitted': 2,
     'completed': 3,
     'failed': 4,
     'canceled': 5,
   };
-
-  const terminalStatuses = new Set(['completed', 'failed', 'canceled']);
 
   const queryClient = useQueryClient();
   const projects = projectsQuery();
@@ -25,7 +22,7 @@
   const agentsQ = agentsQuery();
 
   let executions = $derived(execsQuery.data ?? []);
-  let inputRequiredCount = $derived($executionsWithQuestions.size);
+  let questionsCount = $derived($executionsWithQuestions.size);
 
   let projectNameMap = $derived(
     new Map((projects.data ?? []).map(p => [p.id, p.name]))
@@ -34,11 +31,15 @@
   let searchText = $state('');
   let statusFilter = $state<'all' | 'active' | 'done' | 'fail'>('all');
 
-  const STATUS_GROUPS: Record<string, string[]> = {
-    active: ['working', 'input-required', 'submitted'],
-    done: ['completed'],
-    fail: ['failed', 'canceled'],
-  };
+  // Filter by outcome presence instead of status strings
+  function matchesStatusGroup(exec: import('../types').Execution, group: string): boolean {
+    switch (group) {
+      case 'active': return exec.outcome == null && exec.desired !== 'terminate';
+      case 'done': return exec.outcome === 'completed';
+      case 'fail': return exec.outcome === 'failed' || exec.outcome === 'canceled' || (exec.desired === 'terminate' && exec.outcome == null);
+      default: return true;
+    }
+  }
 
   const STATUS_PILLS = [
     { value: 'all', label: 'All' },
@@ -56,7 +57,7 @@
   let statusFiltered = $derived(
     statusFilter === 'all'
       ? sorted
-      : sorted.filter(e => STATUS_GROUPS[statusFilter].includes(e.status))
+      : sorted.filter(e => matchesStatusGroup(e, statusFilter))
   );
 
   let filtered = $derived(
@@ -86,9 +87,9 @@
   let selectedSessions = $derived(selectedDetailQuery.data?.sessions ?? []);
   let selectedAgents = $derived(agentsQ.data ?? []);
   let selectedPoolAgents = $derived(selectedPoolQuery.data ?? []);
-  let selectedIsTerminal = $derived(terminalStatuses.has(
-    selectedDetailQuery.data?.execution.status ?? ''
-  ));
+  let selectedIsTerminal = $derived(
+    selectedDetailQuery.data?.execution.outcome != null
+  );
 
   function handleAttentionClick() {
     const first = sorted.find(e => $executionsWithQuestions.has(e.id));
@@ -158,10 +159,10 @@
     {/each}
   </div>
 
-  {#if inputRequiredCount > 0}
-    <button class="attention-banner" onclick={handleAttentionClick} aria-label="Jump to first execution awaiting input">
+  {#if questionsCount > 0}
+    <button class="attention-banner" onclick={handleAttentionClick} aria-label="Jump to first execution with questions">
       <span class="attention-icon" aria-hidden="true">!</span>
-      <span>{inputRequiredCount} awaiting input</span>
+      <span>{questionsCount} with questions</span>
     </button>
   {/if}
 

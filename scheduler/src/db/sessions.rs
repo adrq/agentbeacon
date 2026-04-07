@@ -16,14 +16,79 @@ pub struct Session {
     pub cwd: Option<String>,
     pub worktree_path: Option<String>,
     pub base_commit_sha: Option<String>,
-    pub status: String,
-    pub metadata: String, // JSON
     pub slug: String,
     pub recovery_attempts: i64,
+    pub metadata: String,
+    pub desired: String,
+    pub executor_state: String,
+    pub outcome: Option<String>,
+    pub desired_by: Option<String>,
+    pub desired_at: Option<DateTime<Utc>>,
+    pub command_token: Option<String>,
+    pub command_type: Option<String>,
+    pub command_at: Option<DateTime<Utc>>,
+    pub command_has_payload: bool,
+    pub worker_id: Option<String>,
+    pub parent_notified: bool,
+    pub continued_from_session_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
-    pub last_progress_at: DateTime<Utc>,
+}
+
+/// Build the SELECT column list for session queries.
+/// Timestamps need database-specific formatting via format_timestamp().
+fn session_columns(pool: &DbPool) -> String {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
+    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
+    let desired_at_fmt = pool.format_timestamp(TimestampColumn::DesiredAt);
+    let command_at_fmt = pool.format_timestamp(TimestampColumn::CommandAt);
+
+    format!(
+        "id, execution_id, parent_session_id, agent_id, agent_session_id, \
+         cwd, worktree_path, base_commit_sha, slug, recovery_attempts, metadata, \
+         desired, executor_state, outcome, desired_by, \
+         {desired_at_fmt} as desired_at, \
+         command_token, command_type, \
+         {command_at_fmt} as command_at, \
+         command_has_payload, worker_id, parent_notified, continued_from_session_id, \
+         {created_fmt} as created_at, {updated_fmt} as updated_at, \
+         {completed_fmt} as completed_at"
+    )
+}
+
+/// Build the SELECT column list for session queries with table alias prefix.
+fn session_columns_prefixed(pool: &DbPool, alias: &str) -> String {
+    let created_fmt = pool
+        .format_timestamp(TimestampColumn::CreatedAt)
+        .replace("created_at", &format!("{alias}.created_at"));
+    let updated_fmt = pool
+        .format_timestamp(TimestampColumn::UpdatedAt)
+        .replace("updated_at", &format!("{alias}.updated_at"));
+    let completed_fmt = pool
+        .format_timestamp(TimestampColumn::CompletedAt)
+        .replace("completed_at", &format!("{alias}.completed_at"));
+    let desired_at_fmt = pool
+        .format_timestamp(TimestampColumn::DesiredAt)
+        .replace("desired_at", &format!("{alias}.desired_at"));
+    let command_at_fmt = pool
+        .format_timestamp(TimestampColumn::CommandAt)
+        .replace("command_at", &format!("{alias}.command_at"));
+
+    format!(
+        "{alias}.id, {alias}.execution_id, {alias}.parent_session_id, {alias}.agent_id, \
+         {alias}.agent_session_id, {alias}.cwd, {alias}.worktree_path, {alias}.base_commit_sha, \
+         {alias}.slug, {alias}.recovery_attempts, {alias}.metadata, \
+         {alias}.desired, {alias}.executor_state, {alias}.outcome, {alias}.desired_by, \
+         {desired_at_fmt} as desired_at, \
+         {alias}.command_token, {alias}.command_type, \
+         {command_at_fmt} as command_at, \
+         {alias}.command_has_payload, {alias}.worker_id, {alias}.parent_notified, \
+         {alias}.continued_from_session_id, \
+         {created_fmt} as created_at, {updated_fmt} as updated_at, \
+         {completed_fmt} as completed_at"
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -39,7 +104,9 @@ pub async fn create(
     slug: &str,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, worktree_path, base_commit_sha, status, slug, last_progress_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', ?, CURRENT_TIMESTAMP)",
+        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, \
+         worktree_path, base_commit_sha, slug) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
 
     sqlx::query(&query)
@@ -59,15 +126,8 @@ pub async fn create(
 }
 
 pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Session, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
-    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
-    let progress_fmt = pool.format_timestamp(TimestampColumn::LastProgressAt);
-
-    let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, worktree_path, base_commit_sha, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at, {} as last_progress_at FROM sessions WHERE id = ?",
-        created_fmt, updated_fmt, completed_fmt, progress_fmt
-    );
+    let cols = session_columns(pool);
+    let sql = format!("SELECT {cols} FROM sessions WHERE id = ?");
     let query = pool.prepare_query(&sql);
 
     let row = sqlx::query(&query)
@@ -83,15 +143,8 @@ pub async fn list_by_execution(
     pool: &DbPool,
     execution_id: &str,
 ) -> Result<Vec<Session>, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
-    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
-    let progress_fmt = pool.format_timestamp(TimestampColumn::LastProgressAt);
-
-    let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, worktree_path, base_commit_sha, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at, {} as last_progress_at FROM sessions WHERE execution_id = ? ORDER BY created_at ASC",
-        created_fmt, updated_fmt, completed_fmt, progress_fmt
-    );
+    let cols = session_columns(pool);
+    let sql = format!("SELECT {cols} FROM sessions WHERE execution_id = ? ORDER BY created_at ASC");
 
     let rows = sqlx::query(&pool.prepare_query(&sql))
         .bind(execution_id)
@@ -102,62 +155,37 @@ pub async fn list_by_execution(
     rows.into_iter().map(parse_session_row).collect()
 }
 
-pub async fn update_status(pool: &DbPool, id: &str, status: &str) -> Result<(), SchedulerError> {
-    let is_terminal = matches!(status, "completed" | "failed" | "canceled");
-
-    let query = if is_terminal {
-        pool.prepare_query(
-            "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-        )
-    } else {
-        pool.prepare_query(
-            "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, completed_at = NULL WHERE id = ?",
-        )
-    };
-
-    let result = sqlx::query(&query)
-        .bind(status)
-        .bind(id)
-        .execute(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("update session status failed: {e}")))?;
-
-    if result.rows_affected() == 0 {
-        return Err(SchedulerError::NotFound(format!("session not found: {id}")));
-    }
-
-    Ok(())
-}
-
-pub async fn update_status_if_current(
+/// List sessions for an execution with pending_turns counts.
+pub async fn list_by_execution_with_pending(
     pool: &DbPool,
-    id: &str,
-    current_status: &str,
-    new_status: &str,
-) -> Result<bool, SchedulerError> {
-    let is_terminal = matches!(new_status, "completed" | "failed" | "canceled");
+    execution_id: &str,
+) -> Result<Vec<(Session, i64)>, SchedulerError> {
+    let cols = session_columns(pool);
+    let sql = format!(
+        "SELECT {cols}, COALESCE(tq.cnt, 0) as pending_turns \
+         FROM sessions \
+         LEFT JOIN ( \
+           SELECT session_id, COUNT(*) as cnt FROM task_queue \
+           WHERE execution_id = ? GROUP BY session_id \
+         ) tq ON tq.session_id = sessions.id \
+         WHERE sessions.execution_id = ? \
+         ORDER BY sessions.created_at ASC"
+    );
 
-    let query = if is_terminal {
-        pool.prepare_query(
-            "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?",
-        )
-    } else {
-        pool.prepare_query(
-            "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP, completed_at = NULL WHERE id = ? AND status = ?",
-        )
-    };
-
-    let result = sqlx::query(&query)
-        .bind(new_status)
-        .bind(id)
-        .bind(current_status)
-        .execute(pool.as_ref())
+    let rows = sqlx::query(&pool.prepare_query(&sql))
+        .bind(execution_id)
+        .bind(execution_id)
+        .fetch_all(pool.as_ref())
         .await
-        .map_err(|e| {
-            SchedulerError::Database(format!("conditional update session status failed: {e}"))
-        })?;
+        .map_err(|e| SchedulerError::Database(format!("list sessions with pending failed: {e}")))?;
 
-    Ok(result.rows_affected() > 0)
+    rows.into_iter()
+        .map(|row| {
+            let pending: i64 = row.get("pending_turns");
+            let session = parse_session_row(row)?;
+            Ok((session, pending))
+        })
+        .collect()
 }
 
 /// Atomically create a child session only if the parent has fewer than
@@ -176,11 +204,11 @@ pub async fn create_with_width_guard(
     slug: &str,
 ) -> Result<bool, SchedulerError> {
     let query = pool.prepare_query(
-        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, worktree_path, status, slug, last_progress_at) \
-         SELECT ?, ?, ?, ?, ?, ?, 'submitted', ?, CURRENT_TIMESTAMP \
+        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, \
+         worktree_path, slug) \
+         SELECT ?, ?, ?, ?, ?, ?, ? \
          WHERE (SELECT COUNT(*) FROM sessions \
-                WHERE parent_session_id = ? \
-                AND status NOT IN ('completed', 'failed', 'canceled')) < ?",
+                WHERE parent_session_id = ? AND outcome IS NULL) < ?",
     );
 
     let result = sqlx::query(&query)
@@ -206,7 +234,7 @@ pub async fn count_active_children(
     parent_session_id: &str,
 ) -> Result<i64, SchedulerError> {
     let query = pool.prepare_query(
-        "SELECT COUNT(*) as cnt FROM sessions WHERE parent_session_id = ? AND status NOT IN ('completed', 'failed', 'canceled')",
+        "SELECT COUNT(*) as cnt FROM sessions WHERE parent_session_id = ? AND outcome IS NULL",
     );
 
     let row = sqlx::query(&query)
@@ -248,23 +276,65 @@ pub async fn compute_depth(
     Ok(row.get::<i64, _>("depth"))
 }
 
+/// Like `compute_depth` but reads through an existing transaction.
+pub async fn compute_depth_in_tx(
+    pool: &DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    session_id: &str,
+    execution_id: &str,
+) -> Result<i64, SchedulerError> {
+    let query = pool.prepare_query(
+        "WITH RECURSIVE ancestors(id, parent_session_id, lvl) AS (\
+            SELECT id, parent_session_id, 0 \
+            FROM sessions WHERE id = ? AND execution_id = ? \
+            UNION ALL \
+            SELECT s.id, s.parent_session_id, a.lvl + 1 \
+            FROM sessions s JOIN ancestors a ON s.id = a.parent_session_id \
+            WHERE s.execution_id = ? AND a.lvl < 11 \
+        ) \
+        SELECT COALESCE(MAX(lvl), 0) as depth FROM ancestors",
+    );
+
+    let row = sqlx::query(&query)
+        .bind(session_id)
+        .bind(execution_id)
+        .bind(execution_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("compute depth failed: {e}")))?;
+
+    Ok(row.get::<i64, _>("depth"))
+}
+
 pub async fn list_filtered(
     pool: &DbPool,
     status: Option<&str>,
     execution_id: Option<&str>,
 ) -> Result<Vec<Session>, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
-    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
-    let progress_fmt = pool.format_timestamp(TimestampColumn::LastProgressAt);
+    let cols = session_columns(pool);
+    let mut sql = format!("SELECT {cols} FROM sessions WHERE 1=1");
 
-    let mut sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, worktree_path, base_commit_sha, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at, {} as last_progress_at FROM sessions WHERE 1=1",
-        created_fmt, updated_fmt, completed_fmt, progress_fmt
-    );
-
-    if status.is_some() {
-        sql.push_str(" AND status = ?");
+    let is_working = status == Some("working");
+    let status_is_outcome = matches!(status, Some("completed" | "failed" | "canceled"));
+    let is_submitted = status == Some("submitted");
+    let is_input_required = status == Some("input-required");
+    if is_working {
+        sql.push_str(
+            " AND outcome IS NULL AND (executor_state = 'running' OR \
+             command_token IS NOT NULL OR \
+             id IN (SELECT session_id FROM task_queue))",
+        );
+    } else if status_is_outcome {
+        sql.push_str(" AND outcome = ?");
+    } else if is_submitted {
+        sql.push_str(" AND executor_state = 'unassigned' AND outcome IS NULL");
+    } else if is_input_required {
+        sql.push_str(
+            " AND executor_state = 'idle' AND desired = 'run' AND outcome IS NULL \
+             AND id NOT IN (SELECT session_id FROM task_queue)",
+        );
+    } else if status.is_some() {
+        sql.push_str(" AND desired = ?");
     }
     if execution_id.is_some() {
         sql.push_str(" AND execution_id = ?");
@@ -274,7 +344,11 @@ pub async fn list_filtered(
     let prepared = pool.prepare_query(&sql);
     let mut q = sqlx::query(&prepared);
 
-    if let Some(st) = status {
+    if !is_working
+        && !is_submitted
+        && !is_input_required
+        && let Some(st) = status
+    {
         q = q.bind(st);
     }
     if let Some(eid) = execution_id {
@@ -289,18 +363,86 @@ pub async fn list_filtered(
     rows.into_iter().map(parse_session_row).collect()
 }
 
+/// List sessions that may need evaluation.
+pub async fn find_reconcilable(pool: &DbPool) -> Result<Vec<Session>, SchedulerError> {
+    let cols = session_columns(pool);
+    let sql = format!(
+        "SELECT {cols} FROM sessions WHERE \
+         outcome IS NULL \
+         OR worker_id IS NOT NULL \
+         OR command_token IS NOT NULL \
+         OR (parent_notified = FALSE AND parent_session_id IS NOT NULL AND outcome = 'failed') \
+         OR (outcome IS NOT NULL AND desired != 'terminate') \
+         OR (parent_session_id IS NULL AND outcome IS NOT NULL \
+             AND execution_id IN (SELECT id FROM executions WHERE outcome IS NULL)) \
+         OR (outcome IS NOT NULL AND id IN (SELECT DISTINCT session_id FROM task_queue)) \
+         OR (desired = 'terminate' AND outcome IS NOT NULL \
+             AND id IN (SELECT parent_session_id FROM sessions \
+                        WHERE outcome IS NULL AND desired != 'terminate')) \
+         ORDER BY created_at ASC"
+    );
+    let prepared = pool.prepare_query(&sql);
+    let rows = sqlx::query(&prepared)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("find_reconcilable failed: {e}")))?;
+    rows.into_iter().map(parse_session_row).collect()
+}
+
+/// List sessions with pending_turns.
+pub async fn list_with_pending(
+    pool: &DbPool,
+    execution_id: Option<&str>,
+) -> Result<Vec<(Session, i64)>, SchedulerError> {
+    let cols = session_columns(pool);
+    let mut sql = format!(
+        "SELECT {cols}, COALESCE(tq.cnt, 0) as pending_turns \
+         FROM sessions \
+         LEFT JOIN ( \
+           SELECT session_id, COUNT(*) as cnt FROM task_queue GROUP BY session_id \
+         ) tq ON tq.session_id = sessions.id \
+         WHERE 1=1"
+    );
+    if execution_id.is_some() {
+        sql.push_str(" AND sessions.execution_id = ?");
+    }
+    sql.push_str(" ORDER BY sessions.created_at ASC");
+
+    let prepared = pool.prepare_query(&sql);
+    let mut q = sqlx::query(&prepared);
+    if let Some(eid) = execution_id {
+        q = q.bind(eid);
+    }
+
+    let rows = q
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list sessions with pending failed: {e}")))?;
+
+    rows.into_iter()
+        .map(|row| {
+            let pending: i64 = row.get("pending_turns");
+            let session = parse_session_row(row)?;
+            Ok((session, pending))
+        })
+        .collect()
+}
+
 pub async fn update_agent_session_id(
     pool: &DbPool,
     id: &str,
     agent_session_id: &str,
+    worker_id: &str,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
-        "UPDATE sessions SET agent_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        "UPDATE sessions SET agent_session_id = ?, updated_at = CURRENT_TIMESTAMP \
+         WHERE id = ? AND worker_id = ?",
     );
 
     let result = sqlx::query(&query)
         .bind(agent_session_id)
         .bind(id)
+        .bind(worker_id)
         .execute(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("update agent_session_id failed: {e}")))?;
@@ -312,50 +454,13 @@ pub async fn update_agent_session_id(
     Ok(())
 }
 
-pub async fn find_assignable(pool: &DbPool) -> Result<Option<Session>, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
-    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
-    let progress_fmt = pool.format_timestamp(TimestampColumn::LastProgressAt);
-
-    let sql = format!(
-        "SELECT id, execution_id, parent_session_id, agent_id, agent_session_id, cwd, worktree_path, base_commit_sha, status, metadata, slug, recovery_attempts, {} as created_at, {} as updated_at, {} as completed_at, {} as last_progress_at FROM sessions WHERE status = 'submitted' ORDER BY created_at ASC, id ASC LIMIT 1",
-        created_fmt, updated_fmt, completed_fmt, progress_fmt
-    );
-    let query = pool.prepare_query(&sql);
-
-    let row = sqlx::query(&query)
-        .fetch_optional(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("find assignable session failed: {e}")))?;
-
-    match row {
-        Some(r) => Ok(Some(parse_session_row(r)?)),
-        None => Ok(None),
-    }
-}
-
-pub async fn claim_assignable(pool: &DbPool, id: &str) -> Result<bool, SchedulerError> {
-    let query = pool.prepare_query(
-        "UPDATE sessions SET status = 'working', updated_at = CURRENT_TIMESTAMP, last_progress_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitted'",
-    );
-
-    let result = sqlx::query(&query)
-        .bind(id)
-        .execute(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("claim assignable session failed: {e}")))?;
-
-    Ok(result.rows_affected() > 0)
-}
-
 /// Count non-terminal sessions for an agent (used by agent delete guard)
 pub async fn count_non_terminal_by_agent(
     pool: &DbPool,
     agent_id: &str,
 ) -> Result<i64, SchedulerError> {
     let query = pool.prepare_query(
-        "SELECT COUNT(*) as cnt FROM sessions WHERE agent_id = ? AND status NOT IN ('completed', 'failed', 'canceled')",
+        "SELECT COUNT(*) as cnt FROM sessions WHERE agent_id = ? AND outcome IS NULL",
     );
 
     let row = sqlx::query(&query)
@@ -372,10 +477,7 @@ pub async fn count_non_terminal_by_agent(
 /// Return all sessions in the subtree rooted at `root_id` (inclusive).
 /// Uses a recursive CTE — works on both SQLite and PostgreSQL.
 pub async fn get_subtree(pool: &DbPool, root_id: &str) -> Result<Vec<Session>, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
-    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
-    let progress_fmt = pool.format_timestamp(TimestampColumn::LastProgressAt);
+    let cols = session_columns_prefixed(pool, "s");
 
     let sql = format!(
         "WITH RECURSIVE subtree AS (\
@@ -384,18 +486,10 @@ pub async fn get_subtree(pool: &DbPool, root_id: &str) -> Result<Vec<Session>, S
             SELECT s.id FROM sessions s \
             INNER JOIN subtree st ON s.parent_session_id = st.id \
         ) \
-        SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
-               s.agent_session_id, s.cwd, s.worktree_path, s.base_commit_sha, s.status, \
-               s.metadata, s.slug, s.recovery_attempts, \
-               {cr} as created_at, {up} as updated_at, \
-               {co} as completed_at, {pr} as last_progress_at \
+        SELECT {cols} \
         FROM sessions s \
         INNER JOIN subtree st ON s.id = st.id \
-        ORDER BY s.created_at ASC",
-        cr = created_fmt,
-        up = updated_fmt,
-        co = completed_fmt,
-        pr = progress_fmt
+        ORDER BY s.created_at ASC"
     );
     let query = pool.prepare_query(&sql);
 
@@ -405,6 +499,21 @@ pub async fn get_subtree(pool: &DbPool, root_id: &str) -> Result<Vec<Session>, S
         .await
         .map_err(|e| SchedulerError::Database(format!("get subtree failed: {e}")))?;
 
+    rows.into_iter().map(parse_session_row).collect()
+}
+
+/// Get direct children of a session.
+pub async fn get_children(pool: &DbPool, parent_id: &str) -> Result<Vec<Session>, SchedulerError> {
+    let cols = session_columns_prefixed(pool, "s");
+    let sql = format!(
+        "SELECT {cols} FROM sessions s WHERE s.parent_session_id = ? ORDER BY s.created_at ASC"
+    );
+    let query = pool.prepare_query(&sql);
+    let rows = sqlx::query(&query)
+        .bind(parent_id)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("get children failed: {e}")))?;
     rows.into_iter().map(parse_session_row).collect()
 }
 
@@ -439,40 +548,11 @@ pub async fn root_slugs(pool: &DbPool, execution_id: &str) -> Result<Vec<String>
     Ok(rows)
 }
 
-/// Touch last_progress_at (and updated_at) on real progress.
-///
-/// Called on: turn results, session claims, active-turn ("running") heartbeats,
-/// and persisted mid-turn message events.
-///
-/// NOT called on idle ("waiting_for_event") heartbeats — that's what lets the
-/// liveness scan detect stuck `working` sessions. For `input-required` sessions,
-/// the recovery queries use `updated_at` instead, since idle heartbeats are the
-/// only liveness signal for sessions waiting on user input.
-///
-/// Active-turn heartbeats are included because the scheduler cannot distinguish
-/// a healthy quiet turn from a hung executor — both produce `running` heartbeats.
-/// Not including them would falsely recover healthy long-running turns. Hung
-/// executor detection requires a turn-level watchdog in the worker.
-///
-/// See also: `touch_updated_at` (heartbeat-only, does not touch last_progress_at).
-pub async fn touch_last_progress_at(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
-    let query = pool.prepare_query(
-        "UPDATE sessions SET last_progress_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    );
-    sqlx::query(&query)
-        .bind(id)
-        .execute(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("touch last_progress_at failed: {e}")))?;
-    Ok(())
-}
-
-/// Increment recovery_attempts for sessions stuck in pre-CAS failure loops
+/// Increment recovery_attempts for a session
 pub async fn increment_recovery_attempts(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
         "UPDATE sessions SET recovery_attempts = recovery_attempts + 1, \
-         updated_at = CURRENT_TIMESTAMP \
-         WHERE id = ? AND status IN ('working', 'input-required')",
+         updated_at = CURRENT_TIMESTAMP WHERE id = ?",
     );
     sqlx::query(&query)
         .bind(id)
@@ -484,12 +564,7 @@ pub async fn increment_recovery_attempts(pool: &DbPool, id: &str) -> Result<(), 
     Ok(())
 }
 
-/// Touch updated_at only (heartbeat). Called on ALL heartbeats (running,
-/// waiting_for_event, etc.) to signal the worker process is alive.
-///
-/// For `input-required` sessions, this is the staleness signal used by recovery
-/// queries. For `working` sessions, recovery uses `last_progress_at` instead.
-/// See `touch_last_progress_at` for the dual-timestamp design rationale.
+/// Touch updated_at only (heartbeat/liveness signal).
 pub async fn touch_updated_at(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
     let query =
         pool.prepare_query("UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?");
@@ -501,12 +576,12 @@ pub async fn touch_updated_at(pool: &DbPool, id: &str) -> Result<(), SchedulerEr
     Ok(())
 }
 
-/// Clear worktree_path for a session, only if it's in a terminal state.
-/// Uses a WHERE guard for atomicity (prevents TOCTOU race).
+/// Clear worktree_path for a session, only if fully finalized.
+/// Requires outcome set + no worker + no pending command (TOCTOU guard).
 pub async fn clear_worktree_path(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
         "UPDATE sessions SET worktree_path = NULL, updated_at = CURRENT_TIMESTAMP \
-         WHERE id = ? AND status IN ('completed', 'failed', 'canceled')",
+         WHERE id = ? AND outcome IS NOT NULL AND worker_id IS NULL AND command_token IS NULL",
     );
     let result = sqlx::query(&query)
         .bind(id)
@@ -522,205 +597,59 @@ pub async fn clear_worktree_path(pool: &DbPool, id: &str) -> Result<(), Schedule
     Ok(())
 }
 
-/// Find sessions eligible for crash recovery (Tier 2).
-/// Returns sessions that are working/input-required with an agent_session_id,
-/// belonging to resumable agent types, not updated since `updated_before`.
-pub async fn find_recoverable(
+/// Find all sessions assigned to a specific worker
+pub async fn find_sessions_for_worker(
     pool: &DbPool,
-    max_recovery_attempts: i64,
-    updated_before: &str,
+    worker_id: &str,
 ) -> Result<Vec<Session>, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
-    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
-    let progress_fmt = pool.format_timestamp(TimestampColumn::LastProgressAt);
-
-    // PostgreSQL TIMESTAMPTZ can't compare directly with text; cast the bound param
-    let ts_cast = if pool.is_postgres() {
-        "::timestamptz"
-    } else {
-        ""
-    };
-
-    let sql = format!(
-        "SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
-               s.agent_session_id, s.cwd, s.worktree_path, s.base_commit_sha, s.status, \
-               s.metadata, s.slug, s.recovery_attempts, \
-               {cr} as created_at, {up} as updated_at, \
-               {co} as completed_at, {pr} as last_progress_at \
-        FROM sessions s \
-        JOIN agents a ON s.agent_id = a.id \
-        JOIN executions e ON s.execution_id = e.id \
-        WHERE s.status IN ('working', 'input-required') \
-          AND s.agent_session_id IS NOT NULL \
-          AND s.cwd IS NOT NULL \
-          AND s.recovery_attempts < ? \
-          AND a.agent_type IN ('claude_sdk', 'copilot_sdk') \
-          AND a.deleted_at IS NULL \
-          AND e.status NOT IN ('completed', 'failed', 'canceled') \
-          AND ( \
-              (s.status = 'working' AND s.last_progress_at < ?{ts_cast}) \
-              OR (s.status = 'input-required' AND s.updated_at < ?{ts_cast}) \
-          )",
-        cr = created_fmt.replace("created_at", "s.created_at"),
-        up = updated_fmt.replace("updated_at", "s.updated_at"),
-        co = completed_fmt.replace("completed_at", "s.completed_at"),
-        pr = progress_fmt.replace("last_progress_at", "s.last_progress_at"),
-    );
+    let cols = session_columns(pool);
+    let sql = format!("SELECT {cols} FROM sessions WHERE worker_id = ? ORDER BY created_at ASC");
     let query = pool.prepare_query(&sql);
 
     let rows = sqlx::query(&query)
-        .bind(max_recovery_attempts)
-        .bind(updated_before)
-        .bind(updated_before)
+        .bind(worker_id)
         .fetch_all(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("find recoverable sessions failed: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("find sessions for worker failed: {e}")))?;
 
     rows.into_iter().map(parse_session_row).collect()
 }
 
-/// Find sessions that have exhausted their recovery budget (for permanent failure).
-pub async fn find_over_budget(
-    pool: &DbPool,
-    max_recovery_attempts: i64,
-    updated_before: &str,
-) -> Result<Vec<Session>, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
-    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
-    let progress_fmt = pool.format_timestamp(TimestampColumn::LastProgressAt);
-
-    // PostgreSQL TIMESTAMPTZ can't compare directly with text; cast the bound param
-    let ts_cast = if pool.is_postgres() {
-        "::timestamptz"
-    } else {
-        ""
-    };
-
+/// Find an unassigned session with pending work.
+pub async fn find_unassigned_with_work(pool: &DbPool) -> Result<Option<Session>, SchedulerError> {
+    let cols = session_columns_prefixed(pool, "s");
     let sql = format!(
-        "SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
-               s.agent_session_id, s.cwd, s.worktree_path, s.base_commit_sha, s.status, \
-               s.metadata, s.slug, s.recovery_attempts, \
-               {cr} as created_at, {up} as updated_at, \
-               {co} as completed_at, {pr} as last_progress_at \
-        FROM sessions s \
-        JOIN agents a ON s.agent_id = a.id \
-        JOIN executions e ON s.execution_id = e.id \
-        WHERE s.status IN ('working', 'input-required') \
-          AND s.agent_session_id IS NOT NULL \
-          AND s.recovery_attempts >= ? \
-          AND a.agent_type IN ('claude_sdk', 'copilot_sdk') \
-          AND a.deleted_at IS NULL \
-          AND e.status NOT IN ('completed', 'failed', 'canceled') \
-          AND ( \
-              (s.status = 'working' AND s.last_progress_at < ?{ts_cast}) \
-              OR (s.status = 'input-required' AND s.updated_at < ?{ts_cast}) \
-          )",
-        cr = created_fmt.replace("created_at", "s.created_at"),
-        up = updated_fmt.replace("updated_at", "s.updated_at"),
-        co = completed_fmt.replace("completed_at", "s.completed_at"),
-        pr = progress_fmt.replace("last_progress_at", "s.last_progress_at"),
+        "SELECT {cols} FROM sessions s \
+         JOIN executions e ON e.id = s.execution_id \
+         WHERE s.desired = 'run' AND s.executor_state = 'unassigned' AND s.outcome IS NULL \
+         AND s.command_token IS NULL AND s.worker_id IS NULL \
+         AND e.desired = 'run' AND e.outcome IS NULL \
+         AND (EXISTS (SELECT 1 FROM task_queue tq WHERE tq.session_id = s.id) \
+              OR s.agent_session_id IS NOT NULL) \
+         ORDER BY s.created_at ASC LIMIT 1"
     );
     let query = pool.prepare_query(&sql);
 
-    let rows = sqlx::query(&query)
-        .bind(max_recovery_attempts)
-        .bind(updated_before)
-        .bind(updated_before)
-        .fetch_all(pool.as_ref())
+    let row = sqlx::query(&query)
+        .fetch_optional(pool.as_ref())
         .await
-        .map_err(|e| SchedulerError::Database(format!("find over-budget sessions failed: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("find unassigned with work failed: {e}")))?;
 
-    rows.into_iter().map(parse_session_row).collect()
+    match row {
+        Some(r) => Ok(Some(parse_session_row(r)?)),
+        None => Ok(None),
+    }
 }
 
-/// Find stale sessions for non-resumable agent types (e.g., ACP).
-/// These cannot be recovered via resume — they must be permanently failed.
-/// Also catches deleted agents of any type (can't resume if agent config is gone).
-pub async fn find_stale_non_resumable(
-    pool: &DbPool,
-    updated_before: &str,
-) -> Result<Vec<Session>, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
-    let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
-    let progress_fmt = pool.format_timestamp(TimestampColumn::LastProgressAt);
-
-    let ts_cast = if pool.is_postgres() {
-        "::timestamptz"
-    } else {
-        ""
-    };
-
-    let sql = format!(
-        "SELECT s.id, s.execution_id, s.parent_session_id, s.agent_id, \
-               s.agent_session_id, s.cwd, s.worktree_path, s.base_commit_sha, s.status, \
-               s.metadata, s.slug, s.recovery_attempts, \
-               {cr} as created_at, {up} as updated_at, \
-               {co} as completed_at, {pr} as last_progress_at \
-        FROM sessions s \
-        JOIN agents a ON s.agent_id = a.id \
-        JOIN executions e ON s.execution_id = e.id \
-        WHERE s.status IN ('working', 'input-required') \
-          AND (a.agent_type NOT IN ('claude_sdk', 'copilot_sdk') OR a.deleted_at IS NOT NULL) \
-          AND e.status NOT IN ('completed', 'failed', 'canceled') \
-          AND ( \
-              (s.status = 'working' AND s.last_progress_at < ?{ts_cast}) \
-              OR (s.status = 'input-required' AND s.updated_at < ?{ts_cast}) \
-          )",
-        cr = created_fmt.replace("created_at", "s.created_at"),
-        up = updated_fmt.replace("updated_at", "s.updated_at"),
-        co = completed_fmt.replace("completed_at", "s.completed_at"),
-        pr = progress_fmt.replace("last_progress_at", "s.last_progress_at"),
-    );
-    let query = pool.prepare_query(&sql);
-
-    let rows = sqlx::query(&query)
-        .bind(updated_before)
-        .bind(updated_before)
-        .fetch_all(pool.as_ref())
+/// Count pending turns (task_queue entries) for a session
+pub async fn count_pending_turns(pool: &DbPool, session_id: &str) -> Result<i64, SchedulerError> {
+    let query = pool.prepare_query("SELECT COUNT(*) as cnt FROM task_queue WHERE session_id = ?");
+    let row = sqlx::query(&query)
+        .bind(session_id)
+        .fetch_one(pool.as_ref())
         .await
-        .map_err(|e| {
-            SchedulerError::Database(format!("find stale non-resumable sessions failed: {e}"))
-        })?;
-
-    rows.into_iter().map(parse_session_row).collect()
-}
-
-/// Atomically fail a stale over-budget session.
-/// Sets status to 'failed' so the session is terminal even if downstream
-/// cascade/notify (handle_session_failure) encounters errors.
-/// Returns true if the session was still stale and transitioned, false if it
-/// was updated between the SELECT scan and now (worker reconnected).
-pub async fn try_claim_for_failure(
-    pool: &DbPool,
-    id: &str,
-    updated_before: &str,
-) -> Result<bool, SchedulerError> {
-    let ts_cast = if pool.is_postgres() {
-        "::timestamptz"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "UPDATE sessions SET status = 'failed', \
-         updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
-         WHERE id = ? AND status IN ('working', 'input-required') \
-         AND ( \
-             (status = 'working' AND last_progress_at < ?{ts_cast}) \
-             OR (status = 'input-required' AND updated_at < ?{ts_cast}) \
-         )"
-    );
-    let query = pool.prepare_query(&sql);
-    let result = sqlx::query(&query)
-        .bind(id)
-        .bind(updated_before)
-        .bind(updated_before)
-        .execute(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("try_claim_for_failure failed: {e}")))?;
-    Ok(result.rows_affected() > 0)
+        .map_err(|e| SchedulerError::Database(format!("count pending turns failed: {e}")))?;
+    Ok(row.get::<i64, _>("cnt"))
 }
 
 #[derive(Debug, Serialize)]
@@ -729,9 +658,15 @@ pub struct SessionDiscoveryEntry {
     pub agent_id: String,
     pub agent_name: String,
     pub slug: String,
-    pub status: String,
+    pub desired: String,
+    pub executor_state: String,
+    pub outcome: Option<String>,
     pub parent_session_id: Option<String>,
     pub depth: i64,
+    #[serde(skip)]
+    pub command_token: Option<String>,
+    #[serde(skip)]
+    pub pending_turns: i64,
 }
 
 pub async fn list_discovery_by_execution(
@@ -739,15 +674,22 @@ pub async fn list_discovery_by_execution(
     execution_id: &str,
 ) -> Result<Vec<SessionDiscoveryEntry>, SchedulerError> {
     let sql = pool.prepare_query(
-        "SELECT s.id, s.agent_id, a.name as agent_name, s.slug, s.status, \
-         s.parent_session_id, s.execution_id \
+        "SELECT s.id, s.agent_id, a.name as agent_name, s.slug, \
+         s.desired, s.executor_state, s.outcome, \
+         s.parent_session_id, s.execution_id, s.command_token, \
+         COALESCE(tq.cnt, 0) as pending_turns \
          FROM sessions s \
          JOIN agents a ON s.agent_id = a.id \
+         LEFT JOIN ( \
+           SELECT session_id, COUNT(*) as cnt FROM task_queue \
+           WHERE execution_id = ? GROUP BY session_id \
+         ) tq ON tq.session_id = s.id \
          WHERE s.execution_id = ? \
          ORDER BY s.created_at ASC",
     );
 
     let rows = sqlx::query(&sql)
+        .bind(execution_id)
         .bind(execution_id)
         .fetch_all(pool.as_ref())
         .await
@@ -763,13 +705,37 @@ pub async fn list_discovery_by_execution(
             agent_id: row.get("agent_id"),
             agent_name: row.get::<String, _>("agent_name"),
             slug: row.get("slug"),
-            status: row.get("status"),
+            desired: row.get("desired"),
+            executor_state: row.get("executor_state"),
+            outcome: row.get("outcome"),
             parent_session_id: row.get("parent_session_id"),
             depth,
+            command_token: row.get("command_token"),
+            pending_turns: row.get("pending_turns"),
         });
     }
 
     Ok(entries)
+}
+
+/// Read a session inside an existing transaction.
+/// Use this instead of get_by_id() inside tx blocks to avoid SQLite max_connections=1 deadlock.
+pub async fn get_in_tx(
+    pool: &DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    id: &str,
+) -> Result<Session, SchedulerError> {
+    let cols = session_columns(pool);
+    let sql = format!("SELECT {cols} FROM sessions WHERE id = ?");
+    let query = pool.prepare_query(&sql);
+
+    let row = sqlx::query(&query)
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| map_db_error("session", id, e))?;
+
+    parse_session_row(row)
 }
 
 fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> {
@@ -782,13 +748,27 @@ fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> 
         cwd: row.get("cwd"),
         worktree_path: row.get("worktree_path"),
         base_commit_sha: row.get("base_commit_sha"),
-        status: row.get("status"),
-        metadata: row.get("metadata"),
         slug: row.get("slug"),
         recovery_attempts: row.get("recovery_attempts"),
+        metadata: row.get("metadata"),
+        desired: row.get("desired"),
+        executor_state: row.get("executor_state"),
+        outcome: row.get("outcome"),
+        desired_by: row.get("desired_by"),
+        desired_at: parse_optional_timestamp(&row, "desired_at"),
+        command_token: row.get("command_token"),
+        command_type: row.get("command_type"),
+        command_at: parse_optional_timestamp(&row, "command_at"),
+        command_has_payload: row
+            .try_get::<bool, _>("command_has_payload")
+            .unwrap_or_else(|_| row.get::<i32, _>("command_has_payload") != 0),
+        worker_id: row.get("worker_id"),
+        parent_notified: row
+            .try_get::<bool, _>("parent_notified")
+            .unwrap_or_else(|_| row.get::<i32, _>("parent_notified") != 0),
+        continued_from_session_id: row.get("continued_from_session_id"),
         created_at: parse_timestamp(&row, "created_at")?,
         updated_at: parse_timestamp(&row, "updated_at")?,
         completed_at: parse_optional_timestamp(&row, "completed_at"),
-        last_progress_at: parse_timestamp(&row, "last_progress_at")?,
     })
 }

@@ -23,7 +23,19 @@
 
   let page = $derived(pageQuery.data ?? null);
   let tabIsCreate = $derived(getWikiTabs().find(t => t.id === tabId)?.isCreate ?? false);
-  let isNewPage = $derived(tabIsCreate && !page && !pageQuery.isLoading && pageQuery.isError && pageQuery.error instanceof ApiError && pageQuery.error.status === 404);
+
+  let confirmedNewPage = $state(false);
+
+  $effect(() => {
+    if (tabIsCreate && !page && pageQuery.isError && pageQuery.error instanceof ApiError && pageQuery.error.status === 404) {
+      confirmedNewPage = true;
+    }
+    if (page) {
+      confirmedNewPage = false;
+    }
+  });
+
+  let isNewPage = $derived(confirmedNewPage);
 
   let projectName = $derived(
     (projects.data ?? []).find(p => p.id === projectId)?.name ?? projectId.slice(0, 8)
@@ -132,6 +144,14 @@
     updateTabDraft(tabId, value);
   }
 
+  let titlePersistTimer: ReturnType<typeof setTimeout> | null = null;
+  function handleTitleInput() {
+    if (titlePersistTimer) clearTimeout(titlePersistTimer);
+    titlePersistTimer = setTimeout(() => {
+      updateTabEditMeta(tabId, editBaseRevision ?? undefined, draftTitle);
+    }, 500);
+  }
+
   async function handleSave() {
     saveError = null;
     const req = {
@@ -205,7 +225,7 @@
 </script>
 
 <div class="page-view scroll-thin">
-  {#if pageQuery.isLoading}
+  {#if pageQuery.isLoading && !editing && !confirmedNewPage}
     <div class="page-loading">Loading page...</div>
   {:else if isNewPage && editing}
     <!-- New page creation mode -->
@@ -228,7 +248,7 @@
 
       <label class="title-label">
         Title
-        <input class="title-input" type="text" bind:value={draftTitle} placeholder={slug} oninput={(e) => updateTabEditMeta(tabId, editBaseRevision ?? undefined, e.currentTarget.value)} />
+        <input class="title-input" type="text" bind:value={draftTitle} placeholder={slug} oninput={handleTitleInput} onblur={() => { if (titlePersistTimer) clearTimeout(titlePersistTimer); updateTabEditMeta(tabId, editBaseRevision ?? undefined, draftTitle); }} />
       </label>
 
       {#if editView === 'edit'}
@@ -307,7 +327,7 @@
 
         <label class="title-label">
           Title
-          <input class="title-input" type="text" bind:value={draftTitle} oninput={(e) => updateTabEditMeta(tabId, editBaseRevision ?? undefined, e.currentTarget.value)} />
+          <input class="title-input" type="text" bind:value={draftTitle} oninput={handleTitleInput} onblur={() => { if (titlePersistTimer) clearTimeout(titlePersistTimer); updateTabEditMeta(tabId, editBaseRevision ?? undefined, draftTitle); }} />
         </label>
 
         {#if editView === 'edit'}

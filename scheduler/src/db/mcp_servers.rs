@@ -175,7 +175,7 @@ pub async fn cleanup_orphaned_attachments(
            AND id NOT IN (\
              SELECT DISTINCT project_id FROM executions \
              WHERE project_id IS NOT NULL \
-             AND status NOT IN ('completed', 'failed', 'canceled')\
+             AND outcome IS NULL\
            )\
          )",
     );
@@ -203,7 +203,7 @@ pub async fn count_active_deleted_project_attachments(
          AND EXISTS (\
            SELECT 1 FROM executions e \
            WHERE e.project_id = p.id \
-           AND e.status NOT IN ('completed', 'failed', 'canceled')\
+           AND e.outcome IS NULL\
          )",
     );
 

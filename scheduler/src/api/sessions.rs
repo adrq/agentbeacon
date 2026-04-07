@@ -14,12 +14,11 @@ use crate::api::types::{EventResponse, SessionResponse};
 use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
-use crate::queue::TaskAssignment;
+use sqlx::Row;
 
 /// Query parameters for listing sessions
 #[derive(Debug, Deserialize)]
 pub struct ListSessionsQuery {
-    pub status: Option<String>,
     pub execution_id: Option<String>,
 }
 
@@ -77,7 +76,11 @@ async fn get_session(
     Path(id): Path<String>,
 ) -> Result<Json<SessionResponse>, SchedulerError> {
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
-    Ok(Json(session.into()))
+    let pending = db::sessions::count_pending_turns(&state.db_pool, &session.id).await?;
+    let status = crate::api::types::derive_session_display_status(&session, pending);
+    let mut resp: SessionResponse = session.into();
+    resp.status = status;
+    Ok(Json(resp))
 }
 
 /// List sessions with optional filters (GET /api/sessions)
@@ -85,14 +88,19 @@ async fn list_sessions(
     State(state): State<AppState>,
     Query(query): Query<ListSessionsQuery>,
 ) -> Result<Json<Vec<SessionResponse>>, SchedulerError> {
-    let sessions = db::sessions::list_filtered(
-        &state.db_pool,
-        query.status.as_deref(),
-        query.execution_id.as_deref(),
-    )
-    .await?;
+    let snapshot =
+        db::sessions::list_with_pending(&state.db_pool, query.execution_id.as_deref()).await?;
 
-    Ok(Json(sessions.into_iter().map(Into::into).collect()))
+    let responses: Vec<SessionResponse> = snapshot
+        .into_iter()
+        .map(|(session, pending)| {
+            let status = crate::api::types::derive_session_display_status(&session, pending);
+            let mut resp: SessionResponse = session.into();
+            resp.status = status;
+            resp
+        })
+        .collect();
+    Ok(Json(responses))
 }
 
 /// Get events for a session (GET /api/sessions/{id}/events)
@@ -100,7 +108,6 @@ async fn session_events(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<EventResponse>>, SchedulerError> {
-    // Verify session exists
     db::sessions::get_by_id(&state.db_pool, &id).await?;
 
     let events = db::events::list_by_session(&state.db_pool, &id).await?;
@@ -127,24 +134,62 @@ async fn post_message(
 
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
-    // Status guard is inside deliver_message() — identical for user and agent (D17)
-    let result = crate::services::messaging::deliver_message(
+    let msg_payload = common::a2a::message_payload(common::a2a::role::USER, req.parts.clone());
+    let delivery_payload = json!({"message": msg_payload});
+
+    use crate::services::transition;
+    let event_id = match transition::transition(
         &state.db_pool,
-        &state.task_queue,
-        &state.event_broadcast,
-        &state.stop_turn_intents,
-        &session,
-        &req.parts,
-        None, // None = user message
+        &session.execution_id,
+        &session.id,
+        transition::Action::SendMessage(delivery_payload),
     )
-    .await?;
+    .await
+    {
+        Ok(Some(eid)) => eid,
+        Ok(None) => 0,
+        Err(transition::Rejected::WriteBarrier) => {
+            return Err(SchedulerError::Conflict(
+                "session or execution cannot accept messages".into(),
+            ));
+        }
+        Err(e) => {
+            return Err(SchedulerError::Database(format!(
+                "transition failed: {e:?}"
+            )));
+        }
+    };
+
+    let _ = state.event_broadcast.send(EventNotification::persisted(
+        session.execution_id.clone(),
+        event_id,
+    ));
+
+    let platform_payload = json!({"type": "message_delivered"});
+    let platform_event_id = db::events::insert(
+        &state.db_pool,
+        &session.execution_id,
+        Some(&session.id),
+        "platform",
+        &serde_json::to_string(&platform_payload).unwrap(),
+    )
+    .await
+    .unwrap_or(0);
+    if platform_event_id > 0 {
+        let _ = state.event_broadcast.send(EventNotification::persisted(
+            session.execution_id.clone(),
+            platform_event_id,
+        ));
+    }
+
+    state.task_queue.wake_waiters();
 
     Ok((
         StatusCode::OK,
         Json(json!({
-            "event_id": result.event_id,
-            "session_status": result.session_status,
-            "execution_status": result.execution_status,
+            "event_id": event_id,
+            "session_status": "working",
+            "execution_status": "working",
         })),
     ))
 }
@@ -155,290 +200,467 @@ pub struct StopTurnResponse {
     pub tasks_flushed: i64,
 }
 
-/// Cancel a session and its subtree (POST /api/sessions/{id}/cancel)
-async fn cancel_session(
+/// Terminate a session.
+///
+/// Sets desired=terminate and derives outcome. Cascades to children.
+async fn terminate_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, SchedulerError> {
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
-    if matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
-        return Err(SchedulerError::Conflict(format!(
-            "session is already in terminal state: {}",
-            session.status
-        )));
-    }
-
-    use crate::services::cascade::{CascadeMode, terminate_subtree};
-
-    let result = terminate_subtree(
+    use crate::services::{reconciler, transition};
+    let already_terminated = match transition::transition(
         &state.db_pool,
-        &id,
-        true, // include root
-        CascadeMode::Cancel,
-        &state.event_broadcast,
-        &state.task_queue,
+        &session.execution_id,
+        &session.id,
+        transition::Action::SetDesired(transition::Desired::Terminate, "user".to_string()),
     )
-    .await?;
-
-    // Clean up any pending stop_turn command (prevents unbounded HashMap growth)
+    .await
     {
-        let mut intents = state.stop_turn_intents.write().unwrap();
-        intents.remove(&id);
-    }
+        Ok(_) => false,
+        Err(transition::Rejected::Ratchet) => true,
+        Err(e) => {
+            return Err(SchedulerError::Database(format!(
+                "transition failed: {e:?}"
+            )));
+        }
+    };
 
-    // Notify parent that this session was canceled
-    notify_parent_of_termination(&state, &session, "canceled").await?;
-
-    // Root session: propagate to execution status
-    if session.parent_session_id.is_none() {
-        let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
-        use db::executions::CasResult;
-        match db::executions::update_status_cas(
-            &state.db_pool,
-            &session.execution_id,
-            "canceled",
-            &["submitted", "working", "input-required"],
-        )
-        .await?
-        {
-            CasResult::Applied => {
-                let exec_event = json!({"from": execution.status, "to": "canceled"});
-                let event_id = db::events::insert(
+    if already_terminated && session.parent_session_id.is_none() {
+        let exec = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
+        if exec.outcome.is_none() {
+            let mut fix_tx =
+                db::executions::begin_execution_tx(&state.db_pool, &session.execution_id)
+                    .await
+                    .map_err(|e| SchedulerError::Database(format!("begin fix tx: {e}")))?;
+            let tx_root = db::sessions::get_in_tx(&state.db_pool, &mut fix_tx, &session.id)
+                .await
+                .map_err(|e| SchedulerError::Database(format!("recheck root: {e}")))?;
+            if tx_root.outcome.is_none() || tx_root.desired != "terminate" {
+                let _ = fix_tx.rollback().await;
+            } else {
+                let derived = transition::derive_execution_outcome(
                     &state.db_pool,
+                    &mut fix_tx,
                     &session.execution_id,
-                    None,
-                    "state_change",
-                    &serde_json::to_string(&exec_event).unwrap(),
                 )
                 .await?;
-                let _ = state.event_broadcast.send(EventNotification::persisted(
-                    session.execution_id.clone(),
-                    event_id,
-                ));
-            }
-            CasResult::Conflict => {
-                // Another handler already terminalized — desired outcome, no error
-            }
-            CasResult::NotFound => {
-                return Err(SchedulerError::NotFound(format!(
-                    "execution not found: {}",
-                    session.execution_id
-                )));
+                let fix_sql = state.db_pool.prepare_query(
+                    "UPDATE executions SET desired = 'terminate', outcome = ?, \
+                     updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
+                     WHERE id = ? AND outcome IS NULL",
+                );
+                let _ = sqlx::query(&fix_sql)
+                    .bind(&derived)
+                    .bind(&session.execution_id)
+                    .execute(&mut *fix_tx)
+                    .await;
+                reconciler::emit_execution_repair_event(
+                    &state.db_pool,
+                    &mut fix_tx,
+                    &session.execution_id,
+                    &derived,
+                )
+                .await;
+                let _ = fix_tx.commit().await;
             }
         }
     }
 
-    Ok(Json(json!({
-        "canceled": true,
-        "sessions_terminated": result.sessions_terminated
-    })))
+    let fresh = db::sessions::get_by_id(&state.db_pool, &id).await?;
+    let _ = reconciler::cascade_children(&state.db_pool, &fresh).await;
+
+    state.task_queue.wake_waiters();
+
+    let _ = state.event_broadcast.send(EventNotification::persisted(
+        session.execution_id.clone(),
+        0,
+    ));
+
+    Ok(Json(json!({"terminated": true})))
 }
 
-/// Stop the current turn for a session (POST /api/sessions/{id}/stop)
-///
-/// This is a user-initiated stop that:
-/// 1. Validates the session is in a non-terminal state
-/// 2. Flushes any queued tasks for the session (prevents re-triggering)
-/// 3. Writes a "stop_turn" command to the per-session command slot
-/// 4. Wakes long-polling workers so they discover the command immediately
-///
-/// Unlike cancel, stop-turn does NOT transition the session to a terminal state.
-/// The session remains working until the executor acknowledges the stop and
-/// reports back with error_kind "stopped_by_user", at which point the scheduler
-/// transitions it to "input-required".
+/// Continue from a terminal session (POST /api/sessions/{id}/continue)
+/// Creates a new sibling session under the same parent.
+#[derive(Debug, Deserialize)]
+struct ContinueFromRequest {
+    #[serde(default)]
+    parts: Vec<serde_json::Value>,
+}
+
+async fn continue_from_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ContinueFromRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), SchedulerError> {
+    let pool = &state.db_pool;
+    let old_session = db::sessions::get_by_id(pool, &id).await?;
+
+    let has_content = crate::services::messaging::has_deliverable_content(&req.parts);
+    if !has_content {
+        return Err(SchedulerError::ValidationFailed(
+            "parts must contain at least one non-empty text part".to_string(),
+        ));
+    }
+
+    if old_session.outcome.is_none() {
+        return Err(SchedulerError::Conflict(
+            "session is not terminal (outcome IS NULL)".into(),
+        ));
+    }
+
+    let parent_id = match old_session.parent_session_id.as_deref() {
+        Some(pid) => pid.to_string(),
+        None => {
+            return Err(SchedulerError::Conflict(
+                "cannot continue a root session — use re-run instead".into(),
+            ));
+        }
+    };
+
+    if old_session.command_token.is_some() {
+        return Err(SchedulerError::Conflict(
+            "session has a pending command (command_token IS NOT NULL)".into(),
+        ));
+    }
+
+    if old_session.worker_id.is_some() {
+        return Err(SchedulerError::Conflict(
+            "session has a worker attached (worker_id IS NOT NULL)".into(),
+        ));
+    }
+
+    let execution = db::executions::get_by_id(pool, &old_session.execution_id).await?;
+    if execution.outcome.is_some() || execution.desired == "terminate" {
+        return Err(SchedulerError::Conflict(
+            "execution is not alive (desired=terminate or outcome set)".into(),
+        ));
+    }
+
+    let parent = db::sessions::get_by_id(pool, &parent_id).await?;
+    if parent.outcome.is_some() || parent.desired == "terminate" {
+        return Err(SchedulerError::Conflict(
+            "parent is not alive or is terminating".into(),
+        ));
+    }
+
+    let agent = db::agents::get_by_id(pool, &old_session.agent_id)
+        .await
+        .map_err(|e| match e {
+            SchedulerError::NotFound(_) => {
+                SchedulerError::Conflict("agent config no longer exists (deleted)".into())
+            }
+            other => other,
+        })?;
+    if !agent.enabled {
+        return Err(SchedulerError::Conflict(
+            "agent is disabled — cannot continue".into(),
+        ));
+    }
+
+    let new_session_id = uuid::Uuid::new_v4().to_string();
+
+    let is_resumable = matches!(agent.agent_type.as_str(), "claude_sdk" | "copilot_sdk");
+    let msg_payload = common::a2a::message_payload(common::a2a::role::USER, req.parts.clone());
+    let prompt_payload = json!({"message": msg_payload});
+    let prompt_str = serde_json::to_string(&prompt_payload)
+        .map_err(|e| SchedulerError::Database(format!("serialize prompt failed: {e}")))?;
+    let notif_text = format!("Child session continued from {} as {}.", id, new_session_id);
+    let notification = serde_json::json!({
+        "message": {
+            "role": "ROLE_USER",
+            "parts": [
+                {"text": notif_text},
+                {"data": {
+                    "type": "child_continued",
+                    "old_session_id": &id,
+                    "new_session_id": &new_session_id,
+                }}
+            ]
+        }
+    });
+    let notification_str = serde_json::to_string(&notification)
+        .map_err(|e| SchedulerError::Database(format!("serialize notification failed: {e}")))?;
+    let event_payload = serde_json::json!({
+        "type": "child_continued",
+        "old_session_id": &id,
+        "new_session_id": &new_session_id,
+    });
+    let event_str = serde_json::to_string(&event_payload).unwrap_or_default();
+    let source = format!("child_result:{new_session_id}");
+
+    let mut tx = db::executions::begin_execution_tx(pool, &old_session.execution_id)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin continue_from tx: {e}")))?;
+
+    let recheck_sql = pool.prepare_query(
+        "SELECT outcome, command_token, worker_id, agent_session_id FROM sessions WHERE id = ?",
+    );
+    let recheck = sqlx::query(&recheck_sql)
+        .bind(&id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("recheck old session: {e}")))?;
+
+    let recheck_outcome: Option<String> = recheck.get("outcome");
+    let recheck_cmd: Option<String> = recheck.get("command_token");
+    let recheck_wid: Option<String> = recheck.get("worker_id");
+    if recheck_outcome.is_none() || recheck_cmd.is_some() || recheck_wid.is_some() {
+        let _ = tx.rollback().await;
+        return Err(SchedulerError::Conflict(
+            "precondition race: old session state changed".into(),
+        ));
+    }
+
+    let exec_recheck_sql =
+        pool.prepare_query("SELECT desired, outcome FROM executions WHERE id = ?");
+    let exec_row = sqlx::query(&exec_recheck_sql)
+        .bind(&old_session.execution_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("recheck execution: {e}")))?;
+    let exec_desired: String = exec_row.get("desired");
+    let exec_outcome: Option<String> = exec_row.get("outcome");
+    if exec_outcome.is_some() || exec_desired != "run" {
+        let _ = tx.rollback().await;
+        return Err(SchedulerError::Conflict(
+            "precondition race: execution is no longer alive/running".into(),
+        ));
+    }
+
+    let parent_recheck_sql =
+        pool.prepare_query("SELECT desired, outcome FROM sessions WHERE id = ?");
+    let parent_row = sqlx::query(&parent_recheck_sql)
+        .bind(&parent_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("recheck parent: {e}")))?;
+    let parent_desired: String = parent_row.get("desired");
+    let parent_outcome: Option<String> = parent_row.get("outcome");
+    if parent_outcome.is_some() || parent_desired == "terminate" {
+        let _ = tx.rollback().await;
+        return Err(SchedulerError::Conflict(
+            "precondition race: parent is no longer alive or is terminating".into(),
+        ));
+    }
+
+    let agent_sql =
+        pool.prepare_query("SELECT enabled FROM agents WHERE id = ? AND deleted_at IS NULL");
+    let agent_row = sqlx::query(&agent_sql)
+        .bind(&old_session.agent_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("recheck agent: {e}")))?;
+    match agent_row {
+        None => {
+            let _ = tx.rollback().await;
+            return Err(SchedulerError::Conflict(
+                "agent deleted during continue_from".into(),
+            ));
+        }
+        Some(row) => {
+            let enabled: bool = row
+                .try_get("enabled")
+                .unwrap_or_else(|_| row.get::<i32, _>("enabled") != 0);
+            if !enabled {
+                let _ = tx.rollback().await;
+                return Err(SchedulerError::Conflict(
+                    "agent disabled during continue_from".into(),
+                ));
+            }
+        }
+    }
+
+    let slug_sql =
+        pool.prepare_query("SELECT slug FROM sessions WHERE parent_session_id = ? AND slug != ''");
+    let slug_rows = sqlx::query(&slug_sql)
+        .bind(&parent_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("sibling slugs: {e}")))?;
+    let existing_slugs: Vec<String> = slug_rows.iter().map(|r| r.get("slug")).collect();
+    let slug = crate::slugs::generate_slug(&existing_slugs);
+
+    let create_sql = pool.prepare_query(
+        "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, \
+         worktree_path, base_commit_sha, slug, continued_from_session_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    sqlx::query(&create_sql)
+        .bind(&new_session_id)
+        .bind(&old_session.execution_id)
+        .bind(Some(&parent_id))
+        .bind(&old_session.agent_id)
+        .bind(old_session.cwd.as_deref())
+        .bind(old_session.worktree_path.as_deref())
+        .bind(old_session.base_commit_sha.as_deref())
+        .bind(&slug)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("create continued session: {e}")))?;
+
+    if old_session.worktree_path.is_some() {
+        let clear_wt_sql = pool.prepare_query(
+            "UPDATE sessions SET worktree_path = NULL, base_commit_sha = NULL, \
+             updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        );
+        sqlx::query(&clear_wt_sql)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("clear old worktree: {e}")))?;
+    }
+
+    if is_resumable {
+        let recheck_asid: Option<String> = recheck.get("agent_session_id");
+        if let Some(ref asid) = recheck_asid {
+            let set_sql = pool.prepare_query(
+                "UPDATE sessions SET agent_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            );
+            sqlx::query(&set_sql)
+                .bind(asid)
+                .bind(&new_session_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| SchedulerError::Database(format!("transfer agent_session_id: {e}")))?;
+
+            let clear_sql = pool.prepare_query(
+                "UPDATE sessions SET agent_session_id = NULL, updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ? AND agent_session_id = ?",
+            );
+            let clear_result = sqlx::query(&clear_sql)
+                .bind(&id)
+                .bind(asid)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    SchedulerError::Database(format!("clear old agent_session_id: {e}"))
+                })?;
+
+            if clear_result.rows_affected() == 0 {
+                let _ = tx.rollback().await;
+                return Err(SchedulerError::Conflict(
+                    "concurrent continue_from: SDK session already transferred".into(),
+                ));
+            }
+        }
+    }
+
+    let prompt_event_sql = pool.prepare_query(
+        "INSERT INTO events (execution_id, session_id, event_type, payload) \
+         VALUES (?, ?, 'message', ?)",
+    );
+    sqlx::query(&prompt_event_sql)
+        .bind(&old_session.execution_id)
+        .bind(&new_session_id)
+        .bind(&prompt_str)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("insert prompt event: {e}")))?;
+
+    let enqueue_sql = pool.prepare_query(
+        "INSERT INTO task_queue (execution_id, session_id, task_payload, source) VALUES (?, ?, ?, ?)",
+    );
+    sqlx::query(&enqueue_sql)
+        .bind(&old_session.execution_id)
+        .bind(&new_session_id)
+        .bind(&prompt_str)
+        .bind("user")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("enqueue prompt: {e}")))?;
+
+    if parent_desired == "stop" {
+        let resume_sql = pool.prepare_query(
+            "UPDATE sessions SET desired = 'run', desired_by = 'system:continue_from_notify', \
+             desired_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ? AND desired = 'stop'",
+        );
+        let _ = sqlx::query(&resume_sql)
+            .bind(&parent_id)
+            .execute(&mut *tx)
+            .await;
+    }
+    sqlx::query(&enqueue_sql)
+        .bind(&old_session.execution_id)
+        .bind(&parent_id)
+        .bind(&notification_str)
+        .bind(&source)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("enqueue parent notification: {e}")))?;
+
+    let event_sql = pool.prepare_query(
+        "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, 'platform', ?)",
+    );
+    sqlx::query(&event_sql)
+        .bind(&old_session.execution_id)
+        .bind(&parent_id)
+        .bind(&event_str)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("insert platform event: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("commit continue_from tx: {e}")))?;
+
+    state.task_queue.wake_waiters();
+    let _ = state
+        .event_broadcast
+        .send(crate::app::EventNotification::persisted(
+            old_session.execution_id.clone(),
+            0,
+        ));
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({"session_id": new_session_id})),
+    ))
+}
+
+/// Sets desired=stop on the session.
 async fn stop_turn_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<StopTurnResponse>, SchedulerError> {
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
-    // Reject if session is already terminal
-    if matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
-        return Err(SchedulerError::Conflict(format!(
-            "session is already in terminal state: {}",
-            session.status
-        )));
-    }
-
-    // 1. Flush queued tasks FIRST — prevents a new task from being inserted
-    //    between the command write and the flush.
-    let tasks_flushed = state.task_queue.flush_session(&id).await?;
-    if tasks_flushed > 0 {
-        tracing::info!(
-            session_id = %id,
-            tasks_flushed,
-            "Flushed queued tasks on stop-turn"
-        );
-    }
-
-    // If session is submitted (no worker yet), transition directly to input-required
-    if session.status == "submitted" {
-        if db::sessions::update_status_if_current(
-            &state.db_pool,
-            &id,
-            "submitted",
-            "input-required",
-        )
-        .await?
-        {
-            let event_payload = json!({"from": "submitted", "to": "input-required"});
-            if let Ok(event_id) = db::events::insert(
-                &state.db_pool,
-                &session.execution_id,
-                Some(&id),
-                "state_change",
-                &serde_json::to_string(&event_payload).unwrap(),
-            )
-            .await
-            {
-                let _ = state.event_broadcast.send(EventNotification::persisted(
-                    session.execution_id.clone(),
-                    event_id,
-                ));
-            }
-            // Also transition execution if lead session
-            if session.parent_session_id.is_none() {
-                use db::executions::CasResult;
-                if let Ok(CasResult::Applied) = db::executions::update_status_cas(
-                    &state.db_pool,
-                    &session.execution_id,
-                    "input-required",
-                    &["submitted", "working"],
-                )
-                .await
-                {
-                    let exec_event = json!({"from": "submitted", "to": "input-required"});
-                    if let Ok(event_id) = db::events::insert(
-                        &state.db_pool,
-                        &session.execution_id,
-                        None,
-                        "state_change",
-                        &serde_json::to_string(&exec_event).unwrap(),
-                    )
-                    .await
-                    {
-                        let _ = state.event_broadcast.send(EventNotification::persisted(
-                            session.execution_id.clone(),
-                            event_id,
-                        ));
-                    }
-                }
-            }
-            // No command slot needed — no worker to notify
-            return Ok(Json(StopTurnResponse {
-                stopped: true,
-                tasks_flushed,
-            }));
+    use crate::services::transition;
+    match transition::transition(
+        &state.db_pool,
+        &session.execution_id,
+        &session.id,
+        transition::Action::SetDesired(transition::Desired::Stop, "user".to_string()),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(transition::Rejected::Ratchet) => {
+            return Err(SchedulerError::Conflict(
+                "session already terminated".into(),
+            ));
         }
-
-        let fresh_session = db::sessions::get_by_id(&state.db_pool, &id).await?;
-        if matches!(
-            fresh_session.status.as_str(),
-            "completed" | "failed" | "canceled"
-        ) {
-            return Err(SchedulerError::Conflict(format!(
-                "session is already in terminal state: {}",
-                fresh_session.status
+        Err(e) => {
+            return Err(SchedulerError::Database(format!(
+                "transition failed: {e:?}"
             )));
         }
-        if fresh_session.status != "working" {
-            return Ok(Json(StopTurnResponse {
-                stopped: true,
-                tasks_flushed,
-            }));
-        }
     }
 
-    // 2. THEN publish one atomic stop intent for this session.
-    {
-        let mut intents = state.stop_turn_intents.write().unwrap();
-        intents.insert(id.clone());
-    }
-
-    // 3. Wake long-polling workers so they discover the command
     state.task_queue.wake_waiters();
 
-    tracing::info!(session_id = %id, "Stop-turn command issued");
+    let _ = state.event_broadcast.send(EventNotification::persisted(
+        session.execution_id.clone(),
+        0,
+    ));
 
     Ok(Json(StopTurnResponse {
         stopped: true,
-        tasks_flushed,
+        tasks_flushed: 0,
     }))
-}
-
-/// Complete a session and its subtree (POST /api/sessions/{id}/complete)
-async fn complete_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, SchedulerError> {
-    let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
-
-    if session.status != "input-required" {
-        return Err(SchedulerError::Conflict(format!(
-            "session must be 'input-required' to complete (current: {})",
-            session.status
-        )));
-    }
-
-    use crate::services::cascade::{CascadeMode, terminate_subtree};
-
-    let result = terminate_subtree(
-        &state.db_pool,
-        &id,
-        true,
-        CascadeMode::Release,
-        &state.event_broadcast,
-        &state.task_queue,
-    )
-    .await?;
-
-    // Notify parent that this session was completed
-    notify_parent_of_termination(&state, &session, "completed").await?;
-
-    // Root session: propagate to execution status
-    if session.parent_session_id.is_none() {
-        let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
-        use db::executions::CasResult;
-        match db::executions::update_status_cas(
-            &state.db_pool,
-            &session.execution_id,
-            "completed",
-            &["submitted", "working", "input-required"],
-        )
-        .await?
-        {
-            CasResult::Applied => {
-                let exec_event = json!({"from": execution.status, "to": "completed"});
-                let event_id = db::events::insert(
-                    &state.db_pool,
-                    &session.execution_id,
-                    None,
-                    "state_change",
-                    &serde_json::to_string(&exec_event).unwrap(),
-                )
-                .await?;
-                let _ = state.event_broadcast.send(EventNotification::persisted(
-                    session.execution_id.clone(),
-                    event_id,
-                ));
-            }
-            CasResult::Conflict => {
-                // Another handler already terminalized — desired outcome, no error
-            }
-            CasResult::NotFound => {
-                return Err(SchedulerError::NotFound(format!(
-                    "execution not found: {}",
-                    session.execution_id
-                )));
-            }
-        }
-    }
-
-    Ok(Json(json!({
-        "completed": true,
-        "sessions_terminated": result.sessions_terminated
-    })))
 }
 
 #[derive(Debug, Serialize)]
@@ -456,9 +678,10 @@ async fn delete_session_worktree(
 ) -> Result<Json<serde_json::Value>, SchedulerError> {
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
-    if !matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
+    if session.outcome.is_none() || session.worker_id.is_some() || session.command_token.is_some() {
         return Err(SchedulerError::Conflict(
-            "worktree cleanup only allowed on terminal sessions (completed/failed/canceled)"
+            "worktree cleanup only allowed on terminal finalized sessions \
+             (outcome set, no worker, no pending command)"
                 .to_string(),
         ));
     }
@@ -468,8 +691,6 @@ async fn delete_session_worktree(
         .as_deref()
         .ok_or_else(|| SchedulerError::NotFound("session has no worktree".to_string()))?;
 
-    // Resolve project path: session → execution → project
-    // Propagate DB errors; only treat NotFound as soft fallback (project deleted)
     let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
     let project_path = if let Some(ref pid) = execution.project_id {
         match db::projects::get_by_id(&state.db_pool, pid).await {
@@ -481,19 +702,13 @@ async fn delete_session_worktree(
         None
     };
 
-    // Async git cleanup (best-effort, each step independent)
     if let Some(ref proj) = project_path {
         let _ = run_git_command(proj, &["worktree", "remove", "--force", wt_path]).await;
         let _ = run_git_command(proj, &["worktree", "prune"]).await;
     }
 
-    // Fallback: remove directory if git worktree remove didn't
     let _ = tokio::fs::remove_dir_all(wt_path).await;
 
-    // Verify directory is actually gone before clearing DB pointer.
-    // Without this, a failed rm leaves an orphaned dir with no way to find it.
-    // Use explicit metadata check: is_dir() returns false on permission errors,
-    // which would incorrectly let us clear the DB while the dir still exists.
     match std::fs::metadata(wt_path) {
         Ok(_) => {
             return Err(SchedulerError::Database(format!(
@@ -508,7 +723,6 @@ async fn delete_session_worktree(
         }
     }
 
-    // Clear DB column (atomic terminal-state guard)
     db::sessions::clear_worktree_path(&state.db_pool, &id).await?;
 
     Ok(Json(json!({
@@ -575,7 +789,6 @@ async fn session_diff(
 ) -> Result<axum::response::Response, SchedulerError> {
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
-    // Resolve diff directory: worktree_path first, then cwd fallback
     let diff_dir = session
         .worktree_path
         .as_deref()
@@ -590,7 +803,6 @@ async fn session_diff(
         ));
     }
 
-    // Verify it's a git repo — let operational errors (timeout, spawn) pass through as 500
     let rev_parse = run_git_command(diff_dir, &["rev-parse", "--is-inside-work-tree"])
         .await
         .map_err(|e| match e {
@@ -603,8 +815,6 @@ async fn session_diff(
         ));
     }
 
-    // Use stored base SHA (initial worktree HEAD) as default to show cumulative
-    // changes even after the agent makes commits. Explicit ?base= overrides.
     let base = query
         .base
         .as_deref()
@@ -616,13 +826,11 @@ async fn session_diff(
         ));
     }
 
-    // Get numstat (--no-renames avoids R/C parse ambiguity: renames show as delete + add)
     let numstat_output =
         run_git_command(diff_dir, &["diff", "--no-renames", "--numstat", base, "--"])
             .await
             .map_err(|e| remap_git_error(e, base))?;
 
-    // Get name-status
     let name_status_output = run_git_command(
         diff_dir,
         &["diff", "--no-renames", "--name-status", base, "--"],
@@ -658,9 +866,6 @@ async fn session_diff(
         deletions: total_deletions,
     };
 
-    // Collect commits between the stored base and HEAD (best-effort, empty on error).
-    // Always use base_commit_sha (not the possibly-overridden `base`) so the commit
-    // list is stable regardless of the ?base= query param the frontend sends.
     let commit_base = session.base_commit_sha.as_deref().unwrap_or("HEAD");
     let commits = run_git_command(
         diff_dir,
@@ -681,9 +886,8 @@ async fn session_diff(
             .await
             .map_err(|e| remap_git_error(e, base))?;
 
-        const MAX_PATCH_SIZE: usize = 1_048_576; // 1MB
+        const MAX_PATCH_SIZE: usize = 1_048_576;
         if patch_output.len() > MAX_PATCH_SIZE {
-            // Patch too large: return 413 with stat-only fallback
             let response = DiffResponse {
                 files,
                 summary,
@@ -709,7 +913,6 @@ async fn session_diff(
 /// Remap git diff errors: timeouts stay as 500, git failures become 400 (bad base ref)
 fn remap_git_error(e: SchedulerError, base: &str) -> SchedulerError {
     match &e {
-        // Timeouts and spawn failures should remain 500
         SchedulerError::Database(_) => e,
         _ => SchedulerError::ValidationFailed(format!("git diff failed for base ref '{base}'")),
     }
@@ -747,7 +950,6 @@ fn parse_numstat(output: &str) -> Vec<(String, i64, i64)> {
             if parts.len() < 3 {
                 return None;
             }
-            // Binary files return `-` for counts
             let ins = parts[0].parse::<i64>().unwrap_or(0);
             let del = parts[1].parse::<i64>().unwrap_or(0);
             Some((parts[2].to_string(), ins, del))
@@ -765,7 +967,6 @@ fn parse_name_status(output: &str) -> std::collections::HashMap<String, String> 
             if parts.len() < 2 {
                 return None;
             }
-            // Status is the first char (M, A, D, R, etc.)
             let status = parts[0].chars().next().unwrap_or('M').to_string();
             Some((parts[1].to_string(), status))
         })
@@ -794,44 +995,6 @@ fn parse_commit_log(output: &str) -> Vec<DiffCommitEntry> {
         .collect()
 }
 
-/// Push a notification to the parent session's inbox when a child is
-/// externally terminated (by user cancel/complete, not agent release).
-async fn notify_parent_of_termination(
-    state: &AppState,
-    session: &db::sessions::Session,
-    terminal_status: &str,
-) -> Result<(), SchedulerError> {
-    if let Some(ref parent_id) = session.parent_session_id {
-        let agent = db::agents::get_by_id(&state.db_pool, &session.agent_id).await;
-        let agent_name = agent
-            .map(|a| a.name)
-            .unwrap_or_else(|_| session.agent_id.clone());
-        let agent_name = agent_name.replace(['\r', '\n'], " ");
-        let agent_name = agent_name.trim();
-
-        let formatted_text = format!(
-            "[session {} ({}) was {} by user]\n\nThe child session has been terminated.",
-            session.id, agent_name, terminal_status
-        );
-        let notification = json!({
-            "message": {
-                "role": "ROLE_USER",
-                "parts": [{"text": formatted_text}]
-            },
-        });
-        state
-            .task_queue
-            .push(TaskAssignment {
-                execution_id: session.execution_id.clone(),
-                session_id: parent_id.clone(),
-                task_payload: notification,
-            })
-            .await?;
-        state.task_queue.wake_waiters();
-    }
-    Ok(())
-}
-
 /// Request body for manual recovery
 #[derive(Debug, Deserialize)]
 pub struct RecoverSessionRequest {
@@ -858,21 +1021,219 @@ async fn recover_session_handler(
         ));
     }
 
-    let result = crate::services::recovery::attempt_manual_recovery(
-        &state.db_pool,
-        &state.task_queue,
-        &state.event_broadcast,
-        &id,
-        req.message.as_deref(),
-    )
-    .await?;
+    let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
-    let updated = db::sessions::get_by_id(&state.db_pool, &id).await?;
+    if session.outcome.as_deref() != Some("failed") {
+        return Err(SchedulerError::ValidationFailed(
+            "session is not in failed state".to_string(),
+        ));
+    }
+
+    let pool = &state.db_pool;
+
+    let agent = db::agents::get_by_id(pool, &session.agent_id)
+        .await
+        .map_err(|e| match e {
+            SchedulerError::NotFound(_) => SchedulerError::ValidationFailed(
+                "agent no longer exists — cannot recover".to_string(),
+            ),
+            other => other,
+        })?;
+    if !agent.enabled {
+        return Err(SchedulerError::ValidationFailed(
+            "agent is disabled — cannot recover".to_string(),
+        ));
+    }
+
+    let is_resumable = matches!(agent.agent_type.as_str(), "claude_sdk" | "copilot_sdk");
+    let clear_agent_session_id = !is_resumable && session.agent_session_id.is_some();
+    if !is_resumable && req.message.is_none() {
+        return Err(SchedulerError::ValidationFailed(
+            "non-resumable agent requires a message for recovery".to_string(),
+        ));
+    }
+
+    let exec = db::executions::get_by_id(pool, &session.execution_id).await?;
+    let is_root = session.parent_session_id.is_none();
+    if !is_root && (exec.desired == "terminate" || exec.outcome.is_some()) {
+        return Err(SchedulerError::ValidationFailed(
+            "cannot recover child session under terminal or terminating execution".to_string(),
+        ));
+    }
+
+    let msg_payload_json = if let Some(ref msg) = req.message {
+        let msg_payload = common::a2a::message_payload(
+            common::a2a::role::USER,
+            vec![common::a2a::text_part(msg)],
+        );
+        Some(
+            serde_json::to_string(&serde_json::json!({"message": msg_payload}))
+                .map_err(|e| SchedulerError::Database(format!("serialize failed: {e}")))?,
+        )
+    } else {
+        None
+    };
+
+    let mut tx = db::executions::begin_execution_tx(pool, &session.execution_id)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin recover tx: {e}")))?;
+
+    if !is_root {
+        let tx_exec = db::executions::get_in_tx(pool, &mut tx, &session.execution_id)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("execution recheck: {e}")))?;
+        if tx_exec.desired == "terminate" || tx_exec.outcome.is_some() {
+            let _ = tx.rollback().await;
+            return Err(SchedulerError::ValidationFailed(
+                "execution became terminal during recovery".to_string(),
+            ));
+        }
+    }
+
+    let agent_sql =
+        pool.prepare_query("SELECT enabled FROM agents WHERE id = ? AND deleted_at IS NULL");
+    let agent_row = sqlx::query(&agent_sql)
+        .bind(&session.agent_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("recheck agent: {e}")))?;
+    match agent_row {
+        None => {
+            let _ = tx.rollback().await;
+            return Err(SchedulerError::ValidationFailed(
+                "agent deleted during recovery".into(),
+            ));
+        }
+        Some(row) => {
+            let enabled: bool = row
+                .try_get("enabled")
+                .unwrap_or_else(|_| row.get::<i32, _>("enabled") != 0);
+            if !enabled {
+                let _ = tx.rollback().await;
+                return Err(SchedulerError::ValidationFailed(
+                    "agent disabled during recovery".into(),
+                ));
+            }
+        }
+    }
+
+    let sql = if clear_agent_session_id {
+        pool.prepare_query(
+            "UPDATE sessions SET desired = 'run', executor_state = 'unassigned', \
+             outcome = NULL, completed_at = NULL, recovery_attempts = 0, \
+             parent_notified = FALSE, desired_by = 'user', \
+             desired_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, \
+             worker_id = NULL, command_token = NULL, command_type = NULL, \
+             command_at = NULL, command_has_payload = FALSE, agent_session_id = NULL \
+             WHERE id = ? AND outcome = 'failed'",
+        )
+    } else {
+        pool.prepare_query(
+            "UPDATE sessions SET desired = 'run', executor_state = 'unassigned', \
+             outcome = NULL, completed_at = NULL, recovery_attempts = 0, \
+             parent_notified = FALSE, desired_by = 'user', \
+             desired_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, \
+             worker_id = NULL, command_token = NULL, command_type = NULL, \
+             command_at = NULL, command_has_payload = FALSE \
+             WHERE id = ? AND outcome = 'failed'",
+        )
+    };
+    let result = sqlx::query(&sql)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("manual recovery failed: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        let _ = tx.rollback().await;
+        return Err(SchedulerError::Conflict(
+            "session state changed concurrently".to_string(),
+        ));
+    }
+
+    if let Some(ref payload_str) = msg_payload_json {
+        let enqueue_sql = pool.prepare_query(
+            "INSERT INTO task_queue (execution_id, session_id, task_payload, source) VALUES (?, ?, ?, ?)",
+        );
+        sqlx::query(&enqueue_sql)
+            .bind(&session.execution_id)
+            .bind(&id)
+            .bind(payload_str)
+            .bind(None::<&str>)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("enqueue message failed: {e}")))?;
+    }
+
+    let execution_recovered = if is_root && (exec.desired == "terminate" || exec.outcome.is_some())
+    {
+        let tx_exec = db::executions::get_in_tx(pool, &mut tx, &session.execution_id)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("execution recheck: {e}")))?;
+        if tx_exec.desired == "terminate" || tx_exec.outcome.is_some() {
+            let exec_sql = pool.prepare_query(
+                "UPDATE executions SET desired = 'run', outcome = NULL, \
+                 completed_at = NULL, updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ? AND (desired = 'terminate' OR outcome IS NOT NULL)",
+            );
+            sqlx::query(&exec_sql)
+                .bind(&session.execution_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| SchedulerError::Database(format!("execution recovery failed: {e}")))?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let recovery_event = serde_json::json!({"desired": "run", "recovery": true});
+    let recovery_event_str = serde_json::to_string(&recovery_event).unwrap_or_default();
+    let evt_sql = pool.prepare_query(
+        "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, 'state_change', ?)",
+    );
+    let _ = sqlx::query(&evt_sql)
+        .bind(&session.execution_id)
+        .bind(&session.id)
+        .bind(&recovery_event_str)
+        .execute(&mut *tx)
+        .await;
+
+    if execution_recovered {
+        let exec_evt_sql = pool.prepare_query(
+            "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, NULL, 'state_change', ?)",
+        );
+        let _ = sqlx::query(&exec_evt_sql)
+            .bind(&session.execution_id)
+            .bind(&recovery_event_str)
+            .execute(&mut *tx)
+            .await;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("commit recover tx: {e}")))?;
+
+    state.task_queue.wake_waiters();
+    let _ = state
+        .event_broadcast
+        .send(crate::app::EventNotification::persisted(
+            session.execution_id.clone(),
+            0,
+        ));
+
+    let updated = db::sessions::get_by_id(pool, &id).await?;
+    let pending = db::sessions::count_pending_turns(pool, &updated.id).await?;
+    let status = crate::api::types::derive_session_display_status(&updated, pending);
+    let mut resp: SessionResponse = updated.into();
+    resp.status = status;
     Ok((
         StatusCode::OK,
         Json(RecoverSessionResponse {
-            session: updated.into(),
-            execution_recovered: result.execution_recovered,
+            session: resp,
+            execution_recovered,
         }),
     ))
 }
@@ -893,16 +1254,16 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(post_message),
         )
         .route(
-            "/api/sessions/{id}/cancel",
-            axum::routing::post(cancel_session),
+            "/api/sessions/{id}/terminate",
+            axum::routing::post(terminate_session),
         )
         .route(
             "/api/sessions/{id}/stop",
             axum::routing::post(stop_turn_handler),
         )
         .route(
-            "/api/sessions/{id}/complete",
-            axum::routing::post(complete_session),
+            "/api/sessions/{id}/continue",
+            axum::routing::post(continue_from_handler),
         )
         .route(
             "/api/sessions/{id}/recover",

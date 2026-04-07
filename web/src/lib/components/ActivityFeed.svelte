@@ -43,8 +43,7 @@
     'working': { icon: '\u25CF', iconClass: 'working' },
     'completed': { icon: '\u2713', iconClass: 'completed' },
     'failed': { icon: '\u2717', iconClass: 'failed' },
-    'input-required': { icon: '!', iconClass: 'attention' },
-    'submitted': { icon: '\u25CF', iconClass: 'muted' },
+    'awaiting_input': { icon: '!', iconClass: 'attention' },
     'canceled': { icon: '\u2014', iconClass: 'muted' },
   };
 
@@ -52,8 +51,7 @@
     'working': 'is working',
     'completed': 'completed',
     'failed': 'failed',
-    'input-required': 'is awaiting input',
-    'submitted': 'was submitted',
+    'awaiting_input': 'is awaiting input',
     'canceled': 'was canceled',
   };
 
@@ -64,7 +62,7 @@
     switch (filter) {
       case 'running': return exec.status === 'working';
       case 'waiting':
-        return exec.status === 'input-required' && $executionsWithQuestions.has(exec.id);
+        return !exec.outcome && exec.desired !== 'terminate' && $executionsWithQuestions.has(exec.id);
       case 'completed':
         return exec.status === 'completed' && !!exec.completed_at &&
           Date.now() - new Date(exec.completed_at).getTime() < DAY_MS;

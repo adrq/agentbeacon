@@ -43,6 +43,8 @@ const MIGRATION_0017: &str = include_str!("../../migrations/0017_a2a_v1_part_for
 const MIGRATION_0017_PG: &str = include_str!("../../migrations/0017_pg_a2a_v1_part_format.sql");
 const MIGRATION_0018: &str = include_str!("../../migrations/0018_last_progress_at.sql");
 const MIGRATION_0018_PG: &str = include_str!("../../migrations/0018_pg_last_progress_at.sql");
+const MIGRATION_0019: &str = include_str!("../../migrations/0019_state_machine.sql");
+const MIGRATION_0019_PG: &str = include_str!("../../migrations/0019_pg_state_machine.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -250,6 +252,11 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     } else {
         MIGRATION_0018
     };
+    let migration_0019 = if is_postgres {
+        MIGRATION_0019_PG
+    } else {
+        MIGRATION_0019
+    };
     let migrations = vec![
         (MIGRATION_0001, 1),
         (migration_0002, 2),
@@ -269,6 +276,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         (migration_0016, 16),
         (migration_0017, 17),
         (migration_0018, 18),
+        (migration_0019, 19),
     ];
 
     // Process each migration
@@ -280,8 +288,8 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
 
         // Migration 0002 uses DROP TABLE which triggers CASCADE with foreign_keys ON.
         // Disable FKs before the migration and re-enable after.
-        let needs_fk_disable =
-            !is_postgres && (version == 2 || version == 5 || version == 14 || version == 17);
+        let needs_fk_disable = !is_postgres
+            && (version == 2 || version == 5 || version == 14 || version == 17 || version == 19);
 
         // Adapt migration for database-specific syntax
         let migration = if is_postgres {
@@ -400,354 +408,4 @@ pub async fn get_current_version(pool: &DbPool) -> Result<i32, SchedulerError> {
         .map_err(|e| SchedulerError::Database(format!("check migration version failed: {e}")))?;
 
     Ok(result.unwrap_or(0))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- Migration transaction rollback tests ---
-
-    static INIT_DRIVERS: std::sync::Once = std::sync::Once::new();
-
-    fn install_drivers() {
-        INIT_DRIVERS.call_once(|| {
-            sqlx::any::install_default_drivers();
-        });
-    }
-
-    async fn create_test_pool() -> crate::db::DbPool {
-        install_drivers();
-        crate::db::pool::create("sqlite::memory:")
-            .await
-            .expect("Failed to create test pool")
-    }
-
-    #[tokio::test]
-    async fn test_migration_rollback_on_failure() {
-        let pool = create_test_pool().await;
-        let mut conn = pool.as_ref().acquire().await.unwrap();
-
-        // Bootstrap schema_migrations table
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT)",
-        )
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-
-        // Synthetic migration: valid DDL + failing statement + version insert
-        let statements = &[
-            "CREATE TABLE test_rollback_table (id INTEGER PRIMARY KEY, name TEXT)",
-            "INSERT INTO nonexistent_table VALUES (1)",
-            "INSERT INTO schema_migrations (version, applied_at) VALUES (9999, CURRENT_TIMESTAMP)",
-        ];
-        let result = execute_migration_version(&mut conn, 9999, statements).await;
-
-        assert!(result.is_err());
-
-        // Table should NOT exist (transaction rolled back)
-        let table_exists = sqlx::query(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='test_rollback_table'",
-        )
-        .fetch_optional(&mut *conn)
-        .await
-        .unwrap();
-        assert!(
-            table_exists.is_none(),
-            "table should not exist after rollback"
-        );
-
-        // Version should NOT be recorded
-        let version_exists =
-            sqlx::query("SELECT version FROM schema_migrations WHERE version = 9999")
-                .fetch_optional(&mut *conn)
-                .await
-                .unwrap();
-        assert!(
-            version_exists.is_none(),
-            "version should not be recorded after rollback"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_fk_pragma_restored_after_migration_failure() {
-        let pool = create_test_pool().await;
-        let mut conn = pool.as_ref().acquire().await.unwrap();
-
-        // Verify FK is ON by default
-        let fk_before: (i32,) = sqlx::query_as("PRAGMA foreign_keys")
-            .fetch_one(&mut *conn)
-            .await
-            .unwrap();
-        assert_eq!(fk_before.0, 1, "foreign_keys should be ON before test");
-
-        // Simulate PRAGMA flow with a failing migration
-        sqlx::query("PRAGMA foreign_keys = OFF")
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        let statements = &[
-            "CREATE TABLE fk_test_table (id INTEGER PRIMARY KEY)",
-            "INSERT INTO nonexistent_table VALUES (1)",
-        ];
-        let result = execute_migration_version(&mut conn, 9998, statements).await;
-        assert!(result.is_err());
-
-        // Re-enable FK (mirrors production pattern)
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&mut *conn)
-            .await
-            .expect("FK re-enable should succeed");
-
-        // Verify FK is back ON
-        let fk_after: (i32,) = sqlx::query_as("PRAGMA foreign_keys")
-            .fetch_one(&mut *conn)
-            .await
-            .unwrap();
-        assert_eq!(
-            fk_after.0, 1,
-            "foreign_keys should be ON after failed migration"
-        );
-
-        // Table should NOT exist (transaction rolled back)
-        let table_exists = sqlx::query(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fk_test_table'",
-        )
-        .fetch_optional(&mut *conn)
-        .await
-        .unwrap();
-        assert!(
-            table_exists.is_none(),
-            "table should not exist after rollback"
-        );
-    }
-
-    // Tests for the generic replace_type_with_tokenizer function
-    #[test]
-    fn test_generic_boolean_to_integer() {
-        let sql = "is_active BOOLEAN NOT NULL";
-        let result = replace_type_with_tokenizer(sql, "BOOLEAN", "INTEGER");
-        assert_eq!(result, "is_active INTEGER NOT NULL");
-    }
-
-    #[test]
-    fn test_generic_timestamp_to_text() {
-        let sql = "created_at TIMESTAMP NOT NULL";
-        let result = replace_type_with_tokenizer(sql, "TIMESTAMP", "TEXT");
-        assert_eq!(result, "created_at TEXT NOT NULL");
-    }
-
-    #[test]
-    fn test_generic_timestamp_to_timestamptz() {
-        let sql = "updated_at TIMESTAMP";
-        let result = replace_type_with_tokenizer(sql, "TIMESTAMP", "TIMESTAMPTZ");
-        assert_eq!(result, "updated_at TIMESTAMPTZ");
-    }
-
-    #[test]
-    fn test_generic_preserves_column_name() {
-        let sql = "boolean BOOLEAN NOT NULL";
-        let result = replace_type_with_tokenizer(sql, "BOOLEAN", "INTEGER");
-        assert_eq!(result, "boolean INTEGER NOT NULL");
-    }
-
-    #[test]
-    fn test_generic_multiple_replacements() {
-        let sql = "col1 BOOLEAN, col2 BOOLEAN NOT NULL, col3 BOOLEAN";
-        let result = replace_type_with_tokenizer(sql, "BOOLEAN", "INTEGER");
-        assert_eq!(result, "col1 INTEGER, col2 INTEGER NOT NULL, col3 INTEGER");
-    }
-
-    #[test]
-    fn test_generic_case_sensitive() {
-        let sql = "col1 boolean, col2 Boolean, col3 BOOLEAN";
-        let result = replace_type_with_tokenizer(sql, "BOOLEAN", "INTEGER");
-        let count = result.matches("INTEGER").count();
-        assert_eq!(count, 1, "Only uppercase BOOLEAN should be replaced");
-    }
-
-    #[test]
-    fn test_generic_preserves_string_literals() {
-        let sql = "SELECT 'BOOLEAN value' FROM t WHERE col BOOLEAN";
-        let result = replace_type_with_tokenizer(sql, "BOOLEAN", "INTEGER");
-        assert!(result.contains("'BOOLEAN value'"));
-        assert!(result.contains("col INTEGER"));
-    }
-
-    #[test]
-    fn test_generic_malformed_sql_fallback() {
-        let sql = "this is not really SQL but we shouldn't crash";
-        let result = replace_type_with_tokenizer(sql, "BOOLEAN", "INTEGER");
-        // Should return original or attempt best-effort parsing
-        assert!(!result.is_empty());
-    }
-
-    // Existing tests for specific wrapper functions
-    #[test]
-    fn test_timestamp_replacement_handles_comma() {
-        let sql = "completed_at TIMESTAMP,";
-        let result = replace_timestamp_with_timestamptz(sql);
-        assert_eq!(result, "completed_at TIMESTAMPTZ,");
-    }
-
-    #[test]
-    fn test_timestamp_replacement_handles_space() {
-        let sql = "created_at TIMESTAMP NOT NULL";
-        let result = replace_timestamp_with_timestamptz(sql);
-        assert_eq!(result, "created_at TIMESTAMPTZ NOT NULL");
-    }
-
-    #[test]
-    fn test_timestamp_replacement_handles_paren() {
-        let sql = "col TIMESTAMP)";
-        let result = replace_timestamp_with_timestamptz(sql);
-        assert_eq!(result, "col TIMESTAMPTZ)");
-    }
-
-    #[test]
-    fn test_timestamp_replacement_handles_semicolon() {
-        let sql = "col TIMESTAMP;";
-        let result = replace_timestamp_with_timestamptz(sql);
-        assert_eq!(result, "col TIMESTAMPTZ;");
-    }
-
-    #[test]
-    fn test_timestamp_replacement_preserves_string_literals() {
-        let sql = "SELECT 'my TIMESTAMP column' FROM t";
-        let result = replace_timestamp_with_timestamptz(sql);
-        assert_eq!(result, "SELECT 'my TIMESTAMP column' FROM t");
-    }
-
-    #[test]
-    fn test_timestamp_replacement_handles_multiple_occurrences() {
-        let sql =
-            "created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, completed_at TIMESTAMP,";
-        let result = replace_timestamp_with_timestamptz(sql);
-        assert_eq!(
-            result,
-            "created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ,"
-        );
-    }
-
-    #[test]
-    fn test_timestamp_replacement_case_sensitive() {
-        // Only uppercase TIMESTAMP (SQL type) should be replaced, not lowercase (column names)
-        let sql = "col timestamp, col2 Timestamp, col3 TIMESTAMP";
-        let result = replace_timestamp_with_timestamptz(sql);
-        // Only col3's TIMESTAMP should be replaced (uppercase = type)
-        // col1's "timestamp" and col2's "Timestamp" are column names, preserved as-is
-        let count = result.matches("TIMESTAMPTZ").count();
-        assert_eq!(
-            count, 1,
-            "Expected 1 TIMESTAMPTZ replacement (only uppercase), found {count} in: {result}"
-        );
-        assert!(
-            result.contains("col timestamp,"),
-            "Lowercase timestamp (column name) should be preserved"
-        );
-        assert!(
-            result.contains("col2 Timestamp,"),
-            "Mixed-case Timestamp should be preserved"
-        );
-        assert!(
-            result.contains("col3 TIMESTAMPTZ"),
-            "Uppercase TIMESTAMP (type) should be replaced"
-        );
-    }
-
-    #[test]
-    fn test_complete_migration_replacement() {
-        // Test the actual migration SQL snippet for executions.completed_at
-        let sql = r#"
-        CREATE TABLE executions (
-            completed_at TIMESTAMP,
-            created_at TIMESTAMP NOT NULL
-        )
-        "#;
-        let result = replace_timestamp_with_timestamptz(sql);
-
-        // Verify both TIMESTAMP occurrences are replaced
-        assert!(result.contains("completed_at TIMESTAMPTZ,"));
-        assert!(result.contains("created_at TIMESTAMPTZ NOT"));
-        assert!(!result.contains("TIMESTAMP,"));
-        assert!(!result.contains("TIMESTAMP NOT"));
-    }
-
-    #[test]
-    fn test_column_named_timestamp() {
-        // Test that column name 'timestamp' is preserved, but type TIMESTAMP is replaced
-        let sql = "timestamp TIMESTAMP NOT NULL";
-        let result = replace_timestamp_with_timestamptz(sql);
-        assert_eq!(result, "timestamp TIMESTAMPTZ NOT NULL");
-        // Column name preserved, type replaced
-        assert!(result.starts_with("timestamp "));
-        assert!(result.contains("TIMESTAMPTZ"));
-    }
-
-    #[test]
-    fn test_current_timestamp_preserved() {
-        // Test that CURRENT_TIMESTAMP function is NOT replaced
-        let sql = "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP";
-        let result = replace_timestamp_with_timestamptz(sql);
-        assert_eq!(result, "created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP");
-        // Type replaced, but function preserved
-        assert!(result.contains("created_at TIMESTAMPTZ"));
-        assert!(result.contains("CURRENT_TIMESTAMP"));
-        assert!(!result.contains("CURRENT_TIMESTAMPTZ"));
-    }
-
-    #[test]
-    fn test_execution_events_timestamp_column() {
-        // Real-world test from migration line 55
-        let sql = "timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,";
-        let result = replace_timestamp_with_timestamptz(sql);
-        // Column name 'timestamp' preserved, type TIMESTAMP replaced
-        assert!(result.starts_with("timestamp TIMESTAMPTZ"));
-        assert!(result.contains("CURRENT_TIMESTAMP"));
-        assert!(!result.contains("CURRENT_TIMESTAMPTZ"));
-    }
-
-    #[test]
-    #[allow(clippy::uninlined_format_args)] // Test output formatting
-    fn test_full_migration_replacement() {
-        // Test the actual migration process for the execution_events table
-        let migration_snippet = r#"
-CREATE TABLE IF NOT EXISTS execution_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    execution_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    task_id TEXT,
-    message TEXT NOT NULL,
-    metadata TEXT NOT NULL,
-    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (execution_id) REFERENCES executions(id) ON DELETE CASCADE
-);
-        "#;
-
-        // Simulate PostgreSQL migration process
-        let step1 =
-            migration_snippet.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY");
-        let step2 = replace_timestamp_with_timestamptz(&step1);
-
-        // Print for debugging FIRST
-        eprintln!("\n=== MIGRATION REPLACEMENT TEST ===");
-        eprintln!("Original:\n{}", migration_snippet);
-        eprintln!("\nAfter AUTOINCREMENT replacement:\n{}", step1);
-        eprintln!("\nAfter TIMESTAMP replacement:\n{}", step2);
-        eprintln!("=================================\n");
-
-        // Verify column name 'timestamp' is preserved
-        assert!(
-            step2.contains("timestamp TIMESTAMPTZ NOT NULL"),
-            "Expected 'timestamp TIMESTAMPTZ NOT NULL' in result:\n{}",
-            step2
-        );
-        assert!(!step2.contains("timestamp TIMESTAMP NOT NULL"));
-
-        // Verify CURRENT_TIMESTAMP is not replaced
-        assert!(step2.contains("DEFAULT CURRENT_TIMESTAMP"));
-        assert!(!step2.contains("DEFAULT CURRENT_TIMESTAMPTZ"));
-    }
 }

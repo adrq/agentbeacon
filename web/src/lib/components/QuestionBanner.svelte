@@ -24,8 +24,9 @@
   let lastBatchId = $state('');
   let allAnswered = $state(false);
 
+  // Submit answers to the root session
   let inputSessionId = $derived(
-    sessions.find(s => s.status === 'input-required')?.id ?? null
+    sessions.find(s => !s.parent_session_id && !s.outcome && s.desired !== 'terminate')?.id ?? null
   );
 
   // Detect cross-surface submission (e.g., answered from ActionPanel)

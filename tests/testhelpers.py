@@ -6,7 +6,6 @@ temporary files to reduce duplication and flakiness across tests.
 
 from __future__ import annotations
 
-import json
 import os
 import socket
 import subprocess
@@ -429,122 +428,6 @@ def cleanup_files(paths: Iterable[str]) -> None:
             pass
 
 
-def start_mock_agent_a2a(
-    port: int = None, base_dir: Path = None
-) -> tuple[subprocess.Popen, int]:
-    """Start the mock agent A2A HTTP server.
-
-    Args:
-        port: Port number (auto-allocated if None)
-        base_dir: Base directory for the project (defaults to current working directory)
-
-    Returns:
-        tuple: (process, port)
-    """
-    if port is None:
-        port = PortManager().allocate_port()
-    if base_dir is None:
-        base_dir = Path.cwd()
-
-    agent_proc = subprocess.Popen(
-        [
-            "uv",
-            "run",
-            "mock-agent",
-            "--mode",
-            "a2a",
-            "--port",
-            str(port),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=base_dir,
-    )
-    return agent_proc, port
-
-
-def start_and_wait_for_a2a_agent(
-    port: int = None,
-    base_dir: Path = None,
-    timeout: float = 10,
-    config_file: str = None,
-) -> tuple[subprocess.Popen, int]:
-    """Start A2A mock agent and wait for it to be ready.
-
-    Args:
-        port: Port number (auto-allocated if None)
-        base_dir: Base directory for the project (defaults to current working directory)
-        timeout: Maximum time to wait for agent to be ready (default: 10s)
-        config_file: Optional config file for custom responses (e.g., "test-config-responses.json")
-
-    Returns:
-        tuple: (process, port)
-
-    Raises:
-        AssertionError: If agent fails to start within timeout
-    """
-    if port is None:
-        port = PortManager().allocate_port()
-    if base_dir is None:
-        base_dir = Path.cwd()
-
-    cmd = ["uv", "run", "mock-agent", "--mode", "a2a", "--port", str(port)]
-    if config_file:
-        cmd.extend(["--config", config_file])
-
-    agent_proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=base_dir,
-    )
-
-    agent_ready = wait_for_port(
-        port, timeout=timeout, health_path="/.well-known/agent-card.json"
-    )
-    if not agent_ready:
-        agent_proc.kill()
-        raise AssertionError(f"Mock agent A2A server did not start on port {port}")
-
-    return agent_proc, port
-
-
-def start_mock_scheduler(port: int, base_dir: Path = None) -> subprocess.Popen:
-    """Start the simple mock scheduler on the specified port.
-
-    Args:
-        port: Port number for the scheduler to listen on
-        base_dir: Base directory for the project (defaults to current working directory)
-
-    Returns:
-        subprocess.Popen: The scheduler process
-    """
-    if base_dir is None:
-        base_dir = Path.cwd()
-
-    mock_proc = subprocess.Popen(
-        [
-            "uv",
-            "run",
-            "uvicorn",
-            "tests.integration.simple_mock_scheduler:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--log-level",
-            "warning",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=base_dir,
-    )
-    return mock_proc
-
-
 def wait_for_port(
     port: int, timeout: float = 10, health_path: str = "/api/health"
 ) -> bool:
@@ -657,6 +540,7 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
 
         merged_env = {
             "AGENTBEACON_WIKI_INDEX_DIR": wiki_index_dir,
+            "AGENTBEACON_LONG_POLL_TIMEOUT_SECS": "0",
         }
         if env:
             merged_env.update(env)
@@ -687,6 +571,7 @@ def start_worker(
     orchestrator_url: str,
     interval: str = "1s",
     base_dir: Path = None,
+    extra_env: dict = None,
 ) -> subprocess.Popen:
     """Start the worker binary with specified configuration.
 
@@ -694,18 +579,21 @@ def start_worker(
         orchestrator_url: URL of the scheduler to connect to
         interval: Polling interval (default: "1s")
         base_dir: Base directory for the project (defaults to test file parent directory)
+        extra_env: Additional environment variables to set on the worker process
 
     Returns:
         subprocess.Popen: The worker process
 
     Note:
         Worker inherits current environment variables including PYTEST_CURRENT_TEST
-        for mock agent logging support.
+        for agent logging support.
     """
     if base_dir is None:
         base_dir = Path(__file__).parent.parent
 
     worker_env = os.environ.copy()
+    if extra_env:
+        worker_env.update(extra_env)
 
     cmd = [
         "./bin/agentbeacon-worker",
@@ -832,43 +720,6 @@ def worker_context(orchestrator_url: str, interval: str = "1s"):
         # Cleanup
         if worker_process:
             cleanup_processes([worker_process])
-
-
-def parse_agent_log(test_name: str) -> List[Dict]:
-    """Parse log file for test assertions.
-
-    Args:
-        test_name: Test name (used for log file naming)
-
-    Returns:
-        List of parsed log entries, each a dict with keys:
-        execution_id, node_id, timestamp, task_text
-    """
-    from agentbeacon.mock_agent.file_logger import parse_agent_entry
-
-    log_file = Path(f"logs/{test_name}.log")
-
-    # Handle missing files gracefully
-    if not log_file.exists():
-        return []
-
-    try:
-        content = log_file.read_text()
-        if not content.strip():
-            return []
-
-        # Parse each line using unified parse_agent_entry() function
-        entries = []
-        for line in content.strip().split("\n"):
-            # Parse all lines, including empty ones (they get default values)
-            parsed = parse_agent_entry(line.strip())
-            entries.append(parsed)
-
-        return entries
-
-    except Exception:
-        # Handle any file read errors gracefully
-        return []
 
 
 def register_workflow(
@@ -1388,95 +1239,6 @@ def seed_test_agent(
     return agent_id
 
 
-def seed_acp_mock_agent(
-    db_url: str,
-    name: str = "acp-mock",
-    agent_id: str = None,
-) -> str:
-    """Insert an ACP mock agent into the database with appropriate config.
-
-    Args:
-        db_url: Database URL (sqlite:... or postgres://...)
-        name: Agent name
-        agent_id: Agent ID (generated UUID if None)
-
-    Returns:
-        str: Agent ID
-    """
-    if agent_id is None:
-        agent_id = str(uuid.uuid4())
-
-    config = json.dumps(
-        {
-            "command": "uv",
-            "args": ["run", "python", "-m", "agentbeacon.mock_agent", "--mode", "acp"],
-            "timeout": 30,
-        }
-    )
-
-    with db_conn(db_url) as conn:
-        driver_id = _ensure_driver(conn, "acp")
-        conn.execute(
-            "INSERT INTO agents (id, name, agent_type, driver_id, config, enabled) VALUES (?, ?, 'acp', ?, ?, ?)",
-            (agent_id, name, driver_id, config, True),
-        )
-        conn.commit()
-
-    return agent_id
-
-
-def seed_acp_scenario_agent(
-    db_url: str,
-    name: str,
-    scenario: str,
-    delegate_to: str = None,
-    delegate_count: int = None,
-    agent_id: str = None,
-) -> str:
-    """Insert an ACP mock agent with a specific scenario into the database.
-
-    Args:
-        db_url: Database URL (sqlite:... or postgres://...)
-        name: Agent name
-        scenario: Scenario name (delegate, end-turn, delegate-ask, delegate-multi, delegate-release)
-        delegate_to: Child agent name for delegation scenarios
-        delegate_count: Number of children for delegate-multi
-        agent_id: Agent ID (generated UUID if None)
-
-    Returns:
-        str: Agent ID
-    """
-    if agent_id is None:
-        agent_id = str(uuid.uuid4())
-
-    args = [
-        "run",
-        "python",
-        "-m",
-        "agentbeacon.mock_agent",
-        "--mode",
-        "acp",
-        "--scenario",
-        scenario,
-    ]
-    if delegate_to:
-        args.extend(["--delegate-to", delegate_to])
-    if delegate_count is not None:
-        args.extend(["--delegate-count", str(delegate_count)])
-
-    config = json.dumps({"command": "uv", "args": args, "timeout": 60})
-
-    with db_conn(db_url) as conn:
-        driver_id = _ensure_driver(conn, "acp")
-        conn.execute(
-            "INSERT INTO agents (id, name, agent_type, driver_id, config, enabled) VALUES (?, ?, 'acp', ?, ?, ?)",
-            (agent_id, name, driver_id, config, True),
-        )
-        conn.commit()
-
-    return agent_id
-
-
 def create_execution_via_api(
     scheduler_url: str,
     agent_id: str = None,
@@ -1786,3 +1548,93 @@ def create_agent_via_api(
         f"create agent failed: {resp.status_code} {resp.text}"
     )
     return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Helper functions for common test operations
+# ---------------------------------------------------------------------------
+
+
+def worker_sync(url: str, payload: dict = None, timeout: int = 10) -> dict:
+    """POST /api/worker/sync with optional JSON body.
+
+    Args:
+        url: Base scheduler URL (e.g. "http://localhost:19456")
+        payload: Optional JSON body
+        timeout: Request timeout in seconds
+
+    Returns:
+        dict: Parsed JSON response
+    """
+    resp = httpx.post(f"{url}/api/worker/sync", json=payload or {}, timeout=timeout)
+    assert resp.status_code == 200, (
+        f"worker sync failed: {resp.status_code} {resp.text}"
+    )
+    return resp.json()
+
+
+def assert_event_exists(
+    db_url: str,
+    session_id: str,
+    event_type: str,
+    payload_fragment: str = None,
+) -> None:
+    """Assert that a matching event exists in the events table.
+
+    Args:
+        db_url: Database URL (sqlite:... or postgres://...)
+        session_id: Session ID to check events for
+        event_type: Expected event_type value
+        payload_fragment: If provided, assert this substring appears in at
+            least one matching event's payload
+    """
+    with db_conn(db_url) as conn:
+        cur = conn.execute(
+            "SELECT payload FROM events WHERE session_id = ? AND event_type = ?",
+            (session_id, event_type),
+        )
+        rows = cur.fetchall()
+    assert len(rows) > 0, (
+        f"session {session_id}: no events with event_type={event_type!r}"
+    )
+    if payload_fragment is not None:
+        found = any(payload_fragment in row[0] for row in rows)
+        assert found, (
+            f"session {session_id}: no {event_type!r} event contains {payload_fragment!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# HTTP endpoint helpers
+# ---------------------------------------------------------------------------
+
+
+def stop_session(url: str, session_id: str) -> httpx.Response:
+    """POST /api/sessions/{id}/stop — request session stop.
+
+    Args:
+        url: Base scheduler URL
+        session_id: Session ID to stop
+
+    Returns:
+        httpx.Response: Raw HTTP response
+    """
+    return httpx.post(f"{url}/api/sessions/{session_id}/stop", timeout=5)
+
+
+def post_user_message(url: str, session_id: str, text: str) -> httpx.Response:
+    """POST /api/sessions/{id}/message with a text payload.
+
+    Args:
+        url: Base scheduler URL
+        session_id: Session ID to send message to
+        text: Message text
+
+    Returns:
+        httpx.Response: Raw HTTP response
+    """
+    return httpx.post(
+        f"{url}/api/sessions/{session_id}/message",
+        json={"parts": [{"text": text}]},
+        timeout=5,
+    )

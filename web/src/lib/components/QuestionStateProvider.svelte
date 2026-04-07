@@ -2,7 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query';
   import type { Event, Execution, Agent, Project } from '../types';
   import { api } from '../api';
-  import { inputRequiredSessionsQuery, executionsQuery } from '../queries/executions';
+  import { inputCapableSessionsQuery, executionsQuery } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { projectsQuery } from '../queries/projects';
   import { extractQuestions } from '../questions';
@@ -13,7 +13,7 @@
   } from '../stores/questionState';
 
   const queryClient = useQueryClient();
-  const sessionsQuery = inputRequiredSessionsQuery();
+  const sessionsQuery = inputCapableSessionsQuery();
   const execsQ = executionsQuery();
   const agentsQ = agentsQuery();
   const projectsQ = projectsQuery();

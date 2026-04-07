@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm run clean pre-commit dev-backend dev-frontend
+.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-e2e-serial test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm run clean pre-commit dev-backend dev-frontend
 
 RUST_STRICT_FLAGS ?= -Dwarnings
 
@@ -10,6 +10,7 @@ all: build-frontend executors build
 
 executors:
 	cd executors && npm install && npm run build
+
 
 npm-install:
 	@echo "Installing npm dependencies..."
@@ -144,10 +145,16 @@ test-int-ci: all
 	@echo "Running Python integration tests with Rust binaries..."
 	uv run pytest -n4 -v tests
 
-# Boot system, seed agents, run Playwright E2E tests, tear down
+# Boot system, seed agents, run Playwright E2E tests with sharding, tear down
+# Uses port 9480 by default to avoid colliding with dev instances on 9456-9460
 test-e2e: all
-	@echo "Starting E2E test environment..."
-	@AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9456} ./scripts/e2e.sh --fresh --run-tests
+	@echo "Starting E2E test environment (4 shards)..."
+	@AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9480} ./scripts/e2e.sh --fresh --run-tests --shards 4
+
+# Serial E2E run for debugging (single backend, no sharding)
+test-e2e-serial: all
+	@echo "Starting E2E test environment (serial)..."
+	@AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9456} ./scripts/e2e.sh --fresh --run-tests --shards 1
 
 test-all: test-rust test-int test-e2e
 	@echo "All tests passed successfully!"

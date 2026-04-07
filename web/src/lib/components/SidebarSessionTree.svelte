@@ -22,25 +22,13 @@
 
   let { sessions, agents, selectedSessionId = null, isTerminal = false, usageBySession, poolAgents, maxDepth, maxWidth, sessionIdentity, onselectsession, onstatuschange }: Props = $props();
 
-  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
-
-  async function handleCancel(e: Event, sessionId: string) {
+  async function handleTerminate(e: Event, sessionId: string) {
     e.stopPropagation();
     try {
-      await api.cancelSession(sessionId);
+      await api.terminateSession(sessionId);
       onstatuschange?.();
     } catch (err) {
-      toasts.error(`Failed to cancel session: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    }
-  }
-
-  async function handleComplete(e: Event, sessionId: string) {
-    e.stopPropagation();
-    try {
-      await api.completeSession(sessionId);
-      onstatuschange?.();
-    } catch (err) {
-      toasts.error(`Failed to complete session: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      toasts.error(`Failed to terminate session: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   }
 
@@ -80,7 +68,7 @@
     const active: TreeNode[] = [];
     const terminal: TreeNode[] = [];
     for (const child of children) {
-      if (TERMINAL_STATUSES.has(child.session.status)) {
+      if (child.session.outcome != null) {
         terminal.push(child);
       } else {
         active.push(child);
@@ -114,10 +102,12 @@
   function statusIcon(status: string): string {
     switch (status) {
       case 'working': return '\u25CF';
+      case 'idle': return '\u2758\u2758';
+      case 'stopped': return '\u25A0';
+      case 'unassigned': return '\u25CB';
+      case 'crashed': return '\u26A0';
       case 'completed': return '\u2713';
-      case 'input-required': return '!';
       case 'failed': return '\u2717';
-      case 'submitted': return '\u25CB';
       case 'canceled': return '\u25CB';
       default: return '\u25CB';
     }
@@ -249,17 +239,12 @@
       <span class="context-bar placeholder" aria-hidden="true"></span>
     {/if}
     <span class="action-zone">
-      {#if !TERMINAL_STATUSES.has(s.status)}
-        <button class="action-btn cancel-btn" title="Cancel session" onclick={(e) => handleCancel(e, s.id)}>
+      {#if s.outcome == null}
+        <button class="action-btn cancel-btn" title="Terminate session" onclick={(e) => handleTerminate(e, s.id)}>
           &#x2717;
         </button>
       {/if}
-      {#if s.status === 'input-required'}
-        <button class="action-btn complete-btn" title="Complete session" onclick={(e) => handleComplete(e, s.id)}>
-          &#x2713;
-        </button>
-      {/if}
-      {#if s.status === 'failed' && s.agent_session_id}
+      {#if s.outcome === 'failed' && s.agent_session_id}
         <button class="action-btn recover-btn" title="Attempt recovery" onclick={(e) => handleRecover(e, s.id)}>
           &#x21BB;
         </button>
@@ -483,9 +468,10 @@
 
   .working .node-icon { color: hsl(var(--status-working)); }
   .completed .node-icon { color: hsl(var(--status-success)); }
-  .input-required .node-icon { color: hsl(var(--status-attention)); }
+  .idle .node-icon { color: hsl(var(--status-attention)); }
+  .crashed .node-icon { color: hsl(var(--status-danger)); }
   .failed .node-icon { color: hsl(var(--status-danger)); }
-  .submitted .node-icon, .canceled .node-icon { color: hsl(var(--muted-foreground)); }
+  .unassigned .node-icon, .stopped .node-icon, .canceled .node-icon { color: hsl(var(--muted-foreground)); }
 
   .node-label {
     flex: 1;
@@ -580,11 +566,6 @@
   .cancel-btn:hover {
     color: hsl(var(--status-danger));
     background: hsl(var(--status-danger) / 0.1);
-  }
-
-  .complete-btn:hover {
-    color: hsl(var(--status-success));
-    background: hsl(var(--status-success) / 0.1);
   }
 
   .recover-btn:hover {

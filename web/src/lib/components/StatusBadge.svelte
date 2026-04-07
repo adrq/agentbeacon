@@ -1,33 +1,44 @@
 <script lang="ts">
-  import type { ExecutionStatus } from '../types';
+  import type { ExecutionStatus, SessionStatus } from '../types';
 
   interface Props {
-    status: ExecutionStatus;
+    status: ExecutionStatus | SessionStatus;
     size?: 'small' | 'medium';
     hasQuestions?: boolean;
   }
 
   let { status, size = 'medium', hasQuestions }: Props = $props();
 
-  const labels: Record<ExecutionStatus, string> = {
-    'submitted': 'Submitted',
+  const labels: Record<string, string> = {
     'working': 'Working',
-    'input-required': 'Awaiting Input',
+    'awaiting_input': 'Turn Complete',
+    'idle': 'Idle',
+    'stopped': 'Stopped',
+    'unassigned': 'Unassigned',
+    'crashed': 'Crashed',
     'completed': 'Completed',
     'failed': 'Failed',
     'canceled': 'Canceled',
   };
 
-  let label = $derived(
-    status === 'input-required' && hasQuestions === false
-      ? 'Turn Complete'
-      : labels[status]
-  );
+  let label = $derived(labels[status] ?? status);
 
-  let turnComplete = $derived(status === 'input-required' && hasQuestions === false);
+  // Muted turn-complete styling only when explicitly no questions.
+  // With questions or unknown (loading): use attention styling.
+  let turnComplete = $derived(status === 'awaiting_input' && hasQuestions === false);
+
+  // CSS class mapping (some new statuses share styling)
+  let cssClass = $derived(
+    status === 'awaiting_input' ? 'awaiting-input'
+    : status === 'idle' ? 'idle'
+    : status === 'stopped' ? 'stopped'
+    : status === 'unassigned' ? 'unassigned'
+    : status === 'crashed' ? 'crashed'
+    : status
+  );
 </script>
 
-<span class="badge {status} {size}" class:turn-complete={turnComplete}>
+<span class="badge {cssClass} {size}" class:turn-complete={turnComplete}>
   <span class="dot"></span>
   {label}
 </span>
@@ -73,12 +84,73 @@
     box-shadow: 0 0 2px 1px hsl(var(--status-working) / 0.15);
   }
 
-  /* Submitted: hollow circle */
-  .submitted { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
-  .submitted .dot {
+  /* Awaiting input (execution-level): diamond */
+  .awaiting-input { background: hsl(var(--status-attention) / 0.15); color: hsl(var(--status-attention)); }
+  .awaiting-input .dot {
+    background: currentColor;
+    clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+  }
+
+  /* Turn-complete: hollow circle (muted) */
+  .awaiting-input.turn-complete {
+    background: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+  }
+  .awaiting-input.turn-complete .dot {
+    background: transparent;
+    clip-path: none;
+    border: 1.5px solid currentColor;
+    border-radius: 50%;
+  }
+
+  /* Idle: pause icon */
+  .idle { background: hsl(var(--status-attention) / 0.15); color: hsl(var(--status-attention)); }
+  .idle .dot {
+    background: transparent;
+    border-radius: 0;
+    width: 6px;
+  }
+  .idle .dot::before, .idle .dot::after {
+    width: 2px;
+    height: 6px;
+    background: currentColor;
+    top: 0;
+    border-radius: 1px;
+  }
+  .idle .dot::before { left: 0; }
+  .idle .dot::after { left: 4px; }
+
+  /* Stopped: stop icon (square) */
+  .stopped { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+  .stopped .dot {
+    background: currentColor;
+    border-radius: 1px;
+  }
+
+  /* Unassigned: hollow circle */
+  .unassigned { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+  .unassigned .dot {
     background: transparent;
     border: 1.5px solid currentColor;
     border-radius: 50%;
+  }
+
+  /* Crashed: alert triangle */
+  .crashed { background: hsl(var(--status-danger) / 0.15); color: hsl(var(--status-danger)); }
+  .crashed .dot {
+    background: transparent;
+    border-radius: 0;
+    width: 7px;
+    height: 6px;
+  }
+  .crashed .dot::after {
+    width: 0;
+    height: 0;
+    border-left: 3.5px solid transparent;
+    border-right: 3.5px solid transparent;
+    border-bottom: 6px solid currentColor;
+    top: 0;
+    left: 0;
   }
 
   /* Completed: checkmark */
@@ -122,25 +194,6 @@
     height: 2px;
     width: 6px;
     align-self: center;
-  }
-
-  /* Input-required: diamond */
-  .input-required { background: hsl(var(--status-attention) / 0.15); color: hsl(var(--status-attention)); }
-  .input-required .dot {
-    background: currentColor;
-    clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
-  }
-
-  /* Turn-complete: hollow circle (muted) */
-  .input-required.turn-complete {
-    background: hsl(var(--muted));
-    color: hsl(var(--muted-foreground));
-  }
-  .input-required.turn-complete .dot {
-    background: transparent;
-    clip-path: none;
-    border: 1.5px solid currentColor;
-    border-radius: 50%;
   }
 
   @keyframes pulse {

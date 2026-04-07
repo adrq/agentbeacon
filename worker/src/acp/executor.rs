@@ -183,7 +183,7 @@ pub(crate) async fn send_session_new(
     scheduler_url: &str,
     session_id: &str,
 ) -> Result<String> {
-    // TODO(KI-104): merge SessionConfig.user_mcp_servers here (needs format
+    // TODO: merge SessionConfig.user_mcp_servers here (needs format
     // translation — ACP uses array of {name, type, url, headers:[{name,value}]},
     // not the keyed-object Claude Desktop format used by the SDK path).
     let session_params = SessionNewParams {
@@ -266,7 +266,7 @@ pub(crate) async fn send_session_new(
 /// A2A v1.0 parts are discriminated by member presence (no `kind` field):
 /// - `{"text": "..."}` → text part
 /// - `{"raw": "...", "mediaType": "..."}` → file/image part
-/// - `{"url": "..."}` → URL reference (not yet supported, KI-106)
+/// - `{"url": "..."}` → URL reference (not yet supported)
 /// - `{"data": ...}` → opaque data (not translatable to ACP)
 pub(crate) fn translate_a2a_parts_to_acp_content(parts: &[Value]) -> Result<Vec<Value>> {
     parts
@@ -311,12 +311,12 @@ pub(crate) fn translate_a2a_parts_to_acp_content(parts: &[Value]) -> Result<Vec<
                 }
             }
 
-            // URL reference part: has "url" field (KI-106: not yet supported)
+            // URL reference part: has "url" field (not yet supported)
             if part.get("url").is_some() {
                 tracing::warn!(
                     event = "unsupported_part_type",
                     part_type = "url",
-                    "Skipping A2A url part in ACP prompt (KI-106: not yet supported)"
+                    "Skipping A2A url part in ACP prompt (not yet supported)"
                 );
                 return Ok(serde_json::json!(null));
             }

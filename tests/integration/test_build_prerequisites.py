@@ -78,15 +78,3 @@ def test_no_openssl_in_dependency_tree():
         assert f'name = "{banned}"' not in content, (
             f"Cargo.lock still contains {banned} — rustls migration incomplete"
         )
-
-
-def test_mock_agent_script_resolves():
-    """uv run mock-agent --help works (pyproject.toml scripts still functional)."""
-    result = subprocess.run(
-        ["uv", "run", "mock-agent", "--help"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        cwd=str(BASE_DIR),
-    )
-    assert result.returncode == 0, f"mock-agent --help failed: {result.stderr}"

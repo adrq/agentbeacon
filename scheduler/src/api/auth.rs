@@ -24,7 +24,9 @@ pub struct McpSession {
     pub depth: i64,
     pub max_depth: i64,
     pub max_width: i64,
-    pub status: String,
+    pub desired: String,
+    pub executor_state: String,
+    pub outcome: Option<String>,
     pub project_id: Option<String>,
 }
 
@@ -98,7 +100,7 @@ impl FromRequestParts<AppState> for McpSession {
                 })?;
 
             // Terminated sessions → 404 per MCP spec, not 401
-            if matches!(session.status.as_str(), "completed" | "failed" | "canceled") {
+            if session.outcome.is_some() {
                 return Err(AuthRejection::SessionTerminated(
                     "session is in terminal state".into(),
                 ));
@@ -128,7 +130,9 @@ impl FromRequestParts<AppState> for McpSession {
                 depth,
                 max_depth: execution.max_depth,
                 max_width: execution.max_width,
-                status: session.status,
+                desired: session.desired,
+                executor_state: session.executor_state,
+                outcome: session.outcome,
                 project_id: execution.project_id.clone(),
             })
         }

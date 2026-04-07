@@ -1,5 +1,5 @@
 """
-T006: Contract test for Scheduler GET /api/health endpoint.
+Contract test for Scheduler GET /api/health endpoint.
 
 This test verifies that the scheduler binary serves the health endpoint correctly:
 - Start scheduler binary directly

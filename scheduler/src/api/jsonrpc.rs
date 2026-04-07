@@ -156,7 +156,7 @@ async fn handle_jsonrpc(
         }
         "CancelTask" => {
             // Stub — returns "not implemented" like SendMessage/GetTask.
-            // Real implementation deferred to Phase 6 (fill A2A stubs).
+            // Not yet implemented.
             Ok(JsonRpcResponse::error(
                 request.id,
                 JsonRpcError::internal_error("CancelTask not yet implemented"),

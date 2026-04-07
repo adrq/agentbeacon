@@ -58,7 +58,7 @@ pub fn extract_if_needed(data_dir: &Path) -> Result<PathBuf> {
             .with_context(|| format!("failed to write {}", dest.display()))?;
     }
 
-    // Extract package.json and package-lock.json for future SDK install (KI-87).
+    // Extract package.json and package-lock.json for SDK install.
     // Uses the real executors/ files — `npm ci --omit=dev` skips devDependencies.
     std::fs::write(
         data_dir.join("package.json"),
@@ -82,7 +82,7 @@ pub fn extract_if_needed(data_dir: &Path) -> Result<PathBuf> {
     Ok(executors_dir)
 }
 
-// --- SDK installation (KI-87) ---
+// --- SDK installation ---
 
 pub struct SdkPackage {
     pub driver: &'static str,
@@ -159,9 +159,8 @@ mod tests {
         assert!(files.contains(&"common/protocol.js".to_string()));
         assert!(files.contains(&"common/stdio-bridge.js".to_string()));
 
-        // Mock files, source maps, and type declarations must be excluded
+        // Only production files should be embedded
         for f in &files {
-            assert!(!f.starts_with("mock-"), "mock file included: {f}");
             assert!(!f.ends_with(".js.map"), "source map included: {f}");
             assert!(!f.ends_with(".d.ts"), "type declaration included: {f}");
         }

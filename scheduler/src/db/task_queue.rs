@@ -3,19 +3,24 @@ use crate::error::SchedulerError;
 use crate::queue::TaskAssignment;
 use sqlx::Row;
 
-/// Insert task into queue
-pub async fn insert(pool: &DbPool, task: &TaskAssignment) -> Result<(), SchedulerError> {
+/// Insert task into queue with optional source identifier
+pub async fn insert(
+    pool: &DbPool,
+    task: &TaskAssignment,
+    source: Option<&str>,
+) -> Result<(), SchedulerError> {
     let payload_json = serde_json::to_string(&task.task_payload)
         .map_err(|e| SchedulerError::Database(format!("serialize task_payload failed: {e}")))?;
 
     let query = pool.prepare_query(
-        "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
+        "INSERT INTO task_queue (execution_id, session_id, task_payload, source) VALUES (?, ?, ?, ?)",
     );
 
     sqlx::query(&query)
         .bind(&task.execution_id)
         .bind(&task.session_id)
         .bind(&payload_json)
+        .bind(source)
         .execute(pool.as_ref())
         .await
         .map_err(|e| {

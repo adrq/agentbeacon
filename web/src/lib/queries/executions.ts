@@ -2,8 +2,6 @@ import { createQuery, createMutation, useQueryClient } from '@tanstack/svelte-qu
 import type { CreateExecutionResponse, ExecutionDetail } from '../types';
 import { api } from '../api';
 
-const terminalStatuses = new Set(['completed', 'failed', 'canceled']);
-
 export function executionsQuery(projectId?: () => string | null | undefined) {
   return createQuery(() => ({
     queryKey: ['executions', { projectId: projectId?.() ?? undefined }],
@@ -21,9 +19,13 @@ export function executionDetailQuery(id: () => string | null) {
     queryFn: () => api.getExecution(id()!),
     enabled: !!id(),
     refetchInterval: (query) => {
-      const status = (query.state.data as ExecutionDetail | undefined)?.execution?.status;
-      if (status && terminalStatuses.has(status)) return false;
-      return 10_000; // SSE delivers events in real-time; poll is a safety net
+      const data = query.state.data as ExecutionDetail | undefined;
+      if (!data) return 10_000;
+      // Keep polling until tree is fully settled (all sessions have outcome)
+      const allSettled = data.execution.outcome != null
+        && data.sessions.every(s => s.outcome != null);
+      if (allSettled) return false;
+      return 10_000;
     },
   }));
 }
@@ -75,10 +77,15 @@ export function sessionDiffQuery(
   }));
 }
 
-export function inputRequiredSessionsQuery() {
+/**
+ */
+export function inputCapableSessionsQuery() {
   return createQuery(() => ({
-    queryKey: ['sessions', { status: 'input-required' }],
-    queryFn: () => api.getSessions({ status: 'input-required' }),
+    queryKey: ['sessions', { filter: 'input-capable' }],
+    queryFn: async () => {
+      const all = await api.getSessions();
+      return all.filter(s => !s.parent_session_id && !s.outcome && s.desired !== 'terminate');
+    },
     refetchInterval: 5000,
   }));
 }
@@ -112,21 +119,10 @@ export function createExecutionMutation() {
   }));
 }
 
-export function cancelExecutionMutation() {
+export function terminateExecutionMutation() {
   const queryClient = useQueryClient();
   return createMutation(() => ({
-    mutationFn: (id: string) => api.cancelExecution(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['executions'] });
-      queryClient.invalidateQueries({ queryKey: ['execution'] });
-    },
-  }));
-}
-
-export function completeExecutionMutation() {
-  const queryClient = useQueryClient();
-  return createMutation(() => ({
-    mutationFn: (id: string) => api.completeExecution(id),
+    mutationFn: (id: string) => api.terminateExecution(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['executions'] });
       queryClient.invalidateQueries({ queryKey: ['execution'] });

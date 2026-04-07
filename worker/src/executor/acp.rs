@@ -93,6 +93,7 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
     let init_timeout = Duration::from_secs(acp_config.timeout.unwrap_or(30));
 
     let mut child = spawn_acp_subprocess(&legacy_config)?;
+    let child_pid = child.id();
 
     let stdin = child
         .stdin
@@ -187,6 +188,7 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         cmd_tx,
         event_rx,
         task_handle,
+        child_pid,
     })
 }
 
@@ -277,7 +279,7 @@ impl PromptPhase {
 
 /// Event loop that concurrently polls ACP protocol messages and worker
 /// commands via `tokio::select!`. This ensures Cancel is received even
-/// during an active prompt turn (the root cause of the original bug).
+/// during an active prompt turn.
 #[allow(clippy::too_many_arguments)]
 async fn background_task(
     mut child: tokio::process::Child,
@@ -515,20 +517,36 @@ async fn background_task(
                         }
                     }
                     Some(AgentCommand::Cancel) => {
-                        if let PromptPhase::AwaitingResponse { .. } = &phase {
-                            tracing::info!(session_id = %session_id, "Sending session/cancel");
-                            let cancel_params = serde_json::json!({
-                                "sessionId": session_id
-                            });
-                            if let Err(e) = client
-                                .send_notification("session/cancel", cancel_params)
-                                .await
-                            {
-                                tracing::warn!(error = %e, "failed to send session/cancel");
+                        match &phase {
+                            PromptPhase::AwaitingResponse { .. } => {
+                                tracing::info!(session_id = %session_id, "Sending session/cancel");
+                                let cancel_params = serde_json::json!({
+                                    "sessionId": session_id
+                                });
+                                if let Err(e) = client
+                                    .send_notification("session/cancel", cancel_params)
+                                    .await
+                                {
+                                    tracing::warn!(error = %e, "failed to send session/cancel");
+                                }
+                                phase = phase.begin_cancel();
                             }
-                            phase = phase.begin_cancel();
+                            PromptPhase::Idle => {
+                                // Idle executor: terminate subprocess directly.
+                                // Emit empty TurnComplete so the worker can ack the cancel command.
+                                terminate_subprocess(&mut child).await;
+                                reader_handle.abort();
+                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                    agent_session_id: None,
+                                    error: None,
+                                    error_kind: None,
+                                    output: None,
+                                    stderr: None,
+                                }));
+                                return;
+                            }
+                            _ => {} // Already cancelling → no-op
                         }
-                        // Idle or already Cancelling → no-op
                     }
                     Some(AgentCommand::StopTurn) => {
                         if let PromptPhase::AwaitingResponse { .. } = &phase {
