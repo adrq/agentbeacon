@@ -406,9 +406,10 @@ async function main(): Promise<void> {
                 });
               }
 
-              // Buffer instead of emitting — wait for message_stop to confirm
-              // this is the final snapshot for the current API call.
-              pendingAssistant = content;
+              // Accumulate content blocks — the SDK emits per-block
+              // assistant messages (not cumulative snapshots), so we must
+              // collect all blocks and flush together on message_stop.
+              pendingAssistant = [...(pendingAssistant ?? []), ...content];
             } else if (msg.type === "user") {
               const content =
                 "message" in msg &&
