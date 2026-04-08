@@ -107,4 +107,13 @@ export interface ErrorEvent {
   message: string;
 }
 
-export type Event = InitEvent | MessageEvent | ResultEvent | ErrorEvent;
+export interface AcceptedEvent {
+  type: "accepted";
+}
+
+export type Event =
+  | InitEvent
+  | MessageEvent
+  | ResultEvent
+  | ErrorEvent
+  | AcceptedEvent;

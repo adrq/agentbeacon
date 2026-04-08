@@ -330,6 +330,7 @@ async fn background_task(
                                 match send_prompt(&mut client, &session_id, parts).await {
                                     Ok(request_id) => {
                                         last_activity = Instant::now();
+                                        let _ = event_tx.send(AgentEvent::Accepted);
                                         phase = PromptPhase::AwaitingResponse {
                                             request_id,
                                             update_history: Vec::new(),
@@ -462,6 +463,7 @@ async fn background_task(
                         match send_prompt(&mut client, &session_id, prompt_parts).await {
                             Ok(request_id) => {
                                 last_activity = Instant::now();
+                                let _ = event_tx.send(AgentEvent::Accepted);
                                 phase = PromptPhase::AwaitingResponse {
                                     request_id,
                                     update_history: Vec::new(),
@@ -500,6 +502,7 @@ async fn background_task(
                         match send_prompt(&mut client, &session_id, prompt_parts).await {
                             Ok(request_id) => {
                                 last_activity = Instant::now();
+                                let _ = event_tx.send(AgentEvent::Accepted);
                                 phase = PromptPhase::AwaitingResponse {
                                     request_id,
                                     update_history: Vec::new(),

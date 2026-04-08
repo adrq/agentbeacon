@@ -221,6 +221,7 @@ async function* promptStream(
       return;
     }
     if (cmd.type === "prompt") {
+      emit({ type: "accepted" });
       turnState = "in-flight";
       yield {
         type: "user",

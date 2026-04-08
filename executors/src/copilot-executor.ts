@@ -448,6 +448,9 @@ async function runSession(startCmd: StartCommand): Promise<void> {
           attachments: sendOpts.attachments,
         });
 
+        // Signal worker that the SDK accepted the prompt.
+        emit({ type: "accepted" });
+
         await idle.promise;
       } catch (e: unknown) {
         fatalError = String(e);

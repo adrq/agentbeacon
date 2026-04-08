@@ -288,7 +288,7 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
             };
 
             match type_field.as_str() {
-                "init" | "message" | "result" | "error" => {}
+                "init" | "message" | "result" | "error" | "accepted" => {}
                 other => {
                     tracing::warn!(type_field = %other, "ignoring unknown event type");
                     continue;
@@ -524,6 +524,9 @@ async fn background_task(
                                         }));
                                     }
                                 }
+                            }
+                            "accepted" => {
+                                let _ = event_tx.send(AgentEvent::Accepted);
                             }
                             _ => {}
                         }

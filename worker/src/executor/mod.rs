@@ -98,6 +98,8 @@ pub struct TurnResult {
 pub enum AgentEvent {
     /// Agent SDK initialized with a session ID
     Init { session_id: String },
+    /// SDK confirmed receipt of a prompt payload
+    Accepted,
     /// Agent produced output (message content) during a turn.
     /// Forwarded to the scheduler in real-time by the worker main loop.
     /// When `ephemeral` is true, the message contains only streaming text deltas

@@ -435,6 +435,7 @@ async fn run_session(
     let mut agent_busy = true;
     let mut cancel_ack_pending = false;
     let mut pending_stop_token: Option<String> = None;
+    let mut pending_feed_token: Option<String> = None;
 
     let mut escalation_deadline: Option<tokio::time::Instant> = None;
     let mut escalation_stage: u8 = 0;
@@ -462,9 +463,20 @@ async fn run_session(
 
                         drop(poll_fut.take());
 
+                        if pending_feed_token.is_some() && result.error.is_none() {
+                            tracing::warn!("turn ended without accepted signal, acking implicitly");
+                            last_ack = pending_feed_token.take();
+                        }
+
+                        let feed_rejected = pending_feed_token.is_some() && result.error.is_some();
+                        if feed_rejected {
+                            pending_feed_token.take();
+                        }
+                        let executor_state = if feed_rejected { "crashed" } else { "idle" };
+
                         let report = ExecutorReport {
                             session_id: session_id.to_string(),
-                            executor_state: "idle".to_string(),
+                            executor_state: executor_state.to_string(),
                             agent_session_id: agent_session_id.clone(),
                         };
                         let turn_result = TurnResult {
@@ -478,7 +490,8 @@ async fn run_session(
                         let mut req = SyncRequest::with_report_and_result(
                             worker_id, report, turn_result,
                         );
-                        if cancel_ack_pending {
+                        if feed_rejected {
+                        } else if cancel_ack_pending {
                             req.command_ack = last_ack.take();
                         } else if let Some(stop_token) = pending_stop_token.take() {
                             req.command_ack = Some(stop_token);
@@ -497,6 +510,10 @@ async fn run_session(
                             }
                         };
 
+                        if feed_rejected {
+                            break SessionExit::Done;
+                        }
+
                         let was_cancel_ack = cancel_ack_pending;
                         cancel_ack_pending = false;
                         escalation_deadline = None;
@@ -511,6 +528,7 @@ async fn run_session(
                                     &cmd_tx, &token, &action, session_id,
                                     &mut agent_busy, &mut last_ack,
                                     &mut cancel_ack_pending, &mut pending_stop_token,
+                                    &mut pending_feed_token,
                                 ) {
                                     break exit;
                                 }
@@ -518,7 +536,7 @@ async fn run_session(
                                     escalation_deadline = Some(tokio::time::Instant::now() + CONTROL_CMD_SDK_TIMEOUT);
                                     escalation_stage = 0;
                                 }
-                                let ack_for_poll = if pending_stop_token.is_some() { None } else { last_ack.clone() };
+                                let ack_for_poll = if pending_stop_token.is_some() || pending_feed_token.is_some() { None } else { last_ack.clone() };
                                 poll_fut = Some(start_long_poll(
                                     client, scheduler_url, worker_id,
                                     None, ack_for_poll, args.long_poll_timeout,
@@ -550,6 +568,57 @@ async fn run_session(
                             ));
                         }
                     }
+                    Some(AgentEvent::Accepted) => {
+                        if let Some(feed_token) = pending_feed_token.take() {
+                            drop(poll_fut.take());
+                            let report = ExecutorReport {
+                                session_id: session_id.to_string(),
+                                executor_state: "running".to_string(),
+                                agent_session_id: agent_session_id.clone(),
+                            };
+                            let mut req = SyncRequest::with_report(worker_id, report);
+                            req.command_ack = Some(feed_token.clone());
+                            match perform_sync_with_retry(
+                                client, scheduler_url, &req, false, retry_config,
+                            ).await {
+                                Ok(SyncResponse::Command { token, action }) => {
+                                    if let Some(exit) = handle_command(
+                                        &cmd_tx, &token, &action, session_id,
+                                        &mut agent_busy, &mut last_ack,
+                                        &mut cancel_ack_pending, &mut pending_stop_token,
+                                        &mut pending_feed_token,
+                                    ) {
+                                        break exit;
+                                    }
+                                    if cancel_ack_pending || pending_stop_token.is_some() {
+                                        escalation_deadline = Some(tokio::time::Instant::now() + CONTROL_CMD_SDK_TIMEOUT);
+                                        escalation_stage = 0;
+                                    }
+                                }
+                                Ok(SyncResponse::NoAction) => {}
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "accepted ack failed, will retry on next poll");
+                                    last_ack = Some(feed_token);
+                                }
+                            }
+                            let state = if agent_busy { "running" } else { "idle" };
+                            let report = ExecutorReport {
+                                session_id: session_id.to_string(),
+                                executor_state: state.to_string(),
+                                agent_session_id: agent_session_id.clone(),
+                            };
+                            let ack_for_poll = if cancel_ack_pending || pending_stop_token.is_some() || pending_feed_token.is_some() {
+                                None
+                            } else {
+                                last_ack.clone()
+                            };
+                            poll_fut = Some(start_long_poll(
+                                client, scheduler_url, worker_id,
+                                Some(report), ack_for_poll,
+                                args.long_poll_timeout,
+                            ));
+                        }
+                    }
                     Some(AgentEvent::Message { output, ephemeral }) => {
                         msg_seq += 1;
                         if !ephemeral {
@@ -565,6 +634,7 @@ async fn run_session(
                         });
                     }
                     Some(AgentEvent::ProcessDied { error, stderr }) => {
+                        pending_feed_token.take();
                         let report = ExecutorReport {
                             session_id: session_id.to_string(),
                             executor_state: "crashed".to_string(),
@@ -629,6 +699,7 @@ async fn run_session(
                             &cmd_tx, &token, &action, session_id,
                             &mut agent_busy, &mut last_ack,
                             &mut cancel_ack_pending, &mut pending_stop_token,
+                            &mut pending_feed_token,
                         ) {
                             break exit;
                         }
@@ -654,7 +725,7 @@ async fn run_session(
                     executor_state: state.to_string(),
                     agent_session_id: agent_session_id.clone(),
                 };
-                let ack_for_poll = if cancel_ack_pending || pending_stop_token.is_some() {
+                let ack_for_poll = if cancel_ack_pending || pending_stop_token.is_some() || pending_feed_token.is_some() {
                     None
                 } else {
                     last_ack.clone()
@@ -718,6 +789,7 @@ fn handle_command(
     last_ack: &mut Option<String>,
     cancel_ack_pending: &mut bool,
     pending_stop_token: &mut Option<String>,
+    pending_feed_token: &mut Option<String>,
 ) -> Option<SessionExit> {
     match action {
         CommandAction::FeedTurn { payload, .. } => {
@@ -725,7 +797,7 @@ fn handle_command(
                 Ok(parts) => {
                     *agent_busy = true;
                     let _ = cmd_tx.send(AgentCommand::Prompt(parts));
-                    *last_ack = Some(token.to_string());
+                    *pending_feed_token = Some(token.to_string());
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "bad feed_turn payload, withholding ack");
@@ -734,6 +806,7 @@ fn handle_command(
             None
         }
         CommandAction::StopTurn { .. } => {
+            pending_feed_token.take();
             if *agent_busy {
                 let _ = cmd_tx.send(AgentCommand::StopTurn);
                 *pending_stop_token = Some(token.to_string());
@@ -744,6 +817,7 @@ fn handle_command(
         }
         CommandAction::Cancel { .. } => {
             let _ = cmd_tx.send(AgentCommand::Cancel);
+            pending_feed_token.take();
             *pending_stop_token = None;
             *last_ack = Some(token.to_string());
             *cancel_ack_pending = true;
