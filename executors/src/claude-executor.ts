@@ -287,10 +287,15 @@ async function main(): Promise<void> {
     let currentSessionId: string | undefined;
     let lastError: unknown = null;
 
+    // Buffered assistant message — held until message_stop confirms it's final.
+    // Reset per attempt to prevent stale leakage across retries.
+    let pendingAssistant: unknown[] | null = null;
+
     try {
       for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
         currentAc = new AbortController();
         lastError = null;
+        pendingAssistant = null;
 
         if (pendingStopTurn) {
           stoppedByUser = true;
@@ -401,11 +406,9 @@ async function main(): Promise<void> {
                 });
               }
 
-              emit({
-                type: "message",
-                role: "assistant",
-                content,
-              });
+              // Buffer instead of emitting — wait for message_stop to confirm
+              // this is the final snapshot for the current API call.
+              pendingAssistant = content;
             } else if (msg.type === "user") {
               const content =
                 "message" in msg &&
@@ -426,6 +429,9 @@ async function main(): Promise<void> {
                 }
               }
             } else if (msg.type === "result") {
+              // Discard any unflushed assistant snapshot — if message_stop was
+              // missed, the content is incomplete and should not be persisted.
+              pendingAssistant = null;
               turnState = "idle";
               const m = msg as unknown as Record<string, unknown>;
 
@@ -512,9 +518,27 @@ async function main(): Promise<void> {
                     ],
                   });
                 }
+              } else if (event && event.type === "message_stop") {
+                // message_stop confirms the buffered assistant is the final
+                // snapshot for this API call. Flush it as a persisted message.
+                if (pendingAssistant) {
+                  emit({
+                    type: "message",
+                    role: "assistant",
+                    content: pendingAssistant,
+                  });
+                  pendingAssistant = null;
+                }
               } else if (event) {
                 const eventType = event.type as string;
-                if (eventType !== "content_block_delta") {
+                // Silently skip known lifecycle events to avoid stderr noise
+                if (
+                  eventType !== "content_block_delta" &&
+                  eventType !== "message_start" &&
+                  eventType !== "content_block_start" &&
+                  eventType !== "content_block_stop" &&
+                  eventType !== "message_delta"
+                ) {
                   process.stderr.write(
                     `[claude] ignoring stream_event: ${JSON.stringify(eventType ?? "unknown")}\n`,
                   );
@@ -574,7 +598,8 @@ async function main(): Promise<void> {
         }
       }
 
-      // Handle final error (if any)
+      // Handle final error (if any) — discard incomplete buffered content
+      pendingAssistant = null;
       if (lastError) {
         if (lastError instanceof AbortError) {
           turnState = "idle";
