@@ -39,10 +39,12 @@ The interaction model is closer to **triaging an inbox** than monitoring a termi
 One engineer, multiple features in flight, decisions as the main touchpoint.
 
 <p align="center">
-  <img src="docs/screenshot-ops-home.png" alt="AgentBeacon — ops dashboard with activity feed, agent badges, and decision queue" width="900" />
+  <img src="docs/screenshot-org-chart.png" alt="AgentBeacon — execution org chart showing lead agent delegating to architect and frontend teams, with structured decision queue" width="900" />
 </p>
 
 ## Quick Start
+
+**Platform:** Linux (x86_64 and aarch64). macOS support coming soon.
 
 Install via pip, npm, or build from source:
 
@@ -97,7 +99,11 @@ Requires Rust toolchain and Node.js 20+.
 **4. Review converged output.** After agents iterate and converge, review the result. Each execution maintains a full decision log so you can trace why things were built the way they were.
 
 <p align="center">
-  <img src="docs/screenshot-hero.png" alt="AgentBeacon — execution detail showing agent chat, code diffs, and tool calls" width="680" />
+  <img src="docs/screenshot-ops-home.png" alt="AgentBeacon — ops dashboard with activity feed, agent badges, and decision queue" width="900" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshot-hero.png" alt="AgentBeacon — execution detail showing agent chat, tool calls, delegations, and structured decisions" width="680" />
 </p>
 
 ## Why It Works This Way
@@ -110,9 +116,9 @@ Requires Rust toolchain and Node.js 20+.
 
 **Protocol-native, self-hosted, provider-agnostic.** Native integrations for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [GitHub Copilot](https://github.com/github/copilot-cli), and [OpenCode](https://github.com/anomalyco/opencode), with [ACP](https://spec.agentcontextprotocol.org/) support for any compatible agent. Built on [MCP](https://modelcontextprotocol.io/) for tool integration and [A2A](https://google.github.io/A2A/) for agent interop. No proprietary protocols. Your code, your machine, your API keys.
 
-**Three primitives, any scale.** The entire coordination model is three operations: `delegate`, `release`, `escalate`. From 3 agents to 100+. Research shows LLM performance degrades with tool count, so the surface is deliberately small. The same primitives work at every level of the hierarchy, whether that's two agents or twenty.
+**Two primitives, any scale.** The entire coordination model is two operations: `delegate` and `release` — create and destroy. When agents hit genuine ambiguity, they surface structured questions to a decision queue. From 3 agents to 100+. Research shows LLM performance degrades with tool count, so the surface is deliberately small. The same primitives work at every level of the hierarchy, whether that's two agents or twenty.
 
-**Designed for future models.** The same three primitives work whether you're delegating a single endpoint or an entire product. As models improve, the scope of what you can delegate grows, and the architecture is deliberately not the bottleneck. Today you operate as a tech lead making per-feature decisions. As the ceiling rises, the same system scales with it.
+**Designed for future models.** The same two primitives work whether you're delegating a single endpoint or an entire product. As models improve, the scope of what you can delegate grows, and the architecture is deliberately not the bottleneck. Today you operate as a tech lead making per-feature decisions. As the ceiling rises, the same system scales with it.
 
 ## Status
 
