@@ -13,6 +13,7 @@
   import EventsTimeline from './EventsTimeline.svelte';
   import ChatView from './ChatView.svelte';
   import DiffPanel from './DiffPanel.svelte';
+  import ExecutionOrgChart from './ExecutionOrgChart.svelte';
   import { executionsWithQuestions, noQuestionExecutions } from '../stores/questionState';
   import Button from './ui/button.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
@@ -55,6 +56,9 @@
   // Event filter state (shared between Chat and Log views, resets on exec change)
   let eventFilter = $state<EventFilter>('all');
 
+  // Org chart overview toggle
+  let showOverview = $state(false);
+
   // SSE connection state (declared before $effect.pre that references them)
   let sseActive = $state(false);
   let sseReconnecting = $state(false);
@@ -68,6 +72,7 @@
       selectedSessionId.set(null);
       usageBySession.set(new Map());
       eventFilter = 'all';
+      showOverview = false;
       const hashView = getHashViewParam();
       if (hashView) viewMode = hashView;
       lastPersistedSeq.clear();
@@ -534,6 +539,11 @@
           Re-run
         </Button>
       {/if}
+      {#if (detail?.sessions.length ?? 0) > 1}
+        <Button class="org-chart-toggle" variant={showOverview ? 'default' : 'ghost'} size="sm" aria-pressed={showOverview} aria-controls="execution-overview" onclick={() => { showOverview = !showOverview; }}>
+          Overview
+        </Button>
+      {/if}
       {#if detail.execution.project_id}
         <Button variant="ghost" size="sm" onclick={() => { openSearchTab(detail!.execution.project_id!); router.navigate('#/wiki'); }}>
           Wiki
@@ -546,53 +556,66 @@
 
     <QuestionBanner execution={detail.execution} sessions={detail.sessions} events={inputEvents} {agents} />
 
-    <div class="events-header">
-      <span class="section-heading">Events</span>
-      {#if !isTerminal}
-        <span class="sse-indicator"
-          class:connected={sseActive}
-          class:reconnecting={sseReconnecting && !sseActive}
-          class:disconnected={!sseActive && !sseReconnecting}
-          title={sseActive ? 'Live (SSE)' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}
-        >
-          <span class="sse-dot"></span>
-          <span class="sse-label">{sseActive ? 'Live' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}</span>
-          {#if !sseActive && !sseReconnecting}
-            <button class="sse-retry" onclick={() => sseConnection?.reconnect()}>Retry</button>
-          {/if}
-        </span>
-      {/if}
-      <div class="view-toggle" role="tablist" aria-label="Event view mode">
-        <button
-          class="toggle-btn"
-          class:active={viewMode === 'log'}
-          role="tab"
-          aria-selected={viewMode === 'log'}
-          onclick={() => viewMode = 'log'}
-        >Log</button>
-        <button
-          class="toggle-btn"
-          class:active={viewMode === 'chat'}
-          role="tab"
-          aria-selected={viewMode === 'chat'}
-          onclick={() => viewMode = 'chat'}
-        >Chat</button>
-        <button
-          class="toggle-btn"
-          class:active={viewMode === 'diff'}
-          role="tab"
-          aria-selected={viewMode === 'diff'}
-          onclick={() => viewMode = 'diff'}
-        >Diff</button>
+    {#if showOverview}
+      <ExecutionOrgChart
+        sessions={detail.sessions}
+        {agents}
+        {sessionIdentity}
+        onselectsession={(id) => {
+          selectedSessionId.set(id);
+          showOverview = false;
+        }}
+        onstatuschange={() => queryClient.invalidateQueries({ queryKey: ['execution', executionId] })}
+      />
+    {:else}
+      <div class="events-header">
+        <span class="section-heading">Events</span>
+        {#if !isTerminal}
+          <span class="sse-indicator"
+            class:connected={sseActive}
+            class:reconnecting={sseReconnecting && !sseActive}
+            class:disconnected={!sseActive && !sseReconnecting}
+            title={sseActive ? 'Live (SSE)' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}
+          >
+            <span class="sse-dot"></span>
+            <span class="sse-label">{sseActive ? 'Live' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}</span>
+            {#if !sseActive && !sseReconnecting}
+              <button class="sse-retry" onclick={() => sseConnection?.reconnect()}>Retry</button>
+            {/if}
+          </span>
+        {/if}
+        <div class="view-toggle" role="tablist" aria-label="Event view mode">
+          <button
+            class="toggle-btn"
+            class:active={viewMode === 'log'}
+            role="tab"
+            aria-selected={viewMode === 'log'}
+            onclick={() => viewMode = 'log'}
+          >Log</button>
+          <button
+            class="toggle-btn"
+            class:active={viewMode === 'chat'}
+            role="tab"
+            aria-selected={viewMode === 'chat'}
+            onclick={() => viewMode = 'chat'}
+          >Chat</button>
+          <button
+            class="toggle-btn"
+            class:active={viewMode === 'diff'}
+            role="tab"
+            aria-selected={viewMode === 'diff'}
+            onclick={() => viewMode = 'diff'}
+          >Diff</button>
+        </div>
       </div>
-    </div>
 
-    {#if viewMode === 'log'}
-      <EventsTimeline {events} {agents} sessions={detail.sessions} {eventFilter} onfilterchange={(f) => eventFilter = f} />
-    {:else if viewMode === 'chat'}
-      <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} {eventFilter} onfilterchange={(f) => eventFilter = f} />
-    {:else if viewMode === 'diff'}
-      <DiffPanel sessionId={activeSessionId} {isTerminal} />
+      {#if viewMode === 'log'}
+        <EventsTimeline {events} {agents} sessions={detail.sessions} {eventFilter} onfilterchange={(f) => eventFilter = f} />
+      {:else if viewMode === 'chat'}
+        <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} {eventFilter} onfilterchange={(f) => eventFilter = f} />
+      {:else if viewMode === 'diff'}
+        <DiffPanel sessionId={activeSessionId} {isTerminal} />
+      {/if}
     {/if}
   </div>
 

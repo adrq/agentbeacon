@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SessionSummary, Agent, UsageState, WorktreeInfo, SessionIdentity } from '../types';
+  import { buildTree, partitionChildren, terminalSummaryText, containsSession, type TreeNode } from '../utils/treeLayout';
   import AgentPill from './AgentPill.svelte';
   import { formatTokens } from '../format';
   import { api } from '../api';
@@ -42,57 +43,6 @@
     }
   }
 
-  interface TreeNode {
-    session: SessionSummary;
-    children: TreeNode[];
-  }
-
-  function buildTree(sessions: SessionSummary[]): TreeNode[] {
-    const byId = new Map<string, TreeNode>();
-    const roots: TreeNode[] = [];
-    for (const s of sessions) {
-      byId.set(s.id, { session: s, children: [] });
-    }
-    for (const s of sessions) {
-      const node = byId.get(s.id)!;
-      if (s.parent_session_id && byId.has(s.parent_session_id)) {
-        byId.get(s.parent_session_id)!.children.push(node);
-      } else {
-        roots.push(node);
-      }
-    }
-    return roots;
-  }
-
-  function partitionChildren(children: TreeNode[]): { active: TreeNode[]; terminal: TreeNode[] } {
-    const active: TreeNode[] = [];
-    const terminal: TreeNode[] = [];
-    for (const child of children) {
-      if (child.session.outcome != null) {
-        terminal.push(child);
-      } else {
-        active.push(child);
-      }
-    }
-    return { active, terminal };
-  }
-
-  function terminalSummaryText(nodes: TreeNode[]): string {
-    const counts: Record<string, number> = {};
-    for (const n of nodes) {
-      counts[n.session.status] = (counts[n.session.status] ?? 0) + 1;
-    }
-    const order = ['completed', 'failed', 'canceled'];
-    return order
-      .filter(s => counts[s])
-      .map(s => `${counts[s]} ${s}`)
-      .join(', ');
-  }
-
-  function containsSession(nodes: TreeNode[], id: string | null | undefined): boolean {
-    if (!id) return false;
-    return nodes.some(n => n.session.id === id || containsSession(n.children, id));
-  }
 
   function agentName(agentId: string): string {
     const agent = agents.find(a => a.id === agentId);
