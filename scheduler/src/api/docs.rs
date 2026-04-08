@@ -84,6 +84,38 @@ Same endpoint as list, with `q` query param for BM25 full-text search.
 ### Get session
 `GET /api/sessions/{session_id}`
 
+## Escalation (root lead only)
+
+`POST /api/escalate`
+Authorization: Bearer $AGENTBEACON_SESSION_ID
+
+Request body:
+```json
+{
+  "questions": [
+    {
+      "question": "string",
+      "context": "string",
+      "options": [
+        {
+          "label": "string",
+          "description": "string"
+        }
+      ]
+    }
+  ],
+  "importance": "blocking"
+}
+```
+
+- `questions`: required, 1-4 items
+- `question`: required — the question text
+- `context`: optional — additional context for the user
+- `options`: optional, 2-5 items — multiple-choice options with `label` and `description`
+- `importance`: optional — `"blocking"` (default) or `"fyi"`
+
+Response: `{"question_ids": [123], "batch_id": "uuid"}`
+
 ## Examples
 
 ```bash
@@ -108,6 +140,12 @@ curl $AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/archi
 # Search wiki
 curl "$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages?q=auth+design" \
   -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
+
+# Escalate a question to the user (root lead only)
+curl -X POST $AGENTBEACON_API_BASE/api/escalate \
+  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"questions": [{"question": "JWT or session cookies?", "options": [{"label": "JWT", "description": "Stateless"}, {"label": "Cookies", "description": "Simpler"}]}], "importance": "blocking"}'
 ```
 "#;
 

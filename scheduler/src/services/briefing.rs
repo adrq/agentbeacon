@@ -25,8 +25,16 @@ Use the AgentBeacon `release` MCP tool to terminate a child when done.\n\
 Discover available agent configs via `GET $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/agents` before delegating.\n\
 An **agent** is a configured specialist type (e.g., `backend-dev`). A **session** is a running instance — delegating to the same agent twice creates two independent sessions.";
 
-const FALLBACK_ESCALATE: &str =
-    "Use the AgentBeacon `escalate` MCP tool to surface questions to the user.";
+const FALLBACK_ESCALATE: &str = "Use the AgentBeacon `escalate` REST API to surface questions to the user.\n\n\
+`POST $AGENTBEACON_API_BASE/api/escalate`\n\
+```json\n\
+{\"questions\": [{\"question\": \"Your question here\", \"options\": [{\"label\": \"A\", \"description\": \"...\"}]}], \"importance\": \"blocking\"}\n\
+```\n\
+- `importance`: `\"blocking\"` (default) means the agent should end its turn and wait for the user's answer in the next turn; `\"fyi\"` is fire-and-forget.\n\
+- `options`: optional array of 2-5 `{label, description}` choices per question.\n\
+- `context`: optional string with additional context per question.\n\
+- Max 4 questions per batch.\n\
+- The user's answer is delivered as a normal message to this session.";
 
 const FALLBACK_REST_API: &str = "Environment variables for API access:\n\
 - `$AGENTBEACON_SESSION_ID` — your auth token\n\

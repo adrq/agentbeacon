@@ -16,10 +16,6 @@ static DELEGATE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
     Validator::new(&delegate_schema()["inputSchema"]).expect("delegate schema must compile")
 });
 
-static ESCALATE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
-    Validator::new(&escalate_schema()["inputSchema"]).expect("escalate schema must compile")
-});
-
 static RELEASE_VALIDATOR: LazyLock<Validator> = LazyLock::new(|| {
     Validator::new(&release_schema()["inputSchema"]).expect("release schema must compile")
 });
@@ -39,8 +35,8 @@ fn validate_tool_args(validator: &Validator, args: &JsonValue) -> Result<(), Jso
 pub fn handle_tools_list(auth: &McpSession, id: Option<JsonValue>) -> JsonRpcResponse {
     let at_max_depth = auth.depth >= auth.max_depth;
     let tools = match (&auth.role, at_max_depth) {
-        (McpRole::RootLead, false) => vec![delegate_schema(), release_schema(), escalate_schema()],
-        (McpRole::RootLead, true) => vec![escalate_schema()],
+        (McpRole::RootLead, false) => vec![delegate_schema(), release_schema()],
+        (McpRole::RootLead, true) => vec![],
         (McpRole::SubLead, _) => vec![delegate_schema(), release_schema()],
         (McpRole::Leaf, _) => vec![],
     };
@@ -77,16 +73,9 @@ pub async fn handle_tools_call(
         )));
     }
 
-    if tool_name == "escalate" && auth.role != McpRole::RootLead {
-        return Err(JsonRpcError::invalid_request(
-            "escalate is only available to the root lead agent",
-        ));
-    }
-
     match tool_name {
         "delegate" => handle_delegate(auth, state, arguments).await,
         "release" => handle_release(auth, state, arguments).await,
-        "escalate" => handle_escalate(auth, state, arguments).await,
         _ => Err(JsonRpcError::invalid_params(&format!(
             "unknown tool: {tool_name}"
         ))),
@@ -538,72 +527,6 @@ async fn find_lead_cwd(
     Ok(current.cwd)
 }
 
-async fn handle_escalate(
-    auth: &McpSession,
-    state: &AppState,
-    args: JsonValue,
-) -> Result<JsonValue, JsonRpcError> {
-    validate_tool_args(&ESCALATE_VALIDATOR, &args)?;
-    let questions = args["questions"].as_array().unwrap();
-    let importance = args
-        .get("importance")
-        .and_then(|v| v.as_str())
-        .unwrap_or("blocking");
-
-    let batch_id = Uuid::new_v4().to_string();
-    let batch_size = questions.len();
-    let mut question_ids = Vec::with_capacity(batch_size);
-
-    for (batch_index, q) in questions.iter().enumerate() {
-        let question = q["question"].as_str().unwrap();
-        let options = q.get("options").cloned();
-        let context = q.get("context").and_then(|v| v.as_str());
-
-        let mut data = json!({
-            "type": "escalate",
-            "question": question,
-            "importance": importance,
-            "batch_id": batch_id,
-            "batch_size": batch_size,
-            "batch_index": batch_index,
-        });
-        if let Some(opts) = options {
-            data["options"] = opts;
-        }
-        if let Some(ctx) = context {
-            data["context"] = json!(ctx);
-        }
-        let event_payload = json!({
-            "role": "ROLE_AGENT",
-            "parts": [{"data": data}]
-        });
-
-        let event_id = db::events::insert(
-            &state.db_pool,
-            &auth.execution_id,
-            Some(&auth.session_id),
-            "platform",
-            &serde_json::to_string(&event_payload).unwrap(),
-        )
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
-        let _ = state.event_broadcast.send(EventNotification::persisted(
-            auth.execution_id.clone(),
-            event_id,
-        ));
-
-        question_ids.push(event_id);
-    }
-
-    let result_text =
-        serde_json::to_string(&json!({"question_ids": question_ids, "batch_id": batch_id}))
-            .unwrap();
-    Ok(json!({
-        "content": [{"type": "text", "text": result_text}],
-        "isError": false
-    }))
-}
-
 fn delegate_schema() -> JsonValue {
     json!({
         "name": "delegate",
@@ -626,59 +549,6 @@ fn delegate_schema() -> JsonValue {
                 }
             },
             "required": ["agent", "prompt"]
-        }
-    })
-}
-
-fn escalate_schema() -> JsonValue {
-    json!({
-        "name": "escalate",
-        "title": "Escalate",
-        "description": "Escalate one or more questions or notifications to the user.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "questions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 4,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "question": {
-                                "type": "string",
-                                "description": "The question or message to present to the user"
-                            },
-                            "context": {
-                                "type": "string",
-                                "description": "Additional context to help the user answer"
-                            },
-                            "options": {
-                                "type": "array",
-                                "minItems": 2,
-                                "maxItems": 5,
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "label": {"type": "string"},
-                                        "description": {"type": "string"}
-                                    },
-                                    "required": ["label", "description"]
-                                },
-                                "description": "Optional list of choices for the user"
-                            }
-                        },
-                        "required": ["question"]
-                    },
-                    "description": "Array of 1-4 questions to present to the user"
-                },
-                "importance": {
-                    "type": "string",
-                    "enum": ["blocking", "fyi"],
-                    "description": "Whether this blocks execution or is informational"
-                }
-            },
-            "required": ["questions"]
         }
     })
 }
