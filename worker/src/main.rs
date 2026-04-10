@@ -463,20 +463,9 @@ async fn run_session(
 
                         drop(poll_fut.take());
 
-                        if pending_feed_token.is_some() && result.error.is_none() {
-                            tracing::warn!("turn ended without accepted signal, acking implicitly");
-                            last_ack = pending_feed_token.take();
-                        }
-
-                        let feed_rejected = pending_feed_token.is_some() && result.error.is_some();
-                        if feed_rejected {
-                            pending_feed_token.take();
-                        }
-                        let executor_state = if feed_rejected { "crashed" } else { "idle" };
-
                         let report = ExecutorReport {
                             session_id: session_id.to_string(),
-                            executor_state: executor_state.to_string(),
+                            executor_state: "idle".to_string(),
                             agent_session_id: agent_session_id.clone(),
                         };
                         let turn_result = TurnResult {
@@ -490,8 +479,7 @@ async fn run_session(
                         let mut req = SyncRequest::with_report_and_result(
                             worker_id, report, turn_result,
                         );
-                        if feed_rejected {
-                        } else if cancel_ack_pending {
+                        if cancel_ack_pending {
                             req.command_ack = last_ack.take();
                         } else if let Some(stop_token) = pending_stop_token.take() {
                             req.command_ack = Some(stop_token);
@@ -509,10 +497,6 @@ async fn run_session(
                                 break SessionExit::Done;
                             }
                         };
-
-                        if feed_rejected {
-                            break SessionExit::Done;
-                        }
 
                         let was_cancel_ack = cancel_ack_pending;
                         cancel_ack_pending = false;
@@ -793,6 +777,9 @@ fn handle_command(
 ) -> Option<SessionExit> {
     match action {
         CommandAction::FeedTurn { payload, .. } => {
+            if pending_feed_token.as_deref() == Some(token) {
+                return None;
+            }
             match extract_parts(payload) {
                 Ok(parts) => {
                     *agent_busy = true;

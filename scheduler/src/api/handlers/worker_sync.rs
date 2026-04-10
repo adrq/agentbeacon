@@ -74,6 +74,7 @@ pub async fn worker_sync(
 
     let mut skip_reconciler = false;
     let mut executor_report_succeeded = false;
+    let mut session_scoped_reconcile: Option<String> = None;
     if let Some(report) = &req.executor_report {
         let crash_meta = if report.executor_state == "crashed" {
             req.turn_result
@@ -101,8 +102,13 @@ pub async fn worker_sync(
                     skip_reconciler = true;
                 } else {
                     if let Ok(session) = db::sessions::get_by_id(pool, &report.session_id).await {
-                        if session.executor_state != report.executor_state {
+                        if (session.outcome.is_some() && session.desired != "terminate")
+                            || session.executor_state != report.executor_state
+                            || session.worker_id.as_deref() != Some(worker_id)
+                        {
                             skip_reconciler = true;
+                        } else {
+                            session_scoped_reconcile = Some(report.session_id.clone());
                         }
                     } else {
                         skip_reconciler = true;
@@ -397,8 +403,24 @@ pub async fn worker_sync(
         return Ok(Json(WorkerSyncResponse::NoAction));
     }
 
+    if let Some(session_id) = session_scoped_reconcile {
+        return match run_reconciler_for_session(pool, worker_id, &session_id, &state).await {
+            ReconcilerResult::Command(resp) => Ok(Json(resp)),
+            ReconcilerResult::PendingCommand | ReconcilerResult::NoAction => {
+                Ok(Json(WorkerSyncResponse::NoAction))
+            }
+            ReconcilerResult::NothingFound => Ok(Json(WorkerSyncResponse::NoAction)),
+        };
+    }
+
+    let is_flush = req.command_ack.is_some() || req.turn_result.is_some();
+
     match run_reconciler_for_worker(pool, worker_id, &state).await {
         ReconcilerResult::Command(resp) => Ok(Json(resp)),
+        ReconcilerResult::PendingCommand => Ok(Json(WorkerSyncResponse::NoAction)),
+        ReconcilerResult::NoAction | ReconcilerResult::NothingFound if is_flush => {
+            Ok(Json(WorkerSyncResponse::NoAction))
+        }
         ReconcilerResult::NoAction | ReconcilerResult::NothingFound => {
             let timeout_secs = state.long_poll_timeout_secs;
             if timeout_secs == 0 {
@@ -407,10 +429,10 @@ pub async fn worker_sync(
 
             let notified = state.task_queue.notified();
 
-            if let ReconcilerResult::Command(resp) =
-                run_reconciler_for_worker(pool, worker_id, &state).await
-            {
-                return Ok(Json(resp));
+            match run_reconciler_for_worker(pool, worker_id, &state).await {
+                ReconcilerResult::Command(resp) => return Ok(Json(resp)),
+                ReconcilerResult::PendingCommand => return Ok(Json(WorkerSyncResponse::NoAction)),
+                _ => {}
             }
 
             let _ =
@@ -632,6 +654,8 @@ enum ReconcilerResult {
     Command(WorkerSyncResponse),
     /// Reconciler ran on assigned sessions, no command needed.
     NoAction,
+    /// A command is pending (awaiting ack) — return immediately, don't long-poll.
+    PendingCommand,
     /// No sessions found for this worker, no unassigned work — caller should long-poll.
     NothingFound,
 }
@@ -649,6 +673,7 @@ async fn run_reconciler_for_worker(
 
     if !sessions.is_empty() {
         let mut sessions_mutated = false;
+        let mut has_pending_command = false;
         for _pass in 0..2 {
             let fresh = match db::sessions::find_sessions_for_worker(pool, worker_id).await {
                 Ok(s) => s,
@@ -687,6 +712,9 @@ async fn run_reconciler_for_worker(
                     Ok(ReconcilerAction::Mutated) => {
                         sessions_mutated = true;
                     }
+                    Ok(ReconcilerAction::PendingCommand) => {
+                        has_pending_command = true;
+                    }
                     Ok(ReconcilerAction::NoAction) => {}
                     Err(e) => {
                         tracing::warn!("reconciler error for session {}: {e}", session.id);
@@ -699,6 +727,9 @@ async fn run_reconciler_for_worker(
         }
         if sessions_mutated {
             state.task_queue.wake_waiters();
+        }
+        if has_pending_command {
+            return ReconcilerResult::PendingCommand;
         }
         return ReconcilerResult::NoAction;
     }
@@ -811,6 +842,59 @@ async fn run_reconciler_for_worker(
     }
 
     ReconcilerResult::NothingFound
+}
+
+async fn run_reconciler_for_session(
+    pool: &db::DbPool,
+    worker_id: &str,
+    session_id: &str,
+    state: &AppState,
+) -> ReconcilerResult {
+    let mut mutated = false;
+    for _pass in 0..2 {
+        let session = match db::sessions::get_by_id(pool, session_id).await {
+            Ok(s) => s,
+            Err(_) => return ReconcilerResult::NothingFound,
+        };
+        if session.worker_id.as_deref() != Some(worker_id) {
+            return ReconcilerResult::NothingFound;
+        }
+
+        let pending = db::sessions::count_pending_turns(pool, session_id)
+            .await
+            .unwrap_or(0);
+        let execution = match db::executions::get_by_id(pool, &session.execution_id).await {
+            Ok(e) => e,
+            Err(_) => return ReconcilerResult::NothingFound,
+        };
+
+        match reconciler::reconcile(pool, &session, pending, &execution, true, Some(worker_id))
+            .await
+        {
+            Ok(ReconcilerAction::SendCommand { token, action }) => {
+                return ReconcilerResult::Command(WorkerSyncResponse::Command { token, action });
+            }
+            Ok(ReconcilerAction::PendingCommand) => return ReconcilerResult::PendingCommand,
+            Ok(ReconcilerAction::Repaired) => {
+                mutated = true;
+                continue;
+            }
+            Ok(ReconcilerAction::Mutated) => {
+                mutated = true;
+                break;
+            }
+            Ok(ReconcilerAction::NoAction) => break,
+            Err(e) => {
+                tracing::warn!("reconciler error for session {}: {e}", session.id);
+                break;
+            }
+        }
+    }
+
+    if mutated {
+        state.task_queue.wake_waiters();
+    }
+    ReconcilerResult::NoAction
 }
 
 /// Request body for POST /api/worker/events (mid-turn message forwarding).

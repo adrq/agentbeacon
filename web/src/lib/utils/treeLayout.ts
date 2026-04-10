@@ -169,7 +169,9 @@ export function computeLayout(roots: CompactedNode[]): LayoutResult {
 
   // Create fresh d3 hierarchy + tree each call (d3 mutates in place)
   const root = hierarchy(virtualRoot, d => d.children);
-  const treeLayout = d3Tree<CompactedNode>().nodeSize([H_SPACING, V_SPACING]);
+  const treeLayout = d3Tree<CompactedNode>()
+    .nodeSize([H_SPACING, V_SPACING])
+    .separation(() => 1);
   treeLayout(root);
 
   // Collect all real nodes and edges

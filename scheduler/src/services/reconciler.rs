@@ -10,6 +10,8 @@ use crate::services::transition;
 #[allow(clippy::large_enum_variant)]
 pub enum ReconcilerAction {
     NoAction,
+    /// A command is pending — caller should return without long-polling
+    PendingCommand,
     SendCommand {
         token: String,
         action: CommandAction,
@@ -357,7 +359,7 @@ pub async fn reconcile(
             }
         }
 
-        return Ok(ReconcilerAction::NoAction);
+        return Ok(ReconcilerAction::PendingCommand);
     }
 
     let exec_alive = execution.desired == "run" && execution.outcome.is_none();
