@@ -14,6 +14,7 @@ use crate::assets::Assets;
 use crate::db::DbPool;
 use crate::queue::TaskQueue;
 use crate::search::WikiSearchIndex;
+use crate::supervisor::Supervisor;
 
 /// Payload for ephemeral (SSE-only, non-persisted) events.
 #[derive(Clone, Debug)]
@@ -63,6 +64,7 @@ pub struct AppState {
     pub event_broadcast: broadcast::Sender<EventNotification>,
     pub wiki_search: WikiSearchIndex,
     pub vite_dev_port: u16,
+    pub supervisor: Arc<Supervisor>,
     pub stop_turn_intents: Arc<RwLock<HashSet<String>>>,
     pub worker_heartbeats: Arc<RwLock<HashMap<String, std::time::Instant>>>,
     pub heartbeat_timeout_secs: u64,
@@ -71,6 +73,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db_pool: DbPool,
         task_queue: Arc<TaskQueue>,
@@ -79,6 +82,7 @@ impl AppState {
         port: u16,
         event_broadcast: broadcast::Sender<EventNotification>,
         wiki_search: WikiSearchIndex,
+        supervisor: Arc<Supervisor>,
     ) -> Self {
         let vite_dev_port = std::env::var("VITE_DEV_PORT")
             .ok()
@@ -96,6 +100,7 @@ impl AppState {
             event_broadcast,
             wiki_search,
             vite_dev_port,
+            supervisor,
             stop_turn_intents: Arc::new(RwLock::new(HashSet::new())),
             worker_heartbeats: Arc::new(RwLock::new(HashMap::new())),
             heartbeat_timeout_secs,

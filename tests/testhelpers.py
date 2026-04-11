@@ -494,6 +494,8 @@ def start_scheduler(
             str(port),
             "--db-url",
             db_url,
+            "--max-workers",
+            "0",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -918,19 +920,21 @@ def poll_a2a_task_status(
 
 def start_orchestrator(
     port: int,
-    workers: int | None = 2,
+    max_workers: int | None = None,
     db_url: str = None,
     base_dir: Path = None,
     worker_poll_interval: str = None,
+    idle_timeout: str = None,
 ) -> subprocess.Popen:
     """Start the agentbeacon binary with specified configuration.
 
     Args:
         port: Port number for scheduler to listen on
-        workers: Number of worker processes to spawn. None omits --workers flag entirely (uses binary default).
+        max_workers: Maximum auto-spawned workers. None omits flag (unlimited). 0 disables.
         db_url: Complete database URL (creates temp SQLite URL if None)
         base_dir: Base directory for the project (defaults to test file parent directory)
         worker_poll_interval: Worker sync polling interval (e.g., '1s', '500ms'). If None, workers use default (5s)
+        idle_timeout: Worker idle timeout (e.g., '300s'). If None, workers use default (5m)
 
     Returns:
         subprocess.Popen: The agentbeacon process
@@ -946,6 +950,12 @@ def start_orchestrator(
 
     env = os.environ.copy()
     env["DATABASE_URL"] = db_url
+    # Short intervals for tests so dynamic workers react quickly.
+    env.setdefault("AGENTBEACON_RECOVERY_GRACE_SECS", "3")
+    env.setdefault("AGENTBEACON_LONG_POLL_TIMEOUT_SECS", "5")
+    env.setdefault("AGENTBEACON_HEARTBEAT_TIMEOUT_SECS", "10")
+    env.setdefault("AGENTBEACON_LIVENESS_INTERVAL_SECS", "10")
+    env.setdefault("AGENTBEACON_SPAWN_TICK_SECS", "2")
 
     cmd = [
         "./bin/agentbeacon",
@@ -953,11 +963,14 @@ def start_orchestrator(
         str(port),
     ]
 
-    if workers is not None:
-        cmd.extend(["--workers", str(workers)])
+    if max_workers is not None:
+        cmd.extend(["--max-workers", str(max_workers)])
 
     if worker_poll_interval is not None:
         cmd.extend(["--worker-poll-interval", worker_poll_interval])
+
+    if idle_timeout is not None:
+        cmd.extend(["--idle-timeout", idle_timeout])
 
     orchestrator_proc = subprocess.Popen(
         cmd,
@@ -972,11 +985,12 @@ def start_orchestrator(
 
 @contextmanager
 def orchestrator_context(
-    workers: int | None = 2,
+    max_workers: int | None = None,
     db_url: str = None,
     port: int = None,
     test_name: str = None,
     worker_poll_interval: str = None,
+    idle_timeout: str = None,
 ):
     """Context manager for agentbeacon with PID-tracked process management.
 
@@ -989,11 +1003,12 @@ def orchestrator_context(
     - Logs external processes for debugging
 
     Args:
-        workers: Number of worker processes (default: 2). None omits --workers flag entirely (uses binary default).
+        max_workers: Maximum auto-spawned workers. None = unlimited (default). 0 = disabled.
         db_url: Database URL (creates temp SQLite if None)
         port: Port number (allocates one if None)
         test_name: Test name for debugging (auto-detected if None)
         worker_poll_interval: Worker sync polling interval (e.g., '1s', '500ms'). If None, workers use default (5s)
+        idle_timeout: Worker idle timeout (e.g., '300s'). If None, workers use default (5m)
 
     Yields:
         dict: Contains agentbeacon process info and PID tracker:
@@ -1009,7 +1024,7 @@ def orchestrator_context(
             }
 
     Example:
-        with orchestrator_context(workers=2) as orch:
+        with orchestrator_context(max_workers=2) as orch:
             # Assert using tracker
             orch['tracker'].assert_exact_count("worker", 2)
 
@@ -1043,14 +1058,15 @@ def orchestrator_context(
         # Start orchestrator
         orchestrator_proc = start_orchestrator(
             allocated_port,
-            workers=workers,
+            max_workers=max_workers,
             db_url=db_url,
             base_dir=base_dir,
             worker_poll_interval=worker_poll_interval,
+            idle_timeout=idle_timeout,
         )
 
         # Register orchestrator PID
-        effective_workers = workers if workers is not None else 0
+        effective_workers = max_workers if max_workers is not None else 0
         orchestrator_pid = tracker.register_process(
             orchestrator_proc,
             "orchestrator",

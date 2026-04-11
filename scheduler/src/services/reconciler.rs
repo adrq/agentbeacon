@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use serde::Serialize;
 use sqlx::Row;
 
 use crate::db::{self, DbPool};
 use crate::error::SchedulerError;
 use crate::services::transition;
+use crate::supervisor::Supervisor;
 
 /// Action produced for a session.
 #[derive(Debug)]
@@ -69,6 +72,7 @@ pub async fn reconcile(
     execution: &db::Execution,
     command_ok: bool,
     worker_id: Option<&str>,
+    supervisor: Option<&Arc<Supervisor>>,
 ) -> Result<ReconcilerAction, SchedulerError> {
     if session.desired == "terminate" && session.outcome.is_none() {
         if session.parent_session_id.is_none() {
@@ -321,6 +325,11 @@ pub async fn reconcile(
                             &serde_json::to_string(&event_payload).unwrap_or_default(),
                         )
                         .await;
+                    }
+                    if let Some(ref wid) = session.worker_id
+                        && let Some(sup) = supervisor
+                    {
+                        sup.kill_worker(wid).await;
                     }
                     let _ = transition::transition(
                         pool,

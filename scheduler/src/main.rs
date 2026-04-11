@@ -45,9 +45,18 @@ struct Cli {
     #[arg(long, env = "AGENTBEACON_WIKI_INDEX_DIR")]
     wiki_index_dir: Option<String>,
 
-    /// Number of worker processes to supervise (0 = standalone scheduler)
-    #[arg(long, default_value_t = 0)]
-    workers: usize,
+    /// Maximum auto-spawned workers. Default: unlimited.
+    /// Set to 0 to disable auto-spawning (for external/test workers).
+    #[arg(long, env = "AGENTBEACON_MAX_WORKERS")]
+    max_workers: Option<usize>,
+
+    /// Max workers spawned per 10s tick (thundering-herd prevention)
+    #[arg(long, default_value_t = 8, env = "AGENTBEACON_MAX_SPAWN_PER_TICK")]
+    max_spawn_per_tick: usize,
+
+    /// Idle timeout passed through to spawned worker processes
+    #[arg(long, default_value = "300s", value_parser = parse_duration, env = "AGENTBEACON_IDLE_TIMEOUT")]
+    idle_timeout: std::time::Duration,
 
     /// Worker sync polling interval (e.g., '1s', '500ms')
     #[arg(long)]
@@ -75,7 +84,10 @@ async fn main() -> Result<()> {
     sqlx::any::install_default_drivers();
 
     info!("AgentBeacon starting...");
-    info!("Configuration: port={}, workers={}", cli.port, cli.workers);
+    info!(
+        "Configuration: port={}, max_workers={:?}",
+        cli.port, cli.max_workers
+    );
 
     bootstrap(cli).await
 }
@@ -193,7 +205,20 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(90)
-        .max(60);
+        .max(5);
+
+    let spawn_tick_secs = std::env::var("AGENTBEACON_SPAWN_TICK_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(10)
+        .max(1);
+
+    let supervisor = Arc::new(Supervisor::new(
+        cli.port,
+        cli.worker_poll_interval.clone(),
+        cli.max_workers,
+        cli.idle_timeout,
+    ));
 
     let app_state = AppState::new(
         db_pool,
@@ -203,6 +228,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         cli.port,
         event_broadcast.clone(),
         wiki_search,
+        supervisor.clone(),
     );
     let vite_dev_port = app_state.vite_dev_port;
     let app = create_router(app_state.clone(), dev_mode, cli.port);
@@ -235,119 +261,189 @@ async fn bootstrap(cli: Cli) -> Result<()> {
     let tick_heartbeats = app_state.worker_heartbeats.clone();
     let tick_hb_timeout = std::time::Duration::from_secs(app_state.heartbeat_timeout_secs);
     let tick_event_broadcast = event_broadcast.clone();
+    let tick_supervisor = supervisor.clone();
+    let max_spawn_per_tick = cli.max_spawn_per_tick;
+    let max_workers_opt = cli.max_workers;
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(recovery_grace_secs)).await;
-
-        let interval = Duration::from_secs(liveness_interval_secs);
-        loop {
-            tokio::time::sleep(interval).await;
-
-            let sessions = match db::sessions::find_reconcilable(&reconciler_pool).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Reconciler tick: list sessions failed");
-                    continue;
-                }
-            };
-
-            let mut mutated = 0u64;
-            let heartbeats = tick_heartbeats.read().unwrap().clone();
-            for session in &sessions {
-                if let Some(ref wid) = session.worker_id {
-                    let expired = match heartbeats.get(wid.as_str()) {
-                        Some(last_seen) => last_seen.elapsed() > tick_hb_timeout,
-                        None => true,
-                    };
-                    if expired {
-                        if session.command_has_payload {
-                            let event_payload = serde_json::json!({
-                                "message": "Agent recovered from a crash. A message may have been lost."
-                            });
-                            let _ = crate::db::events::insert(
-                                &reconciler_pool,
-                                &session.execution_id,
-                                Some(&session.id),
-                                "platform",
-                                &serde_json::to_string(&event_payload).unwrap_or_default(),
-                            )
-                            .await;
-                        }
-                        let _ = services::transition::transition(
-                            &reconciler_pool,
-                            &session.execution_id,
-                            &session.id,
-                            services::transition::Action::DetectCrash,
-                        )
-                        .await;
-                        mutated += 1;
-                        continue;
-                    }
-                }
-
-                if session.outcome.is_none()
-                    && session.desired != "terminate"
-                    && session.executor_state != "crashed"
-                    && session.command_token.is_none()
-                {
-                    continue;
-                }
-
-                let pending = db::sessions::count_pending_turns(&reconciler_pool, &session.id)
-                    .await
-                    .unwrap_or(0);
-                let execution = match db::executions::get_by_id(
-                    &reconciler_pool,
-                    &session.execution_id,
-                )
+        {
+            let crashed_sessions = db::sessions::find_crashed_workerless(&reconciler_pool)
                 .await
+                .unwrap_or_default();
+            for session in &crashed_sessions {
+                if let Ok(exec) =
+                    db::executions::get_by_id(&reconciler_pool, &session.execution_id).await
                 {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                match services::reconciler::reconcile(
-                    &reconciler_pool,
-                    session,
-                    pending,
-                    &execution,
-                    false,
-                    None,
-                )
-                .await
-                {
-                    Ok(services::reconciler::ReconcilerAction::Mutated) => {
-                        mutated += 1;
-                        let _ = tick_event_broadcast.send(EventNotification::persisted(
-                            session.execution_id.clone(),
-                            0,
-                        ));
-                    }
-                    Ok(services::reconciler::ReconcilerAction::Repaired) => {
-                        mutated += 1;
-                        let _ = tick_event_broadcast.send(EventNotification::persisted(
-                            session.execution_id.clone(),
-                            0,
-                        ));
-                    }
-                    Ok(services::reconciler::ReconcilerAction::SendCommand { .. }) => mutated += 1,
-                    _ => {}
+                    let pending = db::sessions::count_pending_turns(&reconciler_pool, &session.id)
+                        .await
+                        .unwrap_or(0);
+                    let _ = services::reconciler::reconcile(
+                        &reconciler_pool,
+                        session,
+                        pending,
+                        &exec,
+                        true,
+                        None,
+                        Some(&tick_supervisor),
+                    )
+                    .await;
                 }
             }
-            if mutated > 0 {
-                tick_task_queue.wake_waiters();
-                info!(mutated, "Liveness check complete");
+            if max_workers_opt != Some(0) {
+                let claimable = db::sessions::count_claimable(&reconciler_pool)
+                    .await
+                    .unwrap_or(0);
+                for _ in 0..claimable.min(max_spawn_per_tick) {
+                    if let Err(e) = tick_supervisor.spawn_worker().await {
+                        if e.to_string().contains("max workers") {
+                            tracing::warn!(error = %e, "Startup spawn limit reached");
+                        } else {
+                            tracing::error!(error = %e, "Startup worker spawn failed");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(recovery_grace_secs)).await;
+
+        let reconciler_interval = Duration::from_secs(liveness_interval_secs);
+        let spawn_interval = Duration::from_secs(spawn_tick_secs);
+        let mut reconciler_tick = tokio::time::interval(reconciler_interval);
+        let mut spawn_tick = tokio::time::interval(spawn_interval);
+        reconciler_tick.tick().await;
+        spawn_tick.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = reconciler_tick.tick() => {
+                    let sessions = match db::sessions::find_reconcilable(&reconciler_pool).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Reconciler tick: list sessions failed");
+                            continue;
+                        }
+                    };
+
+                    let mut mutated = 0u64;
+                    let heartbeats = tick_heartbeats.read().unwrap().clone();
+                    for session in &sessions {
+                        if let Some(ref wid) = session.worker_id {
+                            let expired = match heartbeats.get(wid.as_str()) {
+                                Some(last_seen) => last_seen.elapsed() > tick_hb_timeout,
+                                None => true,
+                            };
+                            if expired {
+                                if session.command_has_payload {
+                                    let event_payload = serde_json::json!({
+                                        "message": "Agent recovered from a crash. A message may have been lost."
+                                    });
+                                    let _ = crate::db::events::insert(
+                                        &reconciler_pool,
+                                        &session.execution_id,
+                                        Some(&session.id),
+                                        "platform",
+                                        &serde_json::to_string(&event_payload).unwrap_or_default(),
+                                    )
+                                    .await;
+                                }
+                                tick_supervisor.kill_worker(wid).await;
+                                let _ = services::transition::transition(
+                                    &reconciler_pool,
+                                    &session.execution_id,
+                                    &session.id,
+                                    services::transition::Action::DetectCrash,
+                                )
+                                .await;
+                                mutated += 1;
+                                continue;
+                            }
+                        }
+
+                        if session.outcome.is_none()
+                            && session.desired != "terminate"
+                            && session.executor_state != "crashed"
+                            && session.command_token.is_none()
+                        {
+                            continue;
+                        }
+
+                        let pending = db::sessions::count_pending_turns(&reconciler_pool, &session.id)
+                            .await
+                            .unwrap_or(0);
+                        let execution = match db::executions::get_by_id(
+                            &reconciler_pool,
+                            &session.execution_id,
+                        )
+                        .await
+                        {
+                            Ok(e) => e,
+                            Err(_) => continue,
+                        };
+                        match services::reconciler::reconcile(
+                            &reconciler_pool,
+                            session,
+                            pending,
+                            &execution,
+                            false,
+                            None,
+                            Some(&tick_supervisor),
+                        )
+                        .await
+                        {
+                            Ok(services::reconciler::ReconcilerAction::Mutated) => {
+                                mutated += 1;
+                                let _ = tick_event_broadcast.send(EventNotification::persisted(
+                                    session.execution_id.clone(),
+                                    0,
+                                ));
+                            }
+                            Ok(services::reconciler::ReconcilerAction::Repaired) => {
+                                mutated += 1;
+                                let _ = tick_event_broadcast.send(EventNotification::persisted(
+                                    session.execution_id.clone(),
+                                    0,
+                                ));
+                            }
+                            Ok(services::reconciler::ReconcilerAction::SendCommand { .. }) => mutated += 1,
+                            _ => {}
+                        }
+                    }
+                    if mutated > 0 {
+                        tick_task_queue.wake_waiters();
+                        info!(mutated, "Liveness check complete");
+                    }
+
+                    let tracked = tick_supervisor.worker_ids().await;
+                    tick_heartbeats.write().unwrap().retain(|wid, last_seen| {
+                        tracked.contains(wid) || last_seen.elapsed() < tick_hb_timeout
+                    });
+                }
+
+                _ = spawn_tick.tick() => {
+                    if max_workers_opt == Some(0) {
+                        continue;
+                    }
+                    let claimable = db::sessions::count_claimable(&reconciler_pool)
+                        .await
+                        .unwrap_or(0);
+                    if claimable > 0 {
+                        let to_spawn = claimable.min(max_spawn_per_tick);
+                        for _ in 0..to_spawn {
+                            if let Err(e) = tick_supervisor.spawn_worker().await {
+                                if e.to_string().contains("max workers") {
+                                    tracing::warn!(error = %e, "Spawn limit reached");
+                                } else {
+                                    tracing::error!(error = %e, "Worker spawn failed");
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
     });
-
-    let supervisor = if cli.workers > 0 {
-        Some(Supervisor::new(
-            cli.workers,
-            cli.port,
-            cli.worker_poll_interval,
-        ))
-    } else {
-        None
-    };
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -360,13 +456,10 @@ async fn bootstrap(cli: Cli) -> Result<()> {
             .await
     });
 
-    if let Some(ref sup) = supervisor {
-        sup.start_workers().await?;
-        info!(
-            "AgentBeacon ready — scheduler and {} workers running on port {}",
-            cli.workers, cli.port
-        );
-    }
+    info!(
+        "AgentBeacon ready — scheduler on port {} (max_workers={:?})",
+        cli.port, cli.max_workers
+    );
 
     let server_error = tokio::select! {
         _ = wait_for_signal() => {
@@ -378,9 +471,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         }
     };
 
-    if let Some(sup) = supervisor
-        && let Err(e) = sup.shutdown().await
-    {
+    if let Err(e) = supervisor.shutdown().await {
         warn!("Error during worker shutdown: {e}");
     }
 
@@ -393,6 +484,10 @@ async fn bootstrap(cli: Cli) -> Result<()> {
 
     info!("AgentBeacon shut down gracefully");
     Ok(())
+}
+
+fn parse_duration(s: &str) -> Result<std::time::Duration, humantime::DurationError> {
+    humantime::parse_duration(s)
 }
 
 async fn wait_for_signal() {

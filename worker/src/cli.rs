@@ -52,6 +52,11 @@ pub struct Args {
     #[arg(long, default_value = "30m", value_parser = parse_inactivity_timeout)]
     pub inactivity_timeout: Duration,
 
+    /// Idle timeout before self-termination. Default: 5 minutes.
+    /// Set to 0 to disable (worker runs forever).
+    #[arg(long, default_value = "300s", value_parser = parse_duration)]
+    pub idle_timeout: Duration,
+
     /// Internal: resolved node_modules path for embedded executor mode.
     /// Not a CLI flag — set programmatically during startup.
     #[arg(skip)]

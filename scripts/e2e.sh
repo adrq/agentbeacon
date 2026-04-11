@@ -37,7 +37,7 @@ fi
 touch "$DB_PATH"
 
 echo "==> Starting scheduler on port ${AGENTBEACON_PORT}..."
-./bin/agentbeacon --workers 0 --port "$AGENTBEACON_PORT" 2>&1 &
+./bin/agentbeacon --max-workers 0 --port "$AGENTBEACON_PORT" 2>&1 &
 BACKEND_PID=$!
 
 echo "==> Waiting for health check..."

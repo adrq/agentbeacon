@@ -62,7 +62,7 @@ Then install the agent SDK dependencies and start:
 
 ```bash
 agentbeacon --setup          # install Claude + Copilot SDK dependencies
-agentbeacon --workers 2      # start scheduler + 2 workers
+agentbeacon                  # start AgentBeacon
 # Open http://localhost:9456
 ```
 

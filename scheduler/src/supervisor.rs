@@ -1,18 +1,18 @@
 //! Worker process supervision.
 //!
-//! Manages the lifecycle of N worker subprocesses: spawning, colored log
-//! streaming, crash detection with auto-restart, and graceful shutdown.
+//! Manages worker subprocess lifecycle: on-demand spawning, instant SIGKILL,
+//! zombie reaping, colored log streaming, and graceful shutdown.
 
 use anyhow::{Context, Result};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant, sleep};
 use tracing::{info, warn};
 
@@ -58,84 +58,97 @@ pub fn worker_binary_path() -> PathBuf {
     PathBuf::from("./bin/agentbeacon-worker")
 }
 
-struct ProcessInfo {
-    child: Child,
-}
-
-/// PID stored outside mutex for lock-free signal sending.
-struct ProcessHandle {
+/// Worker process tracked by the supervisor. One field — just a PID.
+/// The Child handle is owned by monitor_worker() (background task).
+struct WorkerEntry {
     pid: u32,
-    info: Arc<Mutex<ProcessInfo>>,
 }
 
-/// Supervises N worker subprocesses with crash restart and graceful shutdown.
+pub enum KillResult {
+    /// SIGKILL sent (process is dead) or ESRCH (already dead).
+    Confirmed,
+    /// UUID not in supervisor tracking (already killed or external worker).
+    NotFound,
+}
+
+/// Supervises worker subprocesses with on-demand spawning, instant kill, and graceful shutdown.
 #[derive(Clone)]
 pub struct Supervisor {
-    workers: usize,
     port: u16,
     worker_poll_interval: Option<String>,
-    processes: Arc<RwLock<HashMap<String, ProcessHandle>>>,
+    /// Idle timeout passed through to spawned worker processes.
+    idle_timeout: Duration,
+    /// Worker UUID -> PID. Protected by RwLock for concurrent access.
+    workers: Arc<RwLock<HashMap<String, WorkerEntry>>>,
     shutting_down: Arc<RwLock<bool>>,
+    /// Maximum concurrent workers. None = unlimited, Some(0) = disabled.
+    max_workers: Option<usize>,
+    /// Serializes spawn_worker() to prevent concurrent callers from
+    /// exceeding max_workers. Protects against overlapping ticks.
+    spawn_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Supervisor {
-    pub fn new(workers: usize, port: u16, worker_poll_interval: Option<String>) -> Self {
+    pub fn new(
+        port: u16,
+        worker_poll_interval: Option<String>,
+        max_workers: Option<usize>,
+        idle_timeout: Duration,
+    ) -> Self {
         Self {
-            workers,
             port,
             worker_poll_interval,
-            processes: Arc::new(RwLock::new(HashMap::new())),
+            idle_timeout,
+            workers: Arc::new(RwLock::new(HashMap::new())),
             shutting_down: Arc::new(RwLock::new(false)),
+            max_workers,
+            spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
-    /// Spawn all worker processes. Transactional: if any spawn fails, already-started
-    /// workers are shut down before returning the error.
-    pub async fn start_workers(&self) -> Result<()> {
-        for i in 1..=self.workers {
-            if let Err(e) = self.start_worker(i).await {
-                warn!("Worker {i} failed to start: {e}. Cleaning up already-started workers...");
-                // Best-effort cleanup of already-started workers
-                let _ = self.shutdown().await;
-                return Err(e).context(format!("failed to start worker {i}"));
+    pub async fn spawn_worker(&self) -> Result<String> {
+        let _guard = self.spawn_lock.lock().await;
+        if *self.shutting_down.read().await {
+            anyhow::bail!("supervisor is shutting down");
+        }
+        if let Some(max) = self.max_workers {
+            let count = self.workers.read().await.len();
+            if count >= max {
+                anyhow::bail!("max workers ({}) reached", max);
             }
         }
-        Ok(())
-    }
 
-    async fn start_worker(&self, id: usize) -> Result<()> {
-        let name = format!("worker-{id}");
+        let worker_id = uuid::Uuid::new_v4().to_string();
         let scheduler_url = format!("http://localhost:{}", self.port);
         let worker_bin = worker_binary_path();
 
         let mut cmd = Command::new(&worker_bin);
         cmd.arg("--scheduler-url").arg(&scheduler_url);
-
+        cmd.arg("--worker-id").arg(&worker_id);
+        cmd.arg("--idle-timeout")
+            .arg(format!("{}s", self.idle_timeout.as_secs()));
         if let Some(interval) = &self.worker_poll_interval {
             cmd.arg("--interval").arg(interval);
         }
-
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let color = get_color(&name);
+        let color = get_color(&worker_id);
+        let name = format!("worker-{}", &worker_id[..8]);
         let mut child = cmd.spawn().context(format!(
             "failed to spawn {name} from {}",
             worker_bin.display()
         ))?;
 
         let pid = child.id().context("no PID for child process")?;
-        info!("Started {name} (PID: {pid})");
+        info!(worker_id = %worker_id, pid = pid, "Spawned worker");
 
         let stdout = child.stdout.take().context("failed to get stdout pipe")?;
         let stderr = child.stderr.take().context("failed to get stderr pipe")?;
 
-        let proc_info = Arc::new(Mutex::new(ProcessInfo { child }));
-        let handle = ProcessHandle {
-            pid,
-            info: proc_info,
-        };
-
-        self.processes.write().await.insert(name.clone(), handle);
+        self.workers
+            .write()
+            .await
+            .insert(worker_id.clone(), WorkerEntry { pid });
 
         // Log streaming tasks
         let name_out = name.clone();
@@ -148,116 +161,60 @@ impl Supervisor {
             stream_logs(name_err, color, stderr).await;
         });
 
-        // Monitor task with restart loop
+        // Monitor task: sole owner of the Child handle. Reaps zombie on exit.
         let sup = self.clone();
-        let name_mon = name.clone();
+        let wid = worker_id.clone();
         tokio::spawn(async move {
-            sup.monitor_process_loop(name_mon, color).await;
+            sup.monitor_worker(wid, child).await;
         });
 
-        Ok(())
+        Ok(worker_id)
     }
 
-    /// Monitor a worker process and restart on crash (up to 5 retries).
-    async fn monitor_process_loop(&self, name: String, color: &'static str) {
-        let mut retry_count = 0u32;
-        let max_retries = 5u32;
-
-        loop {
-            // Wait for process to exit
-            let proc_info = {
-                let processes = self.processes.read().await;
-                processes.get(&name).map(|handle| handle.info.clone())
-            };
-
-            let exit_status = if let Some(proc_info) = proc_info {
-                let mut proc = proc_info.lock().await;
-                proc.child.wait().await
-            } else {
-                return;
-            };
-
-            if *self.shutting_down.read().await {
-                return;
-            }
-
-            match exit_status {
-                Err(e) => warn!("Process {name} exited unexpectedly: {e}"),
-                Ok(status) => warn!("Process {name} exited unexpectedly with {status}"),
-            }
-
-            retry_count += 1;
-
-            if retry_count >= max_retries {
-                warn!("Process {name} exceeded max retries ({max_retries}), not restarting");
-                return;
-            }
-
-            warn!(
-                "Restarting {} (attempt {}/{}) in 1 second...",
-                name,
-                retry_count + 1,
-                max_retries
-            );
-
-            sleep(Duration::from_secs(1)).await;
-
-            if *self.shutting_down.read().await {
-                return;
-            }
-
-            if let Err(e) = self.restart_worker(&name, color).await {
-                warn!("Failed to restart {name}: {e}");
-                return;
-            }
-        }
-    }
-
-    async fn restart_worker(&self, name: &str, color: &'static str) -> Result<()> {
-        let scheduler_url = format!("http://localhost:{}", self.port);
-        let worker_bin = worker_binary_path();
-
-        let mut cmd = Command::new(&worker_bin);
-        cmd.arg("--scheduler-url").arg(&scheduler_url);
-
-        if let Some(interval) = &self.worker_poll_interval {
-            cmd.arg("--interval").arg(interval);
-        }
-
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        let mut child = cmd.spawn().context(format!(
-            "failed to restart {name} from {}",
-            worker_bin.display()
-        ))?;
-        let pid = child.id().context("no PID for restarted process")?;
-        info!("Restarted {name} (PID: {pid})");
-
-        let stdout = child.stdout.take().context("failed to get stdout pipe")?;
-        let stderr = child.stderr.take().context("failed to get stderr pipe")?;
-
-        let proc_info = Arc::new(Mutex::new(ProcessInfo { child }));
-        let handle = ProcessHandle {
-            pid,
-            info: proc_info,
+    /// Instant kill. Sends SIGKILL (non-blocking syscall) and removes from tracking.
+    /// monitor_worker() reaps the zombie in the background.
+    pub async fn kill_worker(&self, worker_id: &str) -> KillResult {
+        let pid = match self.workers.write().await.remove(worker_id) {
+            Some(entry) => entry.pid,
+            None => return KillResult::NotFound,
         };
+        let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        info!(worker_id = %worker_id, pid = pid, "Killed worker");
+        KillResult::Confirmed
+    }
 
-        self.processes
-            .write()
-            .await
-            .insert(name.to_string(), handle);
+    pub async fn worker_count(&self) -> usize {
+        self.workers.read().await.len()
+    }
 
-        let name_out = name.to_string();
-        tokio::spawn(async move {
-            stream_logs(name_out, color, stdout).await;
-        });
+    /// Returns the set of tracked worker UUIDs (for heartbeat cleanup).
+    pub async fn worker_ids(&self) -> HashSet<String> {
+        self.workers.read().await.keys().cloned().collect()
+    }
 
-        let name_err = name.to_string();
-        tokio::spawn(async move {
-            stream_logs(name_err, color, stderr).await;
-        });
+    /// Sole owner of the Child handle. Reaps the zombie and detects unexpected exits.
+    async fn monitor_worker(&self, worker_id: String, mut child: Child) {
+        let exit_status = child.wait().await;
+        if *self.shutting_down.read().await {
+            return;
+        }
 
-        Ok(())
+        // Remove from tracking if still present. If kill_worker() already
+        // removed it, was_tracked is false and we skip the log.
+        let was_tracked = self.workers.write().await.remove(&worker_id).is_some();
+        if was_tracked {
+            match exit_status {
+                Ok(status) if status.success() => {
+                    info!(worker_id = %worker_id, "Worker exited cleanly (idle timeout)");
+                }
+                Ok(status) => {
+                    warn!(worker_id = %worker_id, status = %status, "Worker exited unexpectedly")
+                }
+                Err(e) => {
+                    warn!(worker_id = %worker_id, error = %e, "Worker exited unexpectedly")
+                }
+            }
+        }
     }
 
     /// Gracefully shut down all workers: SIGTERM, poll for exit, SIGKILL survivors.
@@ -265,36 +222,35 @@ impl Supervisor {
         info!("Shutting down workers...");
         *self.shutting_down.write().await = true;
 
-        // Collect PIDs (brief lock)
-        let pids_and_names: Vec<(u32, String)> = {
-            let processes = self.processes.read().await;
-            processes
+        let pids_and_ids: Vec<(u32, String)> = {
+            let workers = self.workers.read().await;
+            workers
                 .iter()
-                .map(|(name, handle)| (handle.pid, name.clone()))
+                .map(|(uuid, entry)| (entry.pid, uuid.clone()))
                 .collect()
         };
 
         // SIGTERM all workers
-        for (pid, name) in &pids_and_names {
+        for (pid, worker_id) in &pids_and_ids {
             match kill(Pid::from_raw(*pid as i32), Signal::SIGTERM) {
-                Ok(_) => info!("Sent SIGTERM to {name} (PID {pid})"),
-                Err(e) => warn!("Failed to send SIGTERM to {name}: {e}"),
+                Ok(_) => info!(worker_id = %worker_id, pid = pid, "Sent SIGTERM"),
+                Err(e) => warn!(worker_id = %worker_id, pid = pid, error = %e, "SIGTERM failed"),
             }
         }
 
-        // Poll until all workers exit or 10s timeout
+        // Poll until all exit or 10s timeout, then SIGKILL survivors
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let any_alive = pids_and_names
+            let any_alive = pids_and_ids
                 .iter()
                 .any(|(pid, _)| kill(Pid::from_raw(*pid as i32), None).is_ok());
             if !any_alive {
                 break;
             }
             if Instant::now() > deadline {
-                for (pid, name) in &pids_and_names {
+                for (pid, worker_id) in &pids_and_ids {
                     if kill(Pid::from_raw(*pid as i32), None).is_ok() {
-                        warn!("Worker {name} still alive after 10s, sending SIGKILL");
+                        warn!(worker_id = %worker_id, pid = pid, "Still alive after 10s, sending SIGKILL");
                         let _ = kill(Pid::from_raw(*pid as i32), Signal::SIGKILL);
                     }
                 }
@@ -304,6 +260,7 @@ impl Supervisor {
             sleep(Duration::from_millis(200)).await;
         }
 
+        self.workers.write().await.clear();
         info!("All workers shut down");
         Ok(())
     }
@@ -321,5 +278,19 @@ async fn stream_logs(name: String, color: &'static str, reader: impl tokio::io::
 
     while let Ok(Some(line)) = lines.next_line().await {
         println!("{prefix}{line}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_kill_worker_not_found() {
+        let sup = Supervisor::new(9999, None, None, Duration::from_secs(300));
+        match sup.kill_worker("nonexistent-uuid").await {
+            KillResult::NotFound => {}
+            KillResult::Confirmed => panic!("expected NotFound for unknown UUID"),
+        }
     }
 }

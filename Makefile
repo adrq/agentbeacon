@@ -164,7 +164,7 @@ run: all
 	@echo "Starting AgentBeacon on port $${AGENTBEACON_PORT:-9456}..."
 	@touch scheduler-$${AGENTBEACON_PORT:-9456}.db
 	AGENTBEACON_EXECUTORS_DIR=$${AGENTBEACON_EXECUTORS_DIR:-$(CURDIR)/executors/dist} \
-		./bin/agentbeacon --port $${AGENTBEACON_PORT:-9456} --workers 2
+		./bin/agentbeacon --port $${AGENTBEACON_PORT:-9456}
 
 # Clean build artifacts
 clean:

@@ -88,7 +88,7 @@ pub async fn worker_sync(
         } else {
             None
         };
-        match process_executor_report(pool, worker_id, report, crash_meta).await {
+        match process_executor_report(pool, worker_id, report, crash_meta, &state).await {
             Ok(applied) => {
                 executor_report_succeeded = applied;
                 if !applied || report.executor_state == "crashed" {
@@ -106,6 +106,9 @@ pub async fn worker_sync(
                             || session.executor_state != report.executor_state
                             || session.worker_id.as_deref() != Some(worker_id)
                         {
+                            if session.worker_id.as_deref() != Some(worker_id) {
+                                state.supervisor.kill_worker(worker_id).await;
+                            }
                             skip_reconciler = true;
                         } else {
                             session_scoped_reconcile = Some(report.session_id.clone());
@@ -137,9 +140,14 @@ pub async fn worker_sync(
     if needs_phase2 {
         if let Some(result) = &req.turn_result
             && let Ok(session) = db::sessions::get_by_id(pool, &result.session_id).await
-            && session.worker_id.as_deref() == Some(worker_id)
         {
-            turn_result_session = Some(session);
+            if session.worker_id.as_deref() == Some(worker_id) {
+                turn_result_session = Some(session);
+            } else {
+                tracing::debug!("stale turn_result dropped");
+                state.supervisor.kill_worker(worker_id).await;
+                skip_reconciler = true;
+            }
         }
 
         if should_notify
@@ -188,6 +196,7 @@ pub async fn worker_sync(
         };
 
         let mut tx_child_session: Option<db::sessions::Session> = None;
+        let mut turn_result_stale_worker = false;
         if let Some(result) = &req.turn_result
             && turn_result_session.is_some()
         {
@@ -209,6 +218,8 @@ pub async fn worker_sync(
                         result.session_id
                     );
                     turn_result_session = None;
+                    turn_result_stale_worker = true;
+                    skip_reconciler = true;
                 }
                 Err(_) => {
                     turn_result_session = None;
@@ -355,9 +366,15 @@ pub async fn worker_sync(
             }
         }
 
+        let mut ack_stale_worker = false;
         if let Some(ack_token) = &req.command_ack {
             match process_command_ack_in_tx(pool, &mut tx, worker_id, ack_token).await {
-                Ok(terminal) => was_terminal_cancel = terminal,
+                Ok(AckResult::Applied { terminal_cancel }) => was_terminal_cancel = terminal_cancel,
+                Ok(AckResult::StaleWorker) => {
+                    ack_stale_worker = true;
+                    skip_reconciler = true;
+                }
+                Ok(AckResult::StaleToken) => {}
                 Err(e) => {
                     return Err((
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -370,6 +387,10 @@ pub async fn worker_sync(
         tx.commit()
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("commit tx: {e}")))?;
+
+        if ack_stale_worker || turn_result_stale_worker {
+            state.supervisor.kill_worker(worker_id).await;
+        }
 
         if let Some(ref session) = turn_result_session {
             let _ = state
@@ -461,6 +482,7 @@ async fn process_executor_report(
     worker_id: &str,
     report: &ExecutorReport,
     crash_meta: Option<transition::CrashMeta>,
+    state: &AppState,
 ) -> Result<bool, String> {
     let session = db::sessions::get_by_id(pool, &report.session_id)
         .await
@@ -473,6 +495,7 @@ async fn process_executor_report(
             session.worker_id,
             worker_id
         );
+        state.supervisor.kill_worker(worker_id).await;
         return Ok(false);
     }
 
@@ -566,13 +589,19 @@ async fn process_turn_result_in_tx(
     Ok(())
 }
 
+enum AckResult {
+    Applied { terminal_cancel: bool },
+    StaleWorker,
+    StaleToken,
+}
+
 /// Process command acknowledgment inside caller's transaction.
 async fn process_command_ack_in_tx(
     pool: &db::DbPool,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     worker_id: &str,
     ack_token: &str,
-) -> Result<bool, String> {
+) -> Result<AckResult, String> {
     let sql = pool.prepare_query(
         "SELECT id, execution_id, worker_id, command_type, outcome FROM sessions WHERE command_token = ?",
     );
@@ -584,7 +613,7 @@ async fn process_command_ack_in_tx(
 
     let Some(row) = row else {
         tracing::debug!(ack_token, worker_id, "ack: token not found (stale)");
-        return Ok(false);
+        return Ok(AckResult::StaleToken);
     };
 
     let session_id: String = row.get("id");
@@ -598,7 +627,7 @@ async fn process_command_ack_in_tx(
             ?session_worker_id,
             "ack: stale worker, dropping"
         );
-        return Ok(false);
+        return Ok(AckResult::StaleWorker);
     }
 
     let session_outcome: Option<String> = row.get("outcome");
@@ -632,7 +661,7 @@ async fn process_command_ack_in_tx(
             ack_token,
             "ack: command_token already cleared (stale)"
         );
-        return Ok(false);
+        return Ok(AckResult::StaleToken);
     }
 
     tracing::info!(
@@ -643,7 +672,9 @@ async fn process_command_ack_in_tx(
         "ack processed"
     );
 
-    Ok(is_terminal_cancel)
+    Ok(AckResult::Applied {
+        terminal_cancel: is_terminal_cancel,
+    })
 }
 
 use sqlx::Row;
@@ -696,6 +727,7 @@ async fn run_reconciler_for_worker(
                     &execution,
                     true,
                     Some(worker_id),
+                    Some(&state.supervisor),
                 )
                 .await
                 {
@@ -739,9 +771,16 @@ async fn run_reconciler_for_worker(
             .await
             .unwrap_or(0);
         if let Ok(execution) = db::executions::get_by_id(pool, &session.execution_id).await
-            && let Ok(ReconcilerAction::SendCommand { token, action }) =
-                reconciler::reconcile(pool, &session, pending, &execution, true, Some(worker_id))
-                    .await
+            && let Ok(ReconcilerAction::SendCommand { token, action }) = reconciler::reconcile(
+                pool,
+                &session,
+                pending,
+                &execution,
+                true,
+                Some(worker_id),
+                Some(&state.supervisor),
+            )
+            .await
         {
             return ReconcilerResult::Command(WorkerSyncResponse::Command { token, action });
         }
@@ -776,6 +815,7 @@ async fn run_reconciler_for_worker(
                         )
                         .await;
                     }
+                    state.supervisor.kill_worker(sess_worker_id).await;
                     let _ = transition::transition(
                         pool,
                         &session.execution_id,
@@ -809,7 +849,17 @@ async fn run_reconciler_for_worker(
                 .await
                 .unwrap_or(0);
             if let Ok(execution) = db::executions::get_by_id(pool, &session.execution_id).await {
-                match reconciler::reconcile(pool, session, pending, &execution, false, None).await {
+                match reconciler::reconcile(
+                    pool,
+                    session,
+                    pending,
+                    &execution,
+                    false,
+                    None,
+                    Some(&state.supervisor),
+                )
+                .await
+                {
                     Ok(ReconcilerAction::Mutated) => {
                         global_mutated = true;
                         let _ =
@@ -868,8 +918,16 @@ async fn run_reconciler_for_session(
             Err(_) => return ReconcilerResult::NothingFound,
         };
 
-        match reconciler::reconcile(pool, &session, pending, &execution, true, Some(worker_id))
-            .await
+        match reconciler::reconcile(
+            pool,
+            &session,
+            pending,
+            &execution,
+            true,
+            Some(worker_id),
+            Some(&state.supervisor),
+        )
+        .await
         {
             Ok(ReconcilerAction::SendCommand { token, action }) => {
                 return ReconcilerResult::Command(WorkerSyncResponse::Command { token, action });
@@ -926,6 +984,7 @@ pub async fn worker_event(
             session.worker_id,
             request.worker_id
         );
+        state.supervisor.kill_worker(&request.worker_id).await;
         return Ok(StatusCode::OK);
     }
 

@@ -641,6 +641,45 @@ pub async fn find_unassigned_with_work(pool: &DbPool) -> Result<Option<Session>,
     }
 }
 
+/// Count sessions that could be assigned to a worker immediately.
+/// Same predicate as find_unassigned_with_work() but as COUNT(*).
+pub async fn count_claimable(pool: &DbPool) -> Result<usize, SchedulerError> {
+    let query = pool.prepare_query(
+        "SELECT COUNT(*) as cnt FROM sessions s \
+         JOIN executions e ON e.id = s.execution_id \
+         WHERE s.desired = 'run' \
+           AND s.executor_state = 'unassigned' \
+           AND s.outcome IS NULL \
+           AND e.desired = 'run' \
+           AND e.outcome IS NULL \
+           AND s.worker_id IS NULL \
+           AND s.command_token IS NULL \
+           AND (s.agent_session_id IS NOT NULL \
+                OR EXISTS (SELECT 1 FROM task_queue tq WHERE tq.session_id = s.id))",
+    );
+    let count: i64 = sqlx::query_scalar(&query)
+        .fetch_one(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("count_claimable: {e}")))?;
+    Ok(count as usize)
+}
+
+/// Find crashed sessions with no assigned worker (used during startup recovery).
+pub async fn find_crashed_workerless(pool: &DbPool) -> Result<Vec<Session>, SchedulerError> {
+    let cols = session_columns_prefixed(pool, "s");
+    let sql = format!(
+        "SELECT {cols} FROM sessions s \
+         WHERE s.desired = 'run' AND s.executor_state = 'crashed' \
+         AND s.worker_id IS NULL AND s.outcome IS NULL"
+    );
+    let query = pool.prepare_query(&sql);
+    let rows = sqlx::query(&query)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("find_crashed_workerless failed: {e}")))?;
+    rows.into_iter().map(parse_session_row).collect()
+}
+
 /// Count pending turns (task_queue entries) for a session
 pub async fn count_pending_turns(pool: &DbPool, session_id: &str) -> Result<i64, SchedulerError> {
     let query = pool.prepare_query("SELECT COUNT(*) as cnt FROM task_queue WHERE session_id = ?");

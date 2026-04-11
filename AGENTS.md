@@ -8,7 +8,7 @@ Quick orientation for AI coding agents working in this repository. (This file is
 # Build everything (Rust + frontend)
 make all
 
-# Run the system (scheduler + 2 workers)
+# Run the system (scheduler + dynamic workers)
 make run
 
 # Run all tests (Rust + Python integration)

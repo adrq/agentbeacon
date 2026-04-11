@@ -16,6 +16,7 @@ clap.workspace = true
 common = { path = "../common" }
 futures-util = "0.3"
 hex = "0.4"
+humantime = "2.3.0"
 jsonschema.workspace = true
 regex = "1.11"
 rust-embed.workspace = true

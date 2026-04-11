@@ -184,8 +184,13 @@ async fn run_worker_loop(
     };
 
     let mut has_connected = false;
+    let idle_timeout = args.idle_timeout;
+    let mut idle_since: Option<std::time::Instant> = Some(std::time::Instant::now());
 
-    tracing::info!("Starting worker loop (long-poll)");
+    tracing::info!(
+        idle_timeout = ?idle_timeout,
+        "Starting worker loop (long-poll)"
+    );
 
     loop {
         let response = perform_sync_with_retry(
@@ -200,7 +205,13 @@ async fn run_worker_loop(
         has_connected = true;
 
         match response {
-            SyncResponse::NoAction => {}
+            SyncResponse::NoAction => {
+                if !idle_timeout.is_zero() && idle_since.is_some_and(|s| s.elapsed() > idle_timeout)
+                {
+                    tracing::info!("Idle timeout ({:?}), exiting", idle_timeout);
+                    return Ok(());
+                }
+            }
             SyncResponse::Command { token, action } => match action {
                 CommandAction::Assign {
                     session_id,
@@ -221,7 +232,7 @@ async fn run_worker_loop(
                         "Session assigned"
                     );
 
-                    match run_session(
+                    let exit = run_session(
                         scheduler_url,
                         worker_id,
                         args,
@@ -240,21 +251,24 @@ async fn run_worker_loop(
                         mcp_servers,
                         next_msg_seq,
                     )
-                    .await
-                    {
-                        Ok(SessionExit::Done) => {}
+                    .await;
+
+                    match exit {
                         Ok(SessionExit::ShutdownRequested) => {
                             tracing::info!("Shutdown requested during session");
                             return Ok(());
                         }
-                        Err(e) => {
+                        Err(ref e) => {
                             tracing::error!(
                                 session_id = %session_id,
                                 error = %e,
                                 "Session failed"
                             );
                         }
+                        Ok(SessionExit::Done) => {}
                     }
+
+                    idle_since = Some(std::time::Instant::now());
                 }
                 other => {
                     tracing::warn!("Unexpected command while idle: {:?}", other);
