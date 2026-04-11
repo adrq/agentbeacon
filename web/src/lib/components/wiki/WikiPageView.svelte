@@ -52,6 +52,14 @@
   let saveError = $state<string | null>(null);
   let showConflictDialog = $state(false);
   let editBaseRevision = $state<number | null>(null);
+  let viewEl = $state<HTMLDivElement>();
+
+  // Focus the container so arrow-key scrolling works without clicking first
+  $effect(() => {
+    if (page && !editing && !showHistory && viewEl) {
+      viewEl.focus();
+    }
+  });
 
   // Restore draft from tab store on mount (run once, not reactively)
   onMount(() => {
@@ -224,7 +232,7 @@
   }
 </script>
 
-<div class="page-view scroll-thin">
+<div class="page-view scroll-thin" tabindex="-1" bind:this={viewEl}>
   {#if pageQuery.isLoading && !editing && !confirmedNewPage}
     <div class="page-loading">Loading page...</div>
   {:else if isNewPage && editing}
@@ -409,6 +417,7 @@
     padding: 1rem;
     display: flex;
     flex-direction: column;
+    outline: none;
   }
 
   .page-loading, .page-error {
