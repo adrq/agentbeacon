@@ -1,13 +1,18 @@
 <script lang="ts">
   import type { TodoItem } from '../types';
   import { statusIcon, todoCounts } from './todo-helpers';
+  import { safeGetItem, safeSetItem } from '../stores/appState';
+
+  const STORAGE_KEY = 'agentbeacon-todo-panel-collapsed';
 
   interface Props {
     todos: TodoItem[];
   }
 
   let { todos }: Props = $props();
-  let collapsed = $state(false);
+  let collapsed = $state(safeGetItem(STORAGE_KEY) === 'true');
+
+  $effect(() => { safeSetItem(STORAGE_KEY, String(collapsed)); });
 
   let counts = $derived(todoCounts(todos));
 </script>
