@@ -578,10 +578,12 @@ pub async fn touch_updated_at(pool: &DbPool, id: &str) -> Result<(), SchedulerEr
 
 /// Clear worktree_path for a session, only if fully finalized.
 /// Requires outcome set + no worker + no pending command (TOCTOU guard).
-pub async fn clear_worktree_path(pool: &DbPool, id: &str) -> Result<(), SchedulerError> {
+/// Returns rows_affected so the caller can disambiguate 0-row outcomes.
+pub async fn clear_worktree_path(pool: &DbPool, id: &str) -> Result<u64, SchedulerError> {
     let query = pool.prepare_query(
         "UPDATE sessions SET worktree_path = NULL, updated_at = CURRENT_TIMESTAMP \
-         WHERE id = ? AND outcome IS NOT NULL AND worker_id IS NULL AND command_token IS NULL",
+         WHERE id = ? AND outcome IS NOT NULL AND worker_id IS NULL \
+         AND command_token IS NULL AND worktree_path IS NOT NULL",
     );
     let result = sqlx::query(&query)
         .bind(id)
@@ -589,12 +591,7 @@ pub async fn clear_worktree_path(pool: &DbPool, id: &str) -> Result<(), Schedule
         .await
         .map_err(|e| SchedulerError::Database(format!("clear worktree_path failed: {e}")))?;
 
-    if result.rows_affected() == 0 {
-        return Err(SchedulerError::Conflict(
-            "session not found or not in terminal state".to_string(),
-        ));
-    }
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 /// Find all sessions assigned to a specific worker

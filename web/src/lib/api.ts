@@ -341,6 +341,14 @@ export class AgentBeaconAPI {
     return this.fetchJSON<WorktreeInfo>(`/sessions/${sessionId}/worktree`);
   }
 
+  async deleteSessionWorktree(sessionId: string, opts?: { dryRun?: boolean; deleteBranch?: boolean }): Promise<Record<string, unknown>> {
+    const search = new URLSearchParams();
+    if (opts?.dryRun) search.set('dry_run', 'true');
+    if (opts?.deleteBranch) search.set('delete_branch', 'true');
+    const qs = search.toString();
+    return this.fetchJSON(`/sessions/${sessionId}/worktree${qs ? `?${qs}` : ''}`, { method: 'DELETE' });
+  }
+
   // Session diffs — custom fetch to handle 413 (truncated) as valid data
   async getSessionDiff(sessionId: string, opts?: { base?: string; stat?: boolean }): Promise<DiffResponse> {
     const search = new URLSearchParams();

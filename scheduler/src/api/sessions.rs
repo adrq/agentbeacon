@@ -671,10 +671,18 @@ struct WorktreeInfoResponse {
     exists: bool,
 }
 
+/// Query parameters for DELETE /api/sessions/{id}/worktree
+#[derive(Debug, Deserialize)]
+struct DeleteWorktreeQuery {
+    dry_run: Option<bool>,
+    delete_branch: Option<bool>,
+}
+
 /// Delete a session's worktree (DELETE /api/sessions/{id}/worktree)
 async fn delete_session_worktree(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<DeleteWorktreeQuery>,
 ) -> Result<Json<serde_json::Value>, SchedulerError> {
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
@@ -690,6 +698,73 @@ async fn delete_session_worktree(
         .worktree_path
         .as_deref()
         .ok_or_else(|| SchedulerError::NotFound("session has no worktree".to_string()))?;
+
+    let dry_run = params.dry_run.unwrap_or(false);
+    let delete_branch = params.delete_branch.unwrap_or(false);
+
+    if dry_run {
+        let dir_exists = matches!(std::fs::metadata(wt_path), Ok(m) if m.is_dir());
+
+        if !dir_exists {
+            return Ok(Json(json!({
+                "deleted": false,
+                "dry_run": true,
+                "dirty": null,
+                "dirty_summary": null,
+                "branch": null,
+                "directory_missing": true,
+            })));
+        }
+
+        let dirty_info = run_git_command(wt_path, &["status", "--porcelain"])
+            .await
+            .ok();
+        let dirty = dirty_info.as_ref().map(|output| !output.trim().is_empty());
+        let dirty_summary = dirty_info.as_ref().and_then(|output| {
+            let trimmed = output.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let mut modified = 0i32;
+            let mut untracked = 0i32;
+            for line in trimmed.lines() {
+                if line.starts_with("??") {
+                    untracked += 1;
+                } else {
+                    modified += 1;
+                }
+            }
+            let mut parts = Vec::new();
+            if modified > 0 {
+                parts.push(format!("{modified} modified"));
+            }
+            if untracked > 0 {
+                parts.push(format!("{untracked} untracked"));
+            }
+            Some(parts.join(", "))
+        });
+
+        let branch = run_git_command(wt_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .await
+            .ok()
+            .map(|o| o.trim().to_string())
+            .and_then(|b| if b == "HEAD" { None } else { Some(b) });
+
+        return Ok(Json(json!({
+            "deleted": false,
+            "dry_run": true,
+            "dirty": dirty,
+            "dirty_summary": dirty_summary,
+            "branch": branch,
+            "directory_missing": false,
+        })));
+    }
+
+    let branch_name = run_git_command(wt_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .ok()
+        .map(|o| o.trim().to_string())
+        .and_then(|b| if b == "HEAD" { None } else { Some(b) });
 
     let execution = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
     let project_path = if let Some(ref pid) = execution.project_id {
@@ -723,11 +798,46 @@ async fn delete_session_worktree(
         }
     }
 
-    db::sessions::clear_worktree_path(&state.db_pool, &id).await?;
+    let pre_clear = db::sessions::get_by_id(&state.db_pool, &id).await?;
+    if pre_clear.outcome.is_none()
+        || pre_clear.worker_id.is_some()
+        || pre_clear.command_token.is_some()
+    {
+        return Err(SchedulerError::Conflict(
+            "session was recovered during worktree cleanup — aborting".to_string(),
+        ));
+    }
+
+    let mut branch_deleted = false;
+    if delete_branch
+        && let Some(ref branch) = branch_name
+        && let Some(ref proj) = project_path
+        && run_git_command(proj, &["branch", "-D", branch])
+            .await
+            .is_ok()
+    {
+        branch_deleted = true;
+    }
+
+    let rows_affected = db::sessions::clear_worktree_path(&state.db_pool, &id).await?;
+
+    if rows_affected == 0 {
+        let refreshed = db::sessions::get_by_id(&state.db_pool, &id).await?;
+        if refreshed.worktree_path.is_none() {
+        } else {
+            return Err(SchedulerError::Conflict(
+                "worktree cleanup only allowed on terminal finalized sessions \
+                 (outcome set, no worker, no pending command)"
+                    .to_string(),
+            ));
+        }
+    }
 
     Ok(Json(json!({
         "deleted": true,
         "path": wt_path,
+        "branch_deleted": branch_deleted,
+        "branch": branch_name,
     })))
 }
 
