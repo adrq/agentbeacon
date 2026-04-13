@@ -578,10 +578,29 @@ async fn continue_from_handler(
              desired_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
              WHERE id = ? AND desired = 'stop'",
         );
-        let _ = sqlx::query(&resume_sql)
+        let resume_result = sqlx::query(&resume_sql)
             .bind(&parent_id)
             .execute(&mut *tx)
             .await;
+
+        if resume_result.as_ref().is_ok_and(|r| r.rows_affected() > 0) {
+            let resume_event =
+                serde_json::json!({"desired": "run", "desired_by": "system:continue_from_notify"});
+            let resume_event_str = serde_json::to_string(&resume_event).unwrap_or_default();
+            let sc_sql = pool.prepare_query(
+                "INSERT INTO events (execution_id, session_id, event_type, payload) \
+                 VALUES (?, ?, 'state_change', ?)",
+            );
+            sqlx::query(&sc_sql)
+                .bind(&old_session.execution_id)
+                .bind(&parent_id)
+                .bind(&resume_event_str)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    SchedulerError::Database(format!("auto-resume state_change event: {e}"))
+                })?;
+        }
     }
     sqlx::query(&enqueue_sql)
         .bind(&old_session.execution_id)

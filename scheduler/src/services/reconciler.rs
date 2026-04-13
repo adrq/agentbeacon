@@ -1091,11 +1091,30 @@ async fn notify_parent_of_crash(
              desired_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
              WHERE id = ? AND desired = 'stop'",
         );
-        sqlx::query(&resume_sql)
+        let resume_result = sqlx::query(&resume_sql)
             .bind(parent_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| SchedulerError::Database(format!("auto-resume parent failed: {e}")))?;
+
+        if resume_result.rows_affected() > 0 {
+            let resume_event =
+                serde_json::json!({"desired": "run", "desired_by": "system:child_crash_notify"});
+            let resume_event_str = serde_json::to_string(&resume_event).unwrap_or_default();
+            let sc_sql = pool.prepare_query(
+                "INSERT INTO events (execution_id, session_id, event_type, payload) \
+                 VALUES (?, ?, 'state_change', ?)",
+            );
+            sqlx::query(&sc_sql)
+                .bind(&session.execution_id)
+                .bind(parent_id)
+                .bind(&resume_event_str)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    SchedulerError::Database(format!("auto-resume state_change event: {e}"))
+                })?;
+        }
     }
 
     let enqueue_sql = pool.prepare_query(
