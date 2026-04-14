@@ -1225,6 +1225,7 @@ def seed_test_agent(
     agent_id: str = None,
     enabled: bool = True,
     system_prompt: str = None,
+    config: str = None,
 ) -> str:
     """Insert a test agent directly into the database.
 
@@ -1233,10 +1234,11 @@ def seed_test_agent(
     Args:
         db_url: Database URL (sqlite:... or postgres://...)
         name: Agent name
-        agent_type: Agent type (claude_sdk, codex_sdk, acp, etc.)
+        agent_type: Agent type (claude_sdk, acp, etc.)
         agent_id: Agent ID (generated UUID if None)
         enabled: Whether agent is enabled
         system_prompt: Optional system prompt text
+        config: Optional JSON config string (defaults to '{}')
 
     Returns:
         str: Agent ID
@@ -1244,11 +1246,14 @@ def seed_test_agent(
     if agent_id is None:
         agent_id = str(uuid.uuid4())
 
+    if config is None:
+        config = "{}"
+
     with db_conn(db_url) as conn:
         driver_id = _ensure_driver(conn, agent_type)
         conn.execute(
-            "INSERT INTO agents (id, name, agent_type, driver_id, config, enabled, system_prompt) VALUES (?, ?, ?, ?, '{}', ?, ?)",
-            (agent_id, name, agent_type, driver_id, enabled, system_prompt),
+            "INSERT INTO agents (id, name, agent_type, driver_id, config, enabled, system_prompt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (agent_id, name, agent_type, driver_id, config, enabled, system_prompt),
         )
         conn.commit()
 

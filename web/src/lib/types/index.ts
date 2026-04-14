@@ -297,13 +297,26 @@ export interface CompactionData {
   trigger: string;
 }
 
+export interface NormalizedUsage {
+  normalized: 'usage';
+  inputTokens: number;
+  outputTokens: number;
+  modelContextWindow?: number | null;
+}
+
+export interface NormalizedText {
+  normalized: 'text';
+  text: string;
+}
+
 // UsageState — tracked per session in ExecutionDetail
 export interface UsageState {
   inputTokens: number;
   outputTokens: number;
   contextWindow: number;
   compactions: number;
-  available: boolean;   // false for copilot/acp sessions
+  available: boolean;              // has usage metrics (claude_sdk, codex_sdk)
+  supportsContextPercentage: boolean;  // fill bar reliable (claude_sdk only)
 }
 
 export interface StateChangePayload {

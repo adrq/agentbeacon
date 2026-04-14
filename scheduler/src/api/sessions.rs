@@ -361,7 +361,10 @@ async fn continue_from_handler(
 
     let new_session_id = uuid::Uuid::new_v4().to_string();
 
-    let is_resumable = matches!(agent.agent_type.as_str(), "claude_sdk" | "copilot_sdk");
+    let is_resumable = matches!(
+        agent.agent_type.as_str(),
+        "claude_sdk" | "copilot_sdk" | "codex_sdk"
+    );
     let msg_payload = common::a2a::message_payload(common::a2a::role::USER, req.parts.clone());
     let prompt_payload = json!({"message": msg_payload});
     let prompt_str = serde_json::to_string(&prompt_payload)
@@ -1174,7 +1177,10 @@ async fn recover_session_handler(
         ));
     }
 
-    let is_resumable = matches!(agent.agent_type.as_str(), "claude_sdk" | "copilot_sdk");
+    let is_resumable = matches!(
+        agent.agent_type.as_str(),
+        "claude_sdk" | "copilot_sdk" | "codex_sdk"
+    );
     let clear_agent_session_id = !is_resumable && session.agent_session_id.is_some();
     if !is_resumable && req.message.is_none() {
         return Err(SchedulerError::ValidationFailed(

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData } from '../types';
   import { normalizeDataPart } from '../normalize';
   import { EVENT_FILTER_GROUPS, EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
   import { api } from '../api';
@@ -156,6 +156,12 @@
           // Skip sender metadata part — handled via pre-scan above
           if (d.type === 'sender') continue;
 
+          // Normalize SDK/ACP data parts early so routing uses normalized types
+          const norm = normalizeDataPart(agentType, d);
+
+          // Skip usage metadata — don't show in log view
+          if (norm.normalized === 'usage') continue;
+
           // Platform events
           if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
             const ask = d as unknown as import('../types').EscalateData;
@@ -188,13 +194,6 @@
             continue;
           }
 
-          // Skip usage metadata — don't show in log view
-          // Place BEFORE normalizeDataPart() to prevent data_fallback rendering
-          if (isUsageUpdateData(d as unknown as import('../types').DataPartPayload) ||
-              isUsageSnapshotData(d as unknown as import('../types').DataPartPayload)) {
-            continue;
-          }
-
           if (isCompactionData(d as unknown as import('../types').DataPartPayload)) {
             entries.push({
               key, time,
@@ -205,9 +204,6 @@
             });
             continue;
           }
-
-          // Normalize SDK/ACP data parts
-          const norm = normalizeDataPart(agentType, d);
           switch (norm.normalized) {
             case 'tool_call':
               if (norm.toolCallId) seenToolCalls.add(norm.toolCallId);
@@ -227,6 +223,9 @@
               break;
             case 'thinking':
               entries.push({ key, time, icon: '\u22EF', iconClass: 'agent', text: truncate(norm.text, 200), entryType: 'thinking' });
+              break;
+            case 'text':
+              entries.push({ key, time, icon: '\u25CF', iconClass: 'agent', text: truncate(norm.text, 120), entryType: 'agent' });
               break;
             case 'unknown': {
               const rawType = norm.raw.type as string | undefined;

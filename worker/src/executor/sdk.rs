@@ -487,17 +487,20 @@ async fn background_task(
                                         turn.stderr = snapshot_stderr(&stderr_buf);
                                     }
                                     turn_active = false;
-                                    let _ = event_tx.send(AgentEvent::TurnComplete(turn));
+                                    let _ = event_tx.send(AgentEvent::TurnComplete { result: turn, settled: true });
                                 }
                                 Err(e) => {
                                     turn_active = false;
-                                    let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                                        agent_session_id: agent_session_id.clone(),
-                                        error: Some(format!("malformed result event: {e}")),
-                                        error_kind: Some(ErrorKind::ExecutorFailed),
-                                        output: None,
-                                        stderr: snapshot_stderr(&stderr_buf),
-                                    }));
+                                    let _ = event_tx.send(AgentEvent::TurnComplete {
+                                        result: TurnResult {
+                                            agent_session_id: agent_session_id.clone(),
+                                            error: Some(format!("malformed result event: {e}")),
+                                            error_kind: Some(ErrorKind::ExecutorFailed),
+                                            output: None,
+                                            stderr: snapshot_stderr(&stderr_buf),
+                                        },
+                                        settled: true,
+                                    });
                                 }
                             },
                             "error" => {
@@ -505,23 +508,29 @@ async fn background_task(
                                 match serde_json::from_value::<ErrorEvent>(event) {
                                     Ok(err) => {
                                         turn_active = false;
-                                        let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                                            agent_session_id: agent_session_id.clone(),
-                                            error: Some(err.message),
-                                            error_kind: Some(ErrorKind::ExecutorFailed),
-                                            output: None,
-                                            stderr: snapshot_stderr(&stderr_buf),
-                                        }));
+                                        let _ = event_tx.send(AgentEvent::TurnComplete {
+                                            result: TurnResult {
+                                                agent_session_id: agent_session_id.clone(),
+                                                error: Some(err.message),
+                                                error_kind: Some(ErrorKind::ExecutorFailed),
+                                                output: None,
+                                                stderr: snapshot_stderr(&stderr_buf),
+                                            },
+                                            settled: true,
+                                        });
                                     }
                                     Err(e) => {
                                         turn_active = false;
-                                        let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                                            agent_session_id: agent_session_id.clone(),
-                                            error: Some(format!("malformed error event: {e}")),
-                                            error_kind: Some(ErrorKind::ExecutorFailed),
-                                            output: None,
-                                            stderr: snapshot_stderr(&stderr_buf),
-                                        }));
+                                        let _ = event_tx.send(AgentEvent::TurnComplete {
+                                            result: TurnResult {
+                                                agent_session_id: agent_session_id.clone(),
+                                                error: Some(format!("malformed error event: {e}")),
+                                                error_kind: Some(ErrorKind::ExecutorFailed),
+                                                output: None,
+                                                stderr: snapshot_stderr(&stderr_buf),
+                                            },
+                                            settled: true,
+                                        });
                                     }
                                 }
                             }
@@ -542,6 +551,7 @@ async fn background_task(
                         let _ = event_tx.send(AgentEvent::ProcessDied {
                             error: format!("{} executor process died ({exit_info})", kind.label()),
                             stderr: snapshot_stderr(&stderr_buf),
+                            agent_session_id: None,
                         });
                         break;
                     }
@@ -571,6 +581,7 @@ async fn background_task(
                                     let _ = event_tx.send(AgentEvent::ProcessDied {
                                         error: format!("failed to write start command: {e}"),
                                         stderr: snapshot_stderr(&stderr_buf),
+                                        agent_session_id: None,
                                     });
                                     break;
                                 }
@@ -589,19 +600,23 @@ async fn background_task(
                                     let _ = event_tx.send(AgentEvent::ProcessDied {
                                         error: format!("failed to write resume command: {e}"),
                                         stderr: snapshot_stderr(&stderr_buf),
+                                        agent_session_id: None,
                                     });
                                     break;
                                 }
                             }
                             Err(e) => {
                                 turn_active = false;
-                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                                    agent_session_id: agent_session_id.clone(),
-                                    error: Some(format!("bad task payload: {e}")),
-                                    error_kind: Some(ErrorKind::ExecutorFailed),
-                                    output: None,
-                                    stderr: None,
-                                }));
+                                let _ = event_tx.send(AgentEvent::TurnComplete {
+                                    result: TurnResult {
+                                        agent_session_id: agent_session_id.clone(),
+                                        error: Some(format!("bad task payload: {e}")),
+                                        error_kind: Some(ErrorKind::ExecutorFailed),
+                                        output: None,
+                                        stderr: None,
+                                    },
+                                    settled: true,
+                                });
                             }
                         }
                     }
@@ -664,6 +679,7 @@ async fn background_task(
                 let _ = event_tx.send(AgentEvent::ProcessDied {
                     error: format!("executor stalled: no output for {}s", inactivity_timeout.as_secs()),
                     stderr: snapshot_stderr(&stderr_buf),
+                    agent_session_id: None,
                 });
                 let _ = child.kill().await;
                 reader_handle.abort();

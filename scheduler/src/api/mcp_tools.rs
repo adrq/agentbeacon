@@ -287,7 +287,9 @@ async fn handle_delegate(
     }))
     .unwrap();
 
-    let is_sdk = agent.agent_type == "claude_sdk" || agent.agent_type == "copilot_sdk";
+    let is_sdk = agent.agent_type == "claude_sdk"
+        || agent.agent_type == "copilot_sdk"
+        || agent.agent_type == "codex_sdk";
     let mut task_payload = json!({
         "agent_id": agent.id,
         "driver": {

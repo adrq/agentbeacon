@@ -383,7 +383,9 @@ async fn persist_and_enqueue(
     // Wrap parts in A2A message format for task_payload
     let a2a_message = common::a2a::message_payload(common::a2a::role::USER, parts.to_vec());
 
-    let is_sdk = agent.agent_type == "claude_sdk" || agent.agent_type == "copilot_sdk";
+    let is_sdk = agent.agent_type == "claude_sdk"
+        || agent.agent_type == "copilot_sdk"
+        || agent.agent_type == "codex_sdk";
     let mut task_payload = json!({
         "agent_id": agent.id,
         "driver": {

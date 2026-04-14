@@ -555,7 +555,10 @@ async fn recoverable(
     }
 
     if session.agent_session_id.is_some() {
-        let is_resumable = matches!(agent.agent_type.as_str(), "claude_sdk" | "copilot_sdk");
+        let is_resumable = matches!(
+            agent.agent_type.as_str(),
+            "claude_sdk" | "copilot_sdk" | "codex_sdk"
+        );
         return Ok(is_resumable && session.cwd.is_some());
     }
 
@@ -1163,7 +1166,10 @@ async fn build_driver_info_in_tx(
         .map(|d| d.platform.as_str())
         .unwrap_or(&agent.agent_type);
 
-    let config = if agent.agent_type == "claude_sdk" || agent.agent_type == "copilot_sdk" {
+    let config = if agent.agent_type == "claude_sdk"
+        || agent.agent_type == "copilot_sdk"
+        || agent.agent_type == "codex_sdk"
+    {
         agent
             .sandbox_config
             .as_ref()

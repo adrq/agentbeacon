@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod codex;
 pub(crate) mod sdk;
 
 use anyhow::Result;
@@ -84,6 +85,9 @@ pub struct SessionConfig {
     pub project_id: Option<String>,
     /// User-configured MCP servers from project settings (merged with coordination server)
     pub user_mcp_servers: serde_json::Value,
+    /// For resume: the agent_session_id (Codex thread_id) from the prior session.
+    /// Used by the Codex executor to derive the correct CODEX_HOME path.
+    pub resume_agent_session_id: Option<String>,
 }
 
 pub struct TurnResult {
@@ -111,11 +115,15 @@ pub enum AgentEvent {
     /// Agent turn completed (success or error).
     /// TurnResult.output contains the accumulated last_content from
     /// all Message events during the turn.
-    TurnComplete(TurnResult),
-    /// Agent process died unexpectedly
+    /// When true, the turn is final. When false, more events may follow.
+    TurnComplete { result: TurnResult, settled: bool },
+    /// Agent process died unexpectedly.
+    /// `agent_session_id` is set by Codex when the thread_id is known but Init hasn't
+    /// fired yet (pre-Init turn/start failure). Claude/Copilot/ACP pass `None`.
     ProcessDied {
         error: String,
         stderr: Option<String>,
+        agent_session_id: Option<String>,
     },
 }
 
@@ -204,6 +212,7 @@ pub async fn start_executor(config: SessionConfig) -> Result<ExecutorHandle> {
         "acp" => acp::start(config).await,
         "claude_sdk" => sdk::start(sdk::SdkKind::Claude, config).await,
         "copilot_sdk" => sdk::start(sdk::SdkKind::Copilot, config).await,
+        "codex_sdk" => codex::start(config).await,
         other => Err(anyhow::anyhow!("unsupported agent_type: {other}")),
     }
 }

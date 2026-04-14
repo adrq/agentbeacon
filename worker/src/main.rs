@@ -31,6 +31,11 @@ const CONTROL_CMD_SDK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Time to wait after SIGINT before escalating to SIGKILL.
 const CONTROL_CMD_SIGINT_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Silence timer for unsettled TurnComplete
+/// If the executor reports settled:false but emits zero events within this window,
+/// escalate by killing the process.
+const SETTLED_SILENCE_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// How a session exited — lets the caller distinguish normal completion from shutdown.
 #[allow(dead_code)]
 enum SessionExit {
@@ -400,6 +405,7 @@ async fn run_session(
         inactivity_timeout: args.inactivity_timeout,
         project_id,
         user_mcp_servers,
+        resume_agent_session_id: initial_agent_session_id.clone(),
     };
 
     let executor = match start_executor(config).await {
@@ -446,13 +452,15 @@ async fn run_session(
     let mut msg_seq: i64 = next_msg_seq;
     let mut turn_messages: Vec<TurnMessage> = Vec::new();
     let mut last_ack: Option<String> = Some(initial_token.to_string());
-    let mut agent_busy = true;
+    let mut executor_running = true;
     let mut cancel_ack_pending = false;
     let mut pending_stop_token: Option<String> = None;
     let mut pending_feed_token: Option<String> = None;
 
     let mut escalation_deadline: Option<tokio::time::Instant> = None;
     let mut escalation_stage: u8 = 0;
+
+    let mut silence_deadline: Option<tokio::time::Instant> = None;
 
     let mut poll_fut: Option<Pin<Box<dyn Future<Output = Result<SyncResponse>> + Send>>> = None;
 
@@ -462,8 +470,9 @@ async fn run_session(
 
             event = event_rx.recv() => {
                 match event {
-                    Some(AgentEvent::TurnComplete(result)) => {
-                        agent_busy = false;
+                    Some(AgentEvent::TurnComplete { result, settled }) => {
+                        silence_deadline = None;
+
                         agent_session_id = result.agent_session_id.clone()
                             .or(agent_session_id);
 
@@ -477,9 +486,16 @@ async fn run_session(
 
                         drop(poll_fut.take());
 
+                        let executor_state = if settled {
+                            executor_running = false;
+                            "idle"
+                        } else {
+                            "running"
+                        };
+
                         let report = ExecutorReport {
                             session_id: session_id.to_string(),
-                            executor_state: "idle".to_string(),
+                            executor_state: executor_state.to_string(),
                             agent_session_id: agent_session_id.clone(),
                         };
                         let turn_result = TurnResult {
@@ -524,7 +540,7 @@ async fn run_session(
                                 }
                                 if let Some(exit) = handle_command(
                                     &cmd_tx, &token, &action, session_id,
-                                    &mut agent_busy, &mut last_ack,
+                                    &mut executor_running, &mut last_ack,
                                     &mut cancel_ack_pending, &mut pending_stop_token,
                                     &mut pending_feed_token,
                                 ) {
@@ -550,8 +566,14 @@ async fn run_session(
                                 ));
                             }
                         }
+
+                        if !settled {
+                            silence_deadline = Some(tokio::time::Instant::now() + SETTLED_SILENCE_TIMEOUT);
+                            tracing::debug!("TurnComplete with settled=false, starting {}s silence timer", SETTLED_SILENCE_TIMEOUT.as_secs());
+                        }
                     }
                     Some(AgentEvent::Init { session_id: sid }) => {
+                        silence_deadline = None;
                         agent_session_id = Some(sid);
                         if poll_fut.is_none() {
                             let report = ExecutorReport {
@@ -567,6 +589,7 @@ async fn run_session(
                         }
                     }
                     Some(AgentEvent::Accepted) => {
+                        silence_deadline = None;
                         if let Some(feed_token) = pending_feed_token.take() {
                             drop(poll_fut.take());
                             let report = ExecutorReport {
@@ -582,7 +605,7 @@ async fn run_session(
                                 Ok(SyncResponse::Command { token, action }) => {
                                     if let Some(exit) = handle_command(
                                         &cmd_tx, &token, &action, session_id,
-                                        &mut agent_busy, &mut last_ack,
+                                        &mut executor_running, &mut last_ack,
                                         &mut cancel_ack_pending, &mut pending_stop_token,
                                         &mut pending_feed_token,
                                     ) {
@@ -599,7 +622,7 @@ async fn run_session(
                                     last_ack = Some(feed_token);
                                 }
                             }
-                            let state = if agent_busy { "running" } else { "idle" };
+                            let state = if executor_running { "running" } else { "idle" };
                             let report = ExecutorReport {
                                 session_id: session_id.to_string(),
                                 executor_state: state.to_string(),
@@ -618,6 +641,7 @@ async fn run_session(
                         }
                     }
                     Some(AgentEvent::Message { output, ephemeral }) => {
+                        silence_deadline = None;
                         msg_seq += 1;
                         if !ephemeral {
                             turn_messages.push(TurnMessage { msg_seq, payload: output.clone() });
@@ -631,7 +655,12 @@ async fn run_session(
                             ephemeral,
                         });
                     }
-                    Some(AgentEvent::ProcessDied { error, stderr }) => {
+                    Some(AgentEvent::ProcessDied { error, stderr, agent_session_id: event_session_id }) => {
+                        silence_deadline = None;
+                        let _ = &silence_deadline;
+                        if let Some(ref sid) = event_session_id {
+                            agent_session_id = Some(sid.clone());
+                        }
                         pending_feed_token.take();
                         let report = ExecutorReport {
                             session_id: session_id.to_string(),
@@ -695,7 +724,7 @@ async fn run_session(
 
                         if let Some(exit) = handle_command(
                             &cmd_tx, &token, &action, session_id,
-                            &mut agent_busy, &mut last_ack,
+                            &mut executor_running, &mut last_ack,
                             &mut cancel_ack_pending, &mut pending_stop_token,
                             &mut pending_feed_token,
                         ) {
@@ -717,7 +746,7 @@ async fn run_session(
                     }
                 }
 
-                let state = if agent_busy { "running" } else { "idle" };
+                let state = if executor_running { "running" } else { "idle" };
                 let report = ExecutorReport {
                     session_id: session_id.to_string(),
                     executor_state: state.to_string(),
@@ -765,6 +794,26 @@ async fn run_session(
                     }
                 }
             }
+
+            _ = async {
+                match silence_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            }, if silence_deadline.is_some() => {
+                silence_deadline = None;
+                tracing::warn!(
+                    "Silence timer fired: executor reported settled=false but emitted \
+                     zero events within {}s — killing process",
+                    SETTLED_SILENCE_TIMEOUT.as_secs(),
+                );
+                if let Some(pid) = child_pid {
+                    let _ = nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(pid as i32),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                }
+            }
         }
     };
 
@@ -783,7 +832,7 @@ fn handle_command(
     token: &str,
     action: &CommandAction,
     session_id: &str,
-    agent_busy: &mut bool,
+    executor_running: &mut bool,
     last_ack: &mut Option<String>,
     cancel_ack_pending: &mut bool,
     pending_stop_token: &mut Option<String>,
@@ -796,7 +845,7 @@ fn handle_command(
             }
             match extract_parts(payload) {
                 Ok(parts) => {
-                    *agent_busy = true;
+                    *executor_running = true;
                     let _ = cmd_tx.send(AgentCommand::Prompt(parts));
                     *pending_feed_token = Some(token.to_string());
                 }
@@ -808,7 +857,7 @@ fn handle_command(
         }
         CommandAction::StopTurn { .. } => {
             pending_feed_token.take();
-            if *agent_busy {
+            if *executor_running {
                 let _ = cmd_tx.send(AgentCommand::StopTurn);
                 *pending_stop_token = Some(token.to_string());
             } else {
@@ -832,7 +881,7 @@ fn handle_command(
 }
 
 fn is_sdk_agent(agent_type: &str) -> bool {
-    matches!(agent_type, "claude_sdk" | "copilot_sdk")
+    matches!(agent_type, "claude_sdk" | "copilot_sdk" | "codex_sdk")
 }
 
 /// Resolve agent_config from the assign command, with fallback for non-SDK agents.

@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { AlertDialog } from 'bits-ui';
-  import type { Agent, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
-  import { isMessagePayload, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
+  import type { Agent, AgentType, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
+  import { isMessagePayload, isCompactionData } from '../types';
+  import { normalizeDataPart } from '../normalize';
   import { api } from '../api';
   import { executionDetailQuery, sessionEventsQuery, terminateExecutionMutation, executionAgentsQuery, recoverSessionMutation, executionSessionsQuery, buildSessionIdentityMap } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
@@ -154,11 +155,24 @@
     }
   });
 
+  // Helper: resolve agent type for a session.
+  // Prefer poolQuery (execution-scoped, loaded early) over the global agents array
+  // to avoid the race where agentsQuery hasn't settled yet when SSE events arrive.
+  function agentTypeForSession(sessionId: string): AgentType {
+    const session = detail?.sessions.find(s => s.id === sessionId);
+    if (!session) return 'claude_sdk';
+    const pool = poolQuery.data;
+    const poolAgent = pool?.find(a => a.agent_id === session.agent_id);
+    if (poolAgent) return (poolAgent.agent_type as AgentType) ?? 'claude_sdk';
+    const globalAgent = agents.find(a => a.id === session.agent_id);
+    return (globalAgent?.agent_type as AgentType) ?? 'claude_sdk';
+  }
+
   // Helper: get or lazily create a usage entry for a session
   function getOrCreateUsage(sessionId: string) {
     return $usageBySession.get(sessionId) ?? {
       inputTokens: 0, outputTokens: 0, contextWindow: 0,
-      compactions: 0, available: true,
+      compactions: 0, available: false, supportsContextPercentage: false,
     };
   }
 
@@ -167,7 +181,7 @@
     const execId = executionId;
     const settled = isSettled;
     const stillLoading = detailQuery.isLoading;
-    if (settled || stillLoading) {
+    if (settled || stillLoading || poolQuery.isLoading) {
       sseActive = false;
       return;
     }
@@ -213,9 +227,20 @@
           const thinkBuf = ephemeralThinkingBuffers.get(event.session_id);
           if (thinkBuf && (event.msg_seq ?? 0) >= thinkBuf.lastSeq) {
             const hasPersistedThinking = payload.parts?.some(
-              (p: Record<string, unknown>) =>
-                'data' in p &&
-                (p.data as Record<string, unknown>)?.type === 'thinking'
+              (p: Record<string, unknown>) => {
+                if (!('data' in p)) return false;
+                const d = p.data as Record<string, unknown>;
+                const dt = d?.type;
+                // Claude: thinking (persisted); Codex legacy: reasoning (type-based)
+                if (dt === 'thinking' || dt === 'reasoning') return true;
+                // Codex new shape: full notification with method + params.item
+                const method = d?.method as string | undefined;
+                if (method === 'item/completed' || method === 'item/started') {
+                  const item = (d?.params as Record<string, unknown>)?.item as Record<string, unknown> | undefined;
+                  if (item?.type === 'reasoning') return true;
+                }
+                return false;
+              }
             );
             if (hasPersistedThinking) {
               settledThinkingDurations.set(event.session_id, {
@@ -228,40 +253,36 @@
             }
           }
 
+          const at = agentTypeForSession(event.session_id);
           for (const part of payload.parts ?? []) {
             if (!('data' in part)) continue;
             const d = (part as { data: unknown }).data;
             if (typeof d !== 'object' || d === null) continue;
-            const dataObj = d as { type?: string; [key: string]: unknown };
-            if (!dataObj.type) continue;
-            const typed = dataObj as { type: string; [key: string]: unknown };
+            const dataObj = d as { type?: string; method?: string; tokenUsage?: unknown; [key: string]: unknown };
+            if (!dataObj.type && !dataObj.tokenUsage && !dataObj.method) continue;
 
-            if (isUsageUpdateData(typed)) {
+            const norm = normalizeDataPart(at, dataObj as Record<string, unknown>);
+            if (norm.normalized === 'usage') {
               const current = getOrCreateUsage(event.session_id);
               const next = new Map($usageBySession);
               next.set(event.session_id, {
                 ...current,
-                inputTokens: typed.input_tokens,
-                outputTokens: typed.output_tokens,
+                // Use || not ?? — Claude's usage_snapshot sends input_tokens: 0 meaning
+                // "not populated", not "zero tokens". Treating 0 as falsy is intentional.
+                inputTokens: norm.inputTokens || current.inputTokens,
+                outputTokens: norm.outputTokens || current.outputTokens,
+                contextWindow: norm.modelContextWindow ?? current.contextWindow,
               });
               usageBySession.set(next);
-            } else if (isUsageSnapshotData(typed)) {
-              const current = getOrCreateUsage(event.session_id);
-              const next = new Map($usageBySession);
-              // usage_snapshot now only carries context_window (from modelUsage).
-              // input_tokens/output_tokens are absent — we intentionally preserve
-              // the prior values from the last usage_update so the UI shows the
-              // last known context fill rather than nothing. Preserves last known
-              // usage when the current turn emits no usage_update (e.g.,
-              // failed/early-stop turns). This is the best available fallback.
-              next.set(event.session_id, {
-                ...current,
-                contextWindow: typed.context_window ?? current.contextWindow,
-                inputTokens: typed.input_tokens ?? current.inputTokens,
-                outputTokens: typed.output_tokens ?? current.outputTokens,
-              });
-              usageBySession.set(next);
-            } else if (isCompactionData(typed)) {
+            } else if (norm.normalized === 'text') {
+              // Persisted Codex agentMessage → settle the ephemeral text buffer
+              const buf = ephemeralBuffers.get(event.session_id);
+              if (buf && (event.msg_seq ?? 0) >= buf.lastSeq) {
+                ephemeralBuffers.delete(event.session_id);
+                persistedTextLen.delete(event.session_id);
+                ephemeralBuffers = new Map(ephemeralBuffers);
+              }
+            } else if (isCompactionData(dataObj as { type: string; [key: string]: unknown })) {
               const current = getOrCreateUsage(event.session_id);
               const next = new Map($usageBySession);
               next.set(event.session_id, {
@@ -325,13 +346,26 @@
         }
 
         const thinkingTexts = eph.payload.parts
-          ?.filter((p: Record<string, unknown>) =>
-            'data' in p &&
-            (p.data as Record<string, unknown>)?.type === 'thinking_delta'
-          )
-          .map((p: Record<string, unknown>) =>
-            ((p.data as Record<string, unknown>)?.thinking as string) ?? ''
-          ) ?? [];
+          ?.filter((p: Record<string, unknown>) => {
+            if (!('data' in p)) return false;
+            const d = p.data as Record<string, unknown>;
+            const dt = d?.type;
+            // Claude: thinking_delta; Codex legacy: reasoning (type-based)
+            if (dt === 'thinking_delta' || dt === 'reasoning') return true;
+            // Codex new shape: full notification with method field for reasoning deltas
+            const method = d?.method as string | undefined;
+            return method != null && method.includes('reasoning');
+          })
+          .map((p: Record<string, unknown>) => {
+            const d = p.data as Record<string, unknown>;
+            // Claude puts text in `thinking`; Codex legacy reasoning deltas carry `text`
+            if (d.thinking) return (d.thinking as string);
+            if (d.text) return (d.text as string);
+            // Codex new shape: delta may be a plain string or object with .text
+            const params = d.params as Record<string, unknown> | undefined;
+            const delta = params?.delta;
+            return typeof delta === 'string' ? delta : (delta as any)?.text ?? '';
+          }) ?? [];
         const thinkingText = thinkingTexts.join('');
         if (thinkingText) {
           const existing = ephemeralThinkingBuffers.get(eph.session_id);
@@ -365,7 +399,7 @@
     };
   });
 
-  // Seed `available` flag from session/agent data
+  // Seed usage flags from session/agent data
   $effect(() => {
     const sessions = detail?.sessions;
     if (!sessions) return;
@@ -373,17 +407,22 @@
     let changed = false;
     const next = new Map($usageBySession);
     for (const s of sessions) {
-      const agent = agents.find(a => a.id === s.agent_id);
-      const available = agent?.agent_type === 'claude_sdk';
+      const poolAgent = poolQuery.data?.find(a => a.agent_id === s.agent_id);
+      const globalAgent = !poolAgent ? agents.find(a => a.id === s.agent_id) : undefined;
+      const at = poolAgent?.agent_type ?? globalAgent?.agent_type;
+      // has_usage_metrics: enables the usage widget with raw token counts
+      const available = at === 'claude_sdk' || at === 'codex_sdk';
+      // supports_context_percentage: enables the fill bar (requires verified context occupancy semantics)
+      const supportsContextPercentage = at === 'claude_sdk';
       const existing = next.get(s.id);
       if (!existing) {
         next.set(s.id, {
           inputTokens: 0, outputTokens: 0, contextWindow: 0,
-          compactions: 0, available,
+          compactions: 0, available, supportsContextPercentage,
         });
         changed = true;
-      } else if (existing.available !== available) {
-        next.set(s.id, { ...existing, available });
+      } else if (existing.available !== available || existing.supportsContextPercentage !== supportsContextPercentage) {
+        next.set(s.id, { ...existing, available, supportsContextPercentage });
         changed = true;
       }
     }
@@ -408,24 +447,24 @@
     const next = new Map(untrack(() => $usageBySession));
     for (const event of events) {
       if (event.event_type !== 'message' || !event.session_id) continue;
+      const at = agentTypeForSession(event.session_id);
       const payload = event.payload as MessagePayload;
       for (const part of payload.parts ?? []) {
         if (!('data' in part)) continue;
         const d = (part as { data: unknown }).data;
         if (typeof d !== 'object' || d === null) continue;
-        const dataObj = d as { type?: string; [key: string]: unknown };
-        if (!dataObj.type) continue;
-        const typed = dataObj as { type: string; [key: string]: unknown };
-        if (isUsageUpdateData(typed)) {
-          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: true };
-          next.set(event.session_id, { ...current, inputTokens: typed.input_tokens, outputTokens: typed.output_tokens });
+        const dataObj = d as { type?: string; method?: string; tokenUsage?: unknown; [key: string]: unknown };
+        if (!dataObj.type && !dataObj.tokenUsage && !dataObj.method) continue;
+
+        const norm = normalizeDataPart(at, dataObj as Record<string, unknown>);
+        if (norm.normalized === 'usage') {
+          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: false, supportsContextPercentage: false };
+          // Use || not ?? — Claude's usage_snapshot sends input_tokens: 0 meaning
+          // "not populated", not "zero tokens". Treating 0 as falsy is intentional.
+          next.set(event.session_id, { ...current, inputTokens: norm.inputTokens || current.inputTokens, outputTokens: norm.outputTokens || current.outputTokens, contextWindow: norm.modelContextWindow ?? current.contextWindow });
           changed = true;
-        } else if (isUsageSnapshotData(typed)) {
-          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: true };
-          next.set(event.session_id, { ...current, contextWindow: typed.context_window ?? current.contextWindow, inputTokens: typed.input_tokens ?? current.inputTokens, outputTokens: typed.output_tokens ?? current.outputTokens });
-          changed = true;
-        } else if (isCompactionData(typed)) {
-          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: true };
+        } else if (isCompactionData(dataObj as { type: string; [key: string]: unknown })) {
+          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: false, supportsContextPercentage: false };
           next.set(event.session_id, { ...current, compactions: current.compactions + 1 });
           changed = true;
         }

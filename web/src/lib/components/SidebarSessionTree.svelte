@@ -136,7 +136,7 @@
   {@const displayDepth = Math.min(depth, 4)}
   {@const isFlattened = depth > 4}
   {@const usage = usageBySession?.get(s.id)}
-  {@const usagePct = usage?.available && (usage?.contextWindow ?? 0) > 0
+  {@const usagePct = usage?.available && usage?.supportsContextPercentage && (usage?.contextWindow ?? 0) > 0
     ? Math.max(0, Math.min(100, Math.round(100 * (usage?.inputTokens ?? 0) / (usage?.contextWindow ?? 1))))
     : null}
   {@const usageLevel = usagePct !== null ? (usagePct >= 90 ? 'danger' : usagePct >= 70 ? 'warning' : 'ok') : null}

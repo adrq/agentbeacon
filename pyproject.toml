@@ -30,8 +30,9 @@ build-backend = "hatchling.build"
 markers = [
     "claude: tests requiring Claude auth (run with pytest -m claude)",
     "copilot: tests requiring Copilot/GitHub auth (run with pytest -m copilot)",
+    "codex: tests requiring Codex/OpenAI auth (run with pytest -m codex)",
     "musl: tests verifying musl-static builds (run with pytest -m musl)",
     "packaging: tests verifying wheel generation (run with pytest -m packaging)",
     "npm: tests requiring npm on PATH — package generation and SDK setup (run with pytest -m npm)",
 ]
-addopts = "-m 'not claude and not copilot and not musl and not packaging and not npm'"
+addopts = "-m 'not claude and not copilot and not codex and not musl and not packaging and not npm'"

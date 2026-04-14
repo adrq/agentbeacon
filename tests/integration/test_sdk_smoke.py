@@ -4,6 +4,7 @@ Disabled by default (requires API keys + costs money).
 Run selectively:
     uv run pytest -m claude tests/integration/test_sdk_smoke.py -v
     uv run pytest -m copilot tests/integration/test_sdk_smoke.py -v
+    uv run pytest -m codex tests/integration/test_sdk_smoke.py -v
     uv run pytest -m 'claude or copilot' tests/integration/test_sdk_smoke.py -v
 
 Uses the cheapest available models for fast, low-cost validation.
@@ -96,4 +97,43 @@ def test_smoke_copilot_tool_use(scheduler):
 @pytest.mark.copilot
 def test_smoke_copilot_cancel(scheduler):
     """Cancel a running Copilot execution mid-turn."""
+    raise NotImplementedError
+
+
+# --- Codex smoke tests ---
+
+
+@pytest.mark.codex
+def test_smoke_codex_single_turn(scheduler):
+    """Create an execution with Codex, verify it completes."""
+    raise NotImplementedError
+
+
+@pytest.mark.codex
+def test_smoke_codex_multi_turn(scheduler):
+    """Send a follow-up message to a waiting Codex session."""
+    raise NotImplementedError
+
+
+@pytest.mark.codex
+def test_smoke_codex_tool_use(scheduler):
+    """Codex invokes a tool and receives the result."""
+    raise NotImplementedError
+
+
+@pytest.mark.codex
+def test_smoke_codex_stop_resume(scheduler):
+    """Stop a running Codex session, then resume it."""
+    raise NotImplementedError
+
+
+@pytest.mark.codex
+def test_smoke_codex_cancel(scheduler):
+    """Cancel a running Codex execution mid-turn."""
+    raise NotImplementedError
+
+
+@pytest.mark.codex
+def test_smoke_codex_usage_display(scheduler):
+    """Verify token usage is reported for Codex sessions."""
     raise NotImplementedError

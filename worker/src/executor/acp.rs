@@ -309,7 +309,7 @@ async fn background_task(
                         let history = std::mem::replace(&mut phase, PromptPhase::Idle)
                             .take_history();
                         let turn = build_turn_result(&resp, history, &session_id, &stderr_buf);
-                        let _ = event_tx.send(AgentEvent::TurnComplete(turn));
+                        let _ = event_tx.send(AgentEvent::TurnComplete { result: turn, settled: true });
 
                         // Drain pending prompt queue (skip if cancelling — session ending)
                         if !was_cancelling {
@@ -317,13 +317,13 @@ async fn background_task(
                                 let parts = match translate_a2a_parts_to_acp_content(&a2a_parts) {
                                     Ok(p) => p,
                                     Err(e) => {
-                                        let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                        let _ = event_tx.send(AgentEvent::TurnComplete { result: TurnResult {
                                             agent_session_id: Some(session_id.clone()),
                                             error: Some(format!("failed to translate queued parts: {e}")),
                                             error_kind: Some(ErrorKind::ExecutorFailed),
                                             output: None,
                                             stderr: snapshot_stderr(&stderr_buf),
-                                        }));
+                                        }, settled: true });
                                         continue;
                                     }
                                 };
@@ -337,13 +337,13 @@ async fn background_task(
                                         };
                                     }
                                     Err(e) => {
-                                        let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                        let _ = event_tx.send(AgentEvent::TurnComplete { result: TurnResult {
                                             agent_session_id: Some(session_id.clone()),
                                             error: Some(format!("failed to send queued prompt: {e}")),
                                             error_kind: Some(ErrorKind::ExecutorFailed),
                                             output: None,
                                             stderr: snapshot_stderr(&stderr_buf),
-                                        }));
+                                        }, settled: true });
                                     }
                                 }
                             }
@@ -411,13 +411,13 @@ async fn background_task(
                             );
                             phase = PromptPhase::Idle;
                             pending_prompts.clear();
-                            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                            let _ = event_tx.send(AgentEvent::TurnComplete { result: TurnResult {
                                 agent_session_id: Some(session_id.clone()),
                                 error: Some("malformed JSON-RPC response".into()),
                                 error_kind: Some(ErrorKind::ExecutorFailed),
                                 output: None,
                                 stderr: snapshot_stderr(&stderr_buf),
-                            }));
+                            }, settled: true });
                         }
                     }
                     None => {
@@ -431,6 +431,7 @@ async fn background_task(
                         let _ = event_tx.send(AgentEvent::ProcessDied {
                             error: format!("ACP subprocess died ({exit_info})"),
                             stderr: snapshot_stderr(&stderr_buf),
+                            agent_session_id: None,
                         });
                         reader_handle.abort();
                         terminate_subprocess(&mut child).await;
@@ -445,13 +446,13 @@ async fn background_task(
                     Some(AgentCommand::Start(task_payload)) => {
                         if !phase.is_idle() {
                             tracing::error!("Start received while not idle");
-                            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                            let _ = event_tx.send(AgentEvent::TurnComplete { result: TurnResult {
                                 agent_session_id: Some(session_id.clone()),
                                 error: Some("Start received while prompt in progress".into()),
                                 error_kind: Some(ErrorKind::ExecutorFailed),
                                 output: None,
                                 stderr: None,
-                            }));
+                            }, settled: true });
                             continue;
                         }
                         let prompt_parts = match extract_acp_content(
@@ -470,13 +471,13 @@ async fn background_task(
                                 };
                             }
                             Err(e) => {
-                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                let _ = event_tx.send(AgentEvent::TurnComplete { result: TurnResult {
                                     agent_session_id: Some(session_id.clone()),
                                     error: Some(format!("failed to send prompt: {e}")),
                                     error_kind: Some(ErrorKind::ExecutorFailed),
                                     output: None,
                                     stderr: snapshot_stderr(&stderr_buf),
-                                }));
+                                }, settled: true });
                             }
                         }
                     }
@@ -489,13 +490,13 @@ async fn background_task(
                         let prompt_parts = match translate_a2a_parts_to_acp_content(&a2a_parts) {
                             Ok(p) => p,
                             Err(e) => {
-                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                let _ = event_tx.send(AgentEvent::TurnComplete { result: TurnResult {
                                     agent_session_id: Some(session_id.clone()),
                                     error: Some(format!("failed to translate parts: {e}")),
                                     error_kind: Some(ErrorKind::ExecutorFailed),
                                     output: None,
                                     stderr: None,
-                                }));
+                                }, settled: true });
                                 continue;
                             }
                         };
@@ -509,13 +510,13 @@ async fn background_task(
                                 };
                             }
                             Err(e) => {
-                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                let _ = event_tx.send(AgentEvent::TurnComplete { result: TurnResult {
                                     agent_session_id: Some(session_id.clone()),
                                     error: Some(format!("failed to send prompt: {e}")),
                                     error_kind: Some(ErrorKind::ExecutorFailed),
                                     output: None,
                                     stderr: snapshot_stderr(&stderr_buf),
-                                }));
+                                }, settled: true });
                             }
                         }
                     }
@@ -539,13 +540,13 @@ async fn background_task(
                                 // Emit empty TurnComplete so the worker can ack the cancel command.
                                 terminate_subprocess(&mut child).await;
                                 reader_handle.abort();
-                                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                                let _ = event_tx.send(AgentEvent::TurnComplete { result: TurnResult {
                                     agent_session_id: None,
                                     error: None,
                                     error_kind: None,
                                     output: None,
                                     stderr: None,
-                                }));
+                                }, settled: true });
                                 return;
                             }
                             _ => {} // Already cancelling → no-op
@@ -580,13 +581,13 @@ async fn background_task(
                 tracing::warn!("Agent did not respond to session/cancel within grace period");
                 phase = PromptPhase::Idle;
                 pending_prompts.clear();
-                let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
+                let _ = event_tx.send(AgentEvent::TurnComplete { result: TurnResult {
                     agent_session_id: Some(session_id.clone()),
                     error: Some("Agent did not acknowledge cancellation".into()),
                     error_kind: Some(ErrorKind::Cancelled),
                     output: None,
                     stderr: snapshot_stderr(&stderr_buf),
-                }));
+                }, settled: true });
             }
 
             // Branch 4: Inactivity timeout (only during active, non-cancelling turns)
@@ -600,6 +601,7 @@ async fn background_task(
                 let _ = event_tx.send(AgentEvent::ProcessDied {
                     error: format!("executor stalled: no output for {}s", inactivity_timeout.as_secs()),
                     stderr: snapshot_stderr(&stderr_buf),
+                    agent_session_id: None,
                 });
                 terminate_subprocess(&mut child).await;
                 reader_handle.abort();
@@ -623,39 +625,48 @@ fn extract_acp_content(
     let message = match task_payload.get("message") {
         Some(m) => m,
         None => {
-            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                agent_session_id: Some(session_id.to_string()),
-                error: Some("task_payload missing message field".into()),
-                error_kind: Some(ErrorKind::ExecutorFailed),
-                output: None,
-                stderr: None,
-            }));
+            let _ = event_tx.send(AgentEvent::TurnComplete {
+                result: TurnResult {
+                    agent_session_id: Some(session_id.to_string()),
+                    error: Some("task_payload missing message field".into()),
+                    error_kind: Some(ErrorKind::ExecutorFailed),
+                    output: None,
+                    stderr: None,
+                },
+                settled: true,
+            });
             return None;
         }
     };
     let parts = match message.get("parts").and_then(|p| p.as_array()) {
         Some(p) => p,
         None => {
-            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                agent_session_id: Some(session_id.to_string()),
-                error: Some("message missing parts array".into()),
-                error_kind: Some(ErrorKind::ExecutorFailed),
-                output: None,
-                stderr: None,
-            }));
+            let _ = event_tx.send(AgentEvent::TurnComplete {
+                result: TurnResult {
+                    agent_session_id: Some(session_id.to_string()),
+                    error: Some("message missing parts array".into()),
+                    error_kind: Some(ErrorKind::ExecutorFailed),
+                    output: None,
+                    stderr: None,
+                },
+                settled: true,
+            });
             return None;
         }
     };
     match translate_a2a_parts_to_acp_content(parts) {
         Ok(translated) => Some(translated),
         Err(e) => {
-            let _ = event_tx.send(AgentEvent::TurnComplete(TurnResult {
-                agent_session_id: Some(session_id.to_string()),
-                error: Some(format!("failed to translate parts: {e}")),
-                error_kind: Some(ErrorKind::ExecutorFailed),
-                output: None,
-                stderr: None,
-            }));
+            let _ = event_tx.send(AgentEvent::TurnComplete {
+                result: TurnResult {
+                    agent_session_id: Some(session_id.to_string()),
+                    error: Some(format!("failed to translate parts: {e}")),
+                    error_kind: Some(ErrorKind::ExecutorFailed),
+                    output: None,
+                    stderr: None,
+                },
+                settled: true,
+            });
             None
         }
     }

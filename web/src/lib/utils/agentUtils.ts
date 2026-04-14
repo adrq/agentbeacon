@@ -31,7 +31,7 @@ export const agentTemplates: AgentTemplate[] = [
     name: 'Codex',
     platform: 'codex_sdk',
     description: 'OpenAI Codex CLI Agent',
-    config: { command: 'codex', args: [], timeout: 300, env: {} },
+    config: { command: 'codex', args: ['app-server', '--listen', 'stdio://'], timeout: 300, env: {} },
   },
   {
     name: 'OpenCode',

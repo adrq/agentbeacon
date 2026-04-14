@@ -3,7 +3,7 @@
   import type { Event, Agent, SessionSummary, AgentType, TodoItem, UsageState, SessionIdentity } from '../types';
   import AgentPill from './AgentPill.svelte';
   import CopyButton from './CopyButton.svelte';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isUsageUpdateData, isUsageSnapshotData, isCompactionData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData } from '../types';
   import { formatTokens } from '../format';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
@@ -416,11 +416,11 @@
             // Skip sender metadata part — handled via pre-scan above
             if (d.type === 'sender') continue;
 
+            // Normalize SDK/ACP data parts early so routing uses normalized types
+            const norm = normalizeDataPart(agentType, d);
+
             // Skip usage metadata — don't render in chat
-            if (isUsageUpdateData(d as unknown as import('../types').DataPartPayload) ||
-                isUsageSnapshotData(d as unknown as import('../types').DataPartPayload)) {
-              continue;
-            }
+            if (norm.normalized === 'usage') continue;
 
             // Compaction divider
             if (isCompactionData(d as unknown as import('../types').DataPartPayload)) {
@@ -463,9 +463,6 @@
               entries.push({ type: 'child_response', agentLabel: childAgentLabel, childSessionId: tc.child_session_id ?? null, text, time, key: `${ev.id}-${seq++}` });
               continue;
             }
-
-            // Normalize SDK/ACP data parts
-            const norm = normalizeDataPart(agentType, d);
             switch (norm.normalized) {
               case 'tool_call': {
                 // TodoWrite → emit as todo_write entry (not generic tool_group)
@@ -534,6 +531,16 @@
                   };
                 } else {
                   entries.push({ type: 'thinking', data: norm, time, key: `${ev.id}-${seq++}` });
+                }
+                break;
+              }
+              case 'text': {
+                const prevEntry = entries.length > 0 ? entries[entries.length - 1] : null;
+                if (prevEntry && prevEntry.type === 'agent' && prevEntry.agentLabel === agentLabel && ev.session_id === lastAgentSessionId) {
+                  prevEntry.text += norm.text;
+                } else {
+                  entries.push({ type: 'agent', text: norm.text, agentLabel, agentSessionId: ev.session_id ?? null, time, key: `${ev.id}-${seq++}`, isStreaming: false });
+                  lastAgentSessionId = ev.session_id ?? null;
                 }
                 break;
               }
@@ -986,17 +993,17 @@
       </div>
 
       {#if currentUsage?.available && currentUsage.inputTokens > 0}
-        {@const hasWindow = currentUsage.contextWindow > 0}
-        {@const pct = hasWindow ? Math.max(0, Math.min(100, Math.round(100 * currentUsage.inputTokens / currentUsage.contextWindow))) : null}
+        {@const showFillBar = currentUsage.supportsContextPercentage && currentUsage.contextWindow > 0}
+        {@const pct = showFillBar ? Math.max(0, Math.min(100, Math.round(100 * currentUsage.inputTokens / currentUsage.contextWindow))) : null}
         {@const level = pct !== null ? (pct >= 90 ? 'danger' : pct >= 70 ? 'warning' : 'ok') : 'ok'}
         <div class="context-indicator-wrapper" style="position: relative;">
           <button
             class="context-indicator"
-            aria-label={hasWindow ? `Context window: ${pct}% used (${formatTokens(currentUsage.inputTokens)} of ${formatTokens(currentUsage.contextWindow)})` : `Context: ${formatTokens(currentUsage.inputTokens)} tokens used`}
+            aria-label={showFillBar ? `Context window: ${pct}% used (${formatTokens(currentUsage.inputTokens)} of ${formatTokens(currentUsage.contextWindow)})` : `Context: ${formatTokens(currentUsage.inputTokens)} tokens used`}
             aria-expanded={showUsagePopover}
             onclick={() => showUsagePopover = !showUsagePopover}
           >
-            {#if hasWindow}
+            {#if showFillBar}
               <span class="ctx-bar-inline" role="meter" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
                 <span class="ctx-fill-inline {level}" style="width: {pct}%"></span>
               </span>
@@ -1008,7 +1015,7 @@
           {#if showUsagePopover}
             <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
             <div class="usage-popover" role="tooltip">
-              {#if hasWindow}
+              {#if showFillBar}
                 <div class="usage-row"><span>Context</span><span>{formatTokens(currentUsage.inputTokens)} / {formatTokens(currentUsage.contextWindow)} ({pct}%)</span></div>
               {:else}
                 <div class="usage-row"><span>Context</span><span>{formatTokens(currentUsage.inputTokens)} tokens</span></div>
