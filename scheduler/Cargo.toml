@@ -31,7 +31,7 @@ tokio.workspace = true
 tower-http = { version = "0.6.6", features = ["cors", "compression-gzip"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "json"] }
-rand = "0.8.5"
+rand = "0.9.2"
 uuid = { workspace = true, features = ["serde"] }
 nix = { version = "0.30.1", features = ["signal"] }
 mimalloc = "0.1"
