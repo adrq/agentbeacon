@@ -109,6 +109,27 @@ rl.on("line", (line) => {
     } else {
       process.stderr.write(`[copilot] ignoring stale stop_turn while idle\n`);
     }
+  } else if (
+    cmd.type === "prompt" &&
+    turnState === "in-flight" &&
+    currentSession
+  ) {
+    // Mid-turn: forward directly to SDK for immediate steering.
+    try {
+      const sendOpts = partsToSendOptions(cmd.parts);
+      currentSession
+        .send({
+          prompt: sendOpts.prompt,
+          attachments: sendOpts.attachments,
+          mode: "immediate",
+        })
+        .catch((e: unknown) => {
+          process.stderr.write(`[copilot] mid-turn send rejected: ${e}\n`);
+        });
+      emit({ type: "accepted" });
+    } catch (e: unknown) {
+      process.stderr.write(`[copilot] mid-turn send threw: ${e}\n`);
+    }
   } else {
     commandQueue.push(cmd);
     if (queueResolve) {
@@ -243,7 +264,6 @@ async function runSession(startCmd: StartCommand): Promise<void> {
   turnState = "starting";
   const client = new CopilotClient({
     useStdio: true,
-    autoRestart: true,
     logLevel: "error",
   });
   await client.start();
