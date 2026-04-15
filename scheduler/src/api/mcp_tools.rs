@@ -254,6 +254,7 @@ async fn handle_delegate(
         hierarchical_name: child_hier_name,
         agent_config_name: agent.name.clone(),
         parent_info: parent_hier_name.clone(),
+        project_id: execution.project_id.clone(),
     };
     let agent_config =
         crate::services::agent_config::compose_agent_config(&state.db_pool, &agent, &briefing_ctx)

@@ -80,6 +80,7 @@ pub async fn briefing_context_for_session(
         hierarchical_name: hier_name,
         agent_config_name: agent.name.clone(),
         parent_info,
+        project_id: execution.project_id.clone(),
     })
 }
 
@@ -120,5 +121,6 @@ pub async fn briefing_context_for_session_in_tx(
         hierarchical_name: hier_name,
         agent_config_name: agent.name.clone(),
         parent_info,
+        project_id: execution.project_id.clone(),
     })
 }

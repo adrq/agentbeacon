@@ -371,6 +371,7 @@ async fn persist_and_enqueue(
         hierarchical_name: slug.clone(),
         agent_config_name: agent.name.clone(),
         parent_info: "user".to_string(),
+        project_id: project_id.map(|s| s.to_string()),
     };
     let agent_config =
         crate::services::agent_config::compose_agent_config(db_pool, agent, &briefing_ctx).await;
