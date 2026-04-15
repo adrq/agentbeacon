@@ -59,6 +59,9 @@ pub struct CodexConfig {
     pub sandbox_policy: String,
     #[serde(default)]
     pub persist_extended_history: Option<bool>,
+    /// Optional env var name containing an API key (BYOK). If set, its value
+    /// is injected as `OPENAI_API_KEY` into the Codex process environment.
+    pub api_key_env: Option<String>,
 }
 
 fn default_command() -> String {
@@ -393,6 +396,23 @@ fn create_thread_symlink(session_id: &str, thread_id: &str) {
     }
 }
 
+/// Symlink `auth.json` from the user's real Codex home into the per-session
+/// `CODEX_HOME` so the app-server can authenticate without copying secrets.
+fn symlink_auth_json(codex_home: &Path) -> Result<()> {
+    let dest = codex_home.join("auth.json");
+    if dest.exists() || dest.symlink_metadata().is_ok() {
+        return Ok(());
+    }
+    let real_home = std::env::var("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".codex"));
+    let src = real_home.join("auth.json");
+    if src.exists() {
+        std::os::unix::fs::symlink(&src, &dest)?;
+    }
+    Ok(())
+}
+
 pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
     let codex_config: CodexConfig = serde_json::from_value(config.agent_config.clone())
         .context("failed to parse Codex agent config")?;
@@ -420,6 +440,10 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         &config.user_mcp_servers,
     )?;
 
+    if let Err(e) = symlink_auth_json(&codex_home) {
+        tracing::warn!(error = %e, "failed to symlink auth.json");
+    }
+
     let mut args = codex_config.args.clone();
     if args.is_empty() && codex_config.command == "codex" {
         args = vec![
@@ -438,6 +462,17 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
 
     for (k, v) in &codex_config.env {
         cmd.env(k, v);
+    }
+
+    if let Some(ref key_env) = codex_config.api_key_env {
+        match std::env::var(key_env) {
+            Ok(val) => {
+                cmd.env("OPENAI_API_KEY", val);
+            }
+            Err(_) => {
+                tracing::warn!(env_var = %key_env, "BYOK api_key_env not found in environment");
+            }
+        }
     }
 
     cmd.env("CODEX_HOME", codex_home.to_string_lossy().as_ref());

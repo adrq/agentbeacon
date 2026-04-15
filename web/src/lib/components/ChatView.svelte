@@ -529,7 +529,8 @@
                     ...prevEntry.data,
                     text: prevEntry.data.text + norm.text,
                   };
-                } else {
+                } else if (norm.text) {
+                  // Skip empty thinking (e.g. turn/started lifecycle markers)
                   entries.push({ type: 'thinking', data: norm, time, key: `${ev.id}-${seq++}` });
                 }
                 break;

@@ -127,6 +127,38 @@ function normalizeCodexPart(raw: Record<string, unknown>): NormalizedData {
     return { normalized: 'thinking', text: '' };
   }
 
+  // Output delta methods — extract text content for display
+  if (method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta') {
+    const delta = params.delta;
+    const text = typeof delta === 'string' ? delta : (delta as any)?.text ?? '';
+    return { normalized: 'text', text };
+  }
+
+  // Plan delta — show as thinking/plan text
+  if (method === 'item/plan/delta') {
+    const delta = params.delta;
+    const text = typeof delta === 'string' ? delta : (delta as any)?.text ?? '';
+    return { normalized: 'thinking', text };
+  }
+
+  // MCP tool progress — show as tool call status update
+  if (method === 'mcpToolCall/progress') {
+    return {
+      normalized: 'tool_call',
+      toolCallId: (params.id as string) ?? '',
+      title: `${(params.server as string) ?? 'mcp'}/${(params.tool as string) ?? ''}`,
+      status: 'running',
+      input: params.progress,
+    };
+  }
+
+  // turn/started — lifecycle marker with no visual output.
+  // Returns empty thinking (same pattern as summaryPartAdded) rather than 'unknown',
+  // because ChatView's 'unknown' case falls through to DataFallback for unrecognised types.
+  if (method === 'turn/started') {
+    return { normalized: 'thinking', text: '' };
+  }
+
   // Legacy / backward compat: no method field — use type-based routing (old stored data)
   if (!method) {
     const type = raw.type as string | undefined;
