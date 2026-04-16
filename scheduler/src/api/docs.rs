@@ -47,9 +47,16 @@ Search before duplicating work.
 ### Create/update page
 `PUT /api/projects/{project_id}/wiki/pages/{slug}`
 ```json
-{"title": "Page Title", "body": "Page content", "revision_number": 0}
+{"title": "Page Title", "body": "Page content", "revision_number": 5}
 ```
 Include `revision_number` from the last read for optimistic concurrency. Omit for new pages.
+
+### Edit page
+`PATCH /api/projects/{project_id}/wiki/pages/{slug}`
+```json
+{"edits": [{"old_string": "...", "new_string": "...", "replace_all": false}], "revision_number": 5}
+```
+Applies sequential find/replace edits to an existing page. `revision_number` required. All edits applied atomically or none. Returns 422 if any `old_string` is missing or ambiguous. On 409/422 the response includes a `current_page` field; note that `tags` in `current_page` are not guaranteed atomic with the page row (they are read in a separate query).
 
 ### Read page
 `GET /api/projects/{project_id}/wiki/pages/{slug}`

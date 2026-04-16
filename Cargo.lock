@@ -2486,6 +2486,7 @@ dependencies = [
  "hex",
  "humantime",
  "jsonschema",
+ "memchr",
  "mimalloc",
  "nix",
  "rand 0.8.5",

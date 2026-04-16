@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, Query, State},
+    extract::{Path as AxumPath, Query, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get},
@@ -39,6 +39,62 @@ struct PutPageRequest {
     revision_number: Option<i64>,
     summary: Option<String>,
     tags: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct PatchEdit {
+    old_string: String,
+    new_string: String,
+    #[serde(default)]
+    replace_all: bool,
+}
+
+#[derive(Deserialize)]
+struct PatchPageRequest {
+    edits: Vec<PatchEdit>,
+    revision_number: i64,
+    summary: Option<String>,
+}
+
+enum ApplyEditError {
+    NotFound { index: usize },
+    MultipleMatches { index: usize },
+}
+
+fn apply_edits(body: &str, edits: &[PatchEdit]) -> Result<String, ApplyEditError> {
+    let mut current = body.to_string();
+    for (i, edit) in edits.iter().enumerate() {
+        if edit.replace_all {
+            if !current.contains(&edit.old_string) {
+                return Err(ApplyEditError::NotFound { index: i });
+            }
+            current = current.replace(&edit.old_string, &edit.new_string);
+        } else {
+            let first = current.find(&edit.old_string);
+            match first {
+                None => return Err(ApplyEditError::NotFound { index: i }),
+                Some(pos) => {
+                    // Overlap-aware second-match check: scan from pos+1 byte offset
+                    if current
+                        .as_bytes()
+                        .get(pos + 1..)
+                        .and_then(|slice| memchr::memmem::find(slice, edit.old_string.as_bytes()))
+                        .is_some()
+                    {
+                        return Err(ApplyEditError::MultipleMatches { index: i });
+                    }
+                    let rest_start = pos + edit.old_string.len();
+                    current = format!(
+                        "{}{}{}",
+                        &current[..pos],
+                        edit.new_string,
+                        &current[rest_start..]
+                    );
+                }
+            }
+        }
+    }
+    Ok(current)
 }
 
 #[derive(Serialize)]
@@ -442,6 +498,168 @@ async fn put_page(
     }
 }
 
+async fn patch_page(
+    State(state): State<AppState>,
+    AxumPath((project_id, slug)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    body: Result<Json<PatchPageRequest>, JsonRejection>,
+) -> Result<Response, SchedulerError> {
+    let Json(req) = body.map_err(|e| SchedulerError::ValidationFailed(e.body_text()))?;
+
+    // Verify project exists
+    db::projects::get_by_id(&state.db_pool, &project_id).await?;
+
+    // Validate slug
+    let slug = validate_slug(&slug)?;
+
+    // Validate payload semantics
+    if req.edits.is_empty() {
+        return Err(SchedulerError::ValidationFailed(
+            "edits must not be empty".into(),
+        ));
+    }
+    if req.edits.len() > 50 {
+        return Err(SchedulerError::ValidationFailed(
+            "edits must contain at most 50 items".into(),
+        ));
+    }
+    for (i, edit) in req.edits.iter().enumerate() {
+        if edit.old_string.is_empty() {
+            return Err(SchedulerError::ValidationFailed(format!(
+                "edits[{i}].old_string must not be empty"
+            )));
+        }
+    }
+    if req.revision_number < 1 {
+        return Err(SchedulerError::ValidationFailed(
+            "revision_number must be >= 1".into(),
+        ));
+    }
+
+    // Resolve optional auth
+    let session_id = resolve_wiki_auth(&headers, &state.db_pool, &project_id).await?;
+
+    // Fetch current page
+    let page = db::wiki::get_page_by_slug(&state.db_pool, &project_id, &slug).await?;
+
+    // CAS check
+    if req.revision_number != page.revision_number {
+        let tags = db::wiki::list_page_tags(&state.db_pool, &page.id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, slug = %slug, "failed to fetch tags for 409 current_page");
+                vec![]
+            });
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "revision_conflict",
+                "current_page": WikiPageResponse::from_page(page, tags),
+            })),
+        )
+            .into_response());
+    }
+
+    // Apply edits
+    let new_body = match apply_edits(&page.body, &req.edits) {
+        Ok(b) => b,
+        Err(ApplyEditError::NotFound { index }) => {
+            let tags = db::wiki::list_page_tags(&state.db_pool, &page.id)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, slug = %slug, "failed to fetch tags for 422 current_page");
+                    vec![]
+                });
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "error": "edit_failed",
+                    "reason": "not_found",
+                    "edit_index": index,
+                    "current_page": WikiPageResponse::from_page(page, tags),
+                })),
+            )
+                .into_response());
+        }
+        Err(ApplyEditError::MultipleMatches { index }) => {
+            let tags = db::wiki::list_page_tags(&state.db_pool, &page.id)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, slug = %slug, "failed to fetch tags for 422 current_page");
+                    vec![]
+                });
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "error": "edit_failed",
+                    "reason": "multiple_matches",
+                    "edit_index": index,
+                    "current_page": WikiPageResponse::from_page(page, tags),
+                })),
+            )
+                .into_response());
+        }
+    };
+
+    // Persist via existing update_page (OCC + archive in one transaction)
+    match db::wiki::update_page(
+        &state.db_pool,
+        &project_id,
+        &slug,
+        &page.title,
+        &new_body,
+        req.revision_number,
+        session_id.as_deref(),
+        req.summary.as_deref(),
+        None, // tags unchanged
+    )
+    .await
+    {
+        Ok(updated) => {
+            if let Err(e) = state.wiki_search.index_page(&project_id, &updated) {
+                tracing::warn!(error = %e, slug = %slug, "failed to update wiki search index");
+            }
+            let tags = db::wiki::list_page_tags(&state.db_pool, &updated.id)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, slug = %slug, "best-effort tag lookup failed on PATCH success path");
+                    vec![]
+                });
+            Ok((
+                StatusCode::OK,
+                Json(WikiPageResponse::from_page(updated, tags)),
+            )
+                .into_response())
+        }
+        Err(SchedulerError::Conflict(_)) => {
+            // Late-conflict: re-fetch the page
+            match db::wiki::get_page_by_slug(&state.db_pool, &project_id, &slug).await {
+                Ok(refetched) => {
+                    let tags = db::wiki::list_page_tags(&state.db_pool, &refetched.id)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(error = %e, slug = %slug, "failed to fetch tags for late-conflict 409 current_page");
+                            vec![]
+                        });
+                    Ok((
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": "revision_conflict",
+                            "current_page": WikiPageResponse::from_page(refetched, tags),
+                        })),
+                    )
+                        .into_response())
+                }
+                Err(SchedulerError::NotFound(_)) => {
+                    Err(SchedulerError::NotFound("page not found".into()))
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
 async fn delete_page(
     State(state): State<AppState>,
     AxumPath(path): AxumPath<WikiPagePath>,
@@ -698,7 +916,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/projects/{project_id}/wiki/pages", get(list_pages))
         .route(
             "/api/projects/{project_id}/wiki/pages/{slug}",
-            get(get_page).put(put_page).delete(delete_page),
+            get(get_page)
+                .put(put_page)
+                .patch(patch_page)
+                .delete(delete_page),
         )
         .route(
             "/api/projects/{project_id}/wiki/pages/{slug}/revisions",

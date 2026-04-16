@@ -54,7 +54,7 @@ const FALLBACK_MESSAGING: &str = "Send a message:\n\
   curl -X POST \"$AGENTBEACON_API_BASE/api/messages\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
-    -d '{\"to\": \"<hierarchical-name>\", \"parts\": [{\"text\": \"your message\"}]}'\n\
+    -d \"{\\\"to\\\": \\\"<hierarchical-name>\\\", \\\"parts\\\": [{\\\"text\\\": \\\"your message\\\"}]}\"\n\
 \n\
 Read your messages:\n\
   curl \"$AGENTBEACON_API_BASE/api/messages?session_id=$AGENTBEACON_SESSION_ID\"\n\
@@ -70,12 +70,21 @@ Read a wiki page:\n\
   curl \"$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
 \n\
-Write a wiki page:\n\
+Write a wiki page (full rewrite or create):\n\
   curl -X PUT \"$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
-    -d '{\"title\": \"Page Title\", \"body\": \"Content here\"}'";
-
+    -d \"{\\\"title\\\": \\\"Page Title\\\", \\\"body\\\": \\\"Content here\\\"}\"\n\
+- Include revision_number from GET response when updating an existing page.\n\
+\n\
+Edit a wiki page (targeted find/replace -- prefer this over PUT when updating an existing page):\n\
+  curl -X PATCH \"$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
+    -H \"Content-Type: application/json\" \\\n\
+    -d \"{\\\"edits\\\": [{\\\"old_string\\\": \\\"find me\\\", \\\"new_string\\\": \\\"replace me\\\"}], \\\"revision_number\\\": 5}\"\n\
+- old_string must match exactly once (or set replace_all: true).\n\
+- edits are applied in order, all-or-nothing.\n\
+- revision_number must match the current page revision (GET it first).";
 const FALLBACK_RECOVERY: &str = "When a child session crashes, the system automatically attempts recovery (up to 3 retries).\n\
 - Do NOT immediately re-delegate the same work to a new child.\n\
 - Do NOT assume the child's work is lost.\n\
