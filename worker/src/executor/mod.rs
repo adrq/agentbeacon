@@ -113,9 +113,8 @@ pub enum AgentEvent {
         ephemeral: bool,
     },
     /// Agent turn completed (success or error).
-    /// TurnResult.output contains the accumulated last_content from
-    /// all Message events during the turn.
-    /// When true, the turn is final. When false, more events may follow.
+    /// TurnResult.output is taken from the executor's ResultEvent.result field.
+    /// When `settled` is true, the turn is final. When false, more events may follow.
     TurnComplete { result: TurnResult, settled: bool },
     /// Agent process died unexpectedly.
     /// `agent_session_id` is set by Codex when the thread_id is known but Init hasn't

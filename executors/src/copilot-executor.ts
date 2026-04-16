@@ -401,6 +401,7 @@ async function runSession(startCmd: StartCommand): Promise<void> {
             type: "message",
             role: "assistant",
             content: [{ type: "thinking_delta", thinking: text }],
+            ephemeral: true,
           });
         }
       },
@@ -415,6 +416,7 @@ async function runSession(startCmd: StartCommand): Promise<void> {
             type: "message",
             role: "assistant",
             content: [{ type: "text_delta", text }],
+            ephemeral: true,
           });
         }
       },

@@ -150,11 +150,20 @@ async function nextCommand(): Promise<Command> {
 
 // --- Parts → Claude SDK content blocks ---
 
+// SDK 0.2.104 narrowed Base64ImageSource.media_type to this literal union.
+type ImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+const SUPPORTED_IMAGE_MEDIA_TYPES: readonly ImageMediaType[] = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+];
+
 type ContentBlock =
   | { type: "text"; text: string }
   | {
       type: "image";
-      source: { type: "base64"; media_type: string; data: string };
+      source: { type: "base64"; media_type: ImageMediaType; data: string };
     };
 
 function partsToContent(parts: Part[]): ContentBlock[] {
@@ -167,19 +176,26 @@ function partsToContent(parts: Part[]): ContentBlock[] {
         mediaType?: string;
         filename?: string;
       };
-      if (raw.raw && raw.mediaType?.startsWith("image/")) {
+      const isSupportedImage =
+        !!raw.raw &&
+        !!raw.mediaType &&
+        (SUPPORTED_IMAGE_MEDIA_TYPES as readonly string[]).includes(
+          raw.mediaType,
+        );
+      if (isSupportedImage) {
         return [
           {
             type: "image",
             source: {
               type: "base64",
-              media_type: raw.mediaType,
+              media_type: raw.mediaType as ImageMediaType,
               data: raw.raw,
             },
           },
         ];
       }
-      // Non-image file: represent as text so the model knows an attachment exists
+      // Non-image (or unsupported image) file: represent as text so the model
+      // knows an attachment exists.
       const name = raw.filename ?? "attachment";
       const mime = raw.mediaType ?? "application/octet-stream";
       return [{ type: "text", text: `[File: ${name} (${mime})]` }];
@@ -292,11 +308,16 @@ async function main(): Promise<void> {
     // Reset per attempt to prevent stale leakage across retries.
     let pendingAssistant: unknown[] | null = null;
 
+    // Track the last complete assistant response to populate result.result
+    // when the SDK omits it.
+    let lastFinalOutput: string | null = null;
+
     try {
       for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
         currentAc = new AbortController();
         lastError = null;
         pendingAssistant = null;
+        lastFinalOutput = null;
 
         if (pendingStopTurn) {
           stoppedByUser = true;
@@ -358,28 +379,71 @@ async function main(): Promise<void> {
           });
 
           for await (const msg of q) {
-            if (
-              msg.type === "system" &&
-              "subtype" in msg &&
-              msg.subtype === "init"
-            ) {
-              currentSessionId = msg.session_id;
-              const mcpServers =
-                "mcp_servers" in msg && Array.isArray(msg.mcp_servers)
-                  ? msg.mcp_servers
-                  : undefined;
-              emit({
-                type: "init",
-                sessionId: msg.session_id,
-                mcpServers,
-              });
+            if (msg.type === "system") {
+              const subtype = "subtype" in msg ? msg.subtype : undefined;
+              if (subtype === "init") {
+                currentSessionId = msg.session_id;
+                const mcpServers =
+                  "mcp_servers" in msg && Array.isArray(msg.mcp_servers)
+                    ? msg.mcp_servers
+                    : undefined;
+                emit({
+                  type: "init",
+                  sessionId: msg.session_id,
+                  mcpServers,
+                });
+              } else if (subtype === "compact_boundary") {
+                const meta = (msg as Record<string, unknown>)
+                  .compact_metadata as Record<string, unknown> | undefined;
+                emit({
+                  type: "message",
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "compaction",
+                      trigger:
+                        typeof meta?.trigger === "string"
+                          ? meta.trigger
+                          : "auto",
+                    },
+                  ],
+                });
+              } else {
+                // Any other system subtype (api_retry, status, hook_*,
+                // task_*, local_command_output, files_persisted, ...) is
+                // forwarded as-is.
+                emit({
+                  type: "message",
+                  role: "assistant",
+                  content: [msg as unknown as Record<string, unknown>],
+                });
+              }
             } else if (msg.type === "assistant") {
               const inner =
                 "message" in msg &&
                 msg.message &&
                 typeof msg.message === "object"
-                  ? (msg.message as Record<string, unknown>)
+                  ? (msg.message as unknown as Record<string, unknown>)
                   : undefined;
+
+              // Emit assistant-level errors immediately. On auth/billing
+              // failures the SDK can skip message_stop and go straight to
+              // result, which discards pendingAssistant. Buffering would
+              // therefore lose the error.
+              const assistantError =
+                inner && typeof inner.error === "string"
+                  ? inner.error
+                  : typeof (msg as Record<string, unknown>).error === "string"
+                    ? ((msg as Record<string, unknown>).error as string)
+                    : undefined;
+              if (assistantError) {
+                emit({
+                  type: "message",
+                  role: "assistant",
+                  content: [{ type: "assistant_error", error: assistantError }],
+                });
+              }
+
               const rawContent = inner?.content;
               const content: unknown[] = Array.isArray(rawContent)
                 ? [...rawContent]
@@ -416,7 +480,7 @@ async function main(): Promise<void> {
                 "message" in msg &&
                 msg.message &&
                 typeof msg.message === "object"
-                  ? (msg.message as Record<string, unknown>).content
+                  ? (msg.message as unknown as Record<string, unknown>).content
                   : undefined;
               if (Array.isArray(content)) {
                 const toolResults = content.filter(
@@ -434,6 +498,11 @@ async function main(): Promise<void> {
               // Discard any unflushed assistant snapshot — if message_stop was
               // missed, the content is incomplete and should not be persisted.
               pendingAssistant = null;
+              // Capture then clear the executor-owned fallback so the next
+              // turn starts clean. Any stale value from an earlier turn must
+              // not leak into this result.
+              const fallbackResult = lastFinalOutput;
+              lastFinalOutput = null;
               turnState = "idle";
               const m = msg as unknown as Record<string, unknown>;
 
@@ -484,6 +553,12 @@ async function main(): Promise<void> {
               };
               if (m.subtype === "success" && typeof m.result === "string") {
                 resultEvent.result = m.result;
+              } else if (m.subtype === "success" && fallbackResult) {
+                // SDK omitted result.result (observed with late api_retry
+                // events and some error paths that still report success).
+                // The executor populates it from the most recent message_stop
+                // flush so the worker never has to fall back.
+                resultEvent.result = fallbackResult;
               }
               if (Array.isArray(m.errors)) {
                 resultEvent.errors = m.errors;
@@ -507,6 +582,7 @@ async function main(): Promise<void> {
                     type: "message",
                     role: "assistant",
                     content: [{ type: "text_delta", text: delta.text }],
+                    ephemeral: true,
                   });
                 } else if (
                   delta.type === "thinking_delta" &&
@@ -518,55 +594,70 @@ async function main(): Promise<void> {
                     content: [
                       { type: "thinking_delta", thinking: delta.thinking },
                     ],
+                    ephemeral: true,
+                  });
+                } else if (delta.type) {
+                  // Catch-all for the remaining content_block_delta
+                  // subtypes (input_json_delta, citations_delta,
+                  // signature_delta, compaction_delta, plus any future ones).
+                  // All deltas are streaming fragments -> ephemeral.
+                  emit({
+                    type: "message",
+                    role: "assistant",
+                    content: [delta],
+                    ephemeral: true,
                   });
                 }
               } else if (event && event.type === "message_stop") {
                 // message_stop confirms the buffered assistant is the final
-                // snapshot for this API call. Flush it as a persisted message.
+                // snapshot for this API call. Flush it as a persisted message
+                // and capture its text as fallback for result.result.
                 if (pendingAssistant) {
+                  const flushed = pendingAssistant;
                   emit({
                     type: "message",
                     role: "assistant",
-                    content: pendingAssistant,
+                    content: flushed,
                   });
+                  lastFinalOutput = flushed
+                    .filter(
+                      (b): b is { type: string; text: string } =>
+                        typeof b === "object" &&
+                        b !== null &&
+                        (b as { type?: unknown }).type === "text" &&
+                        typeof (b as { text?: unknown }).text === "string",
+                    )
+                    .map((b) => b.text)
+                    .join("");
                   pendingAssistant = null;
                 }
               } else if (event) {
-                const eventType = event.type as string;
-                // Silently skip known lifecycle events to avoid stderr noise
-                if (
-                  eventType !== "content_block_delta" &&
-                  eventType !== "message_start" &&
-                  eventType !== "content_block_start" &&
-                  eventType !== "content_block_stop" &&
-                  eventType !== "message_delta"
-                ) {
-                  process.stderr.write(
-                    `[claude] ignoring stream_event: ${JSON.stringify(eventType ?? "unknown")}\n`,
-                  );
-                }
+                // Any other stream_event subtype (message_start,
+                // content_block_start/stop, message_delta, future ones)
+                // is a streaming lifecycle fragment -> ephemeral. Worth
+                // transporting on SSE for observability without polluting
+                // persisted history.
+                emit({
+                  type: "message",
+                  role: "assistant",
+                  content: [event],
+                  ephemeral: true,
+                });
               }
-            } else if (
-              msg.type === "system" &&
-              "subtype" in msg &&
-              msg.subtype === "compact_boundary"
-            ) {
-              const meta = (msg as Record<string, unknown>).compact_metadata as
-                | Record<string, unknown>
-                | undefined;
+            } else {
+              // Any unhandled top-level msg.type (auth_status,
+              // tool_progress, tool_use_summary, rate_limit_event,
+              // prompt_suggestion, future SDK additions). Raw passthrough.
+              // tool_progress fires every few seconds per tool — mark
+              // ephemeral; everything else is persisted by default.
+              const top = msg as unknown as Record<string, unknown>;
               emit({
                 type: "message",
                 role: "assistant",
-                content: [
-                  {
-                    type: "compaction",
-                    trigger:
-                      typeof meta?.trigger === "string" ? meta.trigger : "auto",
-                  },
-                ],
+                content: [top],
+                ephemeral: top.type === "tool_progress",
               });
             }
-            // Silently skip: user replay
           }
           break; // success — exit retry loop
         } catch (e: unknown) {
@@ -602,6 +693,7 @@ async function main(): Promise<void> {
 
       // Handle final error (if any) — discard incomplete buffered content
       pendingAssistant = null;
+      lastFinalOutput = null;
       if (lastError) {
         if (lastError instanceof AbortError) {
           turnState = "idle";

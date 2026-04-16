@@ -133,10 +133,13 @@ struct ErrorEvent {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MessageEvent {
     #[allow(dead_code)]
     role: String,
     content: Option<serde_json::Value>,
+    // Set by the executor for streaming fragments that should not be persisted.
+    ephemeral: Option<bool>,
 }
 
 // --- Config types ---
@@ -415,7 +418,6 @@ async fn background_task(
     inactivity_timeout: std::time::Duration,
 ) {
     let mut agent_session_id: Option<String> = None;
-    let mut last_content: Option<serde_json::Value> = None;
     let mut started = false;
     let mut pending_prompts: Vec<Vec<serde_json::Value>> = Vec::new();
     let mut turn_active = true; // starts active — processing initial prompt
@@ -455,21 +457,9 @@ async fn background_task(
                                     && let Some(ref content) = msg.content
                                     && let Some(structured) = build_output_message(content)
                                 {
-                                    // Text deltas have content blocks with type "text_delta" — these are
-                                    // partial fragments that should not overwrite the final complete message
-                                    // and should not be persisted to the DB (ephemeral streaming only).
-                                    let is_delta_only = content.as_array()
-                                        .map(|blocks| !blocks.is_empty() && blocks.iter().all(|b| {
-                                            matches!(
-                                                b.get("type").and_then(|t| t.as_str()),
-                                                Some("text_delta" | "thinking_delta")
-                                            )
-                                        }))
-                                        .unwrap_or(false);
-                                    let _ = event_tx.send(AgentEvent::Message { output: structured.clone(), ephemeral: is_delta_only });
-                                    if !is_delta_only {
-                                        last_content = Some(structured);
-                                    }
+                                    // Use the executor's ephemeral flag directly.
+                                    let ephemeral = msg.ephemeral.unwrap_or(false);
+                                    let _ = event_tx.send(AgentEvent::Message { output: structured, ephemeral });
                                 }
                             }
                             "result" => match serde_json::from_value::<ResultEvent>(event) {
@@ -481,7 +471,6 @@ async fn background_task(
                                         kind,
                                         result,
                                         agent_session_id.clone(),
-                                        last_content.take(),
                                     );
                                     if turn.error.is_some() {
                                         turn.stderr = snapshot_stderr(&stderr_buf);
@@ -504,7 +493,6 @@ async fn background_task(
                                 }
                             },
                             "error" => {
-                                last_content = None;
                                 match serde_json::from_value::<ErrorEvent>(event) {
                                     Ok(err) => {
                                         turn_active = false;
@@ -623,7 +611,6 @@ async fn background_task(
                     Some(AgentCommand::Prompt(parts)) => {
                         turn_active = true;
                         last_activity = tokio::time::Instant::now();
-                        last_content = None;
                         if !started {
                             // Buffer until agent is initialized
                             pending_prompts.push(parts);
@@ -723,7 +710,6 @@ fn map_result_to_turn(
     kind: SdkKind,
     result: ResultEvent,
     agent_session_id: Option<String>,
-    last_content: Option<serde_json::Value>,
 ) -> TurnResult {
     let (error, error_kind) = match result.subtype.as_str() {
         "success" => (None, None),
@@ -762,12 +748,10 @@ fn map_result_to_turn(
         ),
     };
 
-    // last_content is already in structured format from build_output_message()
     let output = if error.is_none() {
         result
             .result
             .map(|text| serde_json::json!({"role": "ROLE_AGENT", "parts": [{"text": text}]}))
-            .or(last_content)
     } else {
         None
     };

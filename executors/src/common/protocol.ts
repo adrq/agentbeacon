@@ -89,6 +89,9 @@ export interface MessageEvent {
   type: "message";
   role: string;
   content: unknown[];
+  // True for streaming fragments (e.g. text_delta) that should be transported
+  // for live UI but not persisted to the DB. Defaults to false (persisted).
+  ephemeral?: boolean;
 }
 
 export interface ResultEvent {
