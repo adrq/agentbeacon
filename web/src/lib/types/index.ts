@@ -309,6 +309,28 @@ export interface NormalizedText {
   text: string;
 }
 
+export interface NormalizedError {
+  normalized: 'error';
+  message: string;
+  details?: string;
+}
+
+export interface NormalizedFyi {
+  normalized: 'fyi';
+  title: string;
+  details?: string;
+}
+
+// Events the normalizer recognises but intentionally hides from the curated
+// "All" view (noise — rate limits, mcp startup chatter, echoed user messages,
+// thread status pings). Shown under the Debug filter so power users can
+// inspect raw JSON when something looks off.
+export interface NormalizedDebug {
+  normalized: 'debug';
+  raw: Record<string, unknown>;
+  reason: string;
+}
+
 // UsageState — tracked per session in ExecutionDetail
 export interface UsageState {
   inputTokens: number;

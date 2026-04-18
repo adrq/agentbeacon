@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
   import { AlertDialog } from 'bits-ui';
   import type { Agent, AgentType, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
   import { isMessagePayload, isCompactionData } from '../types';
@@ -65,6 +64,13 @@
   let sseReconnecting = $state(false);
   let sseConnection = $state<SSEConnection | null>(null);
 
+  // Tracks event ids whose usage/compaction side effects have been applied.
+  // De-dupes between the SSE callback (live events) and the polling fallback
+  // $effect. Needed because SSE reconnect backfills already-polled events,
+  // and naive re-processing would double-count compactions (non-idempotent).
+  // Cleared on execution change (same lifetime as usageBySession).
+  const processedUsageEventIds = new Set<number>();
+
   // Reset state when execution changes
   let prevExecId = '';
   $effect.pre(() => {
@@ -72,6 +78,7 @@
       prevExecId = executionId;
       selectedSessionId.set(null);
       usageBySession.set(new Map());
+      processedUsageEventIds.clear();
       eventFilter = 'all';
       showOverview = false;
       const hashView = getHashViewParam();
@@ -176,6 +183,48 @@
     };
   }
 
+  // Apply usage/compaction side effects for one event. Used by both the SSE
+  // callback and the polling-fallback $effect so the context indicator works
+  // in SSE-only, polling-only, and mixed-delivery scenarios. The processed-id
+  // set de-dupes: compaction increment is non-idempotent, and SSE reconnect
+  // backfills already-polled events.
+  function applyUsageFromEvent(event: BeaconEvent) {
+    if (event.event_type !== 'message' || !event.session_id) return;
+    if (processedUsageEventIds.has(event.id)) return;
+    processedUsageEventIds.add(event.id);
+    const at = agentTypeForSession(event.session_id);
+    const payload = event.payload as MessagePayload;
+    for (const part of payload.parts ?? []) {
+      if (!('data' in part)) continue;
+      const d = (part as { data: unknown }).data;
+      if (typeof d !== 'object' || d === null) continue;
+      const dataObj = d as { type?: string; method?: string; tokenUsage?: unknown; [key: string]: unknown };
+      if (!dataObj.type && !dataObj.tokenUsage && !dataObj.method) continue;
+      const norm = normalizeDataPart(at, dataObj as Record<string, unknown>);
+      if (norm.normalized === 'usage') {
+        const current = getOrCreateUsage(event.session_id);
+        const next = new Map($usageBySession);
+        next.set(event.session_id, {
+          ...current,
+          // Use || not ?? — Claude's usage_snapshot sends input_tokens: 0 meaning
+          // "not populated", not "zero tokens". Treating 0 as falsy is intentional.
+          inputTokens: norm.inputTokens || current.inputTokens,
+          outputTokens: norm.outputTokens || current.outputTokens,
+          contextWindow: norm.modelContextWindow ?? current.contextWindow,
+        });
+        usageBySession.set(next);
+      } else if (isCompactionData(dataObj as { type: string; [key: string]: unknown })) {
+        const current = getOrCreateUsage(event.session_id);
+        const next = new Map($usageBySession);
+        next.set(event.session_id, {
+          ...current,
+          compactions: current.compactions + 1,
+        });
+        usageBySession.set(next);
+      }
+    }
+  }
+
   // SSE connection lifecycle — stay live until tree is fully settled
   $effect(() => {
     const execId = executionId;
@@ -189,14 +238,32 @@
     const conn = connectExecutionSSE(
       execId,
       (event: BeaconEvent) => {
+        // Capture whether this is a new event or an SSE replay/dedupe hit.
+        // Replays (backoff reconnect, manual reconnect — no Last-Event-ID
+        // preservation) can redeliver already-processed events. All
+        // downstream side effects (usage accumulators, ephemeral text
+        // length counters) must run only for new events, or they
+        // double-count.
+        let isNewEvent = true;
         queryClient.setQueryData(
           ['session-events', event.session_id],
           (old: BeaconEvent[] | undefined) => {
             if (!old) return [event];
-            if (old.some(e => e.id === event.id)) return old;
+            if (old.some(e => e.id === event.id)) {
+              isNewEvent = false;
+              return old;
+            }
             return [...old, event];
           },
         );
+
+        // Usage accumulation carries its own per-event dedupe set, so it
+        // must run for both fresh and replayed events — specifically, an
+        // SSE reconnect that backfills events already delivered via
+        // polling would otherwise never reach it under the isNewEvent gate.
+        applyUsageFromEvent(event);
+
+        if (!isNewEvent) return;
 
         if (event.event_type === 'message' && event.session_id) {
           lastPersistedSeq.set(event.session_id, Math.max(
@@ -253,6 +320,9 @@
             }
           }
 
+          // Settle Codex ephemeral text buffer when persisted agentMessage
+          // arrives. Usage/compaction accumulation is handled by
+          // applyUsageFromEvent (called above, pre-isNewEvent gate).
           const at = agentTypeForSession(event.session_id);
           for (const part of payload.parts ?? []) {
             if (!('data' in part)) continue;
@@ -262,19 +332,7 @@
             if (!dataObj.type && !dataObj.tokenUsage && !dataObj.method) continue;
 
             const norm = normalizeDataPart(at, dataObj as Record<string, unknown>);
-            if (norm.normalized === 'usage') {
-              const current = getOrCreateUsage(event.session_id);
-              const next = new Map($usageBySession);
-              next.set(event.session_id, {
-                ...current,
-                // Use || not ?? — Claude's usage_snapshot sends input_tokens: 0 meaning
-                // "not populated", not "zero tokens". Treating 0 as falsy is intentional.
-                inputTokens: norm.inputTokens || current.inputTokens,
-                outputTokens: norm.outputTokens || current.outputTokens,
-                contextWindow: norm.modelContextWindow ?? current.contextWindow,
-              });
-              usageBySession.set(next);
-            } else if (norm.normalized === 'text') {
+            if (norm.normalized === 'text') {
               // Persisted Codex agentMessage → settle the ephemeral text buffer
               const buf = ephemeralBuffers.get(event.session_id);
               if (buf && (event.msg_seq ?? 0) >= buf.lastSeq) {
@@ -282,14 +340,6 @@
                 persistedTextLen.delete(event.session_id);
                 ephemeralBuffers = new Map(ephemeralBuffers);
               }
-            } else if (isCompactionData(dataObj as { type: string; [key: string]: unknown })) {
-              const current = getOrCreateUsage(event.session_id);
-              const next = new Map($usageBySession);
-              next.set(event.session_id, {
-                ...current,
-                compactions: current.compactions + 1,
-              });
-              usageBySession.set(next);
             }
           }
         }
@@ -438,40 +488,26 @@
   );
   let events = $derived(eventsQuery.data ?? []);
 
-  // Extract usage data from REST-loaded events (terminal executions where SSE is not established)
+  // Drive usage/compaction accumulation from the polling cache so the
+  // context indicator works even when SSE is unavailable (permanent
+  // fallback after MAX_CONSECUTIVE_ERRORS, terminal executions where SSE
+  // never attaches, or mid-lifecycle executions where polling delivers
+  // events before the SSE backfill races in). The per-event dedupe set
+  // guarantees each event contributes exactly once regardless of path.
+  // Wait for execution + pool data to resolve so agent-type lookup doesn't
+  // fall back to claude_sdk for Codex sessions, permanently mis-normalizing
+  // the initial event batch.
   $effect(() => {
-    if (!isTerminal || !events.length) return;
-    const sid = activeSessionId;
-    if (!sid) return;
-    let changed = false;
-    const next = new Map(untrack(() => $usageBySession));
+    if (detailQuery.isLoading || poolQuery.isLoading) return;
     for (const event of events) {
-      if (event.event_type !== 'message' || !event.session_id) continue;
-      const at = agentTypeForSession(event.session_id);
-      const payload = event.payload as MessagePayload;
-      for (const part of payload.parts ?? []) {
-        if (!('data' in part)) continue;
-        const d = (part as { data: unknown }).data;
-        if (typeof d !== 'object' || d === null) continue;
-        const dataObj = d as { type?: string; method?: string; tokenUsage?: unknown; [key: string]: unknown };
-        if (!dataObj.type && !dataObj.tokenUsage && !dataObj.method) continue;
-
-        const norm = normalizeDataPart(at, dataObj as Record<string, unknown>);
-        if (norm.normalized === 'usage') {
-          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: false, supportsContextPercentage: false };
-          // Use || not ?? — Claude's usage_snapshot sends input_tokens: 0 meaning
-          // "not populated", not "zero tokens". Treating 0 as falsy is intentional.
-          next.set(event.session_id, { ...current, inputTokens: norm.inputTokens || current.inputTokens, outputTokens: norm.outputTokens || current.outputTokens, contextWindow: norm.modelContextWindow ?? current.contextWindow });
-          changed = true;
-        } else if (isCompactionData(dataObj as { type: string; [key: string]: unknown })) {
-          const current = next.get(event.session_id) ?? { inputTokens: 0, outputTokens: 0, contextWindow: 0, compactions: 0, available: false, supportsContextPercentage: false };
-          next.set(event.session_id, { ...current, compactions: current.compactions + 1 });
-          changed = true;
-        }
-      }
+      applyUsageFromEvent(event);
     }
-    if (changed) usageBySession.set(next);
   });
+
+  // Usage/compaction extraction from REST-loaded events lives in
+  // applyUsageFromEvent, which is called from both the SSE callback and the
+  // polling fallback $effect (above). The per-event dedupe set guarantees
+  // each event contributes exactly once regardless of delivery path.
 
   let inputSessionId = $derived(
     detail?.sessions.find(s => !s.parent_session_id)?.id ?? activeSessionId
@@ -623,28 +659,30 @@
             {/if}
           </span>
         {/if}
-        <div class="view-toggle" role="tablist" aria-label="Event view mode">
-          <button
-            class="toggle-btn"
-            class:active={viewMode === 'log'}
-            role="tab"
-            aria-selected={viewMode === 'log'}
-            onclick={() => viewMode = 'log'}
-          >Log</button>
-          <button
-            class="toggle-btn"
-            class:active={viewMode === 'chat'}
-            role="tab"
-            aria-selected={viewMode === 'chat'}
-            onclick={() => viewMode = 'chat'}
-          >Chat</button>
-          <button
-            class="toggle-btn"
-            class:active={viewMode === 'diff'}
-            role="tab"
-            aria-selected={viewMode === 'diff'}
-            onclick={() => viewMode = 'diff'}
-          >Diff</button>
+        <div class="view-toggle-wrapper">
+          <div class="view-toggle" role="tablist" aria-label="Event view mode">
+            <button
+              class="toggle-btn"
+              class:active={viewMode === 'log'}
+              role="tab"
+              aria-selected={viewMode === 'log'}
+              onclick={() => viewMode = 'log'}
+            >Log</button>
+            <button
+              class="toggle-btn"
+              class:active={viewMode === 'chat'}
+              role="tab"
+              aria-selected={viewMode === 'chat'}
+              onclick={() => viewMode = 'chat'}
+            >Chat</button>
+            <button
+              class="toggle-btn"
+              class:active={viewMode === 'diff'}
+              role="tab"
+              aria-selected={viewMode === 'diff'}
+              onclick={() => viewMode = 'diff'}
+            >Diff</button>
+          </div>
         </div>
       </div>
 
@@ -791,6 +829,10 @@
 
   .sse-retry:hover {
     color: hsl(var(--primary));
+  }
+
+  .view-toggle-wrapper {
+    position: relative;
   }
 
   .view-toggle {

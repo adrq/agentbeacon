@@ -1,11 +1,12 @@
 <script lang="ts">
   interface Props {
     data: Record<string, unknown>;
+    label?: string;
   }
 
-  let { data }: Props = $props();
+  let { data, label }: Props = $props();
 
-  let dataType = $derived((data.type as string) ?? 'data');
+  let dataType = $derived(label ?? (data.method as string) ?? (data.type as string) ?? 'data');
   let jsonText = $derived.by(() => {
     try {
       return JSON.stringify(data, null, 2);

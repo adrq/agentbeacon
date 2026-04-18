@@ -3,7 +3,7 @@
   import type { Event, Agent, SessionSummary, AgentType } from '../types';
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData } from '../types';
   import { normalizeDataPart } from '../normalize';
-  import { EVENT_FILTER_GROUPS, EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
+  import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
   import { api } from '../api';
 
   interface Props {
@@ -227,6 +227,17 @@
             case 'text':
               entries.push({ key, time, icon: '\u25CF', iconClass: 'agent', text: truncate(norm.text, 120), entryType: 'agent' });
               break;
+            case 'error':
+              entries.push({ key, time, icon: '\u2716', iconClass: 'error', text: truncate(norm.message, 160), entryType: 'error' });
+              break;
+            case 'fyi':
+              entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: truncate(norm.title, 160), entryType: 'fyi' });
+              break;
+            case 'debug': {
+              const method = (norm.raw.method as string | undefined) ?? (norm.raw.type as string | undefined) ?? norm.reason;
+              entries.push({ key, time, icon: '\u25A1', iconClass: 'agent', text: `[${method}]`, entryType: 'debug_event' });
+              break;
+            }
             case 'unknown': {
               const rawType = norm.raw.type as string | undefined;
               if (rawType === 'plan' && isPlanData(norm.raw as unknown as import('../types').DataPartPayload)) {
@@ -285,8 +296,7 @@
   let parsed = $derived(parseAllEvents(events));
 
   let filteredParsed = $derived(
-    eventFilter === 'all' ? parsed
-      : parsed.filter(entry => EVENT_FILTER_GROUPS[eventFilter]?.has(entry.entryType) ?? false)
+    parsed.filter(entry => matchesFilter(entry.entryType, eventFilter))
   );
 </script>
 

@@ -15,7 +15,7 @@
   import ErrorPanel from './renderers/ErrorPanel.svelte';
   import TodoChecklist from './renderers/TodoChecklist.svelte';
   import TodoPanel from './TodoPanel.svelte';
-  import { EVENT_FILTER_GROUPS, EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
+  import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
 
   interface Props {
     events: Event[];
@@ -289,8 +289,9 @@
     | { type: 'tool_stream'; groups: ToolGroupEntry[]; live: boolean; key: string }
     | { type: 'thinking'; data: NormalizedThinking; time: string; key: string; isStreaming?: boolean; startedAt?: string; durationMs?: number }
     | { type: 'data_fallback'; data: Record<string, unknown>; time: string; key: string }
-    | { type: 'error'; message: string; stderr?: string; time: string; key: string }
-    | { type: 'fyi'; text: string; time: string; key: string }
+    | { type: 'debug_event'; data: Record<string, unknown>; reason: string; time: string; key: string }
+    | { type: 'error'; message: string; stderr?: string; details?: string; time: string; key: string }
+    | { type: 'fyi'; text: string; details?: string; time: string; key: string }
     | { type: 'child_response'; agentLabel: string; childSessionId: string | null; text: string; time: string; key: string }
     | { type: 'todo_write'; todos: TodoItem[]; time: string; key: string }
     | { type: 'user_image'; mimeType: string; bytes: string; name?: string; time: string; key: string }
@@ -545,6 +546,15 @@
                 }
                 break;
               }
+              case 'error':
+                entries.push({ type: 'error', message: norm.message, details: norm.details, time, key: `${ev.id}-${seq++}` });
+                break;
+              case 'fyi':
+                entries.push({ type: 'fyi', text: norm.title, details: norm.details, time, key: `${ev.id}-${seq++}` });
+                break;
+              case 'debug':
+                entries.push({ type: 'debug_event', data: norm.raw, reason: norm.reason, time, key: `${ev.id}-${seq++}` });
+                break;
               case 'unknown': {
                 const rawType = norm.raw.type as string | undefined;
                 if (rawType === 'plan' && isPlanData(norm.raw as unknown as import('../types').DataPartPayload)) {
@@ -752,8 +762,7 @@
   });
 
   let filteredParsed = $derived(
-    eventFilter === 'all' ? parsed
-      : parsed.filter(entry => EVENT_FILTER_GROUPS[eventFilter]?.has(entry.type) ?? false)
+    parsed.filter(entry => matchesFilter(entry.type, eventFilter))
   );
 </script>
 
@@ -881,9 +890,13 @@
           <div class="chat-row tool-row">
             <DataFallback data={entry.data} />
           </div>
+        {:else if entry.type === 'debug_event'}
+          <div class="chat-row tool-row">
+            <DataFallback data={entry.data} label={entry.reason} />
+          </div>
         {:else if entry.type === 'error'}
           <div class="chat-row tool-row">
-            <ErrorPanel message={entry.message} stderr={entry.stderr} />
+            <ErrorPanel message={entry.message} stderr={entry.stderr ?? entry.details} />
           </div>
         {:else if entry.type === 'tool'}
           <div class="chat-row tool-row">
@@ -898,6 +911,12 @@
             <div class="fyi-card">
               <span class="fyi-icon">{'\u2139'}</span>
               <span class="fyi-text">{entry.text}</span>
+              {#if entry.details}
+                <details class="fyi-details">
+                  <summary>details</summary>
+                  <pre class="fyi-details-body">{entry.details}</pre>
+                </details>
+              {/if}
             </div>
           </div>
         {:else if entry.type === 'compaction'}
@@ -1366,6 +1385,7 @@
     font-size: 0.6875rem;
     color: hsl(var(--foreground));
     max-width: 85%;
+    flex-wrap: wrap;
   }
 
   .fyi-icon {
@@ -1376,6 +1396,31 @@
   .fyi-text {
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .fyi-details {
+    width: 100%;
+    margin-top: 0.25rem;
+  }
+
+  .fyi-details summary {
+    cursor: pointer;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+  }
+
+  .fyi-details-body {
+    margin-top: 0.25rem;
+    padding: 0.375rem 0.5rem;
+    background: hsl(var(--muted) / 0.3);
+    border-radius: var(--radius);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 14rem;
+    overflow-y: auto;
   }
 
   /* Scroll-to-bottom banner */

@@ -1,4 +1,11 @@
-import type { AgentType, NormalizedText, NormalizedUsage } from './types';
+import type {
+  AgentType,
+  NormalizedText,
+  NormalizedUsage,
+  NormalizedError,
+  NormalizedFyi,
+  NormalizedDebug,
+} from './types';
 
 export interface NormalizedToolCall {
   normalized: 'tool_call';
@@ -28,6 +35,9 @@ export type NormalizedData =
   | NormalizedThinking
   | NormalizedUsage
   | NormalizedText
+  | NormalizedError
+  | NormalizedFyi
+  | NormalizedDebug
   | { normalized: 'unknown'; raw: Record<string, unknown> };
 
 export function normalizeDataPart(agentType: AgentType, raw: Record<string, unknown>): NormalizedData {
@@ -159,6 +169,34 @@ function normalizeCodexPart(raw: Record<string, unknown>): NormalizedData {
     return { normalized: 'thinking', text: '' };
   }
 
+  // Errors from the executor — surface as first-class error rows.
+  if (method === 'error') {
+    const err = (params.error ?? {}) as Record<string, unknown>;
+    const message = (err.message as string | undefined)
+      ?? (typeof err === 'string' ? err : undefined)
+      ?? 'Executor error';
+    const details = err.additionalDetails as string | undefined;
+    return { normalized: 'error', message, details };
+  }
+
+  // Config warnings (e.g. disabled config.toml files). User-actionable but low-frequency.
+  if (method === 'configWarning') {
+    const summary = (params.summary as string | undefined) ?? 'Configuration warning';
+    const details = params.details == null
+      ? undefined
+      : (typeof params.details === 'string' ? params.details : JSON.stringify(params.details, null, 2));
+    return { normalized: 'fyi', title: summary, details };
+  }
+
+  // Other known-noise lifecycle methods — hidden from "All" but visible under Debug.
+  // Keeping raw payload so power users can inspect if anything looks off.
+  if (
+    method === 'thread/status/changed' ||
+    method === 'mcpServer/startupStatus/updated'
+  ) {
+    return { normalized: 'debug', raw, reason: method };
+  }
+
   // Legacy / backward compat: no method field — use type-based routing (old stored data)
   if (!method) {
     const type = raw.type as string | undefined;
@@ -244,6 +282,11 @@ function normalizeCodexItem(item: Record<string, unknown>): NormalizedData {
         text: agentText,
       };
     }
+    case 'userMessage':
+      // Codex echoes the user's input back via item/completed. The same text
+      // already appears as a ROLE_USER message part, so suppress from "All"
+      // while keeping it inspectable under Debug.
+      return { normalized: 'debug', raw: item, reason: 'userMessage' };
     default:
       return { normalized: 'unknown', raw: item };
   }
