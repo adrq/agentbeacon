@@ -102,7 +102,7 @@
       {/if}
       {#if agent.system_prompt}
         <div class="info-row">
-          <span class="info-label">System Prompt</span>
+          <span class="info-label">Personality</span>
           <span class="info-value" style="white-space: pre-wrap;">{agent.system_prompt}</span>
         </div>
       {/if}

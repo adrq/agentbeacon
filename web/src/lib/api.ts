@@ -1,5 +1,6 @@
 import type {
-  Agent, AgentPoolEntry, SessionDiscoveryEntry, ConfigEntry, Driver, Execution, ExecutionDetail, Session, Event, Project,
+  Agent, AgentPoolEntry, SessionDiscoveryEntry, ConfigEntry, Driver, DriverDescriptor, ModelSuggestion,
+  Execution, ExecutionDetail, Session, Event, Project,
   CreateExecutionResponse, PostMessageResponse, DiffResponse, WorktreeInfo,
   McpServer, McpServerPoolEntry,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
@@ -116,6 +117,14 @@ export class AgentBeaconAPI {
 
   async deleteDriver(id: string): Promise<void> {
     return this.fetchNoContent(`/drivers/${id}`, { method: 'DELETE' });
+  }
+
+  async getDriverDescriptor(platform: string): Promise<DriverDescriptor> {
+    return this.fetchJSON<DriverDescriptor>(`/drivers/${platform}/descriptor`);
+  }
+
+  async getDriverModels(platform: string): Promise<ModelSuggestion[]> {
+    return this.fetchJSON<ModelSuggestion[]>(`/drivers/${platform}/models`);
   }
 
   // Agents

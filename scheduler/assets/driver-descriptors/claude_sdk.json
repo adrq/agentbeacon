@@ -1,0 +1,79 @@
+{
+  "platform": "claude_sdk",
+  "label": "Claude SDK",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "model": { "type": "string" },
+      "max_turns": { "type": "integer", "minimum": 1 },
+      "max_budget_usd": { "type": "number", "minimum": 0 },
+      "effort": { "type": "string", "enum": ["low", "medium", "high", "max"] },
+      "thinking": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "budgetTokens": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "fields": [
+    {
+      "pointer": "/properties/model",
+      "label": "Model",
+      "help_text": "Claude model to use for this agent.",
+      "group": "basic",
+      "widget": "model_picker",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": "model-catalog"
+    },
+    {
+      "pointer": "/properties/max_turns",
+      "label": "Max turns",
+      "help_text": "Maximum number of agentic turns before stopping.",
+      "group": "basic",
+      "widget": "number",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/max_budget_usd",
+      "label": "Max budget (USD)",
+      "help_text": "Spending cap per session in US dollars.",
+      "group": "basic",
+      "widget": "number",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/effort",
+      "label": "Effort",
+      "help_text": "Controls how much effort the model spends on responses.",
+      "group": "basic",
+      "widget": "enum",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/thinking",
+      "label": "Thinking",
+      "help_text": "Extended thinking configuration.",
+      "group": "advanced",
+      "widget": "thinking",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    }
+  ]
+}

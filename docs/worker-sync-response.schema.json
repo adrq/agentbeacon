@@ -113,7 +113,7 @@
               "required": ["agent_id", "agent_type", "agent_config", "message"],
               "properties": {
                 "agent_id": { "type": "string", "minLength": 1 },
-                "agent_type": { "type": "string", "enum": ["claude_sdk", "codex_sdk", "copilot_sdk", "opencode_sdk", "acp", "a2a"] },
+                "agent_type": { "type": "string", "enum": ["claude_sdk", "codex_sdk", "copilot_sdk", "acp"] },
                 "agent_config": { "type": "object" },
                 "sandbox_config": {},
                 "message": {

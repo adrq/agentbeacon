@@ -12,14 +12,7 @@ use crate::app::AppState;
 use crate::db;
 use crate::error::SchedulerError;
 
-const VALID_PLATFORMS: &[&str] = &[
-    "claude_sdk",
-    "codex_sdk",
-    "copilot_sdk",
-    "opencode_sdk",
-    "acp",
-    "a2a",
-];
+pub const VALID_PLATFORMS: &[&str] = &["claude_sdk", "codex_sdk", "copilot_sdk", "acp"];
 
 #[derive(Debug, Serialize)]
 pub struct DriverResponse {
@@ -66,7 +59,13 @@ async fn list_drivers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<DriverResponse>>, SchedulerError> {
     let drivers = db::drivers::list(&state.db_pool).await?;
-    Ok(Json(drivers.into_iter().map(Into::into).collect()))
+    Ok(Json(
+        drivers
+            .into_iter()
+            .filter(|d| VALID_PLATFORMS.contains(&d.platform.as_str()))
+            .map(Into::into)
+            .collect(),
+    ))
 }
 
 async fn get_driver(
@@ -74,6 +73,9 @@ async fn get_driver(
     Path(id): Path<String>,
 ) -> Result<Json<DriverResponse>, SchedulerError> {
     let driver = db::drivers::get_by_id(&state.db_pool, &id).await?;
+    if !VALID_PLATFORMS.contains(&driver.platform.as_str()) {
+        return Err(SchedulerError::NotFound(format!("driver not found: {id}")));
+    }
     Ok(Json(driver.into()))
 }
 
@@ -129,6 +131,12 @@ async fn update_driver(
     Path(id): Path<String>,
     Json(req): Json<UpdateDriverRequest>,
 ) -> Result<Json<DriverResponse>, SchedulerError> {
+    // Reject updates to retired drivers
+    let existing = db::drivers::get_by_id(&state.db_pool, &id).await?;
+    if !VALID_PLATFORMS.contains(&existing.platform.as_str()) {
+        return Err(SchedulerError::NotFound(format!("driver not found: {id}")));
+    }
+
     if req.platform.is_some() {
         return Err(SchedulerError::ValidationFailed(
             "platform is immutable".to_string(),
@@ -168,10 +176,45 @@ async fn update_driver(
     Ok(Json(driver.into()))
 }
 
+async fn get_driver_descriptor(
+    Path(platform): Path<String>,
+) -> Result<Json<serde_json::Value>, SchedulerError> {
+    if !VALID_PLATFORMS.contains(&platform.as_str()) {
+        return Err(SchedulerError::NotFound(format!(
+            "no descriptor for platform: {platform}"
+        )));
+    }
+    let descriptor =
+        crate::services::driver_descriptors::get_descriptor(&platform).ok_or_else(|| {
+            SchedulerError::NotFound(format!("no descriptor for platform: {platform}"))
+        })?;
+    let value = serde_json::to_value(descriptor)
+        .map_err(|e| SchedulerError::Database(format!("failed to serialize descriptor: {e}")))?;
+    Ok(Json(value))
+}
+
+async fn get_driver_models(
+    Path(platform): Path<String>,
+) -> Result<Json<Vec<crate::services::model_catalog::ModelSuggestion>>, SchedulerError> {
+    if !VALID_PLATFORMS.contains(&platform.as_str()) {
+        return Err(SchedulerError::NotFound(format!(
+            "no models for platform: {platform}"
+        )));
+    }
+    let models = crate::services::model_catalog::list_models(&platform).await;
+    Ok(Json(models))
+}
+
 async fn delete_driver(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, SchedulerError> {
+    // Reject deletes on retired drivers
+    let existing = db::drivers::get_by_id(&state.db_pool, &id).await?;
+    if !VALID_PLATFORMS.contains(&existing.platform.as_str()) {
+        return Err(SchedulerError::NotFound(format!("driver not found: {id}")));
+    }
+
     // Guard: reject delete if agents reference this driver
     let agent_count = db::drivers::count_agents_by_driver(&state.db_pool, &id).await?;
     if agent_count > 0 {
@@ -192,4 +235,9 @@ pub fn routes() -> Router<AppState> {
             "/api/drivers/{id}",
             get(get_driver).patch(update_driver).delete(delete_driver),
         )
+        .route(
+            "/api/drivers/{platform}/descriptor",
+            get(get_driver_descriptor),
+        )
+        .route("/api/drivers/{platform}/models", get(get_driver_models))
 }

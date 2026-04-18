@@ -85,6 +85,24 @@ export function updateAgentMutation() {
   }));
 }
 
+export function driverDescriptorQuery(platform: () => string | null) {
+  return createQuery(() => ({
+    queryKey: ['driver-descriptor', platform()],
+    queryFn: () => api.getDriverDescriptor(platform()!),
+    enabled: !!platform(),
+    staleTime: 60_000,
+  }));
+}
+
+export function driverModelsQuery(platform: () => string | null) {
+  return createQuery(() => ({
+    queryKey: ['driver-models', platform()],
+    queryFn: () => api.getDriverModels(platform()!),
+    enabled: !!platform(),
+    staleTime: 60_000,
+  }));
+}
+
 export function deleteAgentMutation() {
   const queryClient = useQueryClient();
   return createMutation(() => ({

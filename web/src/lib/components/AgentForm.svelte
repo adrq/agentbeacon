@@ -1,9 +1,11 @@
 <script lang="ts">
   import { get } from 'svelte/store';
-  import { agentDetailQuery, createAgentMutation, updateAgentMutation, driversQuery } from '../queries/agents';
+  import { agentDetailQuery, createAgentMutation, updateAgentMutation, driversQuery, driverDescriptorQuery } from '../queries/agents';
   import { agentFormPrefill } from '../stores/appState';
   import { router } from '../router';
   import Button from './ui/button.svelte';
+  import DriverConfigForm from './agent-form/DriverConfigForm.svelte';
+  import RawJsonPanel from './agent-form/RawJsonPanel.svelte';
 
   interface Props {
     agentId?: string;
@@ -21,10 +23,11 @@
   let description = $state('');
   let systemPrompt = $state('');
   let selectedDriverId = $state('');
-  let configText = $state('{}');
+  let config: Record<string, unknown> = $state({});
   let sandboxConfigText = $state('');
   let error: string | null = $state(null);
-  let configError: string | null = $state(null);
+  let driverFormHasError = $state(false);
+  let rawPanelHasError = $state(false);
   let initialized = false;
   let prefillApplied = false;
 
@@ -33,10 +36,37 @@
     claude_sdk: 'Claude SDK',
     codex_sdk: 'Codex SDK',
     copilot_sdk: 'Copilot SDK',
-    opencode_sdk: 'OpenCode SDK',
     acp: 'ACP',
-    a2a: 'A2A',
   };
+
+  // Resolve platform from selected driver, falling back to agent_type for legacy drivers
+  const selectedPlatform = $derived.by(() => {
+    if (!selectedDriverId) return null;
+    const d = (drivers.data ?? []).find(d => d.id === selectedDriverId);
+    if (d) return d.platform;
+    // Legacy/retired driver not in filtered list — derive from agent record
+    if (isEdit && agentQuery.data) return agentQuery.data.agent_type;
+    return null;
+  });
+
+  const SUPPORTED_PLATFORMS = ['claude_sdk', 'codex_sdk', 'copilot_sdk', 'acp'];
+  const isUnsupportedPlatform = $derived(
+    selectedPlatform !== null && !SUPPORTED_PLATFORMS.includes(selectedPlatform)
+  );
+
+  const descriptorQuery = driverDescriptorQuery(() => selectedPlatform);
+
+  // Reset config when driver changes in create mode
+  let prevPlatform: string | null = null;
+  $effect(() => {
+    const p = selectedPlatform;
+    if (!isEdit && prevPlatform !== null && p !== prevPlatform) {
+      config = {};
+      driverFormHasError = false;
+      rawPanelHasError = false;
+    }
+    prevPlatform = p;
+  });
 
   // Populate from fetched agent data (edit mode)
   $effect(() => {
@@ -47,22 +77,19 @@
       description = agent.description ?? '';
       systemPrompt = agent.system_prompt ?? '';
       selectedDriverId = agent.driver_id ?? '';
-      configText = JSON.stringify(agent.config ?? {}, null, 2);
+      config = (agent.config && typeof agent.config === 'object' && !Array.isArray(agent.config))
+        ? { ...agent.config as Record<string, unknown> }
+        : {};
       sandboxConfigText = agent.sandbox_config ? JSON.stringify(agent.sandbox_config, null, 2) : '';
     }
   });
 
-  // Apply prefill store (create mode with template)
+  // Apply prefill store (create mode)
   $effect.pre(() => {
     if (!isEdit && !prefillApplied) {
       const prefill = get(agentFormPrefill);
       if (prefill) {
         prefillApplied = true;
-        if (prefill.template) {
-          name = prefill.template.name ?? '';
-          description = prefill.template.description ?? '';
-          configText = JSON.stringify(prefill.template.config ?? {}, null, 2);
-        }
         if (prefill.driverId) selectedDriverId = prefill.driverId;
         agentFormPrefill.set(null);
       }
@@ -73,15 +100,15 @@
   let initialName = $derived(agentQuery.data?.name ?? '');
   let initialDesc = $derived(agentQuery.data?.description ?? '');
   let initialSysPrompt = $derived(agentQuery.data?.system_prompt ?? '');
-  let initialConfig = $derived(JSON.stringify(agentQuery.data?.config ?? {}, null, 2));
+  let initialConfig = $derived(JSON.stringify(agentQuery.data?.config ?? {}));
   let initialSandbox = $derived(agentQuery.data?.sandbox_config ? JSON.stringify(agentQuery.data.sandbox_config, null, 2) : '');
 
   let isDirty = $derived(
     isEdit
       ? (name !== initialName || description !== initialDesc || systemPrompt !== initialSysPrompt ||
-         configText !== initialConfig || sandboxConfigText !== initialSandbox)
+         JSON.stringify(config) !== initialConfig || sandboxConfigText !== initialSandbox)
       : (name.trim().length > 0 || description.trim().length > 0 || systemPrompt.trim().length > 0 ||
-         selectedDriverId !== '' || configText !== '{}' || sandboxConfigText.trim().length > 0)
+         selectedDriverId !== '' || Object.keys(config).length > 0 || sandboxConfigText.trim().length > 0)
   );
 
   let submitting = $derived(createMut.isPending || updateMut.isPending);
@@ -98,27 +125,22 @@
     }
   }
 
+  // Block submission when descriptor is expected but not loaded
+  const descriptorRequired = $derived(
+    selectedDriverId !== '' && !isUnsupportedPlatform && selectedPlatform !== null
+  );
+  const descriptorReady = $derived(
+    !descriptorRequired || !!descriptorQuery.data
+  );
+
   let canSubmit = $derived.by(() => {
     if (!name.trim() || submitting) return false;
     if (!isEdit && !selectedDriverId) return false;
-    const config = parseJSON(configText);
-    if (!config) return false;
+    if (driverFormHasError || rawPanelHasError) return false;
+    if (!descriptorReady) return false;
     if (sandboxConfigText.trim() && !parseJSON(sandboxConfigText)) return false;
     return true;
   });
-
-  function validateConfig() {
-    if (!configText.trim()) {
-      configError = 'Config is required';
-      return;
-    }
-    const config = parseJSON(configText);
-    if (!config) {
-      configError = 'Invalid JSON object';
-      return;
-    }
-    configError = null;
-  }
 
   // Navigation guard — warns on dirty form
   let guardCleanup: (() => void) | null = null;
@@ -149,10 +171,7 @@
   async function handleSubmit() {
     if (!canSubmit) return;
     error = null;
-    validateConfig();
-    if (configError) return;
 
-    const config = parseJSON(configText)!;
     const sandboxConfig = sandboxConfigText.trim() ? parseJSON(sandboxConfigText) : null;
 
     try {
@@ -199,6 +218,15 @@
 
   function driverLabel(d: { name: string; platform: string }): string {
     return `${d.name} (${platformLabels[d.platform] ?? d.platform})`;
+  }
+
+  function handleConfigChange() {
+    // Trigger reactivity — config is mutated in place by DriverConfigForm
+    config = { ...config };
+  }
+
+  function handleRawJsonChange(newConfig: Record<string, unknown>) {
+    config = newConfig;
   }
 </script>
 
@@ -258,33 +286,49 @@
       {/if}
     </div>
 
-    <div class="field">
-      <label class="field-label" for="agent-config">Config (JSON)</label>
-      <textarea
-        id="agent-config"
-        class="field-textarea mono"
-        bind:value={configText}
-        onblur={validateConfig}
-        rows="6"
-      ></textarea>
-      {#if configError}
-        <span class="field-error">{configError}</span>
-      {/if}
-    </div>
+    {#if isUnsupportedPlatform}
+      <div class="field">
+        <span class="field-hint">This agent uses an unsupported driver ({selectedPlatform}). Config is read-only.</span>
+      </div>
+      <div class="field">
+        <label class="field-label">Config (JSON)</label>
+        <textarea
+          class="field-textarea mono"
+          value={JSON.stringify(config, null, 2)}
+          readonly
+          rows="6"
+        ></textarea>
+      </div>
+    {:else if descriptorQuery.data}
+      <DriverConfigForm
+        descriptor={descriptorQuery.data}
+        value={config}
+        onchange={handleConfigChange}
+        onerror={(hasErr) => driverFormHasError = hasErr}
+      />
+      <RawJsonPanel value={config} onchange={handleRawJsonChange} onerror={(hasErr) => rawPanelHasError = hasErr} />
+    {:else if descriptorQuery.isError}
+      <div class="field">
+        <span class="field-error">Failed to load driver configuration. Please try again.</span>
+      </div>
+    {:else if selectedDriverId}
+      <div class="field">
+        <span class="field-hint">Loading driver configuration...</span>
+      </div>
+    {/if}
 
     <hr class="form-section-divider" />
-    <div class="form-section-label">Advanced</div>
 
     <div class="field">
-      <label class="field-label" for="agent-system-prompt">System Prompt <span class="optional">(optional)</span></label>
+      <label class="field-label" for="agent-system-prompt">Personality <span class="optional">(optional)</span></label>
       <textarea
         id="agent-system-prompt"
         class="field-textarea"
         bind:value={systemPrompt}
         rows="4"
-        placeholder="Custom instructions for this agent..."
+        placeholder={'e.g. "You\'re an expert code reviewer. Be terse and technical."'}
       ></textarea>
-      <span class="field-hint">Prepended to agent's context at execution start.</span>
+      <span class="field-hint">Appended to the AgentBeacon briefing sent to this agent. Good for role framing; leave blank if the briefing alone is enough.</span>
     </div>
 
     <div class="field">

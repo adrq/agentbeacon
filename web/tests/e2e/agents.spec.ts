@@ -36,6 +36,11 @@ test('add agent via sidebar', async ({ page }) => {
 
   await page.getByLabel('Name').fill('E2E Test Agent');
   await page.getByLabel('Driver').selectOption({ label: 'acp (ACP)' });
+
+  // Wait for descriptor to load and fill required ACP command field
+  await expect(page.getByLabel('Command')).toBeVisible({ timeout: 5000 });
+  await page.getByLabel('Command').fill('echo');
+
   await page.locator('.form-panel').getByRole('button', { name: 'Add' }).click();
 
   await expect(page.getByRole('heading', { name: 'Add Agent' })).not.toBeVisible({ timeout: 5000 });

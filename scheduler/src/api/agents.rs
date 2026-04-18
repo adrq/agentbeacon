@@ -121,6 +121,14 @@ async fn create_agent(
             }
             other => other,
         })?;
+    // Reject retired platforms
+    if !crate::api::drivers::VALID_PLATFORMS.contains(&driver.platform.as_str()) {
+        return Err(SchedulerError::ValidationFailed(format!(
+            "driver platform '{}' is not supported",
+            driver.platform
+        )));
+    }
+
     let resolved_agent_type = driver.platform;
     let resolved_driver_id = driver.id;
 
@@ -130,6 +138,10 @@ async fn create_agent(
             "config must be a JSON object".to_string(),
         ));
     }
+
+    // Validate config against driver descriptor schema
+    crate::services::driver_descriptors::validate_config(&resolved_agent_type, &req.config)
+        .map_err(SchedulerError::ValidationFailed)?;
 
     let id = Uuid::new_v4().to_string();
     let config_str = serde_json::to_string(&req.config)
@@ -176,6 +188,26 @@ async fn update_agent(
                 "name must be non-empty and max 255 chars".to_string(),
             ));
         }
+    }
+
+    // Validate config against descriptor if provided
+    if let Some(ref config) = req.config {
+        let existing = db::agents::get_by_id(&state.db_pool, &id).await?;
+        let platform = if let Some(ref driver_id) = existing.driver_id {
+            let driver = db::drivers::get_by_id(&state.db_pool, driver_id).await?;
+            driver.platform
+        } else {
+            existing.agent_type.clone()
+        };
+        // Block config updates for retired platforms
+        if !crate::api::drivers::VALID_PLATFORMS.contains(&platform.as_str()) {
+            return Err(SchedulerError::ValidationFailed(format!(
+                "agent uses unsupported platform '{}'; config updates not allowed",
+                platform
+            )));
+        }
+        crate::services::driver_descriptors::validate_config(&platform, config)
+            .map_err(SchedulerError::ValidationFailed)?;
     }
 
     let config_str = req

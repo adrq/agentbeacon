@@ -59,11 +59,11 @@ test('MCP servers section renders in Integrations', async ({ page }) => {
 
 test('agent system_prompt field in form', async ({ page }) => {
   const agents: { id: string; name: string }[] = await apiGet('/api/agents');
-  let agent = agents.find(a => a.name === 'System Prompt Test Agent');
+  let agent = agents.find(a => a.name === 'Personality Test Agent');
   if (!agent) {
     const driverId = await ensureDriver('acp');
     agent = await apiPost('/api/agents', {
-      name: 'System Prompt Test Agent',
+      name: 'Personality Test Agent',
       driver_id: driverId,
       description: 'Agent for testing system_prompt form field',
       config: { command: 'echo', args: ['noop'], timeout: 60 },
@@ -77,8 +77,8 @@ test('agent system_prompt field in form', async ({ page }) => {
   await page.getByRole('button', { name: 'Edit' }).click();
   await expect(page.locator('.form-panel-title')).toHaveText('Edit Agent', { timeout: 5000 });
 
-  // Verify System Prompt field exists
-  const systemPromptField = page.getByLabel('System Prompt');
+  // Verify Personality field exists
+  const systemPromptField = page.getByLabel('Personality');
   await expect(systemPromptField).toBeVisible();
 
   // Fill in a system prompt
@@ -94,7 +94,7 @@ test('agent system_prompt field in form', async ({ page }) => {
   // Edit again and clear system prompt to clean up
   await page.getByRole('button', { name: 'Edit' }).click();
   await expect(page.locator('.form-panel-title')).toHaveText('Edit Agent', { timeout: 5000 });
-  await page.getByLabel('System Prompt').fill('');
+  await page.getByLabel('Personality').fill('');
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.locator('.form-panel-title')).not.toBeVisible({ timeout: 5000 });
 });

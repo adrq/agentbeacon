@@ -27,7 +27,7 @@ export type EventType = 'message' | 'state_change' | 'platform';
 export type Theme = 'light' | 'dark';
 export type RouteMode = 'view' | 'new' | 'edit';
 export type NavSection = 'home' | 'executions' | 'projects' | 'agents' | 'wiki' | 'settings';
-export type AgentType = 'claude_sdk' | 'codex_sdk' | 'copilot_sdk' | 'opencode_sdk' | 'acp' | 'a2a';
+export type AgentType = 'claude_sdk' | 'codex_sdk' | 'copilot_sdk' | 'acp';
 
 export interface Project {
   id: string;
@@ -544,4 +544,31 @@ export interface ConfigEntry {
   value: string;
   created_at: string;
   updated_at: string;
+}
+
+// Driver descriptor types
+export interface FieldAnnotation {
+  pointer: string;
+  label: string;
+  help_text: string | null;
+  group: string;
+  widget: string;
+  storage: string;
+  support_status: string | { ignored: string };
+  secret: boolean;
+  suggestions_source: string | null;
+}
+
+export interface DriverDescriptor {
+  platform: string;
+  label: string;
+  schema: Record<string, unknown>;
+  fields: FieldAnnotation[];
+}
+
+export interface ModelSuggestion {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
 }

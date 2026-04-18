@@ -1,0 +1,120 @@
+{
+  "platform": "codex_sdk",
+  "label": "Codex SDK",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "model": { "type": "string" },
+      "command": { "type": "string" },
+      "args": { "type": "array", "items": { "type": "string" } },
+      "timeout": { "type": "integer", "minimum": 1 },
+      "env": { "type": "object", "additionalProperties": { "type": "string" } },
+      "approval_policy": { "type": "string" },
+      "sandbox_policy": { "type": "string" },
+      "persist_extended_history": { "type": "boolean" },
+      "api_key_env": { "type": "string" }
+    },
+    "additionalProperties": false
+  },
+  "fields": [
+    {
+      "pointer": "/properties/model",
+      "label": "Model",
+      "help_text": "Codex model to use for this agent.",
+      "group": "basic",
+      "widget": "model_picker",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": "model-catalog"
+    },
+    {
+      "pointer": "/properties/sandbox_policy",
+      "label": "Sandbox policy",
+      "help_text": "Codex sandbox isolation policy.",
+      "group": "basic",
+      "widget": "text",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/persist_extended_history",
+      "label": "Persist extended history",
+      "help_text": "Whether to persist extended conversation history.",
+      "group": "basic",
+      "widget": "boolean",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/approval_policy",
+      "label": "Approval policy",
+      "help_text": "Forced to `never` by the executor.",
+      "group": "basic",
+      "widget": "text",
+      "storage": "config",
+      "support_status": { "ignored": "forced to `never` by executor" },
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/command",
+      "label": "Command",
+      "help_text": "Binary to execute.",
+      "group": "advanced",
+      "widget": "text",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/args",
+      "label": "Arguments",
+      "help_text": "Command-line arguments passed to the binary.",
+      "group": "advanced",
+      "widget": "raw_json",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/timeout",
+      "label": "Timeout",
+      "help_text": "Process timeout in seconds.",
+      "group": "advanced",
+      "widget": "number",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/env",
+      "label": "Environment",
+      "help_text": "Extra environment variables for the process.",
+      "group": "advanced",
+      "widget": "env_map",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/api_key_env",
+      "label": "API key env var",
+      "help_text": "Name of an environment variable containing the API key. Injected as OPENAI_API_KEY.",
+      "group": "advanced",
+      "widget": "text",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": true,
+      "suggestions_source": null
+    }
+  ]
+}

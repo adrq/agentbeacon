@@ -1,6 +1,5 @@
 import { writable } from 'svelte/store';
 import type { Theme, NavSection, ExecutionPrefill, RouteMode, UsageState } from '../types';
-import type { AgentTemplate } from '../utils/agentUtils';
 
 export function safeGetItem(key: string): string | null {
   try { return typeof window !== 'undefined' ? localStorage.getItem(key) : null; } catch { return null; }
@@ -45,7 +44,7 @@ export const selectedAgentId = writable<string | null>(null);
 export const selectedFilterProjectId = writable<string | null>(null);
 export const routeMode = writable<RouteMode>('view');
 export const executionPrefill = writable<ExecutionPrefill | null>(null);
-export const agentFormPrefill = writable<{ template?: AgentTemplate; driverId?: string } | null>(null);
+export const agentFormPrefill = writable<{ driverId?: string } | null>(null);
 
 function createPersistedBoolStore(key: string, defaultValue: boolean) {
   const stored = safeGetItem(key);

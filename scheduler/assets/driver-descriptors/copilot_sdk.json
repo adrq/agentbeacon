@@ -1,0 +1,60 @@
+{
+  "platform": "copilot_sdk",
+  "label": "Copilot SDK",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "model": { "type": "string" },
+      "reasoning_effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] },
+      "provider": { "type": "object" },
+      "api_key_env": { "type": "string" }
+    },
+    "additionalProperties": false
+  },
+  "fields": [
+    {
+      "pointer": "/properties/model",
+      "label": "Model",
+      "help_text": "Copilot model to use for this agent.",
+      "group": "basic",
+      "widget": "model_picker",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": "model-catalog"
+    },
+    {
+      "pointer": "/properties/reasoning_effort",
+      "label": "Reasoning effort",
+      "help_text": "Controls how much reasoning the model applies.",
+      "group": "basic",
+      "widget": "enum",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/provider",
+      "label": "Provider",
+      "help_text": "Custom provider configuration object.",
+      "group": "advanced",
+      "widget": "provider",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
+    },
+    {
+      "pointer": "/properties/api_key_env",
+      "label": "API key env var",
+      "help_text": "Name of an environment variable containing the provider API key.",
+      "group": "advanced",
+      "widget": "text",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": true,
+      "suggestions_source": null
+    }
+  ]
+}
