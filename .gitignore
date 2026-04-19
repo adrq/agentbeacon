@@ -71,6 +71,10 @@ dist/
 build/
 coverage/
 
+# Docs site (Astro/Starlight)
+docs/.astro/
+docs/src/assets/logo-*.svg
+
 # Playwright test artifacts (web/)
 web/test-results/
 web/playwright-report/

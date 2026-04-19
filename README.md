@@ -83,7 +83,7 @@ Requires Rust toolchain and Node.js 20+.
 
 **Prerequisites:**
 - Node.js 20+ (for agent SDK dependencies)
-- At least one coding agent CLI installed: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex) (coming soon), [Copilot CLI](https://github.com/github/copilot-cli), [OpenCode](https://github.com/anomalyco/opencode) (coming soon), or any [ACP](https://spec.agentcontextprotocol.org/)-compatible agent
+- At least one coding agent CLI installed: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Copilot CLI](https://github.com/github/copilot-cli), [OpenCode](https://github.com/anomalyco/opencode) (coming soon), or any [ACP](https://agentclientprotocol.com/get-started/introduction)-compatible agent
 - An API key or subscription for the corresponding provider
 
 **Note:** AgentBeacon orchestrates coding agents you already have installed — it doesn't bundle or replace them.
@@ -114,7 +114,7 @@ Requires Rust toolchain and Node.js 20+.
 
 **Agents talk to each other, not just to you.** Any agent can message any other agent in the hierarchy directly. Two agents negotiate an API contract. A reviewer messages the implementer about a concern. The authority tree governs lifecycle and accountability; communication is open. No copy-paste between terminals, no human relay.
 
-**Protocol-native, self-hosted, provider-agnostic.** Native integrations for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [GitHub Copilot](https://github.com/github/copilot-cli), and [OpenCode](https://github.com/anomalyco/opencode), with [ACP](https://spec.agentcontextprotocol.org/) support for any compatible agent. Built on [MCP](https://modelcontextprotocol.io/) for tool integration and [A2A](https://google.github.io/A2A/) for agent interop. No proprietary protocols. Your code, your machine, your API keys.
+**Protocol-native, self-hosted, provider-agnostic.** Native integrations for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [GitHub Copilot](https://github.com/github/copilot-cli), and [OpenCode](https://github.com/anomalyco/opencode), with [ACP](https://agentclientprotocol.com/get-started/introduction) support for any compatible agent. Built on [MCP](https://modelcontextprotocol.io/) for tool integration and [A2A](https://google.github.io/A2A/) for agent interop. No proprietary protocols. Your code, your machine, your API keys.
 
 **Two primitives, any scale.** The entire coordination model is two operations: `delegate` and `release` — create and destroy. When agents hit genuine ambiguity, they surface structured questions to a decision queue. From 3 agents to 100+. Research shows LLM performance degrades with tool count, so the surface is deliberately small. The same primitives work at every level of the hierarchy, whether that's two agents or twenty.
 

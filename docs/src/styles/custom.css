@@ -1,0 +1,7 @@
+:root {
+  --sl-font: 'Geist', sans-serif;
+  --sl-font-mono: 'Geist Mono', monospace;
+  --sl-color-accent-low: hsl(221 83% 16%);
+  --sl-color-accent: hsl(221 83% 53%);
+  --sl-color-accent-high: hsl(221 83% 85%);
+}

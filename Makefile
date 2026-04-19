@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-e2e-serial test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm run clean pre-commit dev-backend dev-frontend
+.PHONY: all build build-frontend build-docs build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-e2e-serial test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm run clean pre-commit dev-backend dev-frontend dev-docs
 
 RUST_STRICT_FLAGS ?= -Dwarnings
 
@@ -6,7 +6,7 @@ RUST_STRICT_FLAGS ?= -Dwarnings
 ZIG_DIR = $(shell uv run python -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))')
 
 # Default target
-all: build-frontend executors build
+all: build-frontend build-docs executors build
 
 executors:
 	cd executors && npm install && npm run build
@@ -19,6 +19,17 @@ npm-install:
 build-frontend: npm-install
 	@echo "Building frontend..."
 	cd web && npm run build
+
+# Copy shared assets into docs site
+docs-assets:
+	@mkdir -p docs/src/assets
+	cp web/src/assets/logo-mark-light.svg docs/src/assets/logo-light.svg
+	cp web/src/assets/logo-mark-dark.svg docs/src/assets/logo-dark.svg
+
+# Build docs site (for embedding in binary)
+build-docs: docs-assets
+	@echo "Building docs site..."
+	cd docs && npm install && DOCS_BASE=/docs/ npm run build
 
 # Build Rust binaries and install to bin/
 build: install-bins
@@ -172,6 +183,7 @@ clean:
 	rm -rf bin/*
 	rm -rf dist/*
 	cd web && rm -rf dist/
+	cd docs && rm -rf dist/
 	rm -rf executors/dist
 	cargo clean
 
@@ -181,7 +193,7 @@ pre-commit:
 	uv run pre-commit run
 
 # Development mode - run scheduler in dev mode
-dev-backend:
+dev-backend: build-docs
 	@echo "Starting scheduler in dev mode on port $${AGENTBEACON_PORT:-9456}..."
 	DEV_MODE=1 cargo run --bin agentbeacon -- --port $${AGENTBEACON_PORT:-9456}
 
@@ -189,3 +201,8 @@ dev-backend:
 dev-frontend:
 	@echo "Starting Vite dev server (proxy → port $${AGENTBEACON_PORT:-9456})..."
 	cd web && AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9456} npm run dev
+
+# Development mode - run docs dev server
+dev-docs: docs-assets
+	@echo "Starting docs dev server..."
+	cd docs && DOCS_BASE=/docs/ npm run dev -- --port $${DOCS_DEV_PORT:-$$(($${AGENTBEACON_PORT:-9456} + 2000))}

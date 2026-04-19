@@ -31,6 +31,10 @@ export default defineConfig({
         target: `http://localhost:${beaconPort}`,
         changeOrigin: true,
       },
+      '/docs': {
+        target: `http://localhost:${beaconPort}`,
+        changeOrigin: true,
+      },
     },
   },
   build: {

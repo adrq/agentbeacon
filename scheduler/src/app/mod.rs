@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{Request, State},
-    response::Redirect,
+    response::{IntoResponse, Redirect},
     routing::get,
 };
 use std::collections::{HashMap, HashSet};
@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 use tracing::warn;
 
-use crate::assets::Assets;
+use crate::assets::{Assets, DocsAssets};
 use crate::db::DbPool;
 use crate::queue::TaskQueue;
 use crate::search::WikiSearchIndex;
@@ -64,6 +64,7 @@ pub struct AppState {
     pub event_broadcast: broadcast::Sender<EventNotification>,
     pub wiki_search: WikiSearchIndex,
     pub vite_dev_port: u16,
+    pub docs_dev_port: u16,
     pub supervisor: Arc<Supervisor>,
     pub stop_turn_intents: Arc<RwLock<HashSet<String>>>,
     pub worker_heartbeats: Arc<RwLock<HashMap<String, std::time::Instant>>>,
@@ -88,6 +89,10 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(port + 1000);
+        let docs_dev_port = std::env::var("DOCS_DEV_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(port + 2000);
         let heartbeat_timeout_secs = std::env::var("AGENTBEACON_HEARTBEAT_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -100,6 +105,7 @@ impl AppState {
             event_broadcast,
             wiki_search,
             vite_dev_port,
+            docs_dev_port,
             supervisor,
             stop_turn_intents: Arc::new(RwLock::new(HashSet::new())),
             worker_heartbeats: Arc::new(RwLock::new(HashMap::new())),
@@ -166,10 +172,14 @@ pub fn create_router(state: AppState, dev_mode: bool, port: u16) -> Router {
     let base_router = Router::new().merge(crate::api::routes());
     let compressed = if dev_mode {
         base_router
+            .route("/docs", get(dev_mode_proxy_docs))
+            .route("/docs/{*path}", get(dev_mode_proxy_docs))
             .route("/", get(dev_mode_redirect_root))
             .fallback(dev_mode_redirect_path)
     } else {
         base_router
+            .route("/docs", get(serve_docs))
+            .route("/docs/{*path}", get(serve_docs))
             .route("/", get(serve_index))
             .route("/index.html", get(serve_index))
             .fallback(serve_spa_fallback)
@@ -275,4 +285,48 @@ async fn serve_spa_fallback(req: Request) -> axum::response::Response {
         // Default to index.html for root and unmatched routes
         Assets::serve_spa_fallback()
     }
+}
+
+/// Serve embedded docs site assets
+async fn serve_docs(req: Request) -> axum::response::Response {
+    let full_path = req.uri().path();
+    let path = full_path.strip_prefix("/docs").unwrap_or("");
+    let path = path.trim_start_matches('/');
+
+    // /docs (no trailing slash) -> redirect to /docs/
+    if full_path == "/docs" {
+        return Redirect::permanent("/docs/").into_response();
+    }
+
+    // /docs/ (root) -> serve index.html
+    if path.is_empty() {
+        return DocsAssets::serve_index();
+    }
+
+    // Try exact asset match first
+    let response = DocsAssets::serve(path);
+    if response.status() != axum::http::StatusCode::NOT_FOUND {
+        return response;
+    }
+
+    // For paths with file extensions, asset genuinely missing
+    if path.contains('.') {
+        return DocsAssets::not_found();
+    }
+
+    // Clean URLs: try path/index.html
+    let index_path = format!("{}/index.html", path.trim_end_matches('/'));
+    let response = DocsAssets::serve(&index_path);
+    if response.status() != axum::http::StatusCode::NOT_FOUND {
+        return response;
+    }
+
+    // Both lookups missed -> Starlight 404 page
+    DocsAssets::not_found()
+}
+
+/// Dev mode: redirect /docs/* to docs dev server
+async fn dev_mode_proxy_docs(State(state): State<AppState>, req: Request) -> Redirect {
+    let path = req.uri().path();
+    Redirect::temporary(&format!("http://localhost:{}{path}", state.docs_dev_port))
 }
