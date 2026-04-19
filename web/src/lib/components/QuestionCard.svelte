@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { QuestionOption } from '../types';
+  import Markdown from './Markdown.svelte';
 
   interface Props {
     question: string;
@@ -67,10 +68,10 @@
     <div class="question-label">Question {index + 1} of {total}</div>
   {/if}
 
-  <p class="question-text">{question}</p>
+  <div class="question-text"><Markdown text={question} /></div>
 
   {#if context}
-    <p class="question-context">{context}</p>
+    <div class="question-context"><Markdown text={context} /></div>
   {/if}
 
   <div class="options-list">
@@ -91,7 +92,7 @@
             </span>
             <div class="option-content">
               <span class="option-label">{opt.label}</span>
-              <span class="option-desc">{opt.description}</span>
+              <div class="option-desc">{opt.description}</div>
             </div>
           </button>
         {/each}
@@ -181,7 +182,7 @@
 
   .question-label {
     font-size: 0.625rem;
-    font-weight: 600;
+    font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: hsl(var(--muted-foreground));
@@ -189,7 +190,7 @@
   }
 
   .question-text {
-    font-size: 0.8125rem;
+    font-size: 0.875rem;
     font-weight: 600;
     color: hsl(var(--foreground));
     margin-bottom: 0.25rem;
@@ -269,7 +270,7 @@
   .option-label {
     display: block;
     font-size: 0.6875rem;
-    font-weight: 600;
+    font-weight: 500;
     color: hsl(var(--foreground));
   }
 
@@ -301,5 +302,49 @@
 
   .decide-card {
     border-style: dashed;
+  }
+
+  .question-text :global(.markdown-body) {
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+  .question-context :global(.markdown-body) {
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    color: hsl(var(--muted-foreground));
+  }
+  .question-text :global(.markdown-body p),
+  .question-context :global(.markdown-body p) {
+    margin: 0;
+  }
+  .question-text :global(.markdown-body h1),
+  .question-text :global(.markdown-body h2),
+  .question-text :global(.markdown-body h3),
+  .question-text :global(.markdown-body h4),
+  .question-text :global(.markdown-body h5),
+  .question-text :global(.markdown-body h6),
+  .question-context :global(.markdown-body h1),
+  .question-context :global(.markdown-body h2),
+  .question-context :global(.markdown-body h3),
+  .question-context :global(.markdown-body h4),
+  .question-context :global(.markdown-body h5),
+  .question-context :global(.markdown-body h6) {
+    margin: 0;
+    font-size: inherit;
+    font-weight: inherit;
+  }
+  .question-text :global(.markdown-body ul),
+  .question-text :global(.markdown-body ol),
+  .question-context :global(.markdown-body ul),
+  .question-context :global(.markdown-body ol) {
+    margin: 0;
+    padding-left: 1.25em;
+  }
+  .question-text :global(.markdown-body pre),
+  .question-text :global(.markdown-body blockquote),
+  .question-context :global(.markdown-body pre),
+  .question-context :global(.markdown-body blockquote) {
+    margin: 0.25rem 0;
   }
 </style>

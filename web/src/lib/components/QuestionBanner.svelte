@@ -2,7 +2,7 @@
   import type { Execution, SessionSummary, Event, Agent } from '../types';
   import { extractQuestions, composeAnswer, submitAnswer } from '../questions';
   import type { QuestionState } from '../questions';
-  import { submittedBatches, markBatchSubmitted, tryClaimSubmit, releaseSubmit } from '../stores/questionState';
+  import { submittedBatches, suppressedSessions, suppressSession, markBatchSubmitted, tryClaimSubmit, releaseSubmit } from '../stores/questionState';
   import { requestNotificationPermission } from '../adapters/standalone';
   import QuestionCard from './QuestionCard.svelte';
 
@@ -15,6 +15,7 @@
 
   let { execution, sessions, events, agents }: Props = $props();
 
+  let collapsed = $state(false);
   let submitting = $state(false);
   let submitted = $state(false);
   let error: string | null = $state(null);
@@ -34,10 +35,18 @@
     inputSessionId ? $submittedBatches[inputSessionId] === lastBatchId && lastBatchId !== '' : false
   );
 
+  // Detect cross-surface dismiss (e.g., dismissed from DecisionQueue sidebar)
+  let isSuppressed = $derived(
+    inputSessionId ? $suppressedSessions[inputSessionId] === lastBatchId && lastBatchId !== '' : false
+  );
+
   // Update questions only when the batch changes, preserving answers otherwise
   $effect(() => {
     const { batchId: newBatchId, questions: extracted } = extractQuestions(events);
     if (newBatchId !== lastBatchId || extracted.length !== questions.length) {
+      if (newBatchId !== lastBatchId) {
+        collapsed = false;
+      }
       lastBatchId = newBatchId;
       questions = extracted;
       allAnswered = false;
@@ -72,7 +81,7 @@
     requestNotificationPermission();
 
     try {
-      await submitAnswer(inputSessionId, composeAnswer(questions));
+      await submitAnswer(inputSessionId, composeAnswer(questions), lastBatchId);
       markBatchSubmitted(inputSessionId, lastBatchId);
       releaseSubmit(inputSessionId, lastBatchId);
       submitted = true;
@@ -94,10 +103,10 @@
   }
 </script>
 
-{#if inputSessionId && !submitted && !crossSubmitted && (questions.length > 0 || events.length === 0)}
+{#if inputSessionId && !submitted && !crossSubmitted && !isSuppressed && (questions.length > 0 || events.length === 0)}
   <div class="question-banner" class:loading={questions.length === 0}>
-    <div class="banner-header">
-      <span class="banner-icon">&#x26A0;</span>
+    <button type="button" class="banner-header" onclick={() => collapsed = !collapsed} aria-expanded={!collapsed} aria-controls={!collapsed ? "question-content" : undefined}>
+      <span class="banner-icon" aria-hidden="true">&#x26A0;</span>
       <span class="banner-title">
         {#if questions.length === 0}
           Loading question&hellip;
@@ -113,40 +122,60 @@
         {/if}
         {#if execution.title}&middot; {execution.title}{/if}
       </span>
-    </div>
+      <span class="collapse-toggle">
+        <span class="collapse-chevron" class:expanded={!collapsed} aria-hidden="true">&#x25B8;</span>
+        {collapsed ? 'Expand' : 'Collapse'}
+      </span>
+      {#if collapsed}
+        <span class="collapsed-summary">
+          {questions.length} question{questions.length !== 1 ? 's' : ''} pending — click to expand
+        </span>
+      {/if}
+    </button>
 
-    <div class="banner-questions">
-      {#each questions as q, i (lastBatchId + ':' + i)}
-        <QuestionCard
-          question={q.questionText}
-          context={q.context}
-          options={q.options}
-          index={i}
-          total={questions.length}
-          onanswer={(answer) => handleAnswer(i, answer)}
-        />
-      {/each}
-    </div>
+    {#if !collapsed}
+    <div id="question-content">
+      <div class="banner-questions">
+        {#each questions as q, i (lastBatchId + ':' + i)}
+          <QuestionCard
+            question={q.questionText}
+            context={q.context}
+            options={q.options}
+            index={i}
+            total={questions.length}
+            onanswer={(answer) => handleAnswer(i, answer)}
+          />
+        {/each}
+      </div>
 
-    {#if error}
-      <div class="banner-error" role="alert">{error}</div>
+      {#if error}
+        <div class="banner-error" role="alert">{error}</div>
+      {/if}
+
+      <div class="banner-actions">
+        <button
+          type="button"
+          class="dismiss-btn"
+          onclick={() => { if (inputSessionId) suppressSession(inputSessionId, lastBatchId); }}
+        >
+          Dismiss
+        </button>
+        <button
+          class="submit-btn"
+          disabled={!allAnswered || submitting}
+          onclick={handleSubmit}
+        >
+          {#if submitting}
+            Submitting...
+          {:else if questions.length <= 1}
+            Submit Answer
+          {:else}
+            Submit All Answers
+          {/if}
+        </button>
+      </div>
+    </div>
     {/if}
-
-    <div class="banner-actions">
-      <button
-        class="submit-btn"
-        disabled={!allAnswered || submitting}
-        onclick={handleSubmit}
-      >
-        {#if submitting}
-          Submitting...
-        {:else if questions.length <= 1}
-          Submit Answer
-        {:else}
-          Submit All Answers
-        {/if}
-      </button>
-    </div>
   </div>
 {:else if submitted || crossSubmitted}
   <div class="submitted-banner">
@@ -166,9 +195,18 @@
 
   .banner-header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.375rem;
     margin-bottom: 0.5rem;
+    background: none;
+    border: none;
+    padding: 0;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
   }
 
   .banner-icon {
@@ -178,7 +216,7 @@
 
   .banner-title {
     font-size: 0.6875rem;
-    font-weight: 700;
+    font-weight: 500;
     letter-spacing: 0.05em;
     color: hsl(var(--status-attention));
   }
@@ -192,6 +230,39 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+
+  .collapse-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: auto;
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+    font-weight: 500;
+  }
+
+  .collapse-toggle:hover {
+    color: hsl(var(--foreground));
+  }
+
+  .collapse-chevron {
+    display: inline-block;
+    transition: transform 0.15s ease;
+    font-size: 0.5rem;
+  }
+
+  .collapse-chevron.expanded {
+    transform: rotate(90deg);
+  }
+
+  .collapsed-summary {
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+    width: 100%;
+    flex-basis: 100%;
   }
 
   .banner-error {
@@ -205,8 +276,25 @@
 
   .banner-actions {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
     margin-top: 0.5rem;
+  }
+
+  .dismiss-btn {
+    padding: 0.375rem 0.75rem;
+    border-radius: var(--radius);
+    border: 1px solid hsl(var(--border));
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  .dismiss-btn:hover {
+    color: hsl(var(--foreground));
+    border-color: hsl(var(--foreground) / 0.3);
   }
 
   .submit-btn {
@@ -216,7 +304,7 @@
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));
     font-size: 0.6875rem;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     transition: opacity 0.15s;
   }
@@ -254,7 +342,7 @@
   }
 
   .submitted-icon {
-    font-size: 1rem;
-    font-weight: 700;
+    font-size: 0.8125rem;
+    font-weight: 500;
   }
 </style>

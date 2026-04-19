@@ -47,10 +47,10 @@ export function extractQuestions(events: Event[]): { batchId: string; questions:
   const hasAnswer = events.some(ev => {
     if (ev.id <= latestMaxId) return false;
     if (!isMessagePayload(ev.payload) || ev.payload.role !== 'ROLE_USER') return false;
-    const hasSender = ev.payload.parts.some(
-      p => 'data' in p && (p.data as Record<string, unknown>)?.type === 'sender'
+    return ev.payload.parts.some(
+      p => 'data' in p && (p.data as Record<string, unknown>)?.type === 'question_answer'
+        && (p.data as Record<string, unknown>)?.batch_id === latestBatchId
     );
-    return !hasSender;
   });
   if (hasAnswer) return { batchId: '', questions: [] };
 
@@ -73,6 +73,9 @@ export function composeAnswer(questions: QuestionState[]): string {
   return questions.map(q => `${q.questionText}: ${q.answer}`).join('\n');
 }
 
-export async function submitAnswer(sessionId: string, answer: string): Promise<void> {
-  await api.postMessage(sessionId, [{ text: answer }]);
+export async function submitAnswer(sessionId: string, answer: string, batchId: string): Promise<void> {
+  await api.postMessage(sessionId, [
+    { text: answer },
+    { data: { type: 'question_answer', batch_id: batchId } },
+  ]);
 }

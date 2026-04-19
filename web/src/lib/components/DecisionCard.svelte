@@ -22,6 +22,7 @@
 
   let { sessionId, executionId, executionTitle, agentName: agentLabel, projectName, batchId, questions, createdAt, onsubmitted }: Props = $props();
 
+  let collapsed = $state(false);
   let submitting = $state(false);
   let error: string | null = $state(null);
   let allAnswered = $state(false);
@@ -61,7 +62,7 @@
     // Request notification permission synchronously from user gesture (before async boundary)
     requestNotificationPermission();
     try {
-      await submitAnswer(sessionId, composeAnswer(buildAnswerQuestions()));
+      await submitAnswer(sessionId, composeAnswer(buildAnswerQuestions()), batchId);
       markBatchSubmitted(sessionId, batchId);
       releaseSubmit(sessionId, batchId);
       toasts.success('Answer submitted');
@@ -80,49 +81,69 @@
 </script>
 
 <div class="decision-card">
-  <div class="card-header">
+  <button type="button" class="card-header" onclick={() => collapsed = !collapsed} aria-expanded={!collapsed}>
     <div class="card-meta">
       <span class="card-title">{executionTitle ?? 'Untitled execution'}</span>
       <span class="card-agent">{agentLabel}{projectName ? ` · ${projectName}` : ''}</span>
       <span class="card-waiting">waiting <ElapsedTime startTime={createdAt} /></span>
     </div>
-    <button class="view-link" onclick={viewExecution}>
-      View execution &rarr;
+    <span class="collapse-toggle">
+      <span class="collapse-chevron" class:expanded={!collapsed} aria-hidden="true">&#x25B8;</span>
+      {collapsed ? 'Expand' : 'Collapse'}
+    </span>
+    {#if collapsed}
+      <span class="collapsed-summary">
+        {questions.length} question{questions.length !== 1 ? 's' : ''} pending
+      </span>
+    {/if}
+  </button>
+  {#if collapsed}
+    <button type="button" class="view-execution-btn" onclick={viewExecution}>
+      view execution &rarr;
     </button>
-  </div>
-
-  <div class="card-questions">
-    {#each questions as q, i (batchId + ':' + i)}
-      <QuestionCard
-        question={q.questionText}
-        context={q.context}
-        options={q.options}
-        index={i}
-        total={questions.length}
-        onanswer={(answer) => handleAnswer(i, answer)}
-      />
-    {/each}
-  </div>
-
-  {#if error}
-    <div class="card-error" role="alert">{error}</div>
   {/if}
 
-  <div class="card-actions">
-    <button
-      class="submit-btn"
-      disabled={!allAnswered || submitting}
-      onclick={handleSubmit}
-    >
-      {#if submitting}
-        Submitting...
-      {:else if questions.length <= 1}
-        Submit Answer
-      {:else}
-        Submit All Answers
-      {/if}
-    </button>
-  </div>
+  {#if !collapsed}
+    <div class="card-questions">
+      {#each questions as q, i (batchId + ':' + i)}
+        <QuestionCard
+          question={q.questionText}
+          context={q.context}
+          options={q.options}
+          index={i}
+          total={questions.length}
+          onanswer={(answer) => handleAnswer(i, answer)}
+        />
+      {/each}
+    </div>
+
+    {#if error}
+      <div class="card-error" role="alert">{error}</div>
+    {/if}
+
+    <div class="card-actions">
+      <button
+        type="button"
+        class="dismiss-btn"
+        onclick={() => onsubmitted?.(sessionId, batchId)}
+      >
+        Dismiss
+      </button>
+      <button
+        class="submit-btn"
+        disabled={!allAnswered || submitting}
+        onclick={handleSubmit}
+      >
+        {#if submitting}
+          Submitting...
+        {:else if questions.length <= 1}
+          Submit Answer
+        {:else}
+          Submit All Answers
+        {/if}
+      </button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -135,11 +156,19 @@
 
   .card-header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
+    gap: 0.375rem;
     padding: 0.5rem 0.75rem;
+    border: none;
     border-bottom: 1px solid hsl(var(--border));
     background: hsl(var(--muted) / 0.3);
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
   }
 
   .card-meta {
@@ -151,7 +180,7 @@
   }
 
   .card-title {
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     font-weight: 600;
     color: hsl(var(--foreground));
     overflow: hidden;
@@ -174,17 +203,52 @@
     flex-shrink: 0;
   }
 
-  .view-link {
+  .collapse-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: auto;
     font-size: 0.6875rem;
-    color: hsl(var(--primary));
-    background: none;
-    border: none;
-    cursor: pointer;
-    flex-shrink: 0;
-    padding: 0.125rem 0;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
   }
 
-  .view-link:hover {
+  .collapse-toggle:hover {
+    color: hsl(var(--foreground));
+  }
+
+  .collapse-chevron {
+    display: inline-block;
+    transition: transform 0.15s ease;
+    font-size: 0.5rem;
+  }
+
+  .collapse-chevron.expanded {
+    transform: rotate(90deg);
+  }
+
+  .collapsed-summary {
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  .view-execution-btn {
+    display: block;
+    width: 100%;
+    padding: 0.25rem 0.75rem;
+    background: none;
+    border: none;
+    border-bottom: 1px solid hsl(var(--border));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: hsl(var(--primary));
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .view-execution-btn:hover {
     text-decoration: underline;
   }
 
@@ -201,13 +265,30 @@
     border-radius: var(--radius-sm);
     background: hsl(var(--status-danger) / 0.1);
     color: hsl(var(--status-danger));
-    font-size: 0.8125rem;
+    font-size: 0.6875rem;
   }
 
   .card-actions {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
     padding: 0 0.75rem 0.5rem;
+  }
+
+  .dismiss-btn {
+    padding: 0.375rem 0.75rem;
+    border-radius: var(--radius);
+    border: 1px solid hsl(var(--border));
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  .dismiss-btn:hover {
+    color: hsl(var(--foreground));
+    border-color: hsl(var(--foreground) / 0.3);
   }
 
   .submit-btn {
@@ -216,8 +297,8 @@
     border: none;
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: 0.6875rem;
+    font-weight: 500;
     cursor: pointer;
     transition: opacity 0.15s;
   }
