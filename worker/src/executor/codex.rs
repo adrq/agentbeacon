@@ -541,6 +541,7 @@ struct TurnState {
     stop_turn_requested: bool,
     deferred_prompts: Vec<(Vec<serde_json::Value>, Vec<PathBuf>)>,
     fallback_in_flight: bool,
+    last_activity: Instant,
     /// True after we have emitted Init for this executor lifetime.
     init_emitted: bool,
     /// Tracks whether the cancel command was received.
@@ -560,6 +561,7 @@ impl TurnState {
             stop_turn_requested: false,
             deferred_prompts: Vec::new(),
             fallback_in_flight: false,
+            last_activity: Instant::now(),
             init_emitted: false,
             pending_fallback_input: None,
             cancel_requested: false,
@@ -644,7 +646,6 @@ async fn background_task(
     );
 
     let mut state = TurnState::new();
-    let mut last_activity = Instant::now();
 
     loop {
         if let Some(fallback_input) = state.pending_fallback_input.take()
@@ -690,7 +691,7 @@ async fn background_task(
                             {
                                 state.active_turn_id = Some(turn_id.to_string());
                                 state.fallback_in_flight = false;
-                                last_activity = Instant::now();
+                                state.last_activity = Instant::now();
 
                                 if state.stop_turn_requested
                                     && let Some(ref tid) = state.thread_id
@@ -748,7 +749,7 @@ async fn background_task(
             notif = notif_rx.recv() => {
                 match notif {
                     Some(msg) => {
-                        last_activity = Instant::now();
+                        state.last_activity = Instant::now();
                         handle_incoming_message(
                             &msg, &mut state, &event_tx, stdin.as_mut().unwrap(),
                             &session_id, &stderr_buf,
@@ -766,7 +767,7 @@ async fn background_task(
                         if line.trim().is_empty() {
                             continue;
                         }
-                        last_activity = Instant::now();
+                        state.last_activity = Instant::now();
                         match serde_json::from_str::<serde_json::Value>(&line) {
                             Ok(msg) => {
                                 handle_incoming_message(
@@ -969,6 +970,7 @@ async fn background_task(
                                     line_result = stdout_reader.next_line() => {
                                         match line_result {
                                             Ok(Some(line)) if !line.trim().is_empty() => {
+                                                state.last_activity = Instant::now();
                                                 if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
                                                     if msg.get("id").is_some()
                                                         && msg.get("method").is_none()
@@ -980,6 +982,7 @@ async fn background_task(
                                                             .and_then(|i| i.as_str())
                                                     {
                                                         state.active_turn_id = Some(turn_id.to_string());
+                                                        state.last_activity = Instant::now();
                                                         if state.fallback_in_flight {
                                                             state.fallback_in_flight = false;
                                                         }
@@ -1031,7 +1034,7 @@ async fn background_task(
                 }
             }
 
-            _ = tokio::time::sleep_until(last_activity + inactivity_timeout),
+            _ = tokio::time::sleep_until(state.last_activity + inactivity_timeout),
                 if state.active_turn_id.is_some() && !state.cancel_requested => {
                 tracing::warn!(
                     "Codex executor stalled: no output for {}s",
@@ -1184,6 +1187,7 @@ async fn do_turn_start(
 
     state.active_turn_id = Some(turn_id);
     state.fallback_in_flight = false;
+    state.last_activity = Instant::now();
 
     Ok(())
 }
@@ -1312,6 +1316,7 @@ async fn handle_prompt(
             .and_then(|i| i.as_str())
         {
             state.active_turn_id = Some(turn_id.to_string());
+            state.last_activity = Instant::now();
         }
 
         let _ = event_tx.send(AgentEvent::Accepted);
