@@ -46,7 +46,7 @@
     oninput={handleInput}
     onfocus={() => showSuggestions = true}
     onblur={() => setTimeout(() => showSuggestions = false, 150)}
-    placeholder="claude-opus-4-6"
+    placeholder="claude-opus-4-7"
     autocomplete="off"
   />
   {#if showSuggestions && suggestions.length > 0}

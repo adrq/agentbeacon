@@ -12,7 +12,7 @@
     "fix": "eslint --fix src/ && prettier --write src/"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.104",
+    "@anthropic-ai/claude-agent-sdk": "0.2.114",
     "@github/copilot-sdk": "0.2.2"
   },
   "devDependencies": {

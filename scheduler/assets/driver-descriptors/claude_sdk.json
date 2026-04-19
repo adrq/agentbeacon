@@ -7,7 +7,7 @@
       "model": { "type": "string" },
       "max_turns": { "type": "integer", "minimum": 1 },
       "max_budget_usd": { "type": "number", "minimum": 0 },
-      "effort": { "type": "string", "enum": ["low", "medium", "high", "max"] },
+      "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh", "max"] },
       "thinking": {
         "type": "object",
         "properties": {
