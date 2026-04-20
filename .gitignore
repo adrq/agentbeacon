@@ -74,6 +74,7 @@ coverage/
 # Docs site (Astro/Starlight)
 docs/.astro/
 docs/src/assets/logo-*.svg
+docs/public/favicon*
 
 # Playwright test artifacts (web/)
 web/test-results/

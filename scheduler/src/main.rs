@@ -36,7 +36,7 @@ struct Cli {
     /// Examples:
     ///   sqlite:///tmp/scheduler.db
     ///   postgres://user:pass@localhost/dbname
-    /// Defaults to sqlite://scheduler-{port}.db when not specified.
+    /// Defaults to sqlite://scheduler-{port}.db?mode=rwc when not specified.
     #[arg(long, env = "DATABASE_URL")]
     db_url: Option<String>,
 
@@ -120,7 +120,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
 
     let db_url = cli
         .db_url
-        .unwrap_or_else(|| format!("sqlite://scheduler-{}.db", cli.port));
+        .unwrap_or_else(|| format!("sqlite://scheduler-{}.db?mode=rwc", cli.port));
 
     info!("Connecting to database: {}", db_url);
     let db_pool = db::pool::create(&db_url)

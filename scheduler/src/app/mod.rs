@@ -173,12 +173,14 @@ pub fn create_router(state: AppState, dev_mode: bool, port: u16) -> Router {
     let compressed = if dev_mode {
         base_router
             .route("/docs", get(dev_mode_proxy_docs))
+            .route("/docs/", get(dev_mode_proxy_docs))
             .route("/docs/{*path}", get(dev_mode_proxy_docs))
             .route("/", get(dev_mode_redirect_root))
             .fallback(dev_mode_redirect_path)
     } else {
         base_router
             .route("/docs", get(serve_docs))
+            .route("/docs/", get(serve_docs))
             .route("/docs/{*path}", get(serve_docs))
             .route("/", get(serve_index))
             .route("/index.html", get(serve_index))

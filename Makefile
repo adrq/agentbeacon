@@ -22,9 +22,10 @@ build-frontend: npm-install
 
 # Copy shared assets into docs site
 docs-assets:
-	@mkdir -p docs/src/assets
+	@mkdir -p docs/src/assets docs/public
 	cp web/src/assets/logo-mark-light.svg docs/src/assets/logo-light.svg
 	cp web/src/assets/logo-mark-dark.svg docs/src/assets/logo-dark.svg
+	cp web/public/favicon.ico web/public/favicon-32x32.png web/public/favicon-16x16.png docs/public/
 
 # Build docs site (for embedding in binary)
 build-docs: docs-assets
@@ -173,7 +174,6 @@ test-all: test-rust test-int test-e2e
 # Run target
 run: all
 	@echo "Starting AgentBeacon on port $${AGENTBEACON_PORT:-9456}..."
-	@touch scheduler-$${AGENTBEACON_PORT:-9456}.db
 	AGENTBEACON_EXECUTORS_DIR=$${AGENTBEACON_EXECUTORS_DIR:-$(CURDIR)/executors/dist} \
 		./bin/agentbeacon --port $${AGENTBEACON_PORT:-9456}
 

@@ -5,3 +5,12 @@
   --sl-color-accent: hsl(221 83% 53%);
   --sl-color-accent-high: hsl(221 83% 85%);
 }
+
+/* Hero screenshot styling */
+.hero-screenshot {
+  max-width: 100%;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+  border: 1px solid hsl(var(--sl-color-gray-5));
+  margin-top: 2rem;
+}

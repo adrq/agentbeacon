@@ -20,11 +20,12 @@
     <Button variant="default" size="sm" onclick={() => router.navigate('/executions/new')}>
       + New
     </Button>
-    <a href="/docs/" target="_blank" rel="noopener" class="docs-link" title="Documentation">
+    <a href="/docs/" target="_blank" rel="noopener" class="docs-link">
+      Docs
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-           stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
-        <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
-        <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+           stroke-linecap="round" stroke-linejoin="round" width="12" height="12">
+        <path d="M7 17L17 7" />
+        <path d="M7 7h10v10" />
       </svg>
     </a>
     <ThemeToggle />
@@ -76,13 +77,22 @@
   }
 
   .docs-link {
-    display: flex;
+    display: inline-flex;
     align-items: center;
+    gap: 0.25rem;
+    height: 1.75rem;
+    padding: 0 0.5rem;
+    border-radius: 0.375rem;
+    border: 1px solid hsl(var(--border));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    text-decoration: none;
     color: hsl(var(--muted-foreground));
-    transition: color 0.15s;
+    transition: color 0.15s, background-color 0.15s;
   }
 
   .docs-link:hover {
     color: hsl(var(--foreground));
+    background: hsl(var(--accent) / 0.3);
   }
 </style>
