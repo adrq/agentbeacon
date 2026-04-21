@@ -63,7 +63,7 @@ build-worker:
 	cp target/release/agentbeacon-worker bin/
 
 # Build fully static x86_64 musl binaries
-build-musl-x64: build-frontend executors
+build-musl-x64: build-frontend executors build-docs
 	@command -v cargo-zigbuild >/dev/null 2>&1 || { echo "Installing cargo-zigbuild..."; cargo install cargo-zigbuild; }
 	@rustup target list --installed | grep -q x86_64-unknown-linux-musl || rustup target add x86_64-unknown-linux-musl
 	@echo "Building musl-static x86_64 binaries..."
@@ -77,7 +77,7 @@ build-musl-x64: build-frontend executors
 	@echo "musl-static x86_64 binaries verified at target/x86_64-unknown-linux-musl/release/"
 
 # Build fully static aarch64 musl binaries (cross-compiled from x86_64)
-build-musl-arm64: build-frontend executors
+build-musl-arm64: build-frontend executors build-docs
 	@command -v cargo-zigbuild >/dev/null 2>&1 || { echo "Installing cargo-zigbuild..."; cargo install cargo-zigbuild; }
 	@rustup target list --installed | grep -q aarch64-unknown-linux-musl || rustup target add aarch64-unknown-linux-musl
 	@echo "Building musl-static aarch64 binaries (cross-compiling)..."
