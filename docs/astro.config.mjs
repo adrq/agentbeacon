@@ -33,10 +33,10 @@ export default defineConfig({
           ],
         },
       ],
-      favicon: '/favicon.ico',
+      favicon: 'favicon.ico',
       head: [
-        { tag: 'link', attrs: { rel: 'icon', href: '/favicon-32x32.png', sizes: '32x32', type: 'image/png' } },
-        { tag: 'link', attrs: { rel: 'icon', href: '/favicon-16x16.png', sizes: '16x16', type: 'image/png' } },
+        { tag: 'link', attrs: { rel: 'icon', href: `${base}favicon-32x32.png`, sizes: '32x32', type: 'image/png' } },
+        { tag: 'link', attrs: { rel: 'icon', href: `${base}favicon-16x16.png`, sizes: '16x16', type: 'image/png' } },
       ],
       customCss: ['./src/styles/custom.css'],
     }),
