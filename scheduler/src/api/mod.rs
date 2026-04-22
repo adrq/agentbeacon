@@ -6,6 +6,7 @@ pub mod agent_card;
 pub mod agents;
 pub mod auth;
 pub mod config;
+pub mod decisions;
 pub mod docs;
 pub mod drivers;
 pub mod escalate;
@@ -37,6 +38,7 @@ pub fn routes() -> Router<AppState> {
         .merge(config::routes())
         .merge(docs::routes())
         .merge(escalate::routes())
+        .merge(decisions::routes())
         .merge(jsonrpc::routes())
         .merge(agent_card::routes())
         .merge(worker::routes())

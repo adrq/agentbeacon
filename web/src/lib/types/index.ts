@@ -594,3 +594,27 @@ export interface ModelSuggestion {
   description?: string;
   recommended?: boolean;
 }
+
+// Decision batches from GET /api/decisions
+export interface DecisionBatchResponse {
+  batch_id: string;
+  execution_id: string;
+  execution_title: string | null;
+  session_id: string;
+  agent_name: string;
+  hierarchical_name: string;
+  status: 'pending' | 'answered' | 'dismissed' | 'expired';
+  importance: 'blocking' | 'fyi';
+  questions: DecisionQuestionResponse[];
+  answer: string | null;
+  answered_at: string | null;
+  dismissed_at: string | null;
+  created_at: string;
+}
+
+export interface DecisionQuestionResponse {
+  question: string;
+  context?: string | null;
+  options?: QuestionOption[] | null;
+  batch_index: number;
+}

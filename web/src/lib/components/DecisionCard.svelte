@@ -18,9 +18,10 @@
     questions: QuestionState[];
     createdAt: string;
     onsubmitted?: (sessionId: string, batchId: string) => void;
+    ondismiss?: () => void;
   }
 
-  let { sessionId, executionId, executionTitle, agentName: agentLabel, projectName, batchId, questions, createdAt, onsubmitted }: Props = $props();
+  let { sessionId, executionId, executionTitle, agentName: agentLabel, projectName, batchId, questions, createdAt, onsubmitted, ondismiss }: Props = $props();
 
   let collapsed = $state(false);
   let submitting = $state(false);
@@ -125,7 +126,7 @@
       <button
         type="button"
         class="dismiss-btn"
-        onclick={() => onsubmitted?.(sessionId, batchId)}
+        onclick={() => { ondismiss?.(); onsubmitted?.(sessionId, batchId); }}
       >
         Dismiss
       </button>

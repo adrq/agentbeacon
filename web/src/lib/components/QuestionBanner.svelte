@@ -1,8 +1,9 @@
 <script lang="ts">
   import type { Execution, SessionSummary, Event, Agent } from '../types';
-  import { extractQuestions, composeAnswer, submitAnswer } from '../questions';
+  import { composeAnswer, submitAnswer } from '../questions';
   import type { QuestionState } from '../questions';
-  import { submittedBatches, suppressedSessions, suppressSession, markBatchSubmitted, tryClaimSubmit, releaseSubmit } from '../stores/questionState';
+  import { pendingDecisions, tryClaimSubmit, releaseSubmit } from '../stores/questionState';
+  import { api } from '../api';
   import { requestNotificationPermission } from '../adapters/standalone';
   import QuestionCard from './QuestionCard.svelte';
 
@@ -20,76 +21,64 @@
   let submitted = $state(false);
   let error: string | null = $state(null);
 
-  // Derive questions from events but preserve user-typed answers across re-derives
+  // Get pending decisions for this execution from server state
+  let execPending = $derived($pendingDecisions.filter(d => d.executionId === execution.id));
+  let latestBatch = $derived(execPending.length > 0 ? execPending[execPending.length - 1] : null);
+  let pendingCountForExec = $derived(execPending.length);
+
   let questions: QuestionState[] = $state([]);
   let lastBatchId = $state('');
   let allAnswered = $state(false);
 
-  // Submit answers to the root session
-  let inputSessionId = $derived(
-    sessions.find(s => !s.parent_session_id && !s.outcome && s.desired !== 'terminate')?.id ?? null
-  );
+  // Answer target: the root session that emitted the escalation
+  let answerSessionId = $derived(latestBatch?.sessionId ?? null);
 
-  // Detect cross-surface submission (e.g., answered from ActionPanel)
-  let crossSubmitted = $derived(
-    inputSessionId ? $submittedBatches[inputSessionId] === lastBatchId && lastBatchId !== '' : false
-  );
-
-  // Detect cross-surface dismiss (e.g., dismissed from DecisionQueue sidebar)
-  let isSuppressed = $derived(
-    inputSessionId ? $suppressedSessions[inputSessionId] === lastBatchId && lastBatchId !== '' : false
-  );
-
-  // Update questions only when the batch changes, preserving answers otherwise
+  // Sync questions from the latest pending batch
   $effect(() => {
-    const { batchId: newBatchId, questions: extracted } = extractQuestions(events);
-    if (newBatchId !== lastBatchId || extracted.length !== questions.length) {
-      if (newBatchId !== lastBatchId) {
-        collapsed = false;
+    const batch = latestBatch;
+    if (!batch) {
+      if (lastBatchId !== '') {
+        lastBatchId = '';
+        questions = [];
+        submitted = false;
       }
-      lastBatchId = newBatchId;
-      questions = extracted;
+      return;
+    }
+    if (batch.batchId !== lastBatchId) {
+      lastBatchId = batch.batchId;
+      questions = batch.questions.map(q => ({ ...q, answer: '' }));
       allAnswered = false;
       submitted = false;
+      collapsed = false;
     }
   });
-
-  // Reset submitted state when input session changes
-  let prevInputSessionId: string | null = null;
-  $effect(() => {
-    if (inputSessionId !== prevInputSessionId) {
-      prevInputSessionId = inputSessionId;
-      submitted = false;
-      allAnswered = false;
-      error = null;
-      lastBatchId = '';
-      questions = [];
-    }
-  });
-
-  function agentName(agentId: string): string {
-    const agent = agents.find(a => a.id === agentId);
-    return agent?.name ?? agentId.slice(0, 8);
-  }
 
   async function handleSubmit() {
-    if (!inputSessionId || !allAnswered || submitting) return;
-    if (!tryClaimSubmit(inputSessionId, lastBatchId)) return;
+    if (!answerSessionId || !allAnswered || submitting || !lastBatchId) return;
+    if (!tryClaimSubmit(answerSessionId, lastBatchId)) return;
 
     submitting = true;
     error = null;
     requestNotificationPermission();
 
     try {
-      await submitAnswer(inputSessionId, composeAnswer(questions), lastBatchId);
-      markBatchSubmitted(inputSessionId, lastBatchId);
-      releaseSubmit(inputSessionId, lastBatchId);
+      await submitAnswer(answerSessionId, composeAnswer(questions), lastBatchId);
+      releaseSubmit(answerSessionId, lastBatchId);
       submitted = true;
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to submit';
-      releaseSubmit(inputSessionId, lastBatchId);
+      releaseSubmit(answerSessionId, lastBatchId);
     } finally {
       submitting = false;
+    }
+  }
+
+  async function handleDismiss() {
+    if (!lastBatchId) return;
+    try {
+      await api.dismissBatch(lastBatchId);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to dismiss';
     }
   }
 
@@ -103,23 +92,22 @@
   }
 </script>
 
-{#if inputSessionId && !submitted && !crossSubmitted && !isSuppressed && (questions.length > 0 || events.length === 0)}
-  <div class="question-banner" class:loading={questions.length === 0}>
+{#if answerSessionId && !submitted && latestBatch && questions.length > 0}
+  <div class="question-banner">
     <button type="button" class="banner-header" onclick={() => collapsed = !collapsed} aria-expanded={!collapsed} aria-controls={!collapsed ? "question-content" : undefined}>
       <span class="banner-icon" aria-hidden="true">&#x26A0;</span>
       <span class="banner-title">
-        {#if questions.length === 0}
-          Loading question&hellip;
-        {:else if questions.length <= 1}
+        {#if questions.length <= 1}
           QUESTION
         {:else}
           {questions.length} QUESTIONS
         {/if}
       </span>
+      {#if pendingCountForExec > 1}
+        <span class="banner-stack-count">{pendingCountForExec} pending questions &mdash; view all in Decisions panel</span>
+      {/if}
       <span class="banner-meta">
-        {#if inputSessionId}
-          from {agentName(sessions.find(s => s.id === inputSessionId)?.agent_id ?? '')}
-        {/if}
+        from {latestBatch.agentName}
         {#if execution.title}&middot; {execution.title}{/if}
       </span>
       <span class="collapse-toggle">
@@ -156,7 +144,7 @@
         <button
           type="button"
           class="dismiss-btn"
-          onclick={() => { if (inputSessionId) suppressSession(inputSessionId, lastBatchId); }}
+          onclick={handleDismiss}
         >
           Dismiss
         </button>
@@ -177,7 +165,7 @@
     </div>
     {/if}
   </div>
-{:else if submitted || crossSubmitted}
+{:else if submitted}
   <div class="submitted-banner">
     <span class="submitted-icon">&#x2713;</span>
     Answers submitted. Waiting for agent to resume...
@@ -219,6 +207,12 @@
     font-weight: 500;
     letter-spacing: 0.05em;
     color: hsl(var(--status-attention));
+  }
+
+  .banner-stack-count {
+    font-size: 0.625rem;
+    color: hsl(var(--status-attention) / 0.8);
+    font-style: italic;
   }
 
   .banner-meta {
@@ -329,16 +323,6 @@
     display: flex;
     align-items: center;
     gap: 0.375rem;
-  }
-
-  .question-banner.loading {
-    border-color: hsl(var(--muted-foreground) / 0.2);
-    background: hsl(var(--muted-foreground) / 0.03);
-  }
-
-  .question-banner.loading .banner-icon,
-  .question-banner.loading .banner-title {
-    color: hsl(var(--muted-foreground));
   }
 
   .submitted-icon {

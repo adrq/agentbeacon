@@ -1,6 +1,11 @@
 use axum::{
-    Json, Router, extract::State, extract::rejection::JsonRejection, http::StatusCode,
-    response::IntoResponse, routing::post,
+    Json, Router,
+    extract::Path,
+    extract::State,
+    extract::rejection::JsonRejection,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::post,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -131,6 +136,79 @@ async fn escalate(
     ))
 }
 
+async fn dismiss(
+    headers: HeaderMap,
+    Path(batch_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, SchedulerError> {
+    // Reject MCP session auth — dismiss is a user-initiated UI action only
+    if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
+        && auth.len() > 7
+        && auth[..7].eq_ignore_ascii_case("bearer ")
+    {
+        let token = &auth[7..];
+        if db::sessions::get_by_id(&state.db_pool, token).await.is_ok() {
+            return Err(SchedulerError::Forbidden(
+                "dismiss is not available via agent session auth".to_string(),
+            ));
+        }
+    }
+
+    // Find escalation events for this batch_id to validate it exists and get context
+    let batch_events = db::events::find_by_batch_id(&state.db_pool, &batch_id).await?;
+    if batch_events.is_empty() {
+        return Err(SchedulerError::NotFound(format!(
+            "batch_id {batch_id} not found"
+        )));
+    }
+
+    let first_event = &batch_events[0];
+    let execution_id = &first_event.execution_id;
+    let session_id = first_event.session_id.as_deref();
+
+    // Best-effort pre-checks — the reducer handles rare race duplicates
+    let execution = db::executions::get_by_id(&state.db_pool, execution_id).await?;
+    if execution.outcome.is_some() || execution.desired == "terminate" {
+        return Ok((
+            StatusCode::OK,
+            Json(json!({"status": "expired", "message": "execution is terminal"})),
+        ));
+    }
+
+    if let Some(resolution) =
+        db::events::find_resolution_for_batch(&state.db_pool, &batch_id).await?
+    {
+        if resolution.resolution_type == "question_dismiss" {
+            return Ok((StatusCode::OK, Json(json!({"status": "already_dismissed"}))));
+        } else {
+            return Ok((StatusCode::OK, Json(json!({"status": "already_resolved"}))));
+        }
+    }
+
+    // Simple event write — no lock, no transaction. Rare race duplicates are
+    // harmless; the reducer (GET /api/decisions) applies first-resolution-wins.
+    let dismiss_data = json!({"type": "question_dismiss", "batch_id": batch_id});
+    let event_payload = json!({
+        "role": "ROLE_USER",
+        "parts": [{"data": dismiss_data}]
+    });
+    let event_id = db::events::insert(
+        &state.db_pool,
+        execution_id,
+        session_id,
+        "platform",
+        &serde_json::to_string(&event_payload).unwrap(),
+    )
+    .await?;
+
+    let _ = state
+        .event_broadcast
+        .send(EventNotification::persisted(execution_id.clone(), event_id));
+    Ok((StatusCode::OK, Json(json!({"status": "dismissed"}))))
+}
+
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/escalate", post(escalate))
+    Router::new()
+        .route("/api/escalate", post(escalate))
+        .route("/api/escalate/{batch_id}/dismiss", post(dismiss))
 }

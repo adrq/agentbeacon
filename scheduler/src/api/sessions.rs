@@ -114,6 +114,29 @@ async fn session_events(
     Ok(Json(events.into_iter().map(Into::into).collect()))
 }
 
+/// Extract batch_id from a question_answer data part, if present.
+/// Returns Err if multiple question_answer parts are found — a single request
+/// must not resolve more than one batch.
+fn extract_question_answer_batch_id(
+    parts: &[serde_json::Value],
+) -> Result<Option<String>, &'static str> {
+    let mut found: Option<String> = None;
+    for part in parts {
+        if let Some(data) = part.get("data")
+            && data.get("type").and_then(|t| t.as_str()) == Some("question_answer")
+        {
+            if found.is_some() {
+                return Err("message must contain at most one question_answer part");
+            }
+            found = data
+                .get("batch_id")
+                .and_then(|b| b.as_str())
+                .map(String::from);
+        }
+    }
+    Ok(found)
+}
+
 /// Post a user message to a session (POST /api/sessions/{id}/message)
 async fn post_message(
     State(state): State<AppState>,
@@ -132,33 +155,47 @@ async fn post_message(
         ));
     }
 
+    let answer_batch_id = extract_question_answer_batch_id(&req.parts)
+        .map_err(|msg| SchedulerError::ValidationFailed(msg.to_string()))?;
+    if let Some(ref batch_id) = answer_batch_id {
+        let batch_events = db::events::find_by_batch_id(&state.db_pool, batch_id).await?;
+        if batch_events.is_empty() {
+            return Err(SchedulerError::NotFound(format!(
+                "batch {batch_id} does not exist"
+            )));
+        }
+        if db::events::find_resolution_for_batch(&state.db_pool, batch_id)
+            .await?
+            .is_some()
+        {
+            return Err(SchedulerError::Conflict("batch is already resolved".into()));
+        }
+    }
+
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
     let msg_payload = common::a2a::message_payload(common::a2a::role::USER, req.parts.clone());
     let delivery_payload = json!({"message": msg_payload});
 
     use crate::services::transition;
-    let event_id = match transition::transition(
-        &state.db_pool,
-        &session.execution_id,
-        &session.id,
-        transition::Action::SendMessage(delivery_payload),
-    )
-    .await
-    {
-        Ok(Some(eid)) => eid,
-        Ok(None) => 0,
-        Err(transition::Rejected::WriteBarrier) => {
-            return Err(SchedulerError::Conflict(
-                "session or execution cannot accept messages".into(),
-            ));
-        }
-        Err(e) => {
-            return Err(SchedulerError::Database(format!(
-                "transition failed: {e:?}"
-            )));
-        }
-    };
+    let action = transition::Action::SendMessage(delivery_payload);
+    let event_id =
+        match transition::transition(&state.db_pool, &session.execution_id, &session.id, action)
+            .await
+        {
+            Ok(Some(eid)) => eid,
+            Ok(None) => 0,
+            Err(transition::Rejected::WriteBarrier) => {
+                return Err(SchedulerError::Conflict(
+                    "session or execution cannot accept messages".into(),
+                ));
+            }
+            Err(e) => {
+                return Err(SchedulerError::Database(format!(
+                    "transition failed: {e:?}"
+                )));
+            }
+        };
 
     let _ = state.event_broadcast.send(EventNotification::persisted(
         session.execution_id.clone(),

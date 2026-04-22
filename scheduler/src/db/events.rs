@@ -170,6 +170,104 @@ pub async fn list_messages_by_session(
     rows.into_iter().map(parse_event_row).collect()
 }
 
+/// Find escalation events matching a specific batch_id by scanning JSON payloads.
+pub async fn find_by_batch_id(pool: &DbPool, batch_id: &str) -> Result<Vec<Event>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    // Use bare batch_id in LIKE — handles both compact and pretty-printed JSON
+    let pattern = format!("%{batch_id}%");
+    let sql = format!(
+        "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {created_fmt} as created_at \
+         FROM events WHERE event_type = 'platform' AND payload LIKE ? ORDER BY id ASC"
+    );
+    let rows = sqlx::query(&pool.prepare_query(&sql))
+        .bind(&pattern)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("find_by_batch_id failed: {e}")))?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        let event = parse_event_row(row)?;
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload)
+            && let Some(parts) = payload.get("parts").and_then(|p| p.as_array())
+        {
+            for part in parts {
+                if let Some(data) = part.get("data")
+                    && data.get("type").and_then(|t| t.as_str()) == Some("escalate")
+                    && data.get("batch_id").and_then(|b| b.as_str()) == Some(batch_id)
+                {
+                    results.push(event);
+                    break;
+                }
+            }
+        }
+    }
+    Ok(results)
+}
+
+pub struct BatchResolution {
+    pub resolution_type: String,
+    pub event: Event,
+}
+
+/// Find the first resolution event (answer or dismiss) for a batch_id.
+pub async fn find_resolution_for_batch(
+    pool: &DbPool,
+    batch_id: &str,
+) -> Result<Option<BatchResolution>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let pattern = format!("%{batch_id}%");
+    let sql = format!(
+        "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {created_fmt} as created_at \
+         FROM events WHERE event_type IN ('platform', 'message') AND payload LIKE ? ORDER BY id ASC"
+    );
+    let rows = sqlx::query(&pool.prepare_query(&sql))
+        .bind(&pattern)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("find_resolution_for_batch failed: {e}")))?;
+
+    for row in rows {
+        let event = parse_event_row(row)?;
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload)
+            && let Some(parts) = payload.get("parts").and_then(|p| p.as_array())
+        {
+            for part in parts {
+                if let Some(data) = part.get("data") {
+                    let data_type = data.get("type").and_then(|t| t.as_str());
+                    let data_batch = data.get("batch_id").and_then(|b| b.as_str());
+                    if data_batch == Some(batch_id) {
+                        match data_type {
+                            Some("question_answer") | Some("question_dismiss") => {
+                                return Ok(Some(BatchResolution {
+                                    resolution_type: data_type.unwrap().to_string(),
+                                    event,
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// List all platform events (for the decisions reducer).
+pub async fn list_all_platform_events(pool: &DbPool) -> Result<Vec<Event>, SchedulerError> {
+    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let sql = format!(
+        "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {created_fmt} as created_at \
+         FROM events WHERE event_type IN ('platform', 'message') ORDER BY id ASC"
+    );
+    let rows = sqlx::query(&pool.prepare_query(&sql))
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list_all_platform_events failed: {e}")))?;
+    rows.into_iter().map(parse_event_row).collect()
+}
+
 fn parse_event_row(row: sqlx::any::AnyRow) -> Result<Event, SchedulerError> {
     Ok(Event {
         id: row.get("id"),

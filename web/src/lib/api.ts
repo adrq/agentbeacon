@@ -5,6 +5,7 @@ import type {
   McpServer, McpServerPoolEntry,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
+  DecisionBatchResponse,
 } from './types';
 
 export class ApiError extends Error {
@@ -463,6 +464,24 @@ export class AgentBeaconAPI {
 
   async exportWiki(projectId: string): Promise<WikiPageExport[]> {
     return this.fetchJSON<WikiPageExport[]>(`/projects/${projectId}/wiki/export`);
+  }
+
+  // Decisions
+  async getDecisions(params?: {
+    execution_id?: string;
+    status?: string;
+    include_terminal?: boolean;
+  }): Promise<{ decisions: DecisionBatchResponse[] }> {
+    const search = new URLSearchParams();
+    if (params?.execution_id) search.set('execution_id', params.execution_id);
+    if (params?.status) search.set('status', params.status);
+    if (params?.include_terminal !== undefined) search.set('include_terminal', String(params.include_terminal));
+    const qs = search.toString();
+    return this.fetchJSON(`/decisions${qs ? `?${qs}` : ''}`);
+  }
+
+  async dismissBatch(batchId: string): Promise<{ status: string }> {
+    return this.fetchJSON(`/escalate/${batchId}/dismiss`, { method: 'POST' });
   }
 }
 
