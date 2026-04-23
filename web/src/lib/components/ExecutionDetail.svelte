@@ -8,6 +8,7 @@
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { connectExecutionSSE, type SSEConnection } from '../sse';
+  import { untrack } from 'svelte';
   import StatusBadge from './StatusBadge.svelte';
   import QuestionBanner from './QuestionBanner.svelte';
   import EventsTimeline from './EventsTimeline.svelte';
@@ -239,29 +240,31 @@
     }
   }
 
+  // Track when the initial REST events query has loaded so SSE can skip replay
+  let initialEventsLoaded = $state(false);
+  $effect(() => {
+    if (eventsQuery.isSuccess && !initialEventsLoaded) {
+      initialEventsLoaded = true;
+    }
+  });
+
   // SSE connection lifecycle — stay live until tree is fully settled
   $effect(() => {
     const execId = executionId;
     const settled = isSettled;
     const stillLoading = detailQuery.isLoading;
-    if (settled || stillLoading || poolQuery.isLoading) {
+    if (settled || stillLoading || poolQuery.isLoading || !initialEventsLoaded) {
       sseActive = false;
       return;
     }
 
-    // Compute max event ID across ALL session caches so SSE skips replay.
-    // Only safe when every session has cached events; otherwise fall back to 0
-    // to avoid skipping events from sessions we haven't fetched yet.
-    const sessions = detail?.sessions ?? [];
-    let maxEventId = 0;
-    let allCached = sessions.length > 0;
-    for (const s of sessions) {
-      const cached = queryClient.getQueryData<BeaconEvent[]>(['session-events', s.id]);
-      if (!cached?.length) { allCached = false; break; }
-      const last = cached[cached.length - 1];
-      if (last.id > maxEventId) maxEventId = last.id;
-    }
-    if (!allCached) maxEventId = 0;
+    // Snapshot the max event ID from the active session's REST cache.
+    // Use untrack to avoid reactive dep on cache data (changes on every SSE event).
+    const maxEventId = untrack(() => {
+      const cached = queryClient.getQueryData<BeaconEvent[]>(['session-events', activeSessionId]);
+      if (cached?.length) return cached[cached.length - 1].id;
+      return 0;
+    });
 
     const conn = connectExecutionSSE(
       execId,
