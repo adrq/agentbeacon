@@ -68,8 +68,6 @@ export const executionsWithQuestions = derived(
   ($pending) => new Set($pending.map(d => d.executionId))
 );
 
-export const noQuestionExecutions = writable<Set<string>>(new Set());
-
 // Session-level in-flight guard: prevents concurrent POST /sessions/{id}/message
 // when multiple batches are pending on the same session.
 const submittingSessions = new Set<string>();

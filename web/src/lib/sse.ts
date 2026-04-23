@@ -23,6 +23,7 @@ export function connectExecutionSSE(
   onConnected?: () => void,
   onDisconnected?: () => void,
   onReconnecting?: () => void,
+  lastEventId?: number,
 ): SSEConnection {
   let consecutiveErrors = 0;
   let closed = false;
@@ -32,7 +33,8 @@ export function connectExecutionSSE(
   let inBackoff = false;
   let source: EventSource | null = null;
 
-  const url = `/api/executions/${encodeURIComponent(executionId)}/events/stream`;
+  const base = `/api/executions/${encodeURIComponent(executionId)}/events/stream`;
+  const url = lastEventId ? `${base}?since=${lastEventId}` : base;
 
   function createSource() {
     if (closed) return;

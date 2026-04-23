@@ -1,11 +1,12 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use axum::{Router, response::IntoResponse};
+use serde::Deserialize;
 use tokio::sync::broadcast;
 
 use crate::api::types::EventResponse;
@@ -21,19 +22,27 @@ pub fn routes() -> Router<AppState> {
     )
 }
 
+#[derive(Deserialize)]
+struct StreamQuery {
+    since: Option<i64>,
+}
+
 async fn execution_event_stream(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<StreamQuery>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, SchedulerError> {
     // Verify execution exists (404 if not)
     db::executions::get_by_id(&state.db_pool, &id).await?;
 
-    // Parse Last-Event-ID header for reconnection support
+    // Parse Last-Event-ID header for reconnection, or ?since= query param for initial connect.
+    // Header takes precedence (set automatically by EventSource on reconnect).
     let since_id: i64 = headers
         .get("Last-Event-ID")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
+        .or(params.since)
         .unwrap_or(0);
 
     let pool = state.db_pool.clone();

@@ -14,7 +14,7 @@
   import ChatView from './ChatView.svelte';
   import DiffPanel from './DiffPanel.svelte';
   import ExecutionOrgChart from './ExecutionOrgChart.svelte';
-  import { executionsWithQuestions, noQuestionExecutions } from '../stores/questionState';
+  import { executionsWithQuestions } from '../stores/questionState';
   import Button from './ui/button.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
   import { router } from '../router';
@@ -58,6 +58,20 @@
 
   // Org chart overview toggle
   let showOverview = $state(false);
+
+  // Debounced query invalidation — collapses rapid SSE state_change events
+  // (e.g. backfill on page load) into a single batch of invalidations.
+  let invalidateTimer: ReturnType<typeof setTimeout> | null = null;
+  function debouncedInvalidate(execId: string) {
+    if (invalidateTimer) clearTimeout(invalidateTimer);
+    invalidateTimer = setTimeout(() => {
+      invalidateTimer = null;
+      queryClient.invalidateQueries({ queryKey: ['execution', execId] });
+      queryClient.invalidateQueries({ queryKey: ['executions'] });
+      queryClient.invalidateQueries({ queryKey: ['execution-sessions', execId] });
+      queryClient.invalidateQueries({ queryKey: ['session-diff'] });
+    }, 500);
+  }
 
   // SSE connection state (declared before $effect.pre that references them)
   let sseActive = $state(false);
@@ -235,6 +249,20 @@
       return;
     }
 
+    // Compute max event ID across ALL session caches so SSE skips replay.
+    // Only safe when every session has cached events; otherwise fall back to 0
+    // to avoid skipping events from sessions we haven't fetched yet.
+    const sessions = detail?.sessions ?? [];
+    let maxEventId = 0;
+    let allCached = sessions.length > 0;
+    for (const s of sessions) {
+      const cached = queryClient.getQueryData<BeaconEvent[]>(['session-events', s.id]);
+      if (!cached?.length) { allCached = false; break; }
+      const last = cached[cached.length - 1];
+      if (last.id > maxEventId) maxEventId = last.id;
+    }
+    if (!allCached) maxEventId = 0;
+
     const conn = connectExecutionSSE(
       execId,
       (event: BeaconEvent) => {
@@ -345,10 +373,7 @@
         }
 
         if (event.event_type === 'state_change') {
-          queryClient.invalidateQueries({ queryKey: ['execution', execId] });
-          queryClient.invalidateQueries({ queryKey: ['executions'] });
-          queryClient.invalidateQueries({ queryKey: ['execution-sessions', execId] });
-          queryClient.invalidateQueries({ queryKey: ['session-diff'] });
+          debouncedInvalidate(execId);
           if (event.session_id) {
             const p = event.payload as { executor_state?: string; outcome?: string; to?: string };
             // New format: executor_state; Legacy format: to
@@ -438,6 +463,7 @@
         sseReconnecting = false;
       },
       () => { sseReconnecting = true; },
+      maxEventId || undefined,
     );
     sseConnection = conn;
 
@@ -446,6 +472,7 @@
       sseActive = false;
       sseReconnecting = false;
       sseConnection = null;
+      if (invalidateTimer) { clearTimeout(invalidateTimer); invalidateTimer = null; }
     };
   });
 
@@ -598,7 +625,7 @@
   <div class="detail-view scroll-thin">
     <div class="detail-header">
       <h2 class="detail-title">{displayTitle}</h2>
-      <StatusBadge status={detail.execution.status} hasQuestions={$executionsWithQuestions.has(detail.execution.id) ? true : $noQuestionExecutions.has(detail.execution.id) ? false : detail.execution.status === 'awaiting_input' ? undefined : false} />
+      <StatusBadge status={detail.execution.status} hasQuestions={$executionsWithQuestions.has(detail.execution.id)} />
       {#if isTerminable}
         <Button variant={isCompletionEligible ? 'outline' : 'destructive'} size="sm" disabled={terminateMut.isPending} onclick={() => { terminateError = null; showTerminateDialog = true; }}>
           {terminateMut.isPending ? 'Terminating...' : isCompletionEligible ? 'Complete' : 'Cancel'}

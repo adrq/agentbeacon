@@ -2,7 +2,7 @@
   import type { Execution, SessionSummary, Agent, UsageState, SessionIdentity } from '../types';
   import { selectedExecutionId } from '../stores/appState';
   import { router } from '../router';
-  import { executionsWithQuestions, noQuestionExecutions } from '../stores/questionState';
+  import { executionsWithQuestions } from '../stores/questionState';
   import ElapsedTime from './ElapsedTime.svelte';
   import SidebarSessionTree from './SidebarSessionTree.svelte';
 
@@ -24,12 +24,7 @@
 
   let selected = $derived($selectedExecutionId === execution.id);
   let needsInput = $derived(execution.status === 'awaiting_input');
-  let hasQuestions = $derived(
-    $executionsWithQuestions.has(execution.id) ? true
-    : $noQuestionExecutions.has(execution.id) ? false
-    : needsInput ? undefined
-    : false
-  );
+  let hasQuestions = $derived($executionsWithQuestions.has(execution.id));
   let isActive = $derived(execution.outcome == null && execution.desired !== 'terminate');
   let displayTitle = $derived(execution.title ?? execution.id.slice(0, 8));
   let statusText = $derived(needsInput ? 'turn complete'
