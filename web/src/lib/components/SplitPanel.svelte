@@ -141,48 +141,46 @@
   }
 
   .divider {
-    width: 8px;
+    width: 20px;
     cursor: col-resize;
     background: transparent;
     position: relative;
     user-select: none;
-    margin: 0 4px;
+    margin: 0 -6px;
     border: none;
     padding: 0;
     outline: none;
+    z-index: 5;
   }
 
   .hidden-divider {
     display: none;
   }
 
-  .divider:focus-visible::after {
+  .divider::after {
     content: '';
     position: absolute;
     top: 0;
     left: 50%;
     transform: translateX(-50%);
-    width: 2px;
+    width: 3px;
     height: 100%;
+    border-radius: 1.5px;
     background: hsl(var(--primary));
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  .divider:focus-visible::after {
     opacity: 0.8;
   }
 
-  .divider:hover::after,
-  .dragging .divider::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 2px;
-    height: 100%;
-    background: hsl(var(--primary));
-    opacity: 0.5;
+  .divider:hover::after {
+    opacity: 1;
   }
 
-  .divider:hover::after {
-    opacity: 0.7;
+  .dragging .divider::after {
+    opacity: 0.6;
   }
 
   .dragging {

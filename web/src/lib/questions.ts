@@ -69,7 +69,7 @@ export function extractQuestions(events: Event[]): { batchId: string; questions:
 }
 
 export function composeAnswer(questions: QuestionState[]): string {
-  if (questions.length === 1) return questions[0].answer;
+  if (questions.length === 1) return `${questions[0].questionText}: ${questions[0].answer}`;
   return questions.map(q => `${q.questionText}: ${q.answer}`).join('\n');
 }
 

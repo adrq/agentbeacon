@@ -1,6 +1,7 @@
 import { writable, derived } from 'svelte/store';
 import type { QuestionState } from '../questions';
 import type { DecisionBatchResponse } from '../types';
+import { api } from '../api';
 
 export interface DecisionBatch {
   batchId: string;
@@ -51,9 +52,26 @@ export function setDecisionsFromResponse(decisions: DecisionBatchResponse[]) {
   allDecisions.set(decisions.map(mapResponseToBatch));
 }
 
-export const pendingDecisions = derived(allDecisions, $d => $d.filter(d => d.status === 'pending'));
-export const pastDecisions = derived(allDecisions, $d => $d.filter(d => d.status !== 'pending'));
+export const pendingDecisions = derived(allDecisions, $d =>
+  $d.filter(d => d.status === 'pending')
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+);
+export const pastDecisions = derived(allDecisions, $d =>
+  $d.filter(d => d.status !== 'pending')
+    .sort((a, b) => {
+      const aTime = new Date(a.answeredAt ?? a.dismissedAt ?? a.createdAt).getTime();
+      const bTime = new Date(b.answeredAt ?? b.dismissedAt ?? b.createdAt).getTime();
+      return bTime - aTime;
+    })
+);
 export const pendingCount = derived(pendingDecisions, $d => $d.length);
+
+export async function refreshDecisions() {
+  try {
+    const resp = await api.getDecisions();
+    setDecisionsFromResponse(resp.decisions);
+  } catch { /* polling will catch up */ }
+}
 
 // True when polling has failed consecutively; cleared on next success
 export const decisionsStale = writable(false);

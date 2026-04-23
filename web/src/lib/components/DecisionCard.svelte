@@ -3,7 +3,7 @@
   import type { QuestionState } from '../questions';
   import { router } from '../router';
   import { toasts } from '../stores/toasts';
-  import { markBatchSubmitted, tryClaimSubmit, releaseSubmit } from '../stores/questionState';
+  import { markBatchSubmitted, tryClaimSubmit, releaseSubmit, refreshDecisions } from '../stores/questionState';
   import { requestNotificationPermission } from '../adapters/standalone';
   import QuestionCard from './QuestionCard.svelte';
   import ElapsedTime from './ElapsedTime.svelte';
@@ -28,11 +28,8 @@
   let error: string | null = $state(null);
   let allAnswered = $state(false);
 
-  // Local answer state — avoids mutating the parent's prop
   let answers: string[] = $state(questions.map(() => ''));
 
-  // Reset answers only when a genuinely new question batch arrives (stable batchId),
-  // NOT on every poll cycle which creates fresh question array references.
   let prevBatchId = batchId;
   $effect(() => {
     if (batchId !== prevBatchId || questions.length !== answers.length) {
@@ -60,13 +57,13 @@
     if (!tryClaimSubmit(sessionId, batchId)) return;
     submitting = true;
     error = null;
-    // Request notification permission synchronously from user gesture (before async boundary)
     requestNotificationPermission();
     try {
       await submitAnswer(sessionId, composeAnswer(buildAnswerQuestions()), batchId);
       markBatchSubmitted(sessionId, batchId);
       releaseSubmit(sessionId, batchId);
       toasts.success('Answer submitted');
+      await refreshDecisions();
       onsubmitted?.(sessionId, batchId);
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to submit';
@@ -83,25 +80,27 @@
 
 <div class="decision-card">
   <button type="button" class="card-header" onclick={() => collapsed = !collapsed} aria-expanded={!collapsed}>
-    <div class="card-meta">
-      <span class="card-title">{executionTitle ?? 'Untitled execution'}</span>
-      <span class="card-agent">{agentLabel}{projectName ? ` · ${projectName}` : ''}</span>
+    <div class="header-row-1">
       <span class="card-waiting">waiting <ElapsedTime startTime={createdAt} /></span>
+      <span class="collapse-toggle">
+        <span class="collapse-chevron" class:expanded={!collapsed} aria-hidden="true">&#x25B8;</span>
+        {collapsed ? 'Expand' : 'Collapse'}
+      </span>
     </div>
-    <span class="collapse-toggle">
-      <span class="collapse-chevron" class:expanded={!collapsed} aria-hidden="true">&#x25B8;</span>
-      {collapsed ? 'Expand' : 'Collapse'}
-    </span>
-    {#if collapsed}
+    <div class="header-row-2">
+      <span class="card-title">{executionTitle ?? 'Untitled execution'}</span>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <span class="view-execution-link" role="link" tabindex="0" onclick={(e: MouseEvent) => { e.stopPropagation(); viewExecution(); }} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') { e.stopPropagation(); viewExecution(); } }}>
+        view execution &rarr;
+      </span>
+    </div>
+  </button>
+  {#if collapsed}
+    <div class="collapsed-info">
       <span class="collapsed-summary">
         {questions.length} question{questions.length !== 1 ? 's' : ''} pending
       </span>
-    {/if}
-  </button>
-  {#if collapsed}
-    <button type="button" class="view-execution-btn" onclick={viewExecution}>
-      view execution &rarr;
-    </button>
+    </div>
   {/if}
 
   {#if !collapsed}
@@ -157,10 +156,8 @@
 
   .card-header {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.375rem;
+    flex-direction: column;
+    gap: 0.25rem;
     padding: 0.5rem 0.75rem;
     border: none;
     border-bottom: 1px solid hsl(var(--border));
@@ -172,43 +169,39 @@
     cursor: pointer;
   }
 
-  .card-meta {
+  .header-row-1 {
     display: flex;
     align-items: center;
-    gap: 0.375rem;
-    min-width: 0;
-    flex: 1;
-  }
-
-  .card-title {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: hsl(var(--foreground));
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .card-agent {
-    font-size: 0.6875rem;
-    color: hsl(var(--muted-foreground));
-    padding: 0.0625rem 0.375rem;
-    background: hsl(var(--muted));
-    border-radius: var(--radius-sm);
-    flex-shrink: 0;
+    justify-content: space-between;
+    width: 100%;
   }
 
   .card-waiting {
-    font-size: 0.6875rem;
+    font-size: 10px;
+    font-family: var(--font-mono, monospace);
+    font-variant-numeric: tabular-nums;
     color: hsl(var(--status-attention));
-    flex-shrink: 0;
+  }
+
+  .header-row-2 {
+    width: 100%;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+    line-height: 1.3;
   }
 
   .collapse-toggle {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
-    margin-left: auto;
     font-size: 0.6875rem;
     font-weight: 500;
     color: hsl(var(--muted-foreground));
@@ -228,28 +221,32 @@
     transform: rotate(90deg);
   }
 
+  .collapsed-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.25rem 0.75rem;
+    border-bottom: 1px solid hsl(var(--border));
+  }
+
   .collapsed-summary {
     font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
-    width: 100%;
-    flex-basis: 100%;
   }
 
-  .view-execution-btn {
-    display: block;
-    width: 100%;
-    padding: 0.25rem 0.75rem;
+  .view-execution-link {
     background: none;
     border: none;
-    border-bottom: 1px solid hsl(var(--border));
-    font-size: 0.6875rem;
+    font-size: 11px;
     font-weight: 500;
     color: hsl(var(--primary));
-    text-align: left;
     cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
-  .view-execution-btn:hover {
+  .view-execution-link:hover {
     text-decoration: underline;
   }
 

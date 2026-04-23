@@ -178,6 +178,7 @@
     display: flex;
     min-height: 0;
     overflow: hidden;
+    position: relative;
   }
 
   .sidebar {
@@ -201,6 +202,7 @@
     flex-direction: column;
     min-width: 0;
     overflow: hidden;
+    padding-right: var(--action-panel-width, 40px);
   }
 
   .home-view {

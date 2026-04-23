@@ -1,5 +1,6 @@
 <script lang="ts">
   import DecisionQueue from './DecisionQueue.svelte';
+  import { onMount } from 'svelte';
 
   interface Props {
     collapsed: boolean;
@@ -9,9 +10,87 @@
   }
 
   let { collapsed, onToggle, decisionCount, wide = false }: Props = $props();
+
+  const STORAGE_KEY = 'agentbeacon-action-panel-width';
+  const DEFAULT_WIDTH = 420;
+  const MIN_WIDTH = 280;
+  const MAX_WIDTH = 700;
+  const COLLAPSED_WIDTH = 40;
+
+  let panelWidth = $state(DEFAULT_WIDTH);
+  let isDragging = $state(false);
+
+  // Expose effective width as CSS custom property on :root so sibling panels
+  // can reserve space without being in the same flex context.
+  // Use a "committed" width that only updates when NOT dragging, so the
+  // SplitPanel's percentage-based left panel doesn't jitter during resize.
+  let committedWidth = $state(DEFAULT_WIDTH);
+  $effect(() => {
+    if (!isDragging) {
+      committedWidth = collapsed ? COLLAPSED_WIDTH : (wide ? 0 : panelWidth);
+    }
+  });
+  $effect(() => {
+    document.documentElement.style.setProperty('--action-panel-width', `${committedWidth}px`);
+  });
+
+  function handleDragStart(e: MouseEvent) {
+    if (collapsed) return;
+    isDragging = true;
+    e.preventDefault();
+  }
+
+  function handleMouseMove(e: MouseEvent) {
+    if (!isDragging) return;
+    const newWidth = window.innerWidth - e.clientX;
+    panelWidth = Math.min(Math.max(newWidth, MIN_WIDTH), MAX_WIDTH);
+  }
+
+  function handleMouseUp() {
+    if (isDragging) {
+      isDragging = false;
+      localStorage.setItem(STORAGE_KEY, panelWidth.toString());
+    }
+  }
+
+  onMount(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      const w = parseInt(saved, 10);
+      if (!isNaN(w) && w >= MIN_WIDTH && w <= MAX_WIDTH) {
+        panelWidth = w;
+        committedWidth = collapsed ? COLLAPSED_WIDTH : (wide ? 0 : w);
+      }
+    }
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.documentElement.style.removeProperty('--action-panel-width');
+    };
+  });
 </script>
 
-<aside class="action-panel" class:collapsed class:wide aria-label="Decisions panel">
+<aside
+  class="action-panel"
+  class:collapsed
+  class:wide
+  class:dragging={isDragging}
+  aria-label="Decisions panel"
+  style={!collapsed && !wide ? `width: ${panelWidth}px` : ''}
+>
+  {#if !collapsed && !wide}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="resize-handle"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize decisions panel"
+      onmousedown={handleDragStart}
+    ></div>
+  {/if}
+
   {#if collapsed}
     <button class="collapsed-strip" onclick={onToggle} aria-label="Expand decisions panel">
       <div class="collapsed-icon">
@@ -42,19 +121,72 @@
   {/if}
 </aside>
 
+{#if isDragging}
+  <div class="drag-overlay"></div>
+{/if}
+
 <style>
   .action-panel {
-    flex: 0 0 320px;
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 420px;
     display: flex;
     flex-direction: column;
     border-left: 1px solid hsl(var(--border));
     background: hsl(var(--background));
-    overflow: hidden;
-    transition: flex-basis 0.15s ease;
+    overflow: visible;
+    z-index: 5;
+  }
+
+  .action-panel:not(.dragging):not(.collapsed) {
+    transition: width 0.15s ease;
   }
 
   .action-panel.collapsed {
-    flex: 0 0 40px;
+    width: 40px;
+  }
+
+  .resize-handle {
+    position: absolute;
+    left: -10px;
+    top: 0;
+    bottom: 0;
+    width: 20px;
+    cursor: col-resize;
+    z-index: 10;
+    user-select: none;
+    background: transparent;
+  }
+
+  .resize-handle::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 3px;
+    height: 100%;
+    border-radius: 1.5px;
+    background: hsl(var(--primary));
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  .resize-handle:hover::after {
+    opacity: 1;
+  }
+
+  .dragging .resize-handle::after {
+    opacity: 0.6;
+  }
+
+  .drag-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    cursor: col-resize;
   }
 
   .collapsed-strip {
@@ -161,7 +293,9 @@
   }
 
   .action-panel.wide {
+    position: static;
     flex: 1 1 0;
+    width: auto;
     min-width: 0;
     transition: none;
   }
