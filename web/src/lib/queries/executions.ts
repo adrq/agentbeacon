@@ -56,6 +56,26 @@ export function executionEventsQuery(executionId: () => string | null | undefine
   }));
 }
 
+export function sessionBranchesQuery(
+  sessionId: () => string | null | undefined,
+  isTerminal?: () => boolean,
+) {
+  return createQuery(() => ({
+    queryKey: ['session-branches', sessionId()],
+    queryFn: () => api.getSessionBranches(sessionId()!),
+    enabled: !!sessionId(),
+    staleTime: 30_000,
+    refetchInterval: () => {
+      if (isTerminal?.()) return false;
+      return 30_000;
+    },
+    retry: (failureCount: number, error: Error) => {
+      if (error.message.startsWith('API 4')) return false;
+      return failureCount < 2;
+    },
+  }));
+}
+
 export function sessionDiffQuery(
   sessionId: () => string | null | undefined,
   isTerminal?: () => boolean,

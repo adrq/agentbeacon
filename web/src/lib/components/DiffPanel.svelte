@@ -3,7 +3,7 @@
   import DiffSummaryBar from './DiffSummaryBar.svelte';
   import DiffFileList from './DiffFileList.svelte';
   import DiffCommitList from './DiffCommitList.svelte';
-  import { sessionDiffQuery } from '../queries/executions';
+  import { sessionDiffQuery, sessionBranchesQuery } from '../queries/executions';
 
   interface Props {
     sessionId: string | null;
@@ -27,13 +27,22 @@
   // Base ref selector — undefined means use server default (base_commit_sha)
   let selectedBase = $state<string | undefined>(undefined);
 
+  // Resolve the selectedBase for the diff query: strip "branch:" prefix.
+  // Must be defined before diffQuery which references it in a closure.
+  let diffBase = $derived(
+    selectedBase?.startsWith('branch:') ? selectedBase.slice(7) : selectedBase
+  );
+
   const diffQuery = sessionDiffQuery(
     () => sessionId,
     () => isTerminal,
-    () => selectedBase,
+    () => diffBase,
   );
 
+  const branchesQuery = sessionBranchesQuery(() => sessionId, () => isTerminal);
+
   let diffData = $derived(diffQuery.data ?? null);
+  let branches = $derived(branchesQuery.data?.branches ?? []);
   let loading = $derived(diffQuery.isLoading);
   let errorMsg = $derived(diffQuery.error?.message ?? '');
 
@@ -49,13 +58,11 @@
   let truncated = $derived(diffData?.truncated === true);
   let hasCommits = $derived((diffData?.commits?.length ?? 0) > 0);
 
-  // Build base options from commits. The backend always returns the full
-  // commit list (using stored base_commit_sha) regardless of ?base= param,
-  // so this list is stable across base selections.
-  let baseOptions = $derived.by(() => {
-    const opts: { label: string; value: string | undefined }[] = [
-      { label: 'All changes', value: undefined },
-    ];
+  let hasBranches = $derived(branches.length > 0);
+
+  // Build commit options for the select
+  let commitOptions = $derived.by(() => {
+    const opts: { label: string; value: string }[] = [];
     if (diffData?.commits?.length) {
       for (const c of diffData.commits) {
         opts.push({ label: `${c.sha.slice(0, 7)} ${c.message}`, value: c.sha });
@@ -63,6 +70,14 @@
     }
     opts.push({ label: 'HEAD (uncommitted)', value: 'HEAD' });
     return opts;
+  });
+
+  // Build branch options for the select (prefixed with "branch:" to distinguish)
+  let branchOptions = $derived.by(() => {
+    return branches.map(b => ({
+      label: b.name + (b.is_default ? ' (default)' : ''),
+      value: `branch:${b.name}`,
+    }));
   });
 
   function handleSelectBase(sha: string) {
@@ -87,7 +102,7 @@
       highlight: true,
       stickyFileHeaders: false,
       fileListToggle: false,
-      fileContentToggle: false,
+      fileContentToggle: true,
     });
     ui.draw();
     return () => { if (diffContainer) diffContainer.innerHTML = ''; };
@@ -95,7 +110,7 @@
 </script>
 
 <div class="diff-panel scroll-thin">
-  {#if hasCommits || selectedBase !== undefined}
+  {#if hasCommits || hasBranches || selectedBase !== undefined}
     <div class="diff-toolbar">
       <label class="base-label">
         Base:
@@ -107,9 +122,19 @@
             selectedBase = v === '' ? undefined : v;
           }}
         >
-          {#each baseOptions as opt}
-            <option value={opt.value ?? ''}>{opt.label}</option>
-          {/each}
+          <option value="">All changes</option>
+          {#if branchOptions.length > 0}
+            <optgroup label="Branches">
+              {#each branchOptions as opt}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </optgroup>
+          {/if}
+          <optgroup label="Commits">
+            {#each commitOptions as opt}
+              <option value={opt.value}>{opt.label}</option>
+            {/each}
+          </optgroup>
         </select>
       </label>
     </div>

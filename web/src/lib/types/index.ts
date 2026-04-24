@@ -122,6 +122,17 @@ export interface WorktreeInfo {
   exists: boolean;
 }
 
+// GET /api/sessions/{id}/worktree/branches
+export interface BranchInfo {
+  name: string;
+  is_default: boolean;
+}
+
+export interface BranchesResponse {
+  branches: BranchInfo[];
+  current_branch: string | null;
+}
+
 // GET /api/sessions/{id}/worktree/diff
 export interface DiffFileEntry {
   path: string;

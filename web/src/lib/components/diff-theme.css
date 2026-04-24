@@ -64,6 +64,17 @@
   border-color: hsl(var(--status-danger));
 }
 
+/* File collapse toggle (visible when fileContentToggle is enabled) */
+.diff-panel .d2h-file-collapse {
+  border-color: hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+}
+
+.diff-panel .d2h-file-collapse.d2h-selected {
+  background: hsl(var(--muted) / 0.3);
+}
+
 /* File wrapper */
 .diff-panel .d2h-file-wrapper {
   border: 1px solid hsl(var(--border));

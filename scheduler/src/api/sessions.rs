@@ -950,6 +950,92 @@ async fn session_worktree_info(
     }))
 }
 
+#[derive(Debug, Serialize)]
+struct BranchEntry {
+    name: String,
+    is_default: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct BranchesResponse {
+    branches: Vec<BranchEntry>,
+    current_branch: Option<String>,
+}
+
+/// Get local branches in a session's worktree (GET /api/sessions/{id}/worktree/branches)
+async fn session_branches(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<BranchesResponse>, SchedulerError> {
+    let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
+
+    let wt_path = session
+        .worktree_path
+        .as_deref()
+        .or(session.cwd.as_deref())
+        .ok_or_else(|| {
+            SchedulerError::NotFound("session has no worktree or working directory".to_string())
+        })?;
+
+    if !std::path::Path::new(wt_path).is_dir() {
+        return Err(SchedulerError::NotFound(
+            "worktree directory no longer exists".to_string(),
+        ));
+    }
+
+    let rev_parse = run_git_command(wt_path, &["rev-parse", "--is-inside-work-tree"])
+        .await
+        .map_err(|e| match e {
+            SchedulerError::Database(_) => e,
+            _ => SchedulerError::ValidationFailed("not a git repository".to_string()),
+        })?;
+    if rev_parse.trim() != "true" {
+        return Err(SchedulerError::ValidationFailed(
+            "not a git repository".to_string(),
+        ));
+    }
+
+    let output = run_git_command(
+        wt_path,
+        &["for-each-ref", "refs/heads", "--format=%(refname:short)"],
+    )
+    .await
+    .map_err(remap_branch_error)?;
+
+    let branches: Vec<String> = output
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && !l.starts_with("beacon/"))
+        .collect();
+
+    let current_branch = run_git_command(wt_path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .await
+        .ok()
+        .map(|o| o.trim().to_string())
+        .filter(|b| !b.is_empty());
+
+    let default_name = if branches.iter().any(|b| b == "main") {
+        "main".to_string()
+    } else if branches.iter().any(|b| b == "master") {
+        "master".to_string()
+    } else {
+        branches.first().cloned().unwrap_or_default()
+    };
+
+    let branch_entries: Vec<BranchEntry> = branches
+        .into_iter()
+        .map(|name| {
+            let is_default = name == default_name;
+            BranchEntry { name, is_default }
+        })
+        .collect();
+
+    Ok(Json(BranchesResponse {
+        branches: branch_entries,
+        current_branch,
+    }))
+}
+
 /// Get diff for a session's worktree (GET /api/sessions/{id}/worktree/diff)
 async fn session_diff(
     State(state): State<AppState>,
@@ -984,16 +1070,52 @@ async fn session_diff(
         ));
     }
 
-    let base = query
+    let raw_base = query
         .base
         .as_deref()
         .or(session.base_commit_sha.as_deref())
         .unwrap_or("HEAD");
-    if base.starts_with('-') {
+    if raw_base.starts_with('-') {
         return Err(SchedulerError::ValidationFailed(
             "invalid base ref".to_string(),
         ));
     }
+
+    let is_branch = if raw_base == "HEAD" || raw_base.contains('~') || raw_base.contains('^') {
+        false
+    } else {
+        match run_git_command(
+            diff_dir,
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{raw_base}"),
+            ],
+        )
+        .await
+        {
+            Ok(_) => true,
+            Err(SchedulerError::Database(msg)) => return Err(SchedulerError::Database(msg)),
+            Err(_) => false,
+        }
+    };
+
+    let resolved_base = if is_branch {
+        let qualified_ref = format!("refs/heads/{raw_base}");
+        match run_git_command(diff_dir, &["merge-base", "HEAD", &qualified_ref]).await {
+            Ok(output) => output.trim().to_string(),
+            Err(SchedulerError::Database(msg)) => return Err(SchedulerError::Database(msg)),
+            Err(_) => {
+                return Err(SchedulerError::ValidationFailed(format!(
+                    "no merge base found between HEAD and '{raw_base}'"
+                )));
+            }
+        }
+    } else {
+        raw_base.to_string()
+    };
+    let base = resolved_base.as_str();
 
     let numstat_output =
         run_git_command(diff_dir, &["diff", "--no-renames", "--numstat", base, "--"])
@@ -1035,7 +1157,11 @@ async fn session_diff(
         deletions: total_deletions,
     };
 
-    let commit_base = session.base_commit_sha.as_deref().unwrap_or("HEAD");
+    let commit_base = session
+        .base_commit_sha
+        .as_deref()
+        .unwrap_or("HEAD")
+        .to_string();
     let commits = run_git_command(
         diff_dir,
         &[
@@ -1084,6 +1210,18 @@ fn remap_git_error(e: SchedulerError, base: &str) -> SchedulerError {
     match &e {
         SchedulerError::Database(_) => e,
         _ => SchedulerError::ValidationFailed(format!("git diff failed for base ref '{base}'")),
+    }
+}
+
+/// Remap git errors for the branches endpoint: only map "not a git repository"
+/// specifically; preserve timeouts as 500 and other failures with their original message.
+fn remap_branch_error(e: SchedulerError) -> SchedulerError {
+    match &e {
+        SchedulerError::Database(_) => e,
+        SchedulerError::ValidationFailed(msg) if msg.contains("not a git repository") => {
+            SchedulerError::ValidationFailed("not a git repository".to_string())
+        }
+        _ => e,
     }
 }
 
@@ -1421,6 +1559,10 @@ pub fn routes() -> Router<AppState> {
             get(session_worktree_info).delete(delete_session_worktree),
         )
         .route("/api/sessions/{id}/worktree/diff", get(session_diff))
+        .route(
+            "/api/sessions/{id}/worktree/branches",
+            get(session_branches),
+        )
         .route(
             "/api/sessions/{id}/message",
             axum::routing::post(post_message),

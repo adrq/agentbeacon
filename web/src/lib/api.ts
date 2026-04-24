@@ -1,7 +1,7 @@
 import type {
   Agent, AgentPoolEntry, SessionDiscoveryEntry, ConfigEntry, Driver, DriverDescriptor, ModelSuggestion,
   Execution, ExecutionDetail, Session, Event, Project,
-  CreateExecutionResponse, PostMessageResponse, DiffResponse, WorktreeInfo,
+  CreateExecutionResponse, PostMessageResponse, DiffResponse, WorktreeInfo, BranchesResponse,
   McpServer, McpServerPoolEntry,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
@@ -349,6 +349,10 @@ export class AgentBeaconAPI {
 
   async getSessionWorktree(sessionId: string): Promise<WorktreeInfo> {
     return this.fetchJSON<WorktreeInfo>(`/sessions/${sessionId}/worktree`);
+  }
+
+  async getSessionBranches(sessionId: string): Promise<BranchesResponse> {
+    return this.fetchJSON<BranchesResponse>(`/sessions/${sessionId}/worktree/branches`);
   }
 
   async deleteSessionWorktree(sessionId: string, opts?: { dryRun?: boolean; deleteBranch?: boolean }): Promise<Record<string, unknown>> {
