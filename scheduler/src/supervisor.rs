@@ -131,6 +131,7 @@ impl Supervisor {
             cmd.arg("--interval").arg(interval);
         }
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        crate::process_group::configure_child_process(&mut cmd);
 
         let color = get_color(&worker_id);
         let name = format!("worker-{}", &worker_id[..8]);
@@ -178,7 +179,7 @@ impl Supervisor {
             Some(entry) => entry.pid,
             None => return KillResult::NotFound,
         };
-        let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        crate::process_group::kill_process_group(pid, Signal::SIGKILL);
         info!(worker_id = %worker_id, pid = pid, "Killed worker");
         KillResult::Confirmed
     }
@@ -232,9 +233,11 @@ impl Supervisor {
 
         // SIGTERM all workers
         for (pid, worker_id) in &pids_and_ids {
-            match kill(Pid::from_raw(*pid as i32), Signal::SIGTERM) {
-                Ok(_) => info!(worker_id = %worker_id, pid = pid, "Sent SIGTERM"),
-                Err(e) => warn!(worker_id = %worker_id, pid = pid, error = %e, "SIGTERM failed"),
+            match kill(Pid::from_raw(-(*pid as i32)), Signal::SIGTERM) {
+                Ok(_) => info!(worker_id = %worker_id, pid = pid, "Sent SIGTERM to process group"),
+                Err(e) => {
+                    warn!(worker_id = %worker_id, pid = pid, error = %e, "SIGTERM to process group failed")
+                }
             }
         }
 
@@ -250,8 +253,8 @@ impl Supervisor {
             if Instant::now() > deadline {
                 for (pid, worker_id) in &pids_and_ids {
                     if kill(Pid::from_raw(*pid as i32), None).is_ok() {
-                        warn!(worker_id = %worker_id, pid = pid, "Still alive after 10s, sending SIGKILL");
-                        let _ = kill(Pid::from_raw(*pid as i32), Signal::SIGKILL);
+                        warn!(worker_id = %worker_id, pid = pid, "Still alive after 10s, sending SIGKILL to process group");
+                        crate::process_group::kill_process_group(*pid, Signal::SIGKILL);
                     }
                 }
                 sleep(Duration::from_millis(500)).await;

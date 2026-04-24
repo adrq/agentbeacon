@@ -457,8 +457,8 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
+    crate::process_group::configure_child_process(&mut cmd);
 
     for (k, v) in &codex_config.env {
         cmd.env(k, v);
@@ -631,7 +631,7 @@ async fn background_task(
     .await;
 
     if let Err(e) = init_result {
-        let _ = child.kill().await;
+        crate::process_group::kill_child_group(&mut child).await;
         let _ = event_tx.send(AgentEvent::ProcessDied {
             error: format!("Codex initialize failed: {e}"),
             stderr: snapshot_stderr(&stderr_buf),
@@ -671,7 +671,7 @@ async fn background_task(
                     {
                         Ok(Ok(resp)) => {
                             if resp.get("error").is_some() {
-                                let _ = child.kill().await;
+                                crate::process_group::kill_child_group(&mut child).await;
                                 let _ = event_tx.send(AgentEvent::ProcessDied {
                                     error: format!(
                                         "fallback turn/start rejected: {}",
@@ -709,7 +709,7 @@ async fn background_task(
                             }
                         }
                         Ok(Err(e)) => {
-                            let _ = child.kill().await;
+                            crate::process_group::kill_child_group(&mut child).await;
                             let _ = event_tx.send(AgentEvent::ProcessDied {
                                 error: format!("fallback turn/start failed: {e}"),
                                 stderr: snapshot_stderr(&stderr_buf),
@@ -719,7 +719,7 @@ async fn background_task(
                             return;
                         }
                         Err(_elapsed) => {
-                            let _ = child.kill().await;
+                            crate::process_group::kill_child_group(&mut child).await;
                             let _ = event_tx.send(AgentEvent::ProcessDied {
                                 error: "fallback turn/start timed out".to_string(),
                                 stderr: snapshot_stderr(&stderr_buf),
@@ -731,7 +731,7 @@ async fn background_task(
                     }
                 }
                 Err(e) => {
-                    let _ = child.kill().await;
+                    crate::process_group::kill_child_group(&mut child).await;
                     let _ = event_tx.send(AgentEvent::ProcessDied {
                         error: format!("failed to send fallback turn/start: {e}"),
                         stderr: snapshot_stderr(&stderr_buf),
@@ -801,7 +801,7 @@ async fn background_task(
                             agent_session_id: state.thread_id.clone(),
                         });
                         cleanup_state_temp_files(&mut state);
-                        let _ = child.kill().await;
+                        crate::process_group::kill_child_group(&mut child).await;
                         return;
                     }
                 }
@@ -818,7 +818,7 @@ async fn background_task(
                         let parts = match extract_parts(&task_payload) {
                             Ok(p) => p,
                             Err(e) => {
-                                let _ = child.kill().await;
+                                crate::process_group::kill_child_group(&mut child).await;
                                 let _ = event_tx.send(AgentEvent::ProcessDied {
                                     error: format!("bad task payload: {e}"),
                                     stderr: snapshot_stderr(&stderr_buf),
@@ -831,7 +831,7 @@ async fn background_task(
                         let (input, temp_files) = match parts_to_codex_input(&parts) {
                             Ok(r) => r,
                             Err(e) => {
-                                let _ = child.kill().await;
+                                crate::process_group::kill_child_group(&mut child).await;
                                 let _ = event_tx.send(AgentEvent::ProcessDied {
                                     error: format!("failed to prepare input: {e}"),
                                     stderr: snapshot_stderr(&stderr_buf),
@@ -847,7 +847,7 @@ async fn background_task(
                                 &mut state, resume_id, &input,
                                 init_timeout,
                             ).await {
-                                let _ = child.kill().await;
+                                crate::process_group::kill_child_group(&mut child).await;
                                 let _ = event_tx.send(AgentEvent::ProcessDied {
                                     error: format!("Codex resume failed: {e}"),
                                     stderr: snapshot_stderr(&stderr_buf),
@@ -862,7 +862,7 @@ async fn background_task(
                                 &mut state, &session_id, &cwd,
                                 &codex_config, &input, init_timeout,
                             ).await {
-                                let _ = child.kill().await;
+                                crate::process_group::kill_child_group(&mut child).await;
                                 let _ = event_tx.send(AgentEvent::ProcessDied {
                                     error: format!("Codex start failed: {e}"),
                                     stderr: snapshot_stderr(&stderr_buf),
@@ -1040,7 +1040,7 @@ async fn background_task(
                     "Codex executor stalled: no output for {}s",
                     inactivity_timeout.as_secs()
                 );
-                let _ = child.kill().await;
+                crate::process_group::kill_child_group(&mut child).await;
                 let _ = event_tx.send(AgentEvent::ProcessDied {
                     error: format!(
                         "executor stalled: no output for {}s",
@@ -1233,7 +1233,7 @@ async fn handle_prompt(
         let thread_id = match state.thread_id.as_ref() {
             Some(tid) => tid.clone(),
             None => {
-                let _ = child.kill().await;
+                crate::process_group::kill_child_group(child).await;
                 let _ = event_tx.send(AgentEvent::ProcessDied {
                     error: "Prompt received but no thread_id set".to_string(),
                     stderr: snapshot_stderr(stderr_buf),
@@ -1257,7 +1257,7 @@ async fn handle_prompt(
         let id = match id_result {
             Ok(id) => id,
             Err(e) => {
-                let _ = child.kill().await;
+                crate::process_group::kill_child_group(child).await;
                 let _ = event_tx.send(AgentEvent::ProcessDied {
                     error: format!("failed to send turn/start: {e}"),
                     stderr: snapshot_stderr(stderr_buf),
@@ -1274,7 +1274,7 @@ async fn handle_prompt(
             {
                 Ok(Ok(resp)) => resp,
                 Ok(Err(e)) => {
-                    let _ = child.kill().await;
+                    crate::process_group::kill_child_group(child).await;
                     let _ = event_tx.send(AgentEvent::ProcessDied {
                         error: format!("turn/start failed: {e}"),
                         stderr: snapshot_stderr(stderr_buf),
@@ -1284,7 +1284,7 @@ async fn handle_prompt(
                     return;
                 }
                 Err(_elapsed) => {
-                    let _ = child.kill().await;
+                    crate::process_group::kill_child_group(child).await;
                     let _ = event_tx.send(AgentEvent::ProcessDied {
                         error: "turn/start timed out".to_string(),
                         stderr: snapshot_stderr(stderr_buf),
@@ -1296,7 +1296,7 @@ async fn handle_prompt(
             };
 
         if resp.get("error").is_some() {
-            let _ = child.kill().await;
+            crate::process_group::kill_child_group(child).await;
             let _ = event_tx.send(AgentEvent::ProcessDied {
                 error: format!(
                     "turn/start rejected: {}",
@@ -1342,7 +1342,7 @@ async fn handle_prompt(
     let id = match steer_result {
         Ok(id) => id,
         Err(e) => {
-            let _ = child.kill().await;
+            crate::process_group::kill_child_group(child).await;
             let _ = event_tx.send(AgentEvent::ProcessDied {
                 error: format!("turn/steer transport error: {e}"),
                 stderr: snapshot_stderr(stderr_buf),
@@ -1357,7 +1357,7 @@ async fn handle_prompt(
         match tokio::time::timeout(timeout, wait_for_response(id, stdout_reader, notif_tx)).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(e)) => {
-                let _ = child.kill().await;
+                crate::process_group::kill_child_group(child).await;
                 let _ = event_tx.send(AgentEvent::ProcessDied {
                     error: format!("turn/steer failed: {e}"),
                     stderr: snapshot_stderr(stderr_buf),
@@ -1367,7 +1367,7 @@ async fn handle_prompt(
                 return;
             }
             Err(_elapsed) => {
-                let _ = child.kill().await;
+                crate::process_group::kill_child_group(child).await;
                 let _ = event_tx.send(AgentEvent::ProcessDied {
                     error: "turn/steer timed out".to_string(),
                     stderr: snapshot_stderr(stderr_buf),
@@ -1391,7 +1391,7 @@ async fn handle_prompt(
             tracing::info!("steer rejected during StopTurn, dropping prompt");
             cleanup_temp_files(&temp_files);
         } else {
-            let _ = child.kill().await;
+            crate::process_group::kill_child_group(child).await;
             let _ = event_tx.send(AgentEvent::ProcessDied {
                 error: format!(
                     "turn/steer error: {}",
@@ -1680,17 +1680,14 @@ async fn shutdown_process(
     stdin.take();
 
     if let Some(pid) = child.id() {
-        let _ = nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(pid as i32),
-            nix::sys::signal::Signal::SIGINT,
-        );
+        crate::process_group::kill_process_group(pid, nix::sys::signal::Signal::SIGINT);
     }
 
     match tokio::time::timeout(SHUTDOWN_SIGINT_TIMEOUT, child.wait()).await {
         Ok(_) => {}
         Err(_) => {
             tracing::warn!("Codex process did not exit after SIGINT, sending SIGKILL");
-            let _ = child.kill().await;
+            crate::process_group::kill_child_group(child).await;
         }
     }
 }

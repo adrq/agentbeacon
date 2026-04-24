@@ -135,7 +135,7 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
     .context("initialize timed out")??;
 
     if init_result.protocol_version != 1 {
-        let _ = child.kill().await;
+        crate::process_group::kill_child_group(&mut child).await;
         return Err(anyhow::anyhow!(
             "unsupported protocol version: {} (expected 1)",
             init_result.protocol_version

@@ -3,6 +3,7 @@ pub mod app;
 pub mod assets;
 pub mod db;
 pub mod error;
+pub mod process_group;
 pub mod queue;
 pub mod search;
 pub mod services;

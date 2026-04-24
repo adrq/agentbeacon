@@ -214,8 +214,8 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
     cmd.arg(&script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
+    crate::process_group::configure_child_process(&mut cmd);
 
     // Inject BYOK API key via process env if configured — NEVER over stdin
     if let ParsedConfig::Copilot(ref cc) = parsed_config
@@ -640,7 +640,7 @@ async fn background_task(
                             }
                             Err(_) => {
                                 tracing::warn!("{} executor did not exit within timeout, killing", kind.label());
-                                let _ = child.kill().await;
+                                crate::process_group::kill_child_group(&mut child).await;
                             }
                         }
                         let _ = reader_handle.await;
@@ -652,7 +652,7 @@ async fn background_task(
                         let timeout = std::time::Duration::from_secs(5);
                         match tokio::time::timeout(timeout, child.wait()).await {
                             Ok(_) => {}
-                            Err(_) => { let _ = child.kill().await; }
+                            Err(_) => { crate::process_group::kill_child_group(&mut child).await; }
                         }
                         let _ = reader_handle.await;
                         return;
@@ -668,7 +668,7 @@ async fn background_task(
                     stderr: snapshot_stderr(&stderr_buf),
                     agent_session_id: None,
                 });
-                let _ = child.kill().await;
+                crate::process_group::kill_child_group(&mut child).await;
                 reader_handle.abort();
                 return;
             }

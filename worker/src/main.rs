@@ -6,6 +6,7 @@ mod acp;
 mod cli;
 mod embedded_executors;
 mod executor;
+mod process_group;
 mod sync;
 
 use anyhow::{Context, Result};
@@ -775,20 +776,14 @@ async fn run_session(
                     1 => {
                         tracing::warn!("Escalation: executor did not respond to control command, sending SIGINT");
                         if let Some(pid) = child_pid {
-                            let _ = nix::sys::signal::kill(
-                                nix::unistd::Pid::from_raw(pid as i32),
-                                nix::sys::signal::Signal::SIGINT,
-                            );
+                            crate::process_group::kill_process_group(pid, nix::sys::signal::Signal::SIGINT);
                         }
                         escalation_deadline = Some(tokio::time::Instant::now() + CONTROL_CMD_SIGINT_TIMEOUT);
                     }
                     _ => {
                         tracing::warn!("Escalation: SIGINT timed out, sending SIGKILL");
                         if let Some(pid) = child_pid {
-                            let _ = nix::sys::signal::kill(
-                                nix::unistd::Pid::from_raw(pid as i32),
-                                nix::sys::signal::Signal::SIGKILL,
-                            );
+                            crate::process_group::kill_process_group(pid, nix::sys::signal::Signal::SIGKILL);
                         }
                         escalation_deadline = None;
                     }
@@ -808,10 +803,7 @@ async fn run_session(
                     SETTLED_SILENCE_TIMEOUT.as_secs(),
                 );
                 if let Some(pid) = child_pid {
-                    let _ = nix::sys::signal::kill(
-                        nix::unistd::Pid::from_raw(pid as i32),
-                        nix::sys::signal::Signal::SIGKILL,
-                    );
+                    crate::process_group::kill_process_group(pid, nix::sys::signal::Signal::SIGKILL);
                 }
             }
         }

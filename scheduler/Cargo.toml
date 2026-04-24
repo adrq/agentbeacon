@@ -34,5 +34,6 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "json"] }
 rand = "0.8.5"
 uuid = { workspace = true, features = ["serde"] }
+libc = "0.2"
 nix = { version = "0.30.1", features = ["signal"] }
 mimalloc = "0.1"

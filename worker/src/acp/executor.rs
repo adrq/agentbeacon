@@ -36,8 +36,8 @@ pub(crate) fn spawn_acp_subprocess(acp_config: &LegacyAcpConfig) -> Result<Child
     cmd.args(&acp_config.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
+    crate::process_group::configure_child_process(&mut cmd);
 
     // Apply env vars with panic protection
     if let Some(env_vars) = &acp_config.env {
@@ -75,8 +75,7 @@ pub(crate) async fn terminate_subprocess(child: &mut Child) {
     // Try SIGTERM
     if let Some(pid) = child.id() {
         tracing::debug!(pid, "Sending SIGTERM to subprocess");
-        // Safety: pid is a valid process ID from child.id()
-        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        crate::process_group::kill_process_group(pid, nix::sys::signal::Signal::SIGTERM);
 
         match timeout(Duration::from_secs(1), child.wait()).await {
             Ok(Ok(status)) => {
@@ -96,7 +95,7 @@ pub(crate) async fn terminate_subprocess(child: &mut Child) {
         }
     }
 
-    let _ = child.kill().await;
+    crate::process_group::kill_child_group(child).await;
 }
 
 /// Send initialize request and wait for response

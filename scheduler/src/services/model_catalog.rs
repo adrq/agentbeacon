@@ -183,6 +183,7 @@ async fn copilot_models_inner() -> Result<Vec<ModelSuggestion>, String> {
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
+    crate::process_group::configure_child_process(&mut cmd);
 
     let mut child = cmd
         .spawn()
@@ -190,7 +191,7 @@ async fn copilot_models_inner() -> Result<Vec<ModelSuggestion>, String> {
 
     let result = rpc_exchange_and_parse(&mut child, "models.list", "/result/models").await;
 
-    let _ = child.kill().await;
+    crate::process_group::kill_child_group(&mut child).await;
     let _ = child.wait().await;
 
     let models_array = result?;
@@ -234,6 +235,7 @@ async fn codex_models_inner() -> Result<Vec<ModelSuggestion>, String> {
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
+    crate::process_group::configure_child_process(&mut cmd);
 
     let mut child = cmd
         .spawn()
@@ -241,7 +243,7 @@ async fn codex_models_inner() -> Result<Vec<ModelSuggestion>, String> {
 
     let result = codex_rpc_exchange(&mut child).await;
 
-    let _ = child.kill().await;
+    crate::process_group::kill_child_group(&mut child).await;
     let _ = child.wait().await;
 
     let data = result?;
