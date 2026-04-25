@@ -54,7 +54,8 @@
   );
   let isNotGit = $derived(errorMsg.includes('not a git repository'));
   let hasError = $derived(diffQuery.isError && !isNoWorktree && !isNotGit);
-  let noChanges = $derived(diffData !== null && diffData.files.length === 0);
+  let contentIdentical = $derived(diffData?.content_identical === true);
+  let noChanges = $derived(diffData !== null && diffData.files.length === 0 && !contentIdentical);
   let truncated = $derived(diffData?.truncated === true);
   let hasCommits = $derived((diffData?.commits?.length ?? 0) > 0);
 
@@ -153,6 +154,8 @@
     <div class="diff-empty">Not a git repository</div>
   {:else if hasError}
     <div class="diff-empty diff-error">Failed to load diff</div>
+  {:else if contentIdentical}
+    <div class="diff-empty">No differences — branch content matches {diffBase ?? 'base'}</div>
   {:else if noChanges}
     <div class="diff-empty">No changes detected</div>
   {:else if truncated && diffData}

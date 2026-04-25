@@ -68,6 +68,8 @@ struct DiffResponse {
     truncated: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     commits: Vec<DiffCommitEntry>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    content_identical: bool,
 }
 
 /// Get a single session by ID (GET /api/sessions/{id})
@@ -1115,6 +1117,52 @@ async fn session_diff(
     } else {
         raw_base.to_string()
     };
+
+    if is_branch {
+        let qualified_ref = format!("refs/heads/{raw_base}");
+        let name_only = run_git_command(diff_dir, &["diff", "--name-only", &qualified_ref, "--"])
+            .await
+            .map_err(|e| remap_git_error(e, raw_base))?;
+        if name_only.trim().is_empty() {
+            let commit_base = session
+                .base_commit_sha
+                .as_deref()
+                .unwrap_or("HEAD")
+                .to_string();
+            let commits = run_git_command(
+                diff_dir,
+                &[
+                    "log",
+                    "--format=%H%x00%s%x00%an%x00%aI",
+                    &format!("{commit_base}..HEAD"),
+                ],
+            )
+            .await
+            .map(|output| parse_commit_log(&output))
+            .unwrap_or_default();
+
+            let patch = if query.stat.unwrap_or(false) {
+                None
+            } else {
+                Some(String::new())
+            };
+
+            return Ok(Json(DiffResponse {
+                files: vec![],
+                summary: DiffSummary {
+                    files_changed: 0,
+                    insertions: 0,
+                    deletions: 0,
+                },
+                patch,
+                truncated: None,
+                commits,
+                content_identical: true,
+            })
+            .into_response());
+        }
+    }
+
     let base = resolved_base.as_str();
 
     let numstat_output =
@@ -1189,6 +1237,7 @@ async fn session_diff(
                 patch: None,
                 truncated: Some(true),
                 commits,
+                content_identical: false,
             };
             return Ok((StatusCode::PAYLOAD_TOO_LARGE, Json(response)).into_response());
         }
@@ -1201,6 +1250,7 @@ async fn session_diff(
         patch,
         truncated,
         commits,
+        content_identical: false,
     })
     .into_response())
 }

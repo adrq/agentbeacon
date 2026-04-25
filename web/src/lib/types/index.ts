@@ -160,6 +160,7 @@ export interface DiffResponse {
   patch?: string;       // omitted when stat=true
   truncated?: boolean;  // true on 413 responses (patch > 1MB)
   commits?: DiffCommitEntry[];  // commits between base and HEAD
+  content_identical?: boolean;  // true when branch content matches HEAD
 }
 
 // Platform events use the same shape as message events (role + parts with data payloads)
