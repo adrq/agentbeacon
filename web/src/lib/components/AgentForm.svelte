@@ -24,7 +24,6 @@
   let systemPrompt = $state('');
   let selectedDriverId = $state('');
   let config: Record<string, unknown> = $state({});
-  let sandboxConfigText = $state('');
   let error: string | null = $state(null);
   let driverFormHasError = $state(false);
   let rawPanelHasError = $state(false);
@@ -80,7 +79,6 @@
       config = (agent.config && typeof agent.config === 'object' && !Array.isArray(agent.config))
         ? { ...agent.config as Record<string, unknown> }
         : {};
-      sandboxConfigText = agent.sandbox_config ? JSON.stringify(agent.sandbox_config, null, 2) : '';
     }
   });
 
@@ -101,14 +99,12 @@
   let initialDesc = $derived(agentQuery.data?.description ?? '');
   let initialSysPrompt = $derived(agentQuery.data?.system_prompt ?? '');
   let initialConfig = $derived(JSON.stringify(agentQuery.data?.config ?? {}));
-  let initialSandbox = $derived(agentQuery.data?.sandbox_config ? JSON.stringify(agentQuery.data.sandbox_config, null, 2) : '');
-
   let isDirty = $derived(
     isEdit
       ? (name !== initialName || description !== initialDesc || systemPrompt !== initialSysPrompt ||
-         JSON.stringify(config) !== initialConfig || sandboxConfigText !== initialSandbox)
+         JSON.stringify(config) !== initialConfig)
       : (name.trim().length > 0 || description.trim().length > 0 || systemPrompt.trim().length > 0 ||
-         selectedDriverId !== '' || Object.keys(config).length > 0 || sandboxConfigText.trim().length > 0)
+         selectedDriverId !== '' || Object.keys(config).length > 0)
   );
 
   let submitting = $derived(createMut.isPending || updateMut.isPending);
@@ -138,7 +134,6 @@
     if (!isEdit && !selectedDriverId) return false;
     if (driverFormHasError || rawPanelHasError) return false;
     if (!descriptorReady) return false;
-    if (sandboxConfigText.trim() && !parseJSON(sandboxConfigText)) return false;
     return true;
   });
 
@@ -172,8 +167,6 @@
     if (!canSubmit) return;
     error = null;
 
-    const sandboxConfig = sandboxConfigText.trim() ? parseJSON(sandboxConfigText) : null;
-
     try {
       if (isEdit && agentId) {
         const agent = agentQuery.data!;
@@ -184,9 +177,6 @@
         const newSysPrompt = systemPrompt.trim() || null;
         if (newSysPrompt !== (agent.system_prompt ?? null)) req.system_prompt = newSysPrompt;
         if (JSON.stringify(config) !== JSON.stringify(agent.config)) req.config = config;
-        const oldSandbox = agent.sandbox_config ? JSON.stringify(agent.sandbox_config) : null;
-        const newSandbox = sandboxConfig ? JSON.stringify(sandboxConfig) : null;
-        if (newSandbox !== oldSandbox) req.sandbox_config = sandboxConfig;
         await updateMut.mutateAsync({ id: agentId, req });
         clearGuard();
         router.navigate(`/agents/${agentId}`);
@@ -196,7 +186,6 @@
           description: description.trim() || null,
           driver_id: selectedDriverId,
           config,
-          sandbox_config: sandboxConfig,
           system_prompt: systemPrompt.trim() || null,
         });
         clearGuard();
@@ -329,16 +318,6 @@
         placeholder={'e.g. "You\'re an expert code reviewer. Be terse and technical."'}
       ></textarea>
       <span class="field-hint">Appended to the AgentBeacon briefing sent to this agent. Good for role framing; leave blank if the briefing alone is enough.</span>
-    </div>
-
-    <div class="field">
-      <label class="field-label" for="agent-sandbox">Sandbox Config (JSON) <span class="optional">(optional)</span></label>
-      <textarea
-        id="agent-sandbox"
-        class="field-textarea mono"
-        bind:value={sandboxConfigText}
-        rows="4"
-      ></textarea>
     </div>
 
     {#if error}

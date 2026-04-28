@@ -75,6 +75,7 @@ export interface Execution {
   metadata: Record<string, unknown>;
   max_depth: number;
   max_width: number;
+  sandbox_policy: { fs_level: string };
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -106,6 +107,7 @@ export interface SessionSummary {
   parent_notified: boolean;
   recovery_attempts: number;
   metadata: Record<string, unknown>;
+  sandbox_policy: { fs_level: string };
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -373,6 +375,7 @@ export interface ExecutionPrefill {
   agentIds?: string[];
   prompt?: string;
   title?: string;
+  sandbox_policy?: { fs_level: string };
 }
 
 // Response types

@@ -24,6 +24,7 @@ export interface StartCommand {
   thinking?: { type: string; budgetTokens?: number };
   effort?: string;
   reasoningEffort?: string;
+  sandboxPolicy?: { fs_level: string };
 }
 
 // Intentionally loose type — Rust sends opaque JSON, SDK consumes it

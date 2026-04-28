@@ -19,6 +19,7 @@ pub struct Execution {
     pub metadata: String,
     pub max_depth: i64,
     pub max_width: i64,
+    pub sandbox_policy: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -32,7 +33,7 @@ fn execution_columns(pool: &DbPool) -> String {
 
     format!(
         "id, project_id, parent_execution_id, context_id, desired, outcome, title, metadata, \
-         max_depth, max_width, \
+         max_depth, max_width, sandbox_policy, \
          {created_fmt} as created_at, {updated_fmt} as updated_at, \
          {completed_fmt} as completed_at"
     )
@@ -48,11 +49,12 @@ pub async fn create(
     title: Option<&str>,
     max_depth: i64,
     max_width: i64,
+    sandbox_policy: &str,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
         "INSERT INTO executions (id, project_id, parent_execution_id, context_id, title, \
-         metadata, max_depth, max_width, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, '{}', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+         metadata, max_depth, max_width, sandbox_policy, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
     );
 
     sqlx::query(&query)
@@ -63,6 +65,7 @@ pub async fn create(
         .bind(title)
         .bind(max_depth)
         .bind(max_width)
+        .bind(sandbox_policy)
         .execute(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("create execution failed: {e}")))?;
@@ -229,6 +232,7 @@ fn parse_execution_row(row: sqlx::any::AnyRow) -> Result<Execution, SchedulerErr
         metadata: row.get("metadata"),
         max_depth: row.get("max_depth"),
         max_width: row.get("max_width"),
+        sandbox_policy: row.get("sandbox_policy"),
         created_at: parse_timestamp(&row, "created_at")?,
         updated_at: parse_timestamp(&row, "updated_at")?,
         completed_at: parse_optional_timestamp(&row, "completed_at"),

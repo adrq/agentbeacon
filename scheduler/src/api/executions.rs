@@ -42,6 +42,21 @@ pub struct CreateExecutionRequest {
     pub context_id: Option<String>,
     pub max_depth: Option<i64>,
     pub max_width: Option<i64>,
+    /// Double-Option: None = key missing (default), Some(v) = key present (including explicit null).
+    #[serde(default, deserialize_with = "deserialize_optional_value")]
+    pub sandbox_policy: Option<Option<serde_json::Value>>,
+}
+
+/// Deserialize a field so that a missing key yields `None` while an explicit
+/// JSON `null` yields `Some(None)`. Any other value yields `Some(Some(v))`.
+fn deserialize_optional_value<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<serde_json::Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    Ok(Some(v))
 }
 
 /// Response for create execution
@@ -90,7 +105,7 @@ async fn list_executions(
     let mut responses = Vec::with_capacity(executions.len());
     for exec in executions {
         let derived = derive_execution_fields_async(&state.db_pool, &exec).await?;
-        let mut resp: ExecutionResponse = exec.into();
+        let mut resp = ExecutionResponse::try_from_execution(exec)?;
         resp.status = derived.status;
         resp.completion_eligible = derived.completion_eligible;
         responses.push(resp);
@@ -107,19 +122,17 @@ async fn get_execution(
     let snapshot = db::sessions::list_by_execution_with_pending(&state.db_pool, &id).await?;
 
     let derived = ExecutionResponse::derive_from_snapshot(&exec, &snapshot);
-    let mut execution_response: ExecutionResponse = exec.into();
+    let mut execution_response = ExecutionResponse::try_from_execution(exec)?;
     execution_response.status = derived.status;
     execution_response.completion_eligible = derived.completion_eligible;
 
-    let session_responses: Vec<SessionResponse> = snapshot
-        .into_iter()
-        .map(|(session, pending)| {
-            let status = types::derive_session_display_status(&session, pending);
-            let mut resp: SessionResponse = session.into();
-            resp.status = status;
-            resp
-        })
-        .collect();
+    let mut session_responses = Vec::with_capacity(snapshot.len());
+    for (session, pending) in snapshot {
+        let status = types::derive_session_display_status(&session, pending);
+        let mut resp = SessionResponse::try_from_session(session)?;
+        resp.status = status;
+        session_responses.push(resp);
+    }
 
     Ok(Json(ExecutionDetailResponse {
         execution: execution_response,
@@ -180,6 +193,20 @@ async fn create_execution_handler(
         }
     }
 
+    let sandbox_policy: common::sandbox::SandboxPolicy = match req.sandbox_policy {
+        None => common::sandbox::SandboxPolicy::default(),
+        Some(None) | Some(Some(serde_json::Value::Null)) => {
+            return Err(SchedulerError::ValidationFailed(
+                "invalid sandbox_policy: must be an object, not null".to_string(),
+            ));
+        }
+        Some(Some(raw)) => serde_json::from_value(raw).map_err(|e| {
+            SchedulerError::ValidationFailed(format!("invalid sandbox_policy: {e}"))
+        })?,
+    };
+    let sandbox_policy_json = serde_json::to_string(&sandbox_policy)
+        .map_err(|e| SchedulerError::Database(format!("serialize sandbox_policy: {e}")))?;
+
     let agent_id_refs: Vec<&str> = all_agent_ids.iter().map(|s| s.as_str()).collect();
     let result = execution::create_execution(
         &state.db_pool,
@@ -194,6 +221,7 @@ async fn create_execution_handler(
         req.context_id.as_deref(),
         req.max_depth,
         req.max_width,
+        &sandbox_policy_json,
     )
     .await?;
 
@@ -202,7 +230,7 @@ async fn create_execution_handler(
         .send(EventNotification::persisted(result.execution.id.clone(), 0));
 
     let derived = derive_execution_fields_async(&state.db_pool, &result.execution).await?;
-    let mut exec_resp: ExecutionResponse = result.execution.into();
+    let mut exec_resp = ExecutionResponse::try_from_execution(result.execution)?;
     exec_resp.status = derived.status;
     exec_resp.completion_eligible = derived.completion_eligible;
 
@@ -224,7 +252,7 @@ async fn terminate_execution(
     let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
 
     if exec.outcome.is_some() {
-        let exec_resp: ExecutionResponse = exec.into();
+        let exec_resp = ExecutionResponse::try_from_execution(exec)?;
         return Ok(Json(serde_json::json!({"execution": exec_resp})));
     }
 
@@ -294,7 +322,7 @@ async fn terminate_execution(
         .send(crate::app::EventNotification::persisted(id.clone(), 0));
 
     let fresh_exec = db::executions::get_by_id(&state.db_pool, &id).await?;
-    let exec_resp: ExecutionResponse = fresh_exec.into();
+    let exec_resp = ExecutionResponse::try_from_execution(fresh_exec)?;
     Ok(Json(serde_json::json!({"execution": exec_resp})))
 }
 

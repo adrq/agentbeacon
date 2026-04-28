@@ -215,6 +215,7 @@ async function* promptStream(
   message: { role: "user"; content: ContentBlock[] };
   parent_tool_use_id: null;
 }> {
+  emit({ type: "accepted" });
   turnState = "in-flight";
   yield {
     type: "user",
@@ -246,6 +247,40 @@ async function* promptStream(
         parent_tool_use_id: null,
       };
     }
+  }
+}
+
+// --- Sandbox policy compilation ---
+
+function applySandboxPolicy(
+  policy: { fs_level: string } | undefined,
+  cwd: string,
+  options: Record<string, unknown>,
+): void {
+  if (!policy) return;
+  const level = policy.fs_level;
+  if (level === "unrestricted") return;
+
+  // For sandboxed modes, the permission system must be active (not bypassed)
+  // so that sandbox.filesystem enforcement actually takes effect.
+  options.permissionMode = "acceptEdits";
+  delete options.allowDangerouslySkipPermissions;
+
+  if (level === "workspace") {
+    options.sandbox = {
+      enabled: true,
+      filesystem: { allowWrite: [cwd] },
+    };
+    options.autoAllowBashIfSandboxed = true;
+  } else if (level === "read_only") {
+    options.sandbox = {
+      enabled: true,
+      filesystem: { allowWrite: [] },
+    };
+    options.autoAllowBashIfSandboxed = true;
+    const writeTools = ["Write", "Edit", "NotebookEdit", "MultiEdit"];
+    const existing = (options.disallowedTools as string[]) ?? [];
+    options.disallowedTools = [...existing, ...writeTools];
   }
 }
 
@@ -371,6 +406,7 @@ async function main(): Promise<void> {
             options.resume = startCmd.resumeSessionId;
           if (startCmd.thinking) options.thinking = startCmd.thinking;
           if (startCmd.effort) options.effort = startCmd.effort;
+          applySandboxPolicy(startCmd.sandboxPolicy, startCmd.cwd, options);
           options.includePartialMessages = true;
 
           const q = query({

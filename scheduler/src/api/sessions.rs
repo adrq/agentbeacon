@@ -80,7 +80,7 @@ async fn get_session(
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
     let pending = db::sessions::count_pending_turns(&state.db_pool, &session.id).await?;
     let status = crate::api::types::derive_session_display_status(&session, pending);
-    let mut resp: SessionResponse = session.into();
+    let mut resp = SessionResponse::try_from_session(session)?;
     resp.status = status;
     Ok(Json(resp))
 }
@@ -93,15 +93,13 @@ async fn list_sessions(
     let snapshot =
         db::sessions::list_with_pending(&state.db_pool, query.execution_id.as_deref()).await?;
 
-    let responses: Vec<SessionResponse> = snapshot
-        .into_iter()
-        .map(|(session, pending)| {
-            let status = crate::api::types::derive_session_display_status(&session, pending);
-            let mut resp: SessionResponse = session.into();
-            resp.status = status;
-            resp
-        })
-        .collect();
+    let mut responses = Vec::with_capacity(snapshot.len());
+    for (session, pending) in snapshot {
+        let status = crate::api::types::derive_session_display_status(&session, pending);
+        let mut resp = SessionResponse::try_from_session(session)?;
+        resp.status = status;
+        responses.push(resp);
+    }
     Ok(Json(responses))
 }
 
@@ -524,10 +522,12 @@ async fn continue_from_handler(
     let existing_slugs: Vec<String> = slug_rows.iter().map(|r| r.get("slug")).collect();
     let slug = crate::slugs::generate_slug(&existing_slugs);
 
+    crate::services::sandbox::parse_sandbox_policy(&old_session.sandbox_policy)?;
+
     let create_sql = pool.prepare_query(
         "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, \
-         worktree_path, base_commit_sha, slug, continued_from_session_id) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         worktree_path, base_commit_sha, slug, continued_from_session_id, sandbox_policy) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     sqlx::query(&create_sql)
         .bind(&new_session_id)
@@ -539,6 +539,7 @@ async fn continue_from_handler(
         .bind(old_session.base_commit_sha.as_deref())
         .bind(&slug)
         .bind(&id)
+        .bind(&old_session.sandbox_policy)
         .execute(&mut *tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("create continued session: {e}")))?;
@@ -1587,7 +1588,7 @@ async fn recover_session_handler(
     let updated = db::sessions::get_by_id(pool, &id).await?;
     let pending = db::sessions::count_pending_turns(pool, &updated.id).await?;
     let status = crate::api::types::derive_session_display_status(&updated, pending);
-    let mut resp: SessionResponse = updated.into();
+    let mut resp = SessionResponse::try_from_session(updated)?;
     resp.status = status;
     Ok((
         StatusCode::OK,

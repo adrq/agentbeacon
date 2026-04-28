@@ -142,7 +142,6 @@ export class AgentBeaconAPI {
     description?: string | null;
     driver_id: string;
     config: Record<string, unknown>;
-    sandbox_config?: Record<string, unknown> | null;
     system_prompt?: string | null;
   }): Promise<Agent> {
     return this.fetchJSON('/agents', {
@@ -155,7 +154,6 @@ export class AgentBeaconAPI {
     name?: string;
     description?: string | null;
     config?: Record<string, unknown>;
-    sandbox_config?: Record<string, unknown> | null;
     enabled?: boolean;
     system_prompt?: string | null;
   }): Promise<Agent> {
@@ -298,6 +296,7 @@ export class AgentBeaconAPI {
     cwd?: string;
     max_depth?: number;
     max_width?: number;
+    sandbox_policy?: { fs_level: string };
   }): Promise<CreateExecutionResponse> {
     return this.fetchJSON('/executions', {
       method: 'POST',

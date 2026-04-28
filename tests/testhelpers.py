@@ -1272,6 +1272,7 @@ def create_execution_via_api(
     root_agent_id: str = None,
     agent_ids: list = None,
     parts: list = None,
+    sandbox_policy: dict = None,
 ) -> tuple:
     """POST /api/executions, return (execution_id, session_id).
 
@@ -1314,6 +1315,8 @@ def create_execution_via_api(
         payload["branch"] = branch
     if context_id is not None:
         payload["context_id"] = context_id
+    if sandbox_policy is not None:
+        payload["sandbox_policy"] = sandbox_policy
 
     resp = httpx.post(f"{scheduler_url}/api/executions", json=payload, timeout=5)
     assert resp.status_code == 201, (

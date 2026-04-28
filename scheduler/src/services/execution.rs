@@ -28,6 +28,7 @@ pub async fn create_execution(
     context_id: Option<&str>,
     max_depth: Option<i64>,
     max_width: Option<i64>,
+    sandbox_policy: &str,
 ) -> Result<CreateExecutionResult, SchedulerError> {
     // Validate parts non-empty
     if parts.is_empty() {
@@ -242,6 +243,7 @@ pub async fn create_execution(
         agent_ids,
         resolved_max_depth,
         resolved_max_width,
+        sandbox_policy,
     )
     .await;
 
@@ -272,6 +274,7 @@ async fn persist_and_enqueue(
     agent_ids: &[&str],
     max_depth: i64,
     max_width: i64,
+    sandbox_policy: &str,
 ) -> Result<CreateExecutionResult, SchedulerError> {
     db::executions::create(
         db_pool,
@@ -282,6 +285,7 @@ async fn persist_and_enqueue(
         title,
         max_depth,
         max_width,
+        sandbox_policy,
     )
     .await?;
 
@@ -301,6 +305,7 @@ async fn persist_and_enqueue(
             worktree_path,
             base_commit_sha,
             &slug,
+            sandbox_policy,
         )
         .await
         {
@@ -375,11 +380,8 @@ async fn persist_and_enqueue(
     };
     let agent_config =
         crate::services::agent_config::compose_agent_config(db_pool, agent, &briefing_ctx).await;
-    let sandbox_config: JsonValue = agent
-        .sandbox_config
-        .as_ref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or(JsonValue::Null);
+    let parsed_policy = crate::services::sandbox::parse_sandbox_policy(sandbox_policy)?;
+    let sandbox_config = crate::services::sandbox::build_sandbox_driver_config(&parsed_policy)?;
 
     // Wrap parts in A2A message format for task_payload
     let a2a_message = common::a2a::message_payload(common::a2a::role::USER, parts.to_vec());

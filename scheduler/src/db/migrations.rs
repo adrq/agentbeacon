@@ -50,6 +50,8 @@ const MIGRATION_0020_PG: &str = include_str!("../../migrations/0020_pg_briefing_
 const MIGRATION_0021: &str = include_str!("../../migrations/0021_briefing_messaging_patch.sql");
 const MIGRATION_0021_PG: &str =
     include_str!("../../migrations/0021_pg_briefing_messaging_patch.sql");
+const MIGRATION_0022: &str = include_str!("../../migrations/0022_sandbox_policy.sql");
+const MIGRATION_0022_PG: &str = include_str!("../../migrations/0022_pg_sandbox_policy.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -272,6 +274,11 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     } else {
         MIGRATION_0021
     };
+    let migration_0022 = if is_postgres {
+        MIGRATION_0022_PG
+    } else {
+        MIGRATION_0022
+    };
     let migrations = vec![
         (MIGRATION_0001, 1),
         (migration_0002, 2),
@@ -294,6 +301,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         (migration_0019, 19),
         (migration_0020, 20),
         (migration_0021, 21),
+        (migration_0022, 22),
     ];
 
     // Process each migration
@@ -306,7 +314,12 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         // Migration 0002 uses DROP TABLE which triggers CASCADE with foreign_keys ON.
         // Disable FKs before the migration and re-enable after.
         let needs_fk_disable = !is_postgres
-            && (version == 2 || version == 5 || version == 14 || version == 17 || version == 19);
+            && (version == 2
+                || version == 5
+                || version == 14
+                || version == 17
+                || version == 19
+                || version == 22);
 
         // Adapt migration for database-specific syntax
         let migration = if is_postgres {

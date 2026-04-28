@@ -579,7 +579,7 @@ async fn issue_assign(
         .map_err(|e| SchedulerError::Database(format!("begin transaction failed: {e}")))?;
 
     let agent = db::agents::get_by_id_in_tx(pool, &mut tx, &session.agent_id).await?;
-    let driver = build_driver_info_in_tx(&agent, pool, &mut tx).await?;
+    let driver = build_driver_info_in_tx(&agent, session, pool, &mut tx).await?;
 
     let tx_exec = db::executions::get_in_tx(pool, &mut tx, &session.execution_id)
         .await
@@ -1152,6 +1152,7 @@ async fn notify_parent_of_crash(
 /// Build driver info for assign command.
 async fn build_driver_info_in_tx(
     agent: &db::agents::Agent,
+    session: &db::sessions::Session,
     pool: &DbPool,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
 ) -> Result<serde_json::Value, SchedulerError> {
@@ -1170,11 +1171,8 @@ async fn build_driver_info_in_tx(
         || agent.agent_type == "copilot_sdk"
         || agent.agent_type == "codex_sdk"
     {
-        agent
-            .sandbox_config
-            .as_ref()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or(serde_json::json!({}))
+        let parsed = crate::services::sandbox::parse_sandbox_policy(&session.sandbox_policy)?;
+        crate::services::sandbox::build_sandbox_driver_config(&parsed)?
     } else {
         serde_json::from_str(&agent.config).unwrap_or(serde_json::json!({}))
     };

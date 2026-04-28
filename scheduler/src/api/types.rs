@@ -2,6 +2,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::db;
+use crate::error::SchedulerError;
 
 /// Shared execution response shape used by list, detail, and create endpoints.
 #[derive(Debug, Serialize)]
@@ -20,6 +21,7 @@ pub struct ExecutionResponse {
     pub metadata: serde_json::Value,
     pub max_depth: i64,
     pub max_width: i64,
+    pub sandbox_policy: serde_json::Value,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
@@ -153,9 +155,17 @@ impl ExecutionResponse {
     }
 }
 
-impl From<db::Execution> for ExecutionResponse {
-    fn from(e: db::Execution) -> Self {
+/// Parse sandbox_policy JSON string, returning error on malformed data.
+fn parse_sandbox_policy_json(raw: &str) -> Result<serde_json::Value, SchedulerError> {
+    let policy = crate::services::sandbox::parse_sandbox_policy(raw)?;
+    crate::services::sandbox::build_sandbox_driver_config(&policy)
+}
+
+impl ExecutionResponse {
+    /// Fallible conversion — propagates malformed sandbox_policy as internal error.
+    pub fn try_from_execution(e: db::Execution) -> Result<Self, SchedulerError> {
         let metadata = serde_json::from_str(&e.metadata).unwrap_or_else(|_| serde_json::json!({}));
+        let sandbox_policy = parse_sandbox_policy_json(&e.sandbox_policy)?;
         let status = if let Some(ref outcome) = e.outcome {
             outcome.clone()
         } else if e.desired == "terminate" {
@@ -163,7 +173,7 @@ impl From<db::Execution> for ExecutionResponse {
         } else {
             "awaiting_input".to_string()
         };
-        Self {
+        Ok(Self {
             id: e.id,
             project_id: e.project_id,
             parent_execution_id: e.parent_execution_id,
@@ -176,9 +186,22 @@ impl From<db::Execution> for ExecutionResponse {
             metadata,
             max_depth: e.max_depth,
             max_width: e.max_width,
+            sandbox_policy,
             created_at: e.created_at.to_rfc3339(),
             updated_at: e.updated_at.to_rfc3339(),
             completed_at: e.completed_at.map(|dt| dt.to_rfc3339()),
+        })
+    }
+}
+
+impl From<db::Execution> for ExecutionResponse {
+    fn from(e: db::Execution) -> Self {
+        match Self::try_from_execution(e) {
+            Ok(resp) => resp,
+            Err(err) => {
+                tracing::error!("malformed execution sandbox_policy: {err}");
+                unreachable!("invalid sandbox_policy: {err}");
+            }
         }
     }
 }
@@ -245,16 +268,19 @@ pub struct SessionResponse {
     pub parent_notified: bool,
     pub recovery_attempts: i64,
     pub metadata: serde_json::Value,
+    pub sandbox_policy: serde_json::Value,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
 }
 
-impl From<db::sessions::Session> for SessionResponse {
-    fn from(s: db::sessions::Session) -> Self {
+impl SessionResponse {
+    /// Fallible conversion — propagates malformed sandbox_policy as internal error.
+    pub fn try_from_session(s: db::sessions::Session) -> Result<Self, SchedulerError> {
         let metadata = serde_json::from_str(&s.metadata).unwrap_or_else(|_| serde_json::json!({}));
+        let sandbox_policy = parse_sandbox_policy_json(&s.sandbox_policy)?;
         let status = derive_session_display_status_fallback(&s);
-        Self {
+        Ok(Self {
             id: s.id,
             execution_id: s.execution_id,
             parent_session_id: s.parent_session_id,
@@ -273,9 +299,22 @@ impl From<db::sessions::Session> for SessionResponse {
             parent_notified: s.parent_notified,
             recovery_attempts: s.recovery_attempts,
             metadata,
+            sandbox_policy,
             created_at: s.created_at.to_rfc3339(),
             updated_at: s.updated_at.to_rfc3339(),
             completed_at: s.completed_at.map(|dt| dt.to_rfc3339()),
+        })
+    }
+}
+
+impl From<db::sessions::Session> for SessionResponse {
+    fn from(s: db::sessions::Session) -> Self {
+        match Self::try_from_session(s) {
+            Ok(resp) => resp,
+            Err(err) => {
+                tracing::error!("malformed session sandbox_policy: {err}");
+                unreachable!("invalid sandbox_policy: {err}");
+            }
         }
     }
 }

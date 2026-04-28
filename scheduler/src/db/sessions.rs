@@ -31,6 +31,7 @@ pub struct Session {
     pub worker_id: Option<String>,
     pub parent_notified: bool,
     pub continued_from_session_id: Option<String>,
+    pub sandbox_policy: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -53,6 +54,7 @@ fn session_columns(pool: &DbPool) -> String {
          command_token, command_type, \
          {command_at_fmt} as command_at, \
          command_has_payload, worker_id, parent_notified, continued_from_session_id, \
+         sandbox_policy, \
          {created_fmt} as created_at, {updated_fmt} as updated_at, \
          {completed_fmt} as completed_at"
     )
@@ -85,7 +87,7 @@ fn session_columns_prefixed(pool: &DbPool, alias: &str) -> String {
          {alias}.command_token, {alias}.command_type, \
          {command_at_fmt} as command_at, \
          {alias}.command_has_payload, {alias}.worker_id, {alias}.parent_notified, \
-         {alias}.continued_from_session_id, \
+         {alias}.continued_from_session_id, {alias}.sandbox_policy, \
          {created_fmt} as created_at, {updated_fmt} as updated_at, \
          {completed_fmt} as completed_at"
     )
@@ -102,11 +104,12 @@ pub async fn create(
     worktree_path: Option<&str>,
     base_commit_sha: Option<&str>,
     slug: &str,
+    sandbox_policy: &str,
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
         "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, \
-         worktree_path, base_commit_sha, slug) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         worktree_path, base_commit_sha, slug, sandbox_policy) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
 
     sqlx::query(&query)
@@ -118,6 +121,7 @@ pub async fn create(
         .bind(worktree_path)
         .bind(base_commit_sha)
         .bind(slug)
+        .bind(sandbox_policy)
         .execute(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("create session failed: {e}")))?;
@@ -202,11 +206,12 @@ pub async fn create_with_width_guard(
     worktree_path: Option<&str>,
     max_width: i64,
     slug: &str,
+    sandbox_policy: &str,
 ) -> Result<bool, SchedulerError> {
     let query = pool.prepare_query(
         "INSERT INTO sessions (id, execution_id, parent_session_id, agent_id, cwd, \
-         worktree_path, slug) \
-         SELECT ?, ?, ?, ?, ?, ?, ? \
+         worktree_path, slug, sandbox_policy) \
+         SELECT ?, ?, ?, ?, ?, ?, ?, ? \
          WHERE (SELECT COUNT(*) FROM sessions \
                 WHERE parent_session_id = ? AND outcome IS NULL) < ?",
     );
@@ -219,6 +224,7 @@ pub async fn create_with_width_guard(
         .bind(cwd)
         .bind(worktree_path)
         .bind(slug)
+        .bind(sandbox_policy)
         .bind(parent_session_id)
         .bind(max_width)
         .execute(pool.as_ref())
@@ -803,6 +809,7 @@ fn parse_session_row(row: sqlx::any::AnyRow) -> Result<Session, SchedulerError> 
             .try_get::<bool, _>("parent_notified")
             .unwrap_or_else(|_| row.get::<i32, _>("parent_notified") != 0),
         continued_from_session_id: row.get("continued_from_session_id"),
+        sandbox_policy: row.get("sandbox_policy"),
         created_at: parse_timestamp(&row, "created_at")?,
         updated_at: parse_timestamp(&row, "updated_at")?,
         completed_at: parse_optional_timestamp(&row, "completed_at"),

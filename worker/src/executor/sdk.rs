@@ -95,6 +95,9 @@ enum SdkCommand {
         provider: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_effort: Option<String>,
+        // Sandbox policy (normalized {fs_level})
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sandbox_policy: Option<serde_json::Value>,
     },
     #[serde(rename = "prompt", rename_all = "camelCase")]
     Prompt { parts: Vec<serde_json::Value> },
@@ -335,6 +338,14 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
+    // Validate sandbox_policy — fail the session rather than silently dropping invalid config
+    let sandbox_policy_for_protocol = {
+        let policy: common::sandbox::SandboxPolicy =
+            serde_json::from_value(config.sandbox_config.clone())
+                .context("malformed sandbox_policy from scheduler")?;
+        Some(serde_json::to_value(policy).expect("SandboxPolicy always serializes"))
+    };
+
     // Background task: bridges between cmd_rx/event_tx and the subprocess
     let task_handle = tokio::spawn(background_task(
         kind,
@@ -349,6 +360,7 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
         parsed_config,
         stderr_buf,
         config.inactivity_timeout,
+        sandbox_policy_for_protocol,
     ));
 
     Ok(ExecutorHandle {
@@ -367,6 +379,7 @@ fn build_start_command(
     mcp_servers: &serde_json::Value,
     parsed_config: &ParsedConfig,
     resume_session_id: Option<String>,
+    sandbox_policy: Option<serde_json::Value>,
 ) -> SdkCommand {
     match parsed_config {
         ParsedConfig::Claude(cc) => SdkCommand::Start {
@@ -382,6 +395,7 @@ fn build_start_command(
             effort: cc.effort.clone(),
             provider: None,
             reasoning_effort: None,
+            sandbox_policy,
         },
         ParsedConfig::Copilot(cc) => SdkCommand::Start {
             parts,
@@ -396,6 +410,7 @@ fn build_start_command(
             effort: None,
             provider: sanitize_provider(cc.provider.clone()),
             reasoning_effort: cc.reasoning_effort.clone(),
+            sandbox_policy,
         },
     }
 }
@@ -416,6 +431,7 @@ async fn background_task(
     parsed_config: ParsedConfig,
     stderr_buf: StderrBuffer,
     inactivity_timeout: std::time::Duration,
+    sandbox_policy: Option<serde_json::Value>,
 ) {
     let mut agent_session_id: Option<String> = None;
     let mut started = false;
@@ -564,6 +580,7 @@ async fn background_task(
                                     &mcp_servers,
                                     &parsed_config,
                                     resume_session_id,
+                                    sandbox_policy.clone(),
                                 );
                                 if let Err(e) = write_command(&mut stdin, &cmd).await {
                                     let _ = event_tx.send(AgentEvent::ProcessDied {
@@ -583,6 +600,7 @@ async fn background_task(
                                     &mcp_servers,
                                     &parsed_config,
                                     resume_session_id,
+                                    sandbox_policy.clone(),
                                 );
                                 if let Err(e) = write_command(&mut stdin, &cmd).await {
                                     let _ = event_tx.send(AgentEvent::ProcessDied {

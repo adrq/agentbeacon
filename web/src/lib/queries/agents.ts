@@ -55,7 +55,6 @@ export function createAgentMutation() {
       description?: string | null;
       driver_id: string;
       config: Record<string, unknown>;
-      sandbox_config?: Record<string, unknown> | null;
       system_prompt?: string | null;
     }) => api.createAgent(req),
     onSuccess: () => {
@@ -73,7 +72,6 @@ export function updateAgentMutation() {
         name?: string;
         description?: string | null;
         config?: Record<string, unknown>;
-        sandbox_config?: Record<string, unknown> | null;
         enabled?: boolean;
         system_prompt?: string | null;
       };

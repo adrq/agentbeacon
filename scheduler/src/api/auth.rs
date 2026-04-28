@@ -28,6 +28,7 @@ pub struct McpSession {
     pub executor_state: String,
     pub outcome: Option<String>,
     pub project_id: Option<String>,
+    pub sandbox_policy: String,
 }
 
 /// Auth/session rejection per MCP spec:
@@ -134,6 +135,7 @@ impl FromRequestParts<AppState> for McpSession {
                 executor_state: session.executor_state,
                 outcome: session.outcome,
                 project_id: execution.project_id.clone(),
+                sandbox_policy: session.sandbox_policy,
             })
         }
     }

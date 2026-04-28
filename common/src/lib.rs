@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 pub mod a2a;
+pub mod sandbox;
 pub mod schemas;
 pub mod validation;
 

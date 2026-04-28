@@ -184,6 +184,11 @@ async fn handle_delegate(
         }
     }
 
+    let parsed_policy = crate::services::sandbox::parse_sandbox_policy(&auth.sandbox_policy)
+        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+    let sandbox_config = crate::services::sandbox::build_sandbox_driver_config(&parsed_policy)
+        .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
+
     let new_id = Uuid::new_v4().to_string();
     let mut existing_slugs = db::sessions::sibling_slugs(&state.db_pool, &auth.session_id)
         .await
@@ -201,6 +206,7 @@ async fn handle_delegate(
             None,
             auth.max_width,
             &slug,
+            &auth.sandbox_policy,
         )
         .await
         {
@@ -259,11 +265,6 @@ async fn handle_delegate(
     let agent_config =
         crate::services::agent_config::compose_agent_config(&state.db_pool, &agent, &briefing_ctx)
             .await;
-    let sandbox_config: JsonValue = agent
-        .sandbox_config
-        .as_ref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or(JsonValue::Null);
 
     let delegate_event_str = serde_json::to_string(&json!({
         "role": "ROLE_AGENT",

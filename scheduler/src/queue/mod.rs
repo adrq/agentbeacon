@@ -125,14 +125,14 @@ mod tests {
         .await
         .expect("Failed to create agent");
 
-        sqlx::query("INSERT INTO executions (id, context_id) VALUES (?, ?)")
+        sqlx::query("INSERT INTO executions (id, context_id, sandbox_policy) VALUES (?, ?, '{\"fs_level\":\"unrestricted\"}')")
             .bind(execution_id)
             .bind(execution_id)
             .execute(pool.as_ref())
             .await
             .expect("Failed to create execution");
 
-        sqlx::query("INSERT INTO sessions (id, execution_id, agent_id) VALUES (?, ?, 'agent-1')")
+        sqlx::query("INSERT INTO sessions (id, execution_id, agent_id, sandbox_policy) VALUES (?, ?, 'agent-1', '{\"fs_level\":\"unrestricted\"}')")
             .bind(session_id)
             .bind(execution_id)
             .execute(pool.as_ref())
