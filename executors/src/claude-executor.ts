@@ -466,17 +466,17 @@ async function main(): Promise<void> {
               // failures the SDK can skip message_stop and go straight to
               // result, which discards pendingAssistant. Buffering would
               // therefore lose the error.
+              // The error field is on the outer SDKAssistantMessage, not
+              // inside message (BetaMessage has no error field).
               const assistantError =
-                inner && typeof inner.error === "string"
-                  ? inner.error
-                  : typeof (msg as Record<string, unknown>).error === "string"
-                    ? ((msg as Record<string, unknown>).error as string)
-                    : undefined;
+                typeof (msg as Record<string, unknown>).error === "string"
+                  ? ((msg as Record<string, unknown>).error as string)
+                  : undefined;
               if (assistantError) {
                 emit({
                   type: "message",
                   role: "assistant",
-                  content: [{ type: "assistant_error", error: assistantError }],
+                  content: [{ data: msg }],
                 });
               }
 

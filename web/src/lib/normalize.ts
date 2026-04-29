@@ -96,8 +96,24 @@ function normalizeSdkPart(raw: Record<string, unknown>): NormalizedData {
         outputTokens: (raw.output_tokens as number) ?? 0,
         modelContextWindow: (raw.context_window as number | undefined) ?? null,
       };
-    default:
+    default: {
+      // Raw SDK assistant event with error field (e.g., auth failure, rate limit).
+      // Emitted as a data part by the executor to preserve the full SDK context.
+      if (raw.type === 'assistant' && typeof raw.error === 'string') {
+        const msg = raw.message as Record<string, unknown> | undefined;
+        const contentArr = Array.isArray(msg?.content) ? msg!.content as Array<Record<string, unknown>> : [];
+        const textParts = contentArr
+          .filter((c) => c.type === 'text' && typeof c.text === 'string')
+          .map((c) => c.text as string);
+        const humanText = textParts.join(' ') || undefined;
+        return {
+          normalized: 'error',
+          message: raw.error as string,
+          details: humanText,
+        };
+      }
       return { normalized: 'unknown', raw };
+    }
   }
 }
 
