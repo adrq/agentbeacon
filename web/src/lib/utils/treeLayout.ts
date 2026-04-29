@@ -58,10 +58,10 @@ export function containsSession(nodes: TreeNode[], id: string | null | undefined
 // --- Org-chart-only types and logic ---
 
 export interface CompactedNode {
-  type: 'session' | 'group';
-  session?: SessionSummary;
-  groupedSessions?: SessionSummary[];
+  type: 'session';
+  session: SessionSummary;
   children: CompactedNode[];
+  collapsedChildCount?: number;
   x: number;
   y: number;
   width: number;
@@ -70,72 +70,34 @@ export interface CompactedNode {
 
 const NODE_WIDTH = 160;
 const NODE_HEIGHT = 80;
-const GROUP_HEIGHT = 50;
 const H_SPACING = 180;
 const V_SPACING = 120;
 
-const failedStatuses = new Set(['failed', 'crashed']);
-
-function treeNodeToCompacted(node: TreeNode): CompactedNode {
-  const children: CompactedNode[] = [];
-  const { active, terminal } = partitionChildren(node.children);
-
-  // Recurse into active children
-  for (const child of active) {
-    children.push(treeNodeToCompacted(child));
-  }
-
-  // Group terminal children: failed/crashed are never grouped
-  const groupable: SessionSummary[] = [];
-  for (const child of terminal) {
-    if (failedStatuses.has(child.session.status)) {
-      children.push({
-        type: 'session',
-        session: child.session,
-        children: [],
-        x: 0, y: 0,
-        width: NODE_WIDTH,
-        height: NODE_HEIGHT,
-      });
-    } else {
-      groupable.push(child.session);
-    }
-  }
-
-  if (groupable.length >= 3) {
-    children.push({
-      type: 'group',
-      groupedSessions: groupable,
+function treeNodeToCompacted(node: TreeNode, collapsedIds?: Set<string>): CompactedNode {
+  if (collapsedIds?.has(node.session.id)) {
+    return {
+      type: 'session',
+      session: node.session,
       children: [],
+      collapsedChildCount: node.children.length,
       x: 0, y: 0,
       width: NODE_WIDTH,
-      height: GROUP_HEIGHT,
-    });
-  } else {
-    for (const s of groupable) {
-      children.push({
-        type: 'session',
-        session: s,
-        children: [],
-        x: 0, y: 0,
-        width: NODE_WIDTH,
-        height: NODE_HEIGHT,
-      });
-    }
+      height: NODE_HEIGHT,
+    };
   }
 
   return {
     type: 'session',
     session: node.session,
-    children,
+    children: node.children.map(child => treeNodeToCompacted(child, collapsedIds)),
     x: 0, y: 0,
     width: NODE_WIDTH,
     height: NODE_HEIGHT,
   };
 }
 
-export function applyCompaction(roots: TreeNode[]): CompactedNode[] {
-  return roots.map(treeNodeToCompacted);
+export function applyCompaction(roots: TreeNode[], collapsedIds?: Set<string>): CompactedNode[] {
+  return roots.map(r => treeNodeToCompacted(r, collapsedIds));
 }
 
 export interface LayoutEdge {
@@ -149,16 +111,24 @@ export interface LayoutResult {
   bounds: { width: number; height: number };
 }
 
+// Internal type for d3 layout — a CompactedNode or a synthetic wrapper with no session
+interface D3LayoutNode {
+  children: D3LayoutNode[];
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export function computeLayout(roots: CompactedNode[]): LayoutResult {
   if (roots.length === 0) {
     return { nodes: [], edges: [], bounds: { width: 0, height: 0 } };
   }
 
   // Wrap in a virtual root if multiple roots
-  const virtualRoot: CompactedNode = roots.length === 1
+  const virtualRoot: D3LayoutNode = roots.length === 1
     ? roots[0]
     : {
-        type: 'session',
         children: roots,
         x: 0, y: 0,
         width: NODE_WIDTH,
@@ -169,7 +139,7 @@ export function computeLayout(roots: CompactedNode[]): LayoutResult {
 
   // Create fresh d3 hierarchy + tree each call (d3 mutates in place)
   const root = hierarchy(virtualRoot, d => d.children);
-  const treeLayout = d3Tree<CompactedNode>()
+  const treeLayout = d3Tree<D3LayoutNode>()
     .nodeSize([H_SPACING, V_SPACING])
     .separation(() => 1);
   treeLayout(root);
@@ -182,7 +152,7 @@ export function computeLayout(roots: CompactedNode[]): LayoutResult {
   // d3.tree uses x for horizontal, y for depth (top-down)
   root.each(hNode => {
     if (hasVirtualRoot && hNode === root) return; // skip virtual root
-    const cn = hNode.data;
+    const cn = hNode.data as CompactedNode;
     cn.x = (hNode.x ?? 0) - cn.width / 2;
     cn.y = hNode.y ?? 0;
     allNodes.push(cn);
@@ -194,7 +164,7 @@ export function computeLayout(roots: CompactedNode[]): LayoutResult {
     if (!hNode.children) return;
     for (const child of hNode.children) {
       if (hasVirtualRoot && hNode === root) continue;
-      edges.push({ from: hNode.data, to: child.data });
+      edges.push({ from: hNode.data as CompactedNode, to: child.data as CompactedNode });
     }
   });
 

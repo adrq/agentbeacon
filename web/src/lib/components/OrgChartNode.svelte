@@ -8,10 +8,18 @@
     sessionIdentity?: Map<string, SessionIdentity>;
     now: number;
     selected?: boolean;
+    collapsed?: boolean;
+    collapsedChildCount?: number;
+    hasChildren?: boolean;
+    ontogglecollapse?: (sessionId: string) => void;
     onselectsession?: (sessionId: string) => void;
   }
 
-  let { session, agentNameById, sessionIdentity, now, selected = false, onselectsession }: Props = $props();
+  let {
+    session, agentNameById, sessionIdentity, now,
+    selected = false, collapsed = false, collapsedChildCount = 0,
+    hasChildren = false, ontogglecollapse, onselectsession,
+  }: Props = $props();
 
   let identity = $derived(sessionIdentity?.get(session.id));
   let agentFallback = $derived(agentNameById.get(session.agent_id) ?? session.agent_id.slice(0, 8));
@@ -53,33 +61,54 @@
   );
 </script>
 
-<button
-  class="org-chart-node {session.status}"
-  class:selected
-  class:terminal={isTerminal}
-  data-session-id={session.id}
-  aria-label={ariaLabel}
-  onclick={() => onselectsession?.(session.id)}
->
-  <div class="node-header">
-    <span class="status-dot"></span>
-    <span class="node-slug">{slug}</span>
-  </div>
-  <div class="node-meta">
-    <AgentPill name={agentDisplayName} />
-    {#if role}
-      <span class="node-role">{role}</span>
-    {/if}
-  </div>
-  <div class="node-footer">
-    <span class="node-status-text">{statusText}</span>
-    <span class="node-elapsed">{elapsed}</span>
-  </div>
-</button>
+<div class="org-chart-node-wrapper">
+  <button
+    class="org-chart-node {session.status}"
+    class:selected
+    class:terminal={isTerminal}
+    data-session-id={session.id}
+    aria-label={ariaLabel}
+    onclick={() => onselectsession?.(session.id)}
+  >
+    <div class="node-header">
+      <span class="status-dot"></span>
+      <span class="node-slug">{slug}</span>
+    </div>
+    <div class="node-meta">
+      <AgentPill name={agentDisplayName} />
+      {#if role}
+        <span class="node-role">{role}</span>
+      {/if}
+    </div>
+    <div class="node-footer">
+      <span class="node-status-text">{statusText}</span>
+      <span class="node-elapsed">{elapsed}</span>
+    </div>
+  </button>
+  {#if hasChildren}
+    <button
+      class="collapse-toggle"
+      class:collapsed
+      aria-label={collapsed ? `Expand ${collapsedChildCount} children` : 'Collapse subtree'}
+      onclick={(e) => { e.stopPropagation(); ontogglecollapse?.(session.id); }}
+    >
+      {#if collapsed}
+        <span class="collapse-badge">+{collapsedChildCount}</span>
+      {:else}
+        <span class="collapse-chevron">▾</span>
+      {/if}
+    </button>
+  {/if}
+</div>
 
 <style>
+  .org-chart-node-wrapper {
+    position: relative;
+    width: 160px;
+  }
+
   .org-chart-node {
-    position: absolute;
+    position: relative;
     width: 160px;
     height: 80px;
     box-sizing: border-box;
@@ -207,6 +236,48 @@
     font-weight: 500;
     font-family: var(--font-mono, monospace);
     font-variant-numeric: tabular-nums;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .collapse-toggle {
+    position: absolute;
+    bottom: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: 8px;
+    padding: 0 6px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 1;
+    opacity: 0;
+    transition: opacity 0.15s;
+    font-family: inherit;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .collapse-toggle.collapsed {
+    opacity: 1;
+  }
+
+  .org-chart-node-wrapper:hover .collapse-toggle {
+    opacity: 1;
+  }
+
+  .collapse-badge {
+    font-size: 0.625rem;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .collapse-chevron {
+    font-size: 0.5rem;
+    line-height: 1;
     color: hsl(var(--muted-foreground));
   }
 </style>
