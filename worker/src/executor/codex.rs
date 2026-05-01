@@ -43,7 +43,6 @@ const EPHEMERAL_METHODS: &[&str] = &[
 ];
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct CodexConfig {
     #[serde(default = "default_command")]
     pub command: String,
@@ -73,19 +72,6 @@ fn default_approval_policy() -> String {
 }
 fn default_sandbox_policy() -> String {
     "danger-full-access".to_string()
-}
-
-/// Resolve Codex sandbox_mode from the execution-level sandbox_policy.
-/// Fails the session rather than silently degrading to unrestricted.
-fn resolve_codex_sandbox_mode(session_sandbox_config: &serde_json::Value) -> Result<String> {
-    let policy: common::sandbox::SandboxPolicy =
-        serde_json::from_value(session_sandbox_config.clone())
-            .context("malformed sandbox_policy from scheduler")?;
-    Ok(match policy.fs_level {
-        common::sandbox::FsLevel::Unrestricted => "danger-full-access".to_string(),
-        common::sandbox::FsLevel::Workspace => "workspace-write".to_string(),
-        common::sandbox::FsLevel::ReadOnly => "read-only".to_string(),
-    })
 }
 
 /// Monotonically increasing request ID generator.
@@ -256,7 +242,6 @@ fn write_config_toml(
     config: &CodexConfig,
     scheduler_url: &str,
     user_mcp_servers: &serde_json::Value,
-    sandbox_mode: &str,
 ) -> Result<()> {
     use toml::Value as Tv;
 
@@ -266,7 +251,10 @@ fn write_config_toml(
         root.insert("model".into(), Tv::String(model.clone()));
     }
 
-    root.insert("sandbox_mode".into(), Tv::String(sandbox_mode.to_string()));
+    root.insert(
+        "sandbox_mode".into(),
+        Tv::String(config.sandbox_policy.clone()),
+    );
 
     root.insert("approval_policy".into(), Tv::String("never".into()));
 
@@ -445,14 +433,11 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         config.resume_agent_session_id.as_deref(),
     );
 
-    let sandbox_mode = resolve_codex_sandbox_mode(&config.sandbox_config)?;
-
     write_config_toml(
         &codex_home,
         &codex_config,
         &config.scheduler_url,
         &config.user_mcp_servers,
-        &sandbox_mode,
     )?;
 
     if let Err(e) = symlink_auth_json(&codex_home) {
@@ -540,7 +525,6 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
         stderr_buf,
         config.inactivity_timeout,
         init_timeout,
-        sandbox_mode,
     ));
 
     Ok(ExecutorHandle {
@@ -604,7 +588,6 @@ async fn background_task(
     stderr_buf: StderrBuffer,
     inactivity_timeout: Duration,
     init_timeout: Duration,
-    sandbox_mode: String,
 ) {
     let mut stdin = Some(stdin);
 
@@ -877,7 +860,7 @@ async fn background_task(
                             if let Err(e) = do_fresh_start(
                                 stdin.as_mut().unwrap(), &mut stdout_reader, &notif_tx,
                                 &mut state, &session_id, &cwd,
-                                &codex_config, &input, init_timeout, &sandbox_mode,
+                                &codex_config, &input, init_timeout,
                             ).await {
                                 crate::process_group::kill_child_group(&mut child).await;
                                 let _ = event_tx.send(AgentEvent::ProcessDied {
@@ -1081,15 +1064,14 @@ async fn do_fresh_start(
     state: &mut TurnState,
     session_id: &str,
     cwd: &str,
-    _codex_config: &CodexConfig,
+    codex_config: &CodexConfig,
     input: &[serde_json::Value],
     timeout: Duration,
-    sandbox_mode: &str,
 ) -> Result<()> {
     let thread_params = serde_json::json!({
         "cwd": cwd,
         "approvalPolicy": "never",
-        "sandbox": sandbox_mode,
+        "sandbox": codex_config.sandbox_policy,
     });
 
     let id = send_request(stdin, "thread/start", thread_params).await?;

@@ -23,7 +23,6 @@
   let cwd = $state('');
   let maxDepth = $state('');
   let maxWidth = $state('');
-  let sandboxFsLevel = $state('unrestricted');
   let error: string | null = $state(null);
   let sourceExecutionId: string | undefined = undefined;
 
@@ -50,7 +49,6 @@
         }
         if (prefill.prompt) task = prefill.prompt;
         if (prefill.title) title = prefill.title;
-        if (prefill.sandbox_policy?.fs_level) sandboxFsLevel = prefill.sandbox_policy.fs_level;
         executionPrefill.set(null);
       } else {
         prefillApplied = true;
@@ -65,8 +63,6 @@
 
   let singleAgentMode = $derived(enabledAgents.length === 1);
   let poolAgents = $derived(enabledAgents.filter(a => selectedAgentIds.has(a.id)));
-  let hasCopilotInPool = $derived(poolAgents.some(a => a.agent_type === 'copilot_sdk'));
-
   let canSubmit = $derived(
     !!selectedRootAgentId
     && selectedAgentIds.size > 0
@@ -226,7 +222,6 @@
       ...(cwd.trim() && { cwd: cwd.trim() }),
       ...(parsedDepth !== undefined && !isNaN(parsedDepth) && { max_depth: parsedDepth }),
       ...(parsedWidth !== undefined && !isNaN(parsedWidth) && { max_width: parsedWidth }),
-      sandbox_policy: { fs_level: sandboxFsLevel },
     };
 
     try {
@@ -381,27 +376,6 @@
       bind:value={maxWidth}
     />
     <span class="field-hint">Maximum active children per agent</span>
-  </div>
-
-  <div class="field">
-    <label class="field-label">Sandbox Policy</label>
-    <div class="radio-group" data-testid="sandbox-policy-radios">
-      <label class="radio-option">
-        <input type="radio" name="sandbox-fs-level" value="unrestricted" bind:group={sandboxFsLevel} />
-        Unrestricted
-      </label>
-      <label class="radio-option">
-        <input type="radio" name="sandbox-fs-level" value="workspace" bind:group={sandboxFsLevel} />
-        Workspace
-      </label>
-      <label class="radio-option">
-        <input type="radio" name="sandbox-fs-level" value="read_only" bind:group={sandboxFsLevel} />
-        Read-only
-      </label>
-    </div>
-    {#if hasCopilotInPool}
-      <div class="field-warning" data-testid="copilot-sandbox-warning">Sandbox policy is not enforced for GitHub Copilot SDK agents.</div>
-    {/if}
   </div>
 
   {#if enabledAgents.length === 0}

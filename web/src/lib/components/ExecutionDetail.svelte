@@ -511,7 +511,6 @@
 
   // Events for the currently viewed session
   let activeSessionId = $derived($selectedSessionId ?? leadSession?.id ?? null);
-  let activeSession = $derived(detail?.sessions.find(s => s.id === activeSessionId) ?? null);
   const eventsQuery = sessionEventsQuery(
     () => activeSessionId,
     () => isSettled,
@@ -616,7 +615,6 @@
       agentIds: pool.map(a => a.agent_id),
       prompt: promptText,
       title: exec.title ? `Re-run: ${exec.title}` : undefined,
-      sandbox_policy: exec.sandbox_policy,
     });
     router.navigate('/executions/new');
   }
@@ -677,11 +675,6 @@
     {:else}
       <div class="events-header">
         <span class="section-heading">Events</span>
-        {#if activeSession?.sandbox_policy?.fs_level}
-          {@const isCopilot = agents.find(a => a.id === activeSession.agent_id)?.agent_type === 'copilot_sdk'}
-          {@const effectiveLevel = isCopilot ? 'unrestricted' : activeSession.sandbox_policy.fs_level}
-          <span class="sandbox-badge" class:sandbox-badge-neutral={effectiveLevel !== 'unrestricted'} data-testid="session-sandbox-badge" title={isCopilot ? 'SDK sandbox: unrestricted (unenforced)' : effectiveLevel === 'workspace' ? 'SDK sandbox: workspace RW' : effectiveLevel === 'read_only' ? 'SDK sandbox: read-only' : 'SDK sandbox: unrestricted'}>{effectiveLevel === 'read_only' ? '\u{1F6E1} Read-only' : effectiveLevel === 'workspace' ? '\u{1F6E1} Workspace' : '\u{1F6E1} Unrestricted'}</span>
-        {/if}
         {#if !isTerminal}
           <span class="sse-indicator"
             class:connected={sseActive}
@@ -938,20 +931,4 @@
     gap: 0.5rem;
   }
 
-  .sandbox-badge {
-    font-size: 0.6875rem;
-    font-weight: 500;
-    padding: 0.125rem 0.5rem;
-    border-radius: 999px;
-    border: 1px solid hsl(var(--status-attention) / 0.3);
-    background: hsl(var(--status-attention) / 0.08);
-    color: hsl(var(--status-attention));
-    white-space: nowrap;
-  }
-
-  .sandbox-badge-neutral {
-    border-color: hsl(var(--border));
-    background: hsl(var(--muted) / 0.2);
-    color: hsl(var(--muted-foreground));
-  }
 </style>
