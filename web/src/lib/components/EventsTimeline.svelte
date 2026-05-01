@@ -128,9 +128,10 @@
     if (ev.event_type === 'platform' && ev.payload && !('parts' in ev.payload) && !('role' in ev.payload)) {
       const p = ev.payload as Record<string, unknown>;
       if (p.type === 'message_delivered' || p.type === 'child_continued') return [];
-      const msg = p.message as string | undefined;
-      if (!msg) return [];
-      return [{ key: `${ev.id}`, time, icon: '\u26A0', iconClass: 'warning', text: msg, entryType: 'state' }];
+      const msg = typeof p.message === 'string' ? p.message : undefined;
+      const error = typeof p.error === 'string' ? p.error : undefined;
+      if (!msg && !error) return [];
+      return [{ key: `${ev.id}`, time, icon: '\u26A0', iconClass: 'warning', text: msg || error!, entryType: 'state' }];
     }
 
     if (isMessagePayload(ev.payload)) {

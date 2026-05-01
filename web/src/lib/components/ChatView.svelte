@@ -345,10 +345,11 @@
         const p = ev.payload as Record<string, unknown>;
         // Skip known internal/operational events that aren't user-facing
         if (p.type === 'message_delivered' || p.type === 'child_continued') continue;
-        // Show warnings with a message field; skip everything else
-        const msg = p.message as string | undefined;
-        if (!msg) continue;
-        entries.push({ type: 'tool', icon: '\u26A0', text: msg, time, key: `${ev.id}-platform-${seq++}` });
+        // Show warnings with a message or error field; skip everything else
+        const msg = typeof p.message === 'string' ? p.message : undefined;
+        const error = typeof p.error === 'string' ? p.error : undefined;
+        if (!msg && !error) continue;
+        entries.push({ type: 'tool', icon: '\u26A0', text: msg || error!, time, key: `${ev.id}-platform-${seq++}` });
         continue;
       }
 
