@@ -349,8 +349,13 @@ fn write_config_toml(
 
     root.insert("mcp_servers".into(), Tv::Table(mcp_table));
 
+    let mut notice = toml::map::Map::new();
+    notice.insert("fast_default_opt_out".into(), Tv::Boolean(true));
+    root.insert("notice".into(), Tv::Table(notice));
+
     let mut features = toml::map::Map::new();
     features.insert("multi_agent".into(), Tv::Boolean(false));
+    features.insert("fast_mode".into(), Tv::Boolean(false));
     root.insert("features".into(), Tv::Table(features));
 
     let toml_str =
@@ -1704,7 +1709,7 @@ fn cleanup_state_temp_files(state: &mut TurnState) {
 }
 
 /// Minimum supported Codex app-server version.
-const MIN_CODEX_VERSION: (u64, u64, u64) = (0, 118, 0);
+const MIN_CODEX_VERSION: (u64, u64, u64) = (0, 128, 0);
 
 /// Parse a semver-like version string (e.g. "0.118.3") into (major, minor, patch).
 /// Returns None for unparseable strings.
