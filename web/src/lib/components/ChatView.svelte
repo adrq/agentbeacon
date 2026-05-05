@@ -34,6 +34,7 @@
   let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, eventFilter = 'all', onfilterchange }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
+  let prevScrollSessionId: string | null = null;
   let messageText = $state('');
 
   let sending = $state(false);
@@ -218,17 +219,27 @@
     autoResize();
   });
 
-  // Focus chat scroll container when session changes so arrow keys scroll it
+  // Reset auto-scroll and focus when switching sessions.
+  // On initial mount the events-length auto-scroll effect (below) already
+  // scrolls to bottom, so we only force-reset on actual session *changes*.
+  // The setTimeout is needed because Firefox restores per-element scroll
+  // positions asynchronously during the rendering pipeline — after both
+  // tick() and rAF — so we must scroll after that restoration completes.
   $effect(() => {
     if (!sessionId) return;
+    const isSwitch = prevScrollSessionId !== null && sessionId !== prevScrollSessionId;
+    prevScrollSessionId = sessionId;
+    if (!isSwitch) return;
+    shouldAutoScroll = true;
     let cancelled = false;
-    tick().then(() => {
+    const timerId = setTimeout(() => {
       if (cancelled || !scrollContainer) return;
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
       const active = document.activeElement;
       if (active === textareaEl || active?.closest('button, input, textarea, [contenteditable]')) return;
       scrollContainer.focus({ preventScroll: true });
-    });
-    return () => { cancelled = true; };
+    }, 50);
+    return () => { cancelled = true; clearTimeout(timerId); };
   });
 
   function handleScroll() {

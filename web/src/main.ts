@@ -1,3 +1,4 @@
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 import { mount } from 'svelte'
 import '@fontsource/geist/400.css'
 import '@fontsource/geist/500.css'
