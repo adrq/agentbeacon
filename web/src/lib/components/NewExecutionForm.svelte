@@ -352,30 +352,30 @@
     <span class="field-hint">Overrides project path. Mutually exclusive with branch.</span>
   </div>
   <div class="field">
-    <label class="field-label" for="exec-max-depth">Max Depth <span class="optional">(default: 2)</span></label>
+    <label class="field-label" for="exec-max-depth">Max Depth <span class="optional">(default: 5)</span></label>
     <input
       id="exec-max-depth"
       class="field-input"
       type="number"
       min="1"
       max="10"
-      placeholder="2"
+      placeholder="5"
       bind:value={maxDepth}
     />
-    <span class="field-hint">Maximum delegation depth (1 = flat, no sub-leads)</span>
+    <span class="field-hint">Levels of delegation below the root lead (1 = root + leaves only, 5 = up to 5 tiers of sub-agents)</span>
   </div>
   <div class="field">
-    <label class="field-label" for="exec-max-width">Max Width <span class="optional">(default: 5)</span></label>
+    <label class="field-label" for="exec-max-width">Max Width <span class="optional">(default: 10)</span></label>
     <input
       id="exec-max-width"
       class="field-input"
       type="number"
       min="1"
       max="50"
-      placeholder="5"
+      placeholder="10"
       bind:value={maxWidth}
     />
-    <span class="field-hint">Maximum active children per agent</span>
+    <span class="field-hint">Maximum children per agent</span>
   </div>
 
   {#if enabledAgents.length === 0}

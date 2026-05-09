@@ -137,12 +137,12 @@ pub async fn create_execution(
         match db::config::get(db_pool, "max_depth").await {
             Ok(c) => c.value.parse::<i64>().unwrap_or_else(|_| {
                 tracing::warn!(
-                    "config 'max_depth' has invalid value '{}', using default 2",
+                    "config 'max_depth' has invalid value '{}', using default 5",
                     c.value
                 );
-                2
+                5
             }),
-            Err(_) => 2,
+            Err(_) => 5,
         }
     };
     let resolved_max_width = if let Some(w) = max_width {
@@ -151,12 +151,12 @@ pub async fn create_execution(
         match db::config::get(db_pool, "max_width").await {
             Ok(c) => c.value.parse::<i64>().unwrap_or_else(|_| {
                 tracing::warn!(
-                    "config 'max_width' has invalid value '{}', using default 5",
+                    "config 'max_width' has invalid value '{}', using default 10",
                     c.value
                 );
-                5
+                10
             }),
-            Err(_) => 5,
+            Err(_) => 10,
         }
     };
 

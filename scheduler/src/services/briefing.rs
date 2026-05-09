@@ -18,26 +18,36 @@ pub enum BriefingRole {
     Leaf,
 }
 
-// Fallback text used when the config table row is missing.
-// Edit briefing text via POST /api/config, not by changing these constants.
+// Default briefing text — the primary source of truth.
+// When briefing.use_db_overrides is false (default), these are used directly.
+// When true, DB and project-level overrides can replace these defaults.
 
-const FALLBACK_DELEGATION: &str = "Use the AgentBeacon `delegate` MCP tool to assign work to child agents.\n\
-Use the AgentBeacon `release` MCP tool to terminate a child when done.\n\
+const DEFAULT_DELEGATION: &str = "Use the AgentBeacon `delegate` MCP tool to assign work to child agents.\n\
 Discover available agent configs via `GET $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/agents` before delegating.\n\
-An **agent** is a configured specialist type (e.g., `backend-dev`). A **session** is a running instance — delegating to the same agent twice creates two independent sessions.";
+An **agent** is a configured specialist type (e.g., `backend-dev`). A **session** is a running instance — delegating to the same agent twice creates two independent sessions.\n\
+\n\
+**Sessions are long-lived.** After a child completes a task, do NOT release it by default. The child retains its full context (codebase understanding, conversation history, mental model). Re-use it for follow-up work.\n\
+\n\
+**Follow-up work uses messaging, not delegate.** To give more work to an existing child, send a message via `POST /api/messages` (see Messaging section). This automatically wakes the child if it ended its turn. Calling `delegate` again creates a *new*, independent session — only do this when you intentionally want a fresh worker with no prior context.\n\
+\n\
+**Release is explicit termination.** Use `release` only when you have a clear reason:\n\
+- The work stream is fully complete with no foreseeable follow-ups\n\
+- You want a fresh perspective (e.g., code review without bias from having written the code)\n\
+- The child is permanently stuck and recovery has failed\n\
+- The execution is wrapping up and you are cleaning house";
 
-const FALLBACK_ESCALATE: &str = "Use the AgentBeacon `escalate` REST API to surface questions to the user.\n\n\
+const DEFAULT_ESCALATE: &str = "**Always use this API to surface questions, decisions, and updates to the user.** Ending your turn with a question in your output does not notify the user — they would have to manually find your idle session. The escalate API triggers a notification.\n\n\
 `POST $AGENTBEACON_API_BASE/api/escalate`\n\
 ```json\n\
 {\"questions\": [{\"question\": \"Your question here\", \"options\": [{\"label\": \"A\", \"description\": \"...\"}]}], \"importance\": \"blocking\"}\n\
 ```\n\
-- `importance`: `\"blocking\"` (default) means the agent should end its turn and wait for the user's answer in the next turn; `\"fyi\"` is fire-and-forget.\n\
+- `importance`: `\"blocking\"` (default) — end your turn and wait for the answer. `\"fyi\"` — fire-and-forget notification for updates the user should know about.\n\
 - `options`: optional array of 2-5 `{label, description}` choices per question.\n\
 - `context`: optional string with additional context per question.\n\
 - Max 4 questions per batch.\n\
 - The user's answer is delivered as a normal message to this session.";
 
-const FALLBACK_COORDINATION: &str = "When waiting for a reply from another agent or for a child to complete,\n\
+const DEFAULT_COORDINATION: &str = "When waiting for a reply from another agent or for a child to complete,\n\
 **end your turn**. The system will resume you automatically when:\n\
 - A message arrives for you\n\
 - A child session completes or crashes\n\
@@ -48,9 +58,13 @@ Do NOT poll in a loop or sleep-wait. Just finish your turn.\n\
 **Authority is separate from communication.**\n\
 - Authority flows through the tree: you delegate to children, your parent delegates to you.\n\
 - Communication flows freely: you can message any agent in the execution by hierarchical name.\n\
-- Messaging a peer is requesting cooperation, not issuing commands. You have no authority over peers.";
+- Messaging a peer is requesting cooperation, not issuing commands. You have no authority over peers.\n\
+\n\
+You can message any non-terminal session. Stopped, idle, and running children all accept messages — the system handles delivery and auto-resume. Messages are rejected when the recipient session or its execution is terminal or shutting down.\n\
+\n\
+**Escalate decisions, do not decide alone.** When you encounter decisions outside your delegated scope — product direction, architectural choices, ambiguous requirements — do not just proceed. Ending your turn with a question in your output does not notify anyone. Message your parent, who has broader context and can escalate further.";
 
-const FALLBACK_MESSAGING: &str = "Send a message:\n\
+const DEFAULT_MESSAGING: &str = "Send a message:\n\
   curl -X POST \"$AGENTBEACON_API_BASE/api/messages\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
@@ -85,13 +99,13 @@ Edit a wiki page (targeted find/replace -- prefer this over PUT when updating an
 - old_string must match exactly once (or set replace_all: true).\n\
 - edits are applied in order, all-or-nothing.\n\
 - revision_number must match the current page revision (GET it first).";
-const FALLBACK_RECOVERY: &str = "When a child session crashes, the system automatically attempts recovery (up to 3 retries).\n\
+const DEFAULT_RECOVERY: &str = "When a child session crashes, the system automatically attempts recovery (up to 3 retries).\n\
 - Do NOT immediately re-delegate the same work to a new child.\n\
-- Do NOT assume the child's work is lost.\n\
+- Do NOT assume the work is lost — the child retains its context through recovery.\n\
 - Continue with other work. You will be notified when the child recovers or permanently fails.\n\
-- Only re-delegate if the child's status reaches a terminal failure state.";
+- Only re-delegate if the status reaches a terminal failure state (at which point the old session cannot receive messages).";
 
-const FALLBACK_REST_API: &str = "Environment variables for API access:\n\
+const DEFAULT_REST_API: &str = "Environment variables for API access:\n\
 - `$AGENTBEACON_SESSION_ID` — your auth token (use as Bearer header)\n\
 - `$AGENTBEACON_API_BASE` — scheduler base URL\n\
 - `$AGENTBEACON_EXECUTION_ID` — current execution\n\
@@ -233,20 +247,37 @@ async fn load_project_briefing_overrides_in_tx(
 }
 
 pub async fn build_environment_briefing(pool: &DbPool, ctx: &BriefingContext) -> String {
+    let use_db_overrides = match db::config::get(pool, "briefing.use_db_overrides").await {
+        Ok(c) => c.value == "true",
+        Err(_) => false,
+    };
+
+    if !use_db_overrides {
+        return build_environment_briefing_with_sections(
+            ctx,
+            DEFAULT_DELEGATION,
+            DEFAULT_ESCALATE,
+            DEFAULT_COORDINATION,
+            DEFAULT_MESSAGING,
+            DEFAULT_RECOVERY,
+            DEFAULT_REST_API,
+        );
+    }
+
     let overrides = load_project_briefing_overrides(pool, ctx.project_id.as_deref()).await;
     let ov = overrides.as_ref();
     let delegation_text =
-        read_briefing_section(pool, "briefing.delegation", FALLBACK_DELEGATION, ov).await;
+        read_briefing_section(pool, "briefing.delegation", DEFAULT_DELEGATION, ov).await;
     let escalate_text =
-        read_briefing_section(pool, "briefing.escalate", FALLBACK_ESCALATE, ov).await;
+        read_briefing_section(pool, "briefing.escalate", DEFAULT_ESCALATE, ov).await;
     let coordination_text =
-        read_briefing_section(pool, "briefing.coordination", FALLBACK_COORDINATION, ov).await;
+        read_briefing_section(pool, "briefing.coordination", DEFAULT_COORDINATION, ov).await;
     let messaging_text =
-        read_briefing_section(pool, "briefing.messaging", FALLBACK_MESSAGING, ov).await;
+        read_briefing_section(pool, "briefing.messaging", DEFAULT_MESSAGING, ov).await;
     let recovery_text =
-        read_briefing_section(pool, "briefing.recovery", FALLBACK_RECOVERY, ov).await;
+        read_briefing_section(pool, "briefing.recovery", DEFAULT_RECOVERY, ov).await;
     let rest_api_text =
-        read_briefing_section(pool, "briefing.rest_api", FALLBACK_REST_API, ov).await;
+        read_briefing_section(pool, "briefing.rest_api", DEFAULT_REST_API, ov).await;
 
     build_environment_briefing_with_sections(
         ctx,
@@ -265,22 +296,50 @@ pub async fn build_environment_briefing_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     ctx: &BriefingContext,
 ) -> String {
+    // Check use_db_overrides flag via the transaction
+    let use_db_overrides = {
+        let sql = pool.prepare_query("SELECT value FROM config WHERE name = ?");
+        match sqlx::query(&sql)
+            .bind("briefing.use_db_overrides")
+            .fetch_one(&mut **tx)
+            .await
+        {
+            Ok(row) => {
+                use sqlx::Row;
+                row.get::<String, _>("value") == "true"
+            }
+            Err(_) => false,
+        }
+    };
+
+    if !use_db_overrides {
+        return build_environment_briefing_with_sections(
+            ctx,
+            DEFAULT_DELEGATION,
+            DEFAULT_ESCALATE,
+            DEFAULT_COORDINATION,
+            DEFAULT_MESSAGING,
+            DEFAULT_RECOVERY,
+            DEFAULT_REST_API,
+        );
+    }
+
     let overrides =
         load_project_briefing_overrides_in_tx(pool, tx, ctx.project_id.as_deref()).await;
     let ov = overrides.as_ref();
     let delegation_text =
-        read_briefing_section_in_tx(pool, tx, "briefing.delegation", FALLBACK_DELEGATION, ov).await;
+        read_briefing_section_in_tx(pool, tx, "briefing.delegation", DEFAULT_DELEGATION, ov).await;
     let escalate_text =
-        read_briefing_section_in_tx(pool, tx, "briefing.escalate", FALLBACK_ESCALATE, ov).await;
+        read_briefing_section_in_tx(pool, tx, "briefing.escalate", DEFAULT_ESCALATE, ov).await;
     let coordination_text =
-        read_briefing_section_in_tx(pool, tx, "briefing.coordination", FALLBACK_COORDINATION, ov)
+        read_briefing_section_in_tx(pool, tx, "briefing.coordination", DEFAULT_COORDINATION, ov)
             .await;
     let messaging_text =
-        read_briefing_section_in_tx(pool, tx, "briefing.messaging", FALLBACK_MESSAGING, ov).await;
+        read_briefing_section_in_tx(pool, tx, "briefing.messaging", DEFAULT_MESSAGING, ov).await;
     let recovery_text =
-        read_briefing_section_in_tx(pool, tx, "briefing.recovery", FALLBACK_RECOVERY, ov).await;
+        read_briefing_section_in_tx(pool, tx, "briefing.recovery", DEFAULT_RECOVERY, ov).await;
     let rest_api_text =
-        read_briefing_section_in_tx(pool, tx, "briefing.rest_api", FALLBACK_REST_API, ov).await;
+        read_briefing_section_in_tx(pool, tx, "briefing.rest_api", DEFAULT_REST_API, ov).await;
 
     build_environment_briefing_with_sections(
         ctx,

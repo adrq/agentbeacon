@@ -499,7 +499,7 @@ fn release_schema() -> JsonValue {
     json!({
         "name": "release",
         "title": "Release",
-        "description": "Terminate a child session and free its resources. Works in any non-terminal state (including while the child is working). Also terminates any descendants.",
+        "description": "Terminate a child session and free its resources. Also terminates any descendants. Prefer keeping children alive for follow-up work — only release when the work stream is complete, you need a fresh perspective, or the execution is wrapping up.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -535,7 +535,7 @@ fn delegate_schema() -> JsonValue {
     json!({
         "name": "delegate",
         "title": "Delegate",
-        "description": "Assign work to a child agent. Returns immediately with a session_id.",
+        "description": "Create a new child session and assign it a task. Returns immediately with a session_id. Each call creates an independent session — to send follow-up work to an existing child, use POST /api/messages instead.",
         "inputSchema": {
             "type": "object",
             "properties": {

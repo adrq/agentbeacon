@@ -52,6 +52,8 @@ const MIGRATION_0021_PG: &str =
     include_str!("../../migrations/0021_pg_briefing_messaging_patch.sql");
 const MIGRATION_0022: &str = include_str!("../../migrations/0022_sandbox_policy.sql");
 const MIGRATION_0022_PG: &str = include_str!("../../migrations/0022_pg_sandbox_policy.sql");
+const MIGRATION_0023: &str = include_str!("../../migrations/0023_briefing_defaults.sql");
+const MIGRATION_0023_PG: &str = include_str!("../../migrations/0023_pg_briefing_defaults.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -279,6 +281,11 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
     } else {
         MIGRATION_0022
     };
+    let migration_0023 = if is_postgres {
+        MIGRATION_0023_PG
+    } else {
+        MIGRATION_0023
+    };
     let migrations = vec![
         (MIGRATION_0001, 1),
         (migration_0002, 2),
@@ -302,6 +309,7 @@ pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError
         (migration_0020, 20),
         (migration_0021, 21),
         (migration_0022, 22),
+        (migration_0023, 23),
     ];
 
     // Process each migration
