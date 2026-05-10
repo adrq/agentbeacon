@@ -313,6 +313,7 @@ export interface CompactionData {
 
 export interface NormalizedUsage {
   normalized: 'usage';
+  usedTokens: number;
   inputTokens: number;
   outputTokens: number;
   modelContextWindow?: number | null;
@@ -347,12 +348,13 @@ export interface NormalizedDebug {
 
 // UsageState — tracked per session in ExecutionDetail
 export interface UsageState {
+  usedTokens: number;
   inputTokens: number;
   outputTokens: number;
   contextWindow: number;
   compactions: number;
   available: boolean;              // has usage metrics (claude_sdk, codex_sdk)
-  supportsContextPercentage: boolean;  // fill bar reliable (claude_sdk only)
+  supportsContextPercentage: boolean;  // fill bar reliable when a context window is known
 }
 
 export interface StateChangePayload {

@@ -84,14 +84,20 @@ function normalizeSdkPart(raw: Record<string, unknown>): NormalizedData {
         text: (raw.thinking as string) ?? '',
       };
     case 'usage_update':
-      return {
-        normalized: 'usage',
-        inputTokens: (raw.input_tokens as number) ?? 0,
-        outputTokens: (raw.output_tokens as number) ?? 0,
-      };
+      {
+        const inputTokens = (raw.input_tokens as number) ?? 0;
+        const outputTokens = (raw.output_tokens as number) ?? 0;
+        return {
+          normalized: 'usage',
+          usedTokens: inputTokens + outputTokens,
+          inputTokens,
+          outputTokens,
+        };
+      }
     case 'usage_snapshot':
       return {
         normalized: 'usage',
+        usedTokens: ((raw.input_tokens as number) ?? 0) + ((raw.output_tokens as number) ?? 0),
         inputTokens: (raw.input_tokens as number) ?? 0,
         outputTokens: (raw.output_tokens as number) ?? 0,
         modelContextWindow: (raw.context_window as number | undefined) ?? null,
@@ -311,14 +317,11 @@ function normalizeCodexItem(item: Record<string, unknown>): NormalizedData {
 /** Normalize a Codex token usage object. */
 function normalizeCodexUsage(usage: Record<string, unknown>): NormalizedData {
   const last = (usage.last ?? {}) as Record<string, number>;
-  const total = (usage.total ?? {}) as Record<string, number>;
-  // Support both nested format ({total: {inputTokens}}) and flat format ({totalInputTokens})
-  const flatInput = (usage.totalInputTokens as number | undefined) ?? 0;
-  const flatOutput = (usage.totalOutputTokens as number | undefined) ?? 0;
   return {
     normalized: 'usage',
-    inputTokens: total.inputTokens ?? last.inputTokens ?? flatInput,
-    outputTokens: total.outputTokens ?? last.outputTokens ?? flatOutput,
+    usedTokens: last.totalTokens ?? 0,
+    inputTokens: last.inputTokens ?? 0,
+    outputTokens: last.outputTokens ?? 0,
     modelContextWindow: (usage.modelContextWindow as number | undefined) ?? null,
   };
 }

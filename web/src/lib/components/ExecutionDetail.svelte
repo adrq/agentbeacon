@@ -193,7 +193,7 @@
   // Helper: get or lazily create a usage entry for a session
   function getOrCreateUsage(sessionId: string) {
     return $usageBySession.get(sessionId) ?? {
-      inputTokens: 0, outputTokens: 0, contextWindow: 0,
+      usedTokens: 0, inputTokens: 0, outputTokens: 0, contextWindow: 0,
       compactions: 0, available: false, supportsContextPercentage: false,
     };
   }
@@ -223,6 +223,7 @@
           ...current,
           // Use || not ?? — Claude's usage_snapshot sends input_tokens: 0 meaning
           // "not populated", not "zero tokens". Treating 0 as falsy is intentional.
+          usedTokens: norm.usedTokens || current.usedTokens,
           inputTokens: norm.inputTokens || current.inputTokens,
           outputTokens: norm.outputTokens || current.outputTokens,
           contextWindow: norm.modelContextWindow ?? current.contextWindow,
@@ -492,12 +493,12 @@
       const at = poolAgent?.agent_type ?? globalAgent?.agent_type;
       // has_usage_metrics: enables the usage widget with raw token counts
       const available = at === 'claude_sdk' || at === 'codex_sdk';
-      // supports_context_percentage: enables the fill bar (requires verified context occupancy semantics)
-      const supportsContextPercentage = at === 'claude_sdk';
+      // supports_context_percentage: enables the fill bar when the executor reports a context window
+      const supportsContextPercentage = at === 'claude_sdk' || at === 'codex_sdk';
       const existing = next.get(s.id);
       if (!existing) {
         next.set(s.id, {
-          inputTokens: 0, outputTokens: 0, contextWindow: 0,
+          usedTokens: 0, inputTokens: 0, outputTokens: 0, contextWindow: 0,
           compactions: 0, available, supportsContextPercentage,
         });
         changed = true;
