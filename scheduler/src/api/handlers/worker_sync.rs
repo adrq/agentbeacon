@@ -4,6 +4,15 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+
+fn is_retryable_sqlx(e: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(db_err) = e
+        && let Some(code) = db_err.code()
+    {
+        return code == "40P01" || code == "40001";
+    }
+    false
+}
 use crate::db;
 use crate::services::reconciler::{self, CommandAction, ReconcilerAction};
 use crate::services::transition::{self, ExState};
@@ -121,7 +130,7 @@ pub async fn worker_sync(
         }
     }
 
-    let needs_phase2 = req.turn_result.is_some() || req.command_ack.is_some();
+    let needs_result_tx = req.turn_result.is_some() || req.command_ack.is_some();
     let mut turn_result_session: Option<db::sessions::Session> = None;
     let mut was_terminal_cancel = false;
     let should_notify = req
@@ -137,7 +146,7 @@ pub async fn worker_sync(
 
     let mut notify_parent: Option<db::sessions::Session> = None;
 
-    if needs_phase2 {
+    if needs_result_tx {
         if let Some(result) = &req.turn_result
             && let Ok(session) = db::sessions::get_by_id(pool, &result.session_id).await
         {
@@ -164,9 +173,10 @@ pub async fn worker_sync(
             notify_parent = Some(parent);
         }
 
-        let mut phase2_execution_id = turn_result_session.as_ref().map(|s| s.execution_id.clone());
+        let mut result_tx_execution_id =
+            turn_result_session.as_ref().map(|s| s.execution_id.clone());
 
-        if phase2_execution_id.is_none()
+        if result_tx_execution_id.is_none()
             && let Some(ref ack_token) = req.command_ack
         {
             let ack_sql =
@@ -176,239 +186,313 @@ pub async fn worker_sync(
                 .fetch_optional(pool.as_ref())
                 .await
             {
-                phase2_execution_id = Some(row.get::<String, _>("execution_id"));
+                result_tx_execution_id = Some(row.get::<String, _>("execution_id"));
             }
         }
 
-        let mut tx = if let Some(ref exec_id) = phase2_execution_id {
-            db::executions::begin_execution_tx(pool, exec_id)
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("begin execution tx: {e}"),
-                    )
-                })?
-        } else {
-            pool.begin()
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("begin tx: {e}")))?
-        };
-
-        let mut tx_child_session: Option<db::sessions::Session> = None;
         let mut turn_result_stale_worker = false;
-        if let Some(result) = &req.turn_result
-            && turn_result_session.is_some()
-        {
-            match db::sessions::get_in_tx(pool, &mut tx, &result.session_id).await {
-                Ok(s) if s.worker_id.as_deref() == Some(worker_id) => {
-                    process_turn_result_in_tx(pool, &mut tx, &s, result)
-                        .await
-                        .map_err(|e| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("turn_result persist failed: {e}"),
-                            )
-                        })?;
-                    tx_child_session = Some(s);
-                }
-                Ok(_) => {
-                    tracing::debug!(
-                        "turn_result dropped: worker_id changed inside tx for session {}",
-                        result.session_id
-                    );
-                    turn_result_session = None;
-                    turn_result_stale_worker = true;
-                    skip_reconciler = true;
-                }
-                Err(_) => {
-                    turn_result_session = None;
-                }
-            }
-        }
+        let mut ack_stale_worker = false;
 
-        if should_notify && turn_result_session.is_some() {
-            let child_ok = tx_child_session
-                .as_ref()
-                .is_some_and(|s| s.desired == "run" && s.outcome.is_none());
-
-            let mut tx_parent_session: Option<db::sessions::Session> = None;
-            let notify_still_valid = if !child_ok {
-                false
-            } else if notify_parent.is_some() {
-                let tx_exec = db::executions::get_in_tx(
-                    pool,
-                    &mut tx,
-                    &tx_child_session.as_ref().unwrap().execution_id,
-                )
+        for attempt in 0..=3u32 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    50 * (1u64 << (attempt - 1)),
+                ))
                 .await;
-                let exec_ok = tx_exec
-                    .as_ref()
-                    .is_ok_and(|e| e.desired != "terminate" && e.outcome.is_none());
+            }
+            let trs_in = turn_result_session.clone();
+            let result: Result<_, Box<dyn std::error::Error + Send + Sync>> = async {
+                let mut turn_result_session_local = trs_in;
+                let mut was_terminal_cancel_local = false;
+                let mut ack_stale_worker_local = false;
+                let mut turn_result_stale_worker_local = false;
+                let mut skip_reconciler_local = false;
 
-                let parent_ok = if exec_ok {
-                    let tx_parent =
-                        db::sessions::get_in_tx(pool, &mut tx, &notify_parent.as_ref().unwrap().id)
-                            .await;
-                    let ok = tx_parent
-                        .as_ref()
-                        .is_ok_and(|p| p.outcome.is_none() && p.desired != "terminate");
-                    if ok {
-                        tx_parent_session = tx_parent.ok();
-                    }
-                    ok
+                let mut tx = if let Some(ref exec_id) = result_tx_execution_id {
+                    db::executions::begin_execution_tx(pool, exec_id)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::warn!(attempt, error = %e, "begin execution tx failed")
+                        })
+                        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                            e.to_string().into()
+                        })?
                 } else {
-                    false
+                    pool.begin()
+                        .await
+                        .inspect_err(|e| tracing::warn!(attempt, error = %e, "begin tx failed"))
+                        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
                 };
-                exec_ok && parent_ok
-            } else {
-                true
-            };
 
-            if notify_still_valid && let Some(ref session) = turn_result_session {
-                let notification_data = serde_json::json!({
-                    "type": "turn_complete",
-                    "child_session_id": &session.id,
-                });
-
-                if let Some(ref parent) = notify_parent {
-                    let parent_id = &parent.id;
-
-                    let parent_is_stopped = tx_parent_session
-                        .as_ref()
-                        .is_some_and(|p| p.desired == "stop");
-                    if parent_is_stopped {
-                        let resume_sql = pool.prepare_query(
-                            "UPDATE sessions SET desired = 'run', desired_by = 'system:turn_complete_notify', \
-                             desired_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
-                             WHERE id = ? AND desired = 'stop'",
-                        );
-                        let resume_result = sqlx::query(&resume_sql)
-                            .bind(parent_id)
-                            .execute(&mut *tx)
-                            .await
-                            .map_err(|e| {
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("auto-resume parent failed: {e}"),
-                                )
-                            })?;
-
-                        if resume_result.rows_affected() > 0 {
-                            let resume_event = serde_json::json!({"desired": "run", "desired_by": "system:turn_complete_notify"});
-                            let resume_event_str =
-                                serde_json::to_string(&resume_event).unwrap_or_default();
-                            let sc_sql = pool.prepare_query(
-                                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                                 VALUES (?, ?, 'state_change', ?)",
+                let mut tx_child_session: Option<db::sessions::Session> = None;
+                if let Some(result) = &req.turn_result
+                    && turn_result_session_local.is_some()
+                {
+                    match db::sessions::get_in_tx(pool, &mut tx, &result.session_id).await {
+                        Ok(s) if s.worker_id.as_deref() == Some(worker_id) => {
+                            process_turn_result_in_tx(pool, &mut tx, &s, result)
+                                .await
+                                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                                    e.into()
+                                })?;
+                            tx_child_session = Some(s);
+                        }
+                        Ok(_) => {
+                            tracing::debug!(
+                                "turn_result dropped: worker_id changed inside tx for session {}",
+                                result.session_id
                             );
-                            sqlx::query(&sc_sql)
+                            turn_result_session_local = None;
+                            turn_result_stale_worker_local = true;
+                            skip_reconciler_local = true;
+                        }
+                        Err(_) => {
+                            turn_result_session_local = None;
+                        }
+                    }
+                }
+
+                if should_notify && turn_result_session_local.is_some() {
+                    let child_ok = tx_child_session
+                        .as_ref()
+                        .is_some_and(|s| s.desired == "run" && s.outcome.is_none());
+
+                    let mut tx_parent_session: Option<db::sessions::Session> = None;
+                    let notify_still_valid = if !child_ok {
+                        false
+                    } else if notify_parent.is_some() {
+                        let tx_exec = db::executions::get_in_tx(
+                            pool,
+                            &mut tx,
+                            &tx_child_session.as_ref().unwrap().execution_id,
+                        )
+                        .await;
+                        let exec_ok = tx_exec
+                            .as_ref()
+                            .is_ok_and(|e| e.desired != "terminate" && e.outcome.is_none());
+
+                        let parent_ok = if exec_ok {
+                            let tx_parent = db::sessions::get_in_tx(
+                                pool,
+                                &mut tx,
+                                &notify_parent.as_ref().unwrap().id,
+                            )
+                            .await;
+                            let ok = tx_parent
+                                .as_ref()
+                                .is_ok_and(|p| p.outcome.is_none() && p.desired != "terminate");
+                            if ok {
+                                tx_parent_session = tx_parent.ok();
+                            }
+                            ok
+                        } else {
+                            false
+                        };
+                        exec_ok && parent_ok
+                    } else {
+                        true
+                    };
+
+                    if notify_still_valid && let Some(ref session) = turn_result_session_local {
+                        let notification_data = serde_json::json!({
+                            "type": "turn_complete",
+                            "child_session_id": &session.id,
+                        });
+
+                        if let Some(ref parent) = notify_parent {
+                            let parent_id = &parent.id;
+
+                            let parent_is_stopped = tx_parent_session
+                                .as_ref()
+                                .is_some_and(|p| p.desired == "stop");
+                            if parent_is_stopped {
+                                let resume_sql = pool.prepare_query(
+                                    "UPDATE sessions SET desired = 'run', desired_by = 'system:turn_complete_notify', \
+                                     desired_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
+                                     WHERE id = ? AND desired = 'stop'",
+                                );
+                                let resume_result = sqlx::query(&resume_sql)
+                                    .bind(parent_id)
+                                    .execute(&mut *tx)
+                                    .await
+                                    .inspect_err(|e| {
+                                        tracing::warn!(attempt, error = %e, "auto-resume parent failed")
+                                    })
+                                    .map_err(
+                                        |e| -> Box<dyn std::error::Error + Send + Sync> {
+                                            Box::new(e)
+                                        },
+                                    )?;
+
+                                if resume_result.rows_affected() > 0 {
+                                    let resume_event = serde_json::json!({"desired": "run", "desired_by": "system:turn_complete_notify"});
+                                    let resume_event_str =
+                                        serde_json::to_string(&resume_event).unwrap_or_default();
+                                    let sc_sql = pool.prepare_query(
+                                        "INSERT INTO events (execution_id, session_id, event_type, payload) \
+                                         VALUES (?, ?, 'state_change', ?)",
+                                    );
+                                    sqlx::query(&sc_sql)
+                                        .bind(&session.execution_id)
+                                        .bind(parent_id)
+                                        .bind(&resume_event_str)
+                                        .execute(&mut *tx)
+                                        .await
+                                        .inspect_err(|e| {
+                                            tracing::warn!(
+                                                attempt,
+                                                error = %e,
+                                                "auto-resume state_change event failed"
+                                            )
+                                        })
+                                        .map_err(
+                                            |e| -> Box<dyn std::error::Error + Send + Sync> {
+                                                Box::new(e)
+                                            },
+                                        )?;
+                                }
+                            }
+
+                            let notif_text =
+                                format!("Child session {} turn complete.", session.id);
+                            let notification = serde_json::json!({
+                                "message": {
+                                    "role": "ROLE_USER",
+                                    "parts": [
+                                        {"text": notif_text},
+                                        {"data": {
+                                            "type": "turn_complete",
+                                            "child_session_id": &session.id,
+                                        }}
+                                    ]
+                                }
+                            });
+                            let payload_json =
+                                serde_json::to_string(&notification).unwrap_or_default();
+                            let source = format!("child_result:{}", session.id);
+                            let insert_sql = pool.prepare_query(
+                                "INSERT INTO task_queue (execution_id, session_id, task_payload, source) VALUES (?, ?, ?, ?)",
+                            );
+                            sqlx::query(&insert_sql)
                                 .bind(&session.execution_id)
                                 .bind(parent_id)
-                                .bind(&resume_event_str)
+                                .bind(&payload_json)
+                                .bind(&source)
                                 .execute(&mut *tx)
                                 .await
-                                .map_err(|e| {
-                                    (
-                                        StatusCode::INTERNAL_SERVER_ERROR,
-                                        format!("auto-resume state_change event: {e}"),
+                                .inspect_err(|e| {
+                                    tracing::warn!(
+                                        attempt,
+                                        error = %e,
+                                        "turn-complete notification enqueue failed"
                                     )
+                                })
+                                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                                    Box::new(e)
                                 })?;
+
+                            let platform_payload = serde_json::json!({
+                                "parts": [{"data": notification_data}]
+                            });
+                            let platform_str =
+                                serde_json::to_string(&platform_payload).unwrap_or_default();
+                            let event_sql = pool.prepare_query(
+                                "INSERT INTO events (execution_id, session_id, event_type, payload) \
+                                 VALUES (?, ?, 'platform', ?) RETURNING id",
+                            );
+                            sqlx::query(&event_sql)
+                                .bind(&session.execution_id)
+                                .bind(parent_id)
+                                .bind(&platform_str)
+                                .execute(&mut *tx)
+                                .await
+                                .inspect_err(|e| {
+                                    tracing::warn!(
+                                        attempt,
+                                        error = %e,
+                                        "turn-complete platform event failed"
+                                    )
+                                })
+                                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                                    Box::new(e)
+                                })?;
+                        } else if session.parent_session_id.is_none() {
+                            let platform_payload = serde_json::json!({
+                                "parts": [{"data": notification_data}]
+                            });
+                            let platform_str =
+                                serde_json::to_string(&platform_payload).unwrap_or_default();
+                            let event_sql = pool.prepare_query(
+                                "INSERT INTO events (execution_id, session_id, event_type, payload) \
+                                 VALUES (?, ?, 'platform', ?) RETURNING id",
+                            );
+                            let _ = sqlx::query(&event_sql)
+                                .bind(&session.execution_id)
+                                .bind(&session.id)
+                                .bind(&platform_str)
+                                .execute(&mut *tx)
+                                .await;
                         }
                     }
+                }
 
-                    let notif_text = format!("Child session {} turn complete.", session.id);
-                    let notification = serde_json::json!({
-                        "message": {
-                            "role": "ROLE_USER",
-                            "parts": [
-                                {"text": notif_text},
-                                {"data": {
-                                    "type": "turn_complete",
-                                    "child_session_id": &session.id,
-                                }}
-                            ]
+                if let Some(ack_token) = &req.command_ack {
+                    match process_command_ack_in_tx(pool, &mut tx, worker_id, ack_token).await {
+                        Ok(AckResult::Applied { terminal_cancel }) => {
+                            was_terminal_cancel_local = terminal_cancel
                         }
-                    });
-                    let payload_json = serde_json::to_string(&notification).unwrap_or_default();
-                    let source = format!("child_result:{}", session.id);
-                    let insert_sql = pool.prepare_query(
-                        "INSERT INTO task_queue (execution_id, session_id, task_payload, source) VALUES (?, ?, ?, ?)",
-                    );
-                    sqlx::query(&insert_sql)
-                        .bind(&session.execution_id)
-                        .bind(parent_id)
-                        .bind(&payload_json)
-                        .bind(&source)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|e| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("turn-complete notification enqueue failed: {e}"),
-                            )
-                        })?;
-
-                    let platform_payload = serde_json::json!({
-                        "parts": [{"data": notification_data}]
-                    });
-                    let platform_str = serde_json::to_string(&platform_payload).unwrap_or_default();
-                    let event_sql = pool.prepare_query(
-                        "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                         VALUES (?, ?, 'platform', ?) RETURNING id",
-                    );
-                    sqlx::query(&event_sql)
-                        .bind(&session.execution_id)
-                        .bind(parent_id)
-                        .bind(&platform_str)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|e| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("turn-complete platform event failed: {e}"),
-                            )
-                        })?;
-                } else if session.parent_session_id.is_none() {
-                    let platform_payload = serde_json::json!({
-                        "parts": [{"data": notification_data}]
-                    });
-                    let platform_str = serde_json::to_string(&platform_payload).unwrap_or_default();
-                    let event_sql = pool.prepare_query(
-                        "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                         VALUES (?, ?, 'platform', ?) RETURNING id",
-                    );
-                    let _ = sqlx::query(&event_sql)
-                        .bind(&session.execution_id)
-                        .bind(&session.id)
-                        .bind(&platform_str)
-                        .execute(&mut *tx)
-                        .await;
+                        Ok(AckResult::StaleWorker) => {
+                            ack_stale_worker_local = true;
+                            skip_reconciler_local = true;
+                        }
+                        Ok(AckResult::StaleToken) => {}
+                        Err(e) => {
+                            return Err(format!("command_ack failed: {e}").into());
+                        }
+                    }
                 }
+
+                tx.commit()
+                    .await
+                    .inspect_err(|e| tracing::warn!(attempt, error = %e, "commit tx failed"))
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+
+                Ok((
+                    turn_result_session_local,
+                    was_terminal_cancel_local,
+                    ack_stale_worker_local,
+                    turn_result_stale_worker_local,
+                    skip_reconciler_local,
+                ))
             }
-        }
+            .await;
 
-        let mut ack_stale_worker = false;
-        if let Some(ack_token) = &req.command_ack {
-            match process_command_ack_in_tx(pool, &mut tx, worker_id, ack_token).await {
-                Ok(AckResult::Applied { terminal_cancel }) => was_terminal_cancel = terminal_cancel,
-                Ok(AckResult::StaleWorker) => {
-                    ack_stale_worker = true;
-                    skip_reconciler = true;
+            match result {
+                Ok((trs, wtc, asw, trsw, ps)) => {
+                    turn_result_session = trs;
+                    was_terminal_cancel = wtc;
+                    ack_stale_worker = asw;
+                    turn_result_stale_worker = trsw;
+                    skip_reconciler |= ps;
+                    break;
                 }
-                Ok(AckResult::StaleToken) => {}
+                Err(e)
+                    if (e
+                        .downcast_ref::<sqlx::Error>()
+                        .is_some_and(is_retryable_sqlx)
+                        || {
+                            let msg = e.to_string();
+                            msg.contains("deadlock detected") || msg.contains("could not serialize")
+                        })
+                        && attempt < 3 =>
+                {
+                    tracing::warn!(attempt, error = %e, "sync deadlock, retrying");
+                }
                 Err(e) => {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("command_ack failed: {e}"),
-                    ));
+                    return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")));
                 }
             }
         }
-
-        tx.commit()
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("commit tx: {e}")))?;
 
         if ack_stale_worker || turn_result_stale_worker {
             state.supervisor.kill_worker(worker_id).await;
@@ -438,7 +522,7 @@ pub async fn worker_sync(
         skip_reconciler = true;
     }
 
-    if needs_phase2 {
+    if needs_result_tx {
         state.task_queue.wake_waiters();
     }
 
