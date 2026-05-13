@@ -15,6 +15,7 @@
   import ChatView from './ChatView.svelte';
   import DiffPanel from './DiffPanel.svelte';
   import ExecutionOrgChart from './ExecutionOrgChart.svelte';
+  import SidebarSessionTree from './SidebarSessionTree.svelte';
   import { executionsWithQuestions } from '../stores/questionState';
   import Button from './ui/button.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
@@ -60,6 +61,30 @@
   // Org chart overview toggle
   let showOverview = $state(false);
 
+  // Mobile overflow menu and details overlay
+  let isMobile = $state(false);
+  let overflowMenuOpen = $state(false);
+  let showDetailsOverlay = $state(false);
+  $effect(() => {
+    const mql = window.matchMedia('(max-width: 768px)');
+    isMobile = mql.matches;
+    const handler = (e: MediaQueryListEvent) => { isMobile = e.matches; };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  });
+  $effect(() => {
+    if (!overflowMenuOpen) return;
+    let handler: ((e: Event) => void) | null = null;
+    const timerId = setTimeout(() => {
+      handler = () => { overflowMenuOpen = false; };
+      document.addEventListener('click', handler, { once: true });
+    }, 0);
+    return () => {
+      clearTimeout(timerId);
+      if (handler) document.removeEventListener('click', handler);
+    };
+  });
+
   // Debounced query invalidation — collapses rapid SSE state_change events
   // (e.g. backfill on page load) into a single batch of invalidations.
   let invalidateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -96,6 +121,8 @@
       processedUsageEventIds.clear();
       eventFilter = 'all';
       showOverview = false;
+      overflowMenuOpen = false;
+      showDetailsOverlay = false;
       const hashView = getHashViewParam();
       if (hashView) viewMode = hashView;
       lastPersistedSeq.clear();
@@ -635,25 +662,49 @@
           {terminateMut.isPending ? 'Terminating...' : isCompletionEligible ? 'Complete' : 'Cancel'}
         </Button>
       {/if}
-      {#if isRecoverable}
-        <Button variant="secondary" size="sm" disabled={recoverMut.isPending} onclick={handleRecover}>
-          {recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}
-        </Button>
-      {/if}
-      {#if isTerminal}
-        <Button variant={isRecoverable ? 'outline' : 'secondary'} size="sm" disabled={!poolQuery.data} onclick={handleRerun}>
-          Re-run
-        </Button>
-      {/if}
-      {#if (detail?.sessions.length ?? 0) > 1}
-        <Button class="org-chart-toggle" variant={showOverview ? 'default' : 'ghost'} size="sm" aria-pressed={showOverview} aria-controls="execution-overview" onclick={() => { showOverview = !showOverview; }}>
-          Overview
-        </Button>
-      {/if}
-      {#if detail.execution.project_id}
-        <Button variant="ghost" size="sm" onclick={() => { openSearchTab(detail!.execution.project_id!); router.navigate('#/wiki'); }}>
-          Wiki
-        </Button>
+      <span class="desktop-only-actions">
+        {#if isRecoverable}
+          <Button variant="secondary" size="sm" disabled={recoverMut.isPending} onclick={handleRecover}>
+            {recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}
+          </Button>
+        {/if}
+        {#if isTerminal}
+          <Button variant={isRecoverable ? 'outline' : 'secondary'} size="sm" disabled={!poolQuery.data} onclick={handleRerun}>
+            Re-run
+          </Button>
+        {/if}
+        {#if (detail?.sessions.length ?? 0) > 1}
+          <Button class="org-chart-toggle" variant={showOverview ? 'default' : 'ghost'} size="sm" aria-pressed={showOverview} aria-controls="execution-overview" onclick={() => { showOverview = !showOverview; }}>
+            Overview
+          </Button>
+        {/if}
+        {#if detail.execution.project_id}
+          <Button variant="ghost" size="sm" onclick={() => { openSearchTab(detail!.execution.project_id!); router.navigate('#/wiki'); }}>
+            Wiki
+          </Button>
+        {/if}
+      </span>
+      {#if isMobile}
+        <div class="overflow-menu-wrapper">
+          <button class="overflow-menu-btn" aria-label="More actions" onclick={(e) => { e.stopPropagation(); overflowMenuOpen = !overflowMenuOpen; }}>⋯</button>
+          {#if overflowMenuOpen}
+            <div class="overflow-menu">
+              {#if isRecoverable}
+                <button class="overflow-item" disabled={recoverMut.isPending} onclick={() => { overflowMenuOpen = false; handleRecover(); }}>{recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}</button>
+              {/if}
+              {#if isTerminal}
+                <button class="overflow-item" disabled={!poolQuery.data} onclick={() => { overflowMenuOpen = false; handleRerun(); }}>Re-run</button>
+              {/if}
+              {#if (detail?.sessions.length ?? 0) > 1}
+                <button class="overflow-item" onclick={() => { overflowMenuOpen = false; showOverview = !showOverview; }}>Overview</button>
+              {/if}
+              {#if detail.execution.project_id}
+                <button class="overflow-item" onclick={() => { overflowMenuOpen = false; openSearchTab(detail!.execution.project_id!); router.navigate('#/wiki'); }}>Wiki</button>
+              {/if}
+              <button class="overflow-item" onclick={() => { overflowMenuOpen = false; showDetailsOverlay = true; }}>Execution Details</button>
+            </div>
+          {/if}
+        </div>
       {/if}
     </div>
     {#if recoverError}
@@ -726,6 +777,31 @@
       {/if}
     {/if}
   </div>
+
+  {#if showDetailsOverlay && isMobile}
+    <button class="details-backdrop" onclick={() => showDetailsOverlay = false} aria-label="Close execution details"></button>
+    <div class="details-overlay">
+      <div class="details-overlay-header">
+        <button class="details-overlay-back" onclick={() => showDetailsOverlay = false} aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+        </button>
+        <span class="details-overlay-title">Execution Details</span>
+      </div>
+      <div class="details-overlay-body scroll-thin">
+        <SidebarSessionTree
+          sessions={detail.sessions}
+          {agents}
+          selectedSessionId={activeSessionId}
+          {isTerminal}
+          usageBySession={$usageBySession}
+          poolAgents={poolQuery.data}
+          {sessionIdentity}
+          onselectsession={(id) => { selectedSessionId.set(id); showDetailsOverlay = false; }}
+          onstatuschange={() => queryClient.invalidateQueries({ queryKey: ['execution', executionId] })}
+        />
+      </div>
+    </div>
+  {/if}
 
   <AlertDialog.Root bind:open={showTerminateDialog}>
     <AlertDialog.Portal>
@@ -932,4 +1008,139 @@
     gap: 0.5rem;
   }
 
+  .overflow-menu-wrapper {
+    position: relative;
+    display: none;
+  }
+
+  .overflow-menu-btn {
+    width: 2rem;
+    height: 1.75rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.1em;
+  }
+
+  .overflow-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 0.25rem;
+    min-width: 10rem;
+    padding: 0.25rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    box-shadow: 0 4px 12px hsl(var(--shadow-hsl) / 0.2);
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+  }
+
+  .overflow-item {
+    padding: 0.375rem 0.625rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--foreground));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .overflow-item:hover {
+    background: hsl(var(--muted) / 0.5);
+  }
+
+  .overflow-item:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .details-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 49;
+    background: rgba(0, 0, 0, 0.4);
+    border: none;
+    cursor: default;
+  }
+
+  .details-overlay {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    left: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    background: hsl(var(--background));
+  }
+
+  .details-overlay-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid hsl(var(--border));
+    flex-shrink: 0;
+  }
+
+  .details-overlay-back {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+  }
+
+  .details-overlay-back svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .details-overlay-back:hover {
+    color: hsl(var(--foreground));
+    background: hsl(var(--muted) / 0.5);
+  }
+
+  .details-overlay-title {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+  }
+
+  .details-overlay-body {
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  @media (max-width: 768px) {
+    .events-header .section-heading,
+    .events-header .sse-indicator {
+      display: none;
+    }
+    .events-header {
+      padding: 0.25rem 1rem;
+    }
+    .desktop-only-actions {
+      display: none;
+    }
+    .overflow-menu-wrapper {
+      display: block;
+    }
+  }
 </style>

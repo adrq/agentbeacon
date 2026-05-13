@@ -8,12 +8,25 @@
     minWidth?: number;
     maxWidth?: number;
     collapsed?: boolean;
+    mobileShowRight?: boolean;
+    onMobileBack?: () => void;
     onresize?: (data: { leftWidth: number }) => void;
     left?: Snippet;
     right?: Snippet;
   }
 
-  let { storageKey, initialLeftWidth = 50, minWidth = 20, maxWidth = 80, collapsed = false, onresize, left, right }: Props = $props();
+  let { storageKey, initialLeftWidth = 50, minWidth = 20, maxWidth = 80, collapsed = false, mobileShowRight = false, onMobileBack, onresize, left, right }: Props = $props();
+
+  let isMobile = $state(false);
+  $effect(() => {
+    const mql = window.matchMedia('(max-width: 768px)');
+    isMobile = mql.matches;
+    const handler = (e: MediaQueryListEvent) => { isMobile = e.matches; };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  });
+
+  let mobileDetail = $derived(isMobile && (collapsed || mobileShowRight));
 
   let leftPanelWidth = $state(initialLeftWidth);
   let isDragging = $state(false);
@@ -82,7 +95,7 @@
   });
 </script>
 
-<div bind:this={containerElement} class="split-panel-container" class:dragging={isDragging}>
+<div bind:this={containerElement} class="split-panel-container" class:dragging={isDragging} class:mobile={isMobile} class:mobile-detail={mobileDetail}>
   <div
     class="left-panel"
     class:collapsed
@@ -108,6 +121,12 @@
   ></div>
 
   <div style="width: {collapsed ? 100 : 100 - leftPanelWidth}%; min-width: {collapsed ? 0 : minWidth}%;" class="right-panel">
+    {#if isMobile && !collapsed && mobileShowRight && onMobileBack}
+      <button class="mobile-back" onclick={onMobileBack} aria-label="Back to list">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+        Back
+      </button>
+    {/if}
     {#if right}{@render right()}{/if}
   </div>
 </div>
@@ -188,21 +207,46 @@
     user-select: none;
   }
 
-  /* Responsive: Stack vertically on mobile */
-  @media (max-width: 768px) {
-    .split-panel-container {
-      flex-direction: column;
-    }
+  .mobile-back {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.375rem 0.75rem;
+    border: none;
+    border-bottom: 1px solid hsl(var(--border));
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
 
-    .left-panel,
-    .right-panel {
-      width: 100% !important;
-      min-width: 100% !important;
-      max-width: 100% !important;
-    }
+  .mobile-back svg {
+    width: 14px;
+    height: 14px;
+  }
 
-    .divider {
-      display: none;
-    }
+  .mobile-back:hover {
+    color: hsl(var(--foreground));
+  }
+
+  .split-panel-container.mobile .divider {
+    display: none;
+  }
+
+  .split-panel-container.mobile .left-panel,
+  .split-panel-container.mobile .right-panel {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .split-panel-container.mobile-detail .left-panel {
+    display: none;
+  }
+
+  .split-panel-container.mobile:not(.mobile-detail) .right-panel {
+    display: none;
   }
 </style>

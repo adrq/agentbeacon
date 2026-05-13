@@ -19,6 +19,7 @@
 
   let panelWidth = $state(DEFAULT_WIDTH);
   let isDragging = $state(false);
+  let isMobile = $state(false);
 
   // Expose effective width as CSS custom property on :root so sibling panels
   // can reserve space without being in the same flex context.
@@ -27,11 +28,18 @@
   let committedWidth = $state(DEFAULT_WIDTH);
   $effect(() => {
     if (!isDragging) {
-      committedWidth = collapsed ? COLLAPSED_WIDTH : (wide ? 0 : panelWidth);
+      committedWidth = isMobile ? 0 : (collapsed ? COLLAPSED_WIDTH : (wide ? 0 : panelWidth));
     }
   });
   $effect(() => {
     document.documentElement.style.setProperty('--action-panel-width', `${committedWidth}px`);
+  });
+  $effect(() => {
+    const mql = window.matchMedia('(max-width: 768px)');
+    isMobile = mql.matches;
+    const handler = (e: MediaQueryListEvent) => { isMobile = e.matches; };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
   });
 
   function handleDragStart(e: MouseEvent) {
@@ -76,6 +84,7 @@
   class="action-panel"
   class:collapsed
   class:wide
+  class:mobile={isMobile}
   class:dragging={isDragging}
   aria-label="Decisions panel"
   style={!collapsed && !wide ? `width: ${panelWidth}px` : ''}
@@ -120,6 +129,10 @@
     </div>
   {/if}
 </aside>
+
+{#if isMobile && !collapsed}
+  <button class="mobile-backdrop" onclick={onToggle} aria-label="Close decisions panel"></button>
+{/if}
 
 {#if isDragging}
   <div class="drag-overlay"></div>
@@ -300,9 +313,34 @@
     transition: none;
   }
 
+  .mobile-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 49;
+    background: rgba(0, 0, 0, 0.4);
+    border: none;
+    cursor: default;
+  }
+
   @media (max-width: 768px) {
     .action-panel {
+      position: fixed;
+      z-index: 50;
+      transition: transform 0.25s ease;
+    }
+
+    .action-panel.collapsed {
       display: none;
     }
+
+    .action-panel:not(.collapsed) {
+      top: 0;
+      bottom: 0;
+      right: 0;
+      left: 0;
+      width: 100% !important;
+      border-left: none;
+    }
+
   }
 </style>

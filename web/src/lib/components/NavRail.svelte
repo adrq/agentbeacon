@@ -226,12 +226,13 @@
       left: 0;
       right: 0;
       width: 100%;
-      height: 48px;
+      height: auto;
       flex-direction: row;
       justify-content: space-around;
       border-right: none;
       border-top: 1px solid hsl(var(--border));
-      padding: 0;
+      padding: 0 0 env(safe-area-inset-bottom, 0px);
+      min-height: 48px;
       z-index: 100;
     }
 

@@ -17,7 +17,17 @@ export default defineConfig({
   projects: [
     {
       name: 'firefox',
+      testIgnore: '**/mobile-*.spec.ts',
       use: { ...devices['Desktop Firefox'] },
+    },
+    {
+      name: 'mobile',
+      testMatch: '**/mobile-*.spec.ts',
+      use: {
+        viewport: { width: 375, height: 812 },
+        isMobile: true,
+        hasTouch: true,
+      },
     },
   ],
 });

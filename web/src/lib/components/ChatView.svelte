@@ -1815,4 +1815,36 @@
     white-space: nowrap;
     text-transform: lowercase;
   }
+
+  @media (max-width: 768px) {
+    .chat-input {
+      min-height: 36px;
+    }
+    .chat-input-area {
+      padding: 0.25rem 0.5rem 0.25rem;
+    }
+    .send-btn, .stop-btn {
+      width: 2.5rem;
+      height: 2.5rem;
+    }
+    .toolbar-btn {
+      width: 2.5rem;
+      height: 2.5rem;
+    }
+    .event-filter-pills {
+      display: none;
+    }
+    .chat-scroll {
+      padding: 0.375rem 0.75rem 0.375rem;
+    }
+    .chat-messages {
+      gap: 0.25rem;
+    }
+    .state-text {
+      padding: 0;
+    }
+    .compaction-row {
+      padding: 0.375rem 0.75rem;
+    }
+  }
 </style>

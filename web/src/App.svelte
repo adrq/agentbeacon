@@ -25,10 +25,19 @@
   .app-shell {
     width: 100%;
     height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     background: hsl(var(--background));
     color: hsl(var(--foreground));
     overflow: hidden;
+  }
+
+  @media (max-width: 768px) {
+    .app-shell {
+      position: fixed;
+      inset: 0;
+      height: auto;
+    }
   }
 </style>

@@ -367,3 +367,19 @@
   margin-bottom: 1.25rem;
   color: hsl(var(--foreground));
 }
+
+/* Prevent iOS Safari auto-zoom on input focus (triggered when font-size < 16px) */
+@media (max-width: 768px) {
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+
+  /* Hide nav bar and remove bottom padding when keyboard is open */
+  body:has(input:focus, textarea:focus) .nav-rail {
+    display: none !important;
+  }
+  body:has(input:focus, textarea:focus) .shell-body {
+    padding-bottom: 0 !important;
+  }
+
+}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { get } from 'svelte/store';
   import { activeSection, sidebarOpen, selectedExecutionId, selectedProjectId, selectedAgentId, actionPanelCollapsed, userExplicitlyCollapsed, homeFeedFilter, routeMode } from '../stores/appState';
+  import { router } from '../router';
   import { decisionCount } from '../stores/questionState';
   import { executionsQuery } from '../queries/executions';
   import AppHeader from './AppHeader.svelte';
@@ -35,15 +36,37 @@
     return () => mql.removeEventListener('change', handler);
   });
 
+  let isMobile = $state(false);
+  $effect(() => {
+    const mql = window.matchMedia('(max-width: 768px)');
+    isMobile = mql.matches;
+    const handler = (e: MediaQueryListEvent) => { isMobile = e.matches; };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  });
+
   let isHome = $derived($activeSection === 'home');
   let sidebarHidden = $derived($activeSection === 'home' || $activeSection === 'wiki' || $activeSection === 'settings');
-  let effectiveCollapsed = $derived(isHome ? false : (isTablet || $actionPanelCollapsed));
+  let effectiveCollapsed = $derived(isMobile ? $actionPanelCollapsed : (isHome ? false : (isTablet || $actionPanelCollapsed)));
 
   const execsQuery = executionsQuery();
   let hasExecutions = $derived((execsQuery.data ?? []).length > 0);
 
+  let mobileShowRight = $derived(
+    $selectedExecutionId != null ||
+    $selectedProjectId != null ||
+    $selectedAgentId != null ||
+    $routeMode === 'new' ||
+    $routeMode === 'edit'
+  );
+
+  function handleMobileBack() {
+    const section = get(activeSection);
+    router.navigate(`/${section}`);
+  }
+
   function toggleActionPanel() {
-    if (isTablet || isHome) return;
+    if (!isMobile && (isTablet || isHome)) return;
     actionPanelCollapsed.update(v => {
       const next = !v;
       if (next) {
@@ -98,7 +121,7 @@
 
 <div class="shell-body">
   <NavRail onToggleDecisions={toggleActionPanel} panelOpen={!effectiveCollapsed} />
-  <SplitPanel storageKey="agentbeacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35} collapsed={sidebarHidden || !$sidebarOpen}>
+  <SplitPanel storageKey="agentbeacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35} collapsed={sidebarHidden || !$sidebarOpen} {mobileShowRight} onMobileBack={handleMobileBack}>
     {#snippet left()}
       <div class="sidebar">
         <div class="sidebar-panel" class:hidden={$activeSection !== 'executions'}>
@@ -168,7 +191,7 @@
     collapsed={effectiveCollapsed}
     onToggle={toggleActionPanel}
     decisionCount={$decisionCount}
-    wide={isHome}
+    wide={isHome && !isMobile}
   />
 </div>
 
@@ -229,7 +252,10 @@
 
   @media (max-width: 768px) {
     .shell-body {
-      padding-bottom: 48px;
+      padding-bottom: calc(48px + env(safe-area-inset-bottom, 0px));
+    }
+    .main-content {
+      padding-right: 0 !important;
     }
   }
 </style>

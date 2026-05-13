@@ -9,6 +9,7 @@ export default defineConfig({
   plugins: [svelte()],
   server: {
     port: vitePort,
+    host: "0.0.0.0",
     proxy: {
       '/api': {
         target: `http://localhost:${beaconPort}`,
