@@ -56,7 +56,25 @@ function createPersistedBoolStore(key: string, defaultValue: boolean) {
 
 export const actionPanelCollapsed = createPersistedBoolStore('agentbeacon-action-panel-collapsed', true);
 export const userExplicitlyCollapsed = writable<boolean>(false);
-export const notificationsEnabled = createPersistedBoolStore('agentbeacon-notifications-enabled', false);
+
+// Migrate old notification key BEFORE creating stores, so the store picks up the migrated value.
+// Only preserve affirmative opt-in (old key was set to true when browser permission was granted).
+// Old false means "never interacted", not "explicitly disabled" — let the new default (true) apply.
+(() => {
+  const oldKey = 'agentbeacon-notifications-enabled';
+  const newKey = 'agentbeacon-escalation-notifications-enabled';
+  const oldVal = safeGetItem(oldKey);
+  if (oldVal !== null) {
+    if (oldVal === 'true' && safeGetItem(newKey) === null) {
+      safeSetItem(newKey, 'true');
+    }
+    try { localStorage.removeItem(oldKey); } catch { /* ignore */ }
+  }
+})();
+
+// Notification preference stores (split from old single `notificationsEnabled`)
+export const escalationNotificationsEnabled = createPersistedBoolStore('agentbeacon-escalation-notifications-enabled', true);
+export const turnCompleteNotificationsEnabled = createPersistedBoolStore('agentbeacon-turn-complete-notifications-enabled', true);
 
 export type HomeFeedFilter = 'running' | 'waiting' | 'completed' | 'failed' | null;
 export const homeFeedFilter = writable<HomeFeedFilter>(null);

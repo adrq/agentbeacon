@@ -1,11 +1,14 @@
 import type { EnvironmentAdapter } from './types.js';
+import type { Execution } from '../types';
 import { toasts } from '../stores/toasts';
-import { notificationsEnabled } from '../stores/appState';
+import { escalationNotificationsEnabled, turnCompleteNotificationsEnabled } from '../stores/appState';
 import { setOnNewDecisionCallback, type DecisionItem } from '../stores/questionState';
 import { get } from 'svelte/store';
 
 const NOTIFIED_KEY = 'agentbeacon-notified-sessions';
+const COOLDOWN_KEY = 'agentbeacon-notification-cooldowns';
 const MAX_NOTIFIED_CACHE = 100;
+const COOLDOWN_MS = 10_000;
 
 // Persist across refresh and tabs (localStorage is shared cross-tab, survives refresh)
 const notifiedSessions: Set<string> = (() => {
@@ -21,7 +24,33 @@ function persistNotified() {
   } catch { /* quota exceeded — silent */ }
 }
 
-function fireNotification(item: DecisionItem) {
+// Per-execution cooldown: suppress duplicate notifications when escalation
+// and turn-complete fire in quick succession for the same execution.
+function isOnCooldown(executionId: string): boolean {
+  try {
+    const raw = localStorage.getItem(COOLDOWN_KEY);
+    if (!raw) return false;
+    const cooldowns: Record<string, number> = JSON.parse(raw);
+    const ts = cooldowns[executionId];
+    return typeof ts === 'number' && Date.now() - ts < COOLDOWN_MS;
+  } catch { return false; }
+}
+
+function setCooldown(executionId: string) {
+  try {
+    const raw = localStorage.getItem(COOLDOWN_KEY);
+    const cooldowns: Record<string, number> = raw ? JSON.parse(raw) : {};
+    cooldowns[executionId] = Date.now();
+    // Prune stale entries
+    const now = Date.now();
+    for (const key of Object.keys(cooldowns)) {
+      if (now - cooldowns[key] > COOLDOWN_MS * 6) delete cooldowns[key];
+    }
+    localStorage.setItem(COOLDOWN_KEY, JSON.stringify(cooldowns));
+  } catch { /* ignore */ }
+}
+
+function fireEscalationNotification(item: DecisionItem) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
 
   // Re-read from localStorage so writes from other tabs are visible
@@ -33,6 +62,8 @@ function fireNotification(item: DecisionItem) {
   const notifKey = `${item.sessionId}:${item.batchId}`;
   if (notifiedSessions.has(notifKey)) return;
 
+  // Escalation notifications are high-priority and always fire (no cooldown check).
+  // They DO set the cooldown so subsequent turn-complete notifications get suppressed.
   const question = item.questions[0]?.questionText ?? 'New question';
   const n = new Notification('AgentBeacon: Question pending', {
     body: `${item.executionTitle ?? 'Execution'}: ${question}`,
@@ -48,29 +79,39 @@ function fireNotification(item: DecisionItem) {
     if (first) notifiedSessions.delete(first);
   }
   persistNotified();
+  setCooldown(item.executionId);
+}
+
+export function fireTurnCompleteNotification(execution: Execution) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (!get(turnCompleteNotificationsEnabled)) return;
+  if (isOnCooldown(execution.id)) return;
+
+  const n = new Notification('AgentBeacon: Turn complete', {
+    body: execution.title ?? 'Execution',
+  });
+  n.onclick = () => {
+    window.focus();
+    window.location.hash = `/execution/${execution.id}`;
+    n.close();
+  };
+  setCooldown(execution.id);
 }
 
 function setupNotificationCallback() {
   setOnNewDecisionCallback((item: DecisionItem) => {
-    if (!get(notificationsEnabled)) return;
-    fireNotification(item);
+    if (!get(escalationNotificationsEnabled)) return;
+    fireEscalationNotification(item);
   });
 }
 
 export async function requestNotificationPermission(): Promise<boolean> {
   try {
     if (!('Notification' in window)) return false;
-    if (Notification.permission === 'granted') {
-      notificationsEnabled.set(true);
-      return true;
-    }
+    if (Notification.permission === 'granted') return true;
     if (Notification.permission === 'denied') return false;
     const result = await Notification.requestPermission();
-    if (result === 'granted') {
-      notificationsEnabled.set(true);
-      return true;
-    }
-    return false;
+    return result === 'granted';
   } catch {
     return false;
   }
@@ -156,6 +197,5 @@ export class StandaloneAdapter implements EnvironmentAdapter {
   }
 }
 
-// Register notification callback at module load time so it runs when
-// DecisionCard imports requestNotificationPermission (the only import path).
+// Register notification callback at module load time.
 setupNotificationCallback();

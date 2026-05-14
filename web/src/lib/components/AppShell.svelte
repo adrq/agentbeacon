@@ -4,6 +4,8 @@
   import { router } from '../router';
   import { decisionCount } from '../stores/questionState';
   import { executionsQuery } from '../queries/executions';
+  // Import standalone adapter to bootstrap notification callback registration
+  import { fireTurnCompleteNotification } from '../adapters/standalone';
   import AppHeader from './AppHeader.svelte';
   import NavRail from './NavRail.svelte';
   import SplitPanel from './SplitPanel.svelte';
@@ -98,6 +100,34 @@
   $effect(() => {
     const count = $decisionCount;
     document.title = count > 0 ? `(${count}) AgentBeacon` : 'AgentBeacon';
+  });
+
+  // Turn-complete detection: track completion_eligible transitions per execution.
+  // First poll snapshot becomes the baseline (no notifications on page load).
+  let completionBaseline: Map<string, boolean> | null = null;
+  $effect(() => {
+    const executions = execsQuery.data;
+    if (!executions) return;
+
+    if (completionBaseline === null) {
+      // First successful poll — snapshot as baseline, no notifications
+      completionBaseline = new Map(executions.map(e => [e.id, e.completion_eligible]));
+      return;
+    }
+
+    for (const exec of executions) {
+      const prev = completionBaseline.get(exec.id);
+      // Fire on false→true transition, or newly-appearing execution with completion_eligible=true
+      if (exec.completion_eligible && prev !== true) {
+        fireTurnCompleteNotification(exec);
+      }
+      completionBaseline.set(exec.id, exec.completion_eligible);
+    }
+
+    // Clean up executions no longer in the list
+    for (const id of completionBaseline.keys()) {
+      if (!executions.some(e => e.id === id)) completionBaseline.delete(id);
+    }
   });
 
   // Reset home feed filter when navigating away from Home and Executions

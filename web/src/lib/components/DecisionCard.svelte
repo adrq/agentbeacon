@@ -4,7 +4,6 @@
   import { router } from '../router';
   import { toasts } from '../stores/toasts';
   import { markBatchSubmitted, tryClaimSubmit, releaseSubmit, refreshDecisions } from '../stores/questionState';
-  import { requestNotificationPermission } from '../adapters/standalone';
   import QuestionCard from './QuestionCard.svelte';
   import ElapsedTime from './ElapsedTime.svelte';
 
@@ -57,7 +56,6 @@
     if (!tryClaimSubmit(sessionId, batchId)) return;
     submitting = true;
     error = null;
-    requestNotificationPermission();
     try {
       await submitAnswer(sessionId, composeAnswer(buildAnswerQuestions()), batchId);
       markBatchSubmitted(sessionId, batchId);
