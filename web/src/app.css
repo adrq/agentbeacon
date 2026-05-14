@@ -106,6 +106,8 @@
 .markdown-body p { margin: 0.375em 0; }
 .markdown-body blockquote { margin: 0.5em 0; padding-left: 0.75em; border-left: 3px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); }
 .markdown-body ul, .markdown-body ol { margin: 0.375em 0; padding-left: 1.5em; }
+.markdown-body ul { list-style-type: disc; }
+.markdown-body ol { list-style-type: decimal; }
 .markdown-body li { margin: 0.125em 0; }
 
 .markdown-body code { font-family: var(--font-mono); font-size: 0.875em; padding: 0.125em 0.25em; border-radius: var(--radius-sm); background: hsl(var(--muted)); }
