@@ -29,9 +29,10 @@
     sessionIdentity?: Map<string, SessionIdentity>;
     eventFilter?: EventFilter;
     onfilterchange?: (filter: EventFilter) => void;
+    onthreadopen?: (sessionA: string, sessionB: string) => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, eventFilter = 'all', onfilterchange }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, eventFilter = 'all', onfilterchange, onthreadopen }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
   let prevScrollSessionId: string | null = null;
@@ -838,7 +839,12 @@
                 <CopyButton text={entry.senderName} label="Copy path" />
               </div>
               <div class="lateral-body"><Markdown text={entry.text} /></div>
-              <div class="lateral-time">{entry.time}</div>
+              <div class="lateral-footer">
+                <span class="lateral-time">{entry.time}</span>
+                {#if entry.senderSessionId && onthreadopen && sessionId}
+                  <button class="thread-link" onclick={() => onthreadopen(sessionId!, entry.senderSessionId!)}>View thread →</button>
+                {/if}
+              </div>
             </div>
           </div>
         {:else if entry.type === 'lateral_image'}
@@ -857,7 +863,12 @@
               <div class="lateral-body">
                 <img src="data:{entry.mimeType};base64,{entry.bytes}" alt={entry.name ?? 'Attached image'} class="user-image" />
               </div>
-              <div class="lateral-time">{entry.time}</div>
+              <div class="lateral-footer">
+                <span class="lateral-time">{entry.time}</span>
+                {#if entry.senderSessionId && onthreadopen && sessionId}
+                  <button class="thread-link" onclick={() => onthreadopen(sessionId!, entry.senderSessionId!)}>View thread →</button>
+                {/if}
+              </div>
             </div>
           </div>
         {:else if entry.type === 'child_response'}
@@ -1299,8 +1310,29 @@
   .lateral-time {
     font-size: 0.625rem;
     color: hsl(var(--muted-foreground));
-    margin-top: 0.25rem;
     font-family: var(--font-mono);
+  }
+
+  .lateral-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0.25rem;
+  }
+
+  .thread-link {
+    border: none;
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.625rem;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: none;
+  }
+
+  .thread-link:hover {
+    color: hsl(var(--foreground));
+    text-decoration: underline;
   }
 
   .child-response-row {

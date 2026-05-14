@@ -13,6 +13,7 @@
   import QuestionBanner from './QuestionBanner.svelte';
   import EventsTimeline from './EventsTimeline.svelte';
   import ChatView from './ChatView.svelte';
+  import ThreadView from './ThreadView.svelte';
   import DiffPanel from './DiffPanel.svelte';
   import ExecutionOrgChart from './ExecutionOrgChart.svelte';
   import SidebarSessionTree from './SidebarSessionTree.svelte';
@@ -60,6 +61,9 @@
 
   // Org chart overview toggle
   let showOverview = $state(false);
+
+  // Thread view state
+  let threadTarget = $state<{ sessionA: string; sessionB: string } | null>(null);
 
   // Mobile overflow menu and details overlay
   let isMobile = $state(false);
@@ -121,6 +125,7 @@
       processedUsageEventIds.clear();
       eventFilter = 'all';
       showOverview = false;
+      threadTarget = null;
       overflowMenuOpen = false;
       showDetailsOverlay = false;
       const hashView = getHashViewParam();
@@ -202,6 +207,12 @@
     if (lead && $selectedSessionId === null) {
       selectedSessionId.set(lead.id);
     }
+  });
+
+  // Reset thread view when selected session changes
+  $effect(() => {
+    $selectedSessionId;
+    threadTarget = null;
   });
 
   // Helper: resolve agent type for a session.
@@ -741,37 +752,48 @@
             {/if}
           </span>
         {/if}
-        <div class="view-toggle-wrapper">
-          <div class="view-toggle" role="tablist" aria-label="Event view mode">
-            <button
-              class="toggle-btn"
-              class:active={viewMode === 'log'}
-              role="tab"
-              aria-selected={viewMode === 'log'}
-              onclick={() => viewMode = 'log'}
-            >Log</button>
-            <button
-              class="toggle-btn"
-              class:active={viewMode === 'chat'}
-              role="tab"
-              aria-selected={viewMode === 'chat'}
-              onclick={() => viewMode = 'chat'}
-            >Chat</button>
-            <button
-              class="toggle-btn"
-              class:active={viewMode === 'diff'}
-              role="tab"
-              aria-selected={viewMode === 'diff'}
-              onclick={() => viewMode = 'diff'}
-            >Diff</button>
+        {#if !threadTarget}
+          <div class="view-toggle-wrapper">
+            <div class="view-toggle" role="tablist" aria-label="Event view mode">
+              <button
+                class="toggle-btn"
+                class:active={viewMode === 'log'}
+                role="tab"
+                aria-selected={viewMode === 'log'}
+                onclick={() => viewMode = 'log'}
+              >Log</button>
+              <button
+                class="toggle-btn"
+                class:active={viewMode === 'chat'}
+                role="tab"
+                aria-selected={viewMode === 'chat'}
+                onclick={() => viewMode = 'chat'}
+              >Chat</button>
+              <button
+                class="toggle-btn"
+                class:active={viewMode === 'diff'}
+                role="tab"
+                aria-selected={viewMode === 'diff'}
+                onclick={() => viewMode = 'diff'}
+              >Diff</button>
+            </div>
           </div>
-        </div>
+        {/if}
       </div>
 
-      {#if viewMode === 'log'}
+      {#if threadTarget}
+        <ThreadView
+          sessionA={threadTarget.sessionA}
+          sessionB={threadTarget.sessionB}
+          {sessionIdentity}
+          {isTerminal}
+          {sseActive}
+          onclose={() => { threadTarget = null; }}
+        />
+      {:else if viewMode === 'log'}
         <EventsTimeline {events} {agents} sessions={detail.sessions} {eventFilter} onfilterchange={(f) => eventFilter = f} />
       {:else if viewMode === 'chat'}
-        <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} {eventFilter} onfilterchange={(f) => eventFilter = f} />
+        <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} {eventFilter} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} />
       {:else if viewMode === 'diff'}
         <DiffPanel sessionId={activeSessionId} {isTerminal} />
       {/if}
