@@ -791,9 +791,9 @@
           onclose={() => { threadTarget = null; }}
         />
       {:else if viewMode === 'log'}
-        <EventsTimeline {events} {agents} sessions={detail.sessions} {eventFilter} onfilterchange={(f) => eventFilter = f} />
+        <EventsTimeline {events} {agents} sessions={detail.sessions} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} />
       {:else if viewMode === 'chat'}
-        <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} {eventFilter} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} />
+        <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} />
       {:else if viewMode === 'diff'}
         <DiffPanel sessionId={activeSessionId} {isTerminal} />
       {/if}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Event, Agent, SessionSummary, AgentType } from '../types';
+  import type { Event, Agent, AgentPoolEntry, SessionSummary, AgentType } from '../types';
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData } from '../types';
   import { normalizeDataPart } from '../normalize';
   import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
@@ -10,16 +10,20 @@
     events: Event[];
     agents?: Agent[];
     sessions?: SessionSummary[];
+    agentPool?: AgentPoolEntry[];
     eventFilter?: EventFilter;
     onfilterchange?: (filter: EventFilter) => void;
   }
 
-  let { events, agents = [], sessions = [], eventFilter = 'all', onfilterchange }: Props = $props();
+  let { events, agents = [], sessions = [], agentPool, eventFilter = 'all', onfilterchange }: Props = $props();
 
   function resolveAgentType(sessionId: string | null): AgentType {
     const session = sessions.find(s => s.id === sessionId);
-    const agent = agents.find(a => a.id === session?.agent_id);
-    return agent?.agent_type ?? 'acp';
+    if (!session) return 'claude_sdk';
+    const poolAgent = agentPool?.find(a => a.agent_id === session.agent_id);
+    if (poolAgent) return (poolAgent.agent_type as AgentType) ?? 'claude_sdk';
+    const globalAgent = agents.find(a => a.id === session.agent_id);
+    return (globalAgent?.agent_type as AgentType) ?? 'claude_sdk';
   }
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);

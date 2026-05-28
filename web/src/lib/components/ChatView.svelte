@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
-  import type { Event, Agent, SessionSummary, AgentType, TodoItem, UsageState, SessionIdentity } from '../types';
+  import type { Event, Agent, AgentPoolEntry, SessionSummary, AgentType, TodoItem, UsageState, SessionIdentity } from '../types';
   import AgentPill from './AgentPill.svelte';
   import CopyButton from './CopyButton.svelte';
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData } from '../types';
@@ -27,12 +26,13 @@
     settledThinkingDuration?: { durationMs: number; startedAt: string } | null;
     usageBySession?: Map<string, UsageState>;
     sessionIdentity?: Map<string, SessionIdentity>;
+    agentPool?: AgentPoolEntry[];
     eventFilter?: EventFilter;
     onfilterchange?: (filter: EventFilter) => void;
     onthreadopen?: (sessionA: string, sessionB: string) => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, eventFilter = 'all', onfilterchange, onthreadopen }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', onfilterchange, onthreadopen }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
   let prevScrollSessionId: string | null = null;
@@ -255,6 +255,7 @@
     const _len = events.length; // dependency: triggers on every new event
     const _eph = ephemeralText; // dependency: triggers on ephemeral streaming updates
     const _ephThink = ephemeralThinking; // dependency: triggers on ephemeral thinking updates
+    const _filter = eventFilter; // dependency: scroll to bottom on filter change
     if (shouldAutoScroll && scrollContainer) {
       if (scrollRafId) cancelAnimationFrame(scrollRafId);
       scrollRafId = requestAnimationFrame(() => {
@@ -312,8 +313,11 @@
 
   function resolveAgentType(sessionId: string | null): AgentType {
     const session = sessions.find(s => s.id === sessionId);
-    const agent = agents.find(a => a.id === session?.agent_id);
-    return agent?.agent_type ?? 'acp';
+    if (!session) return 'claude_sdk';
+    const poolAgent = agentPool?.find(a => a.agent_id === session.agent_id);
+    if (poolAgent) return (poolAgent.agent_type as AgentType) ?? 'claude_sdk';
+    const globalAgent = agents.find(a => a.id === session.agent_id);
+    return (globalAgent?.agent_type as AgentType) ?? 'claude_sdk';
   }
 
   function parseEntries(evs: Event[]): ChatEntry[] {
@@ -1864,7 +1868,8 @@
       height: 2.5rem;
     }
     .event-filter-pills {
-      display: none;
+      padding: 0.25rem 0.75rem;
+      gap: 4px;
     }
     .chat-scroll {
       padding: 0.375rem 0.75rem 0.375rem;
