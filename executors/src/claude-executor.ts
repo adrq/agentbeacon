@@ -52,6 +52,20 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "TaskGet",
   "SendMessage", // Inter-agent messaging
   "SendMessageTool", // Alternate name for SendMessage (block both defensively)
+  "Workflow", // Multi-step workflow orchestration
+  "CronCreate", // Scheduled task creation
+  "CronDelete", // Scheduled task deletion
+  "CronList", // Scheduled task listing
+  "ScheduleWakeup", // Deferred self-wake scheduling
+  "Monitor", // Long-running process monitoring
+  "REPL", // Interactive REPL sessions
+  "RemoteTrigger", // External webhook/trigger invocation
+  "PushNotification", // Push notification dispatch
+  "EnterPlanMode", // We manage planning externally
+  "ExitPlanMode", // We manage planning externally
+  "EnterWorktree", // We manage worktrees externally
+  "ExitWorktree", // We manage worktrees externally
+  "AskUserQuestion", // We manage user interaction externally
 ];
 
 // --- Command queue (single stdin listener, cancel as side-effect) ---
