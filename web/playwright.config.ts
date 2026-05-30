@@ -29,5 +29,11 @@ export default defineConfig({
         hasTouch: true,
       },
     },
+    // TODO: re-enable once webkit system deps are available in CI
+    // {
+    //   name: 'webkit',
+    //   testMatch: '**/virtual-scroll*.spec.ts',
+    //   use: { ...devices['Desktop Safari'] },
+    // },
   ],
 });

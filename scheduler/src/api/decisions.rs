@@ -13,6 +13,7 @@ pub struct DecisionsQuery {
     pub execution_id: Option<String>,
     pub status: Option<String>,
     pub include_terminal: Option<bool>,
+    pub resolved_limit: Option<i64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -66,8 +67,33 @@ async fn get_decisions(
     Query(params): Query<DecisionsQuery>,
 ) -> Result<(StatusCode, Json<DecisionsResponse>), SchedulerError> {
     let include_terminal = params.include_terminal.unwrap_or(true);
+    let resolved_limit = params.resolved_limit.unwrap_or(20).max(0);
 
-    let events = db::events::list_all_platform_events(&state.db_pool).await?;
+    // Fast path: specific execution_id requested — query that single execution directly
+    let events = if let Some(ref exec_id) = params.execution_id {
+        db::events::list_platform_events_for_executions(
+            &state.db_pool,
+            std::slice::from_ref(exec_id),
+        )
+        .await?
+    } else {
+        // Main path: get active execution events
+        let active_ids = db::executions::list_active_ids(&state.db_pool).await?;
+        let mut all_events =
+            db::events::list_platform_events_for_executions(&state.db_pool, &active_ids).await?;
+
+        // Optionally add recent terminal execution events
+        if include_terminal && resolved_limit > 0 {
+            let terminal_ids =
+                db::executions::list_recent_terminal_ids(&state.db_pool, resolved_limit).await?;
+            let terminal_events =
+                db::events::list_platform_events_for_executions(&state.db_pool, &terminal_ids)
+                    .await?;
+            all_events.extend(terminal_events);
+        }
+
+        all_events
+    };
 
     // Phase 1: collect escalation events grouped by batch_id
     let mut batches: HashMap<String, PendingBatch> = HashMap::new();

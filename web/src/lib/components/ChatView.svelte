@@ -15,6 +15,7 @@
   import TodoChecklist from './renderers/TodoChecklist.svelte';
   import TodoPanel from './TodoPanel.svelte';
   import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
+  import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
 
   interface Props {
     events: Event[];
@@ -34,6 +35,7 @@
 
   let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', onfilterchange, onthreadopen }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
+  let virtualizer: VirtualizerHandle | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
   let prevScrollSessionId: string | null = null;
   let messageText = $state('');
@@ -235,7 +237,7 @@
     let cancelled = false;
     const timerId = setTimeout(() => {
       if (cancelled || !scrollContainer) return;
-      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      scrollToBottom();
       const active = document.activeElement;
       if (active === textareaEl || active?.closest('button, input, textarea, [contenteditable]')) return;
       scrollContainer.focus({ preventScroll: true });
@@ -249,6 +251,19 @@
     shouldAutoScroll = scrollHeight - scrollTop - clientHeight < 80;
   }
 
+  // iOS Safari can blank the viewport if scrollToIndex fires during inertia
+  // scrolling (virtua #483). Stopping momentum first avoids the issue.
+  function scrollToBottom() {
+    if (!scrollContainer) return;
+    // iOS momentum stop
+    scrollContainer.scrollTop = scrollContainer.scrollTop;
+    if (virtualizer && filteredParsed.length > 0) {
+      virtualizer.scrollToIndex(filteredParsed.length - 1, { align: 'end' });
+    } else {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    }
+  }
+
   let scrollRafId = 0;
 
   $effect(() => {
@@ -259,8 +274,8 @@
     if (shouldAutoScroll && scrollContainer) {
       if (scrollRafId) cancelAnimationFrame(scrollRafId);
       scrollRafId = requestAnimationFrame(() => {
-        if (scrollContainer && shouldAutoScroll) {
-          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        if (shouldAutoScroll) {
+          scrollToBottom();
         }
         scrollRafId = 0;
       });
@@ -799,8 +814,14 @@
   {#if filteredParsed.length === 0}
     <div class="chat-empty">{parsed.length === 0 ? 'No messages yet' : 'No matching events'}</div>
   {:else}
-    <div class="chat-messages">
-      {#each filteredParsed as entry (entry.key)}
+    {#key `${sessionId}-${eventFilter}`}
+    <Virtualizer
+      data={filteredParsed}
+      getKey={(entry) => entry.key}
+      scrollRef={scrollContainer}
+      bind:this={virtualizer}
+    >
+      {#snippet children(entry, _index)}
         {#if entry.type === 'agent'}
           {@const identity = entry.agentSessionId ? sessionIdentity?.get(entry.agentSessionId) : undefined}
           <div class="chat-row agent-row">
@@ -953,8 +974,9 @@
             </div>
           </div>
         {/if}
-      {/each}
-    </div>
+      {/snippet}
+    </Virtualizer>
+    {/key}
   {/if}
 </div>
 
@@ -962,10 +984,8 @@
   <button
     class="new-messages-bar"
     onclick={() => {
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-        shouldAutoScroll = true;
-      }
+      scrollToBottom();
+      shouldAutoScroll = true;
     }}
     aria-label="Scroll to bottom"
   >
@@ -1169,7 +1189,7 @@
     flex: 1;
     overflow-y: auto;
     padding: 0.5rem 1rem 1rem;
-    overflow-anchor: auto;
+    overflow-anchor: none;
   }
 
   .chat-scroll:focus {
@@ -1195,9 +1215,7 @@
 
   .chat-row {
     display: flex;
-    contain: layout style;
-    content-visibility: auto;
-    contain-intrinsic-size: 0 60px;
+    padding-bottom: 0.5rem;
   }
 
   .agent-row {

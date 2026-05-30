@@ -254,17 +254,32 @@ pub async fn find_resolution_for_batch(
     Ok(None)
 }
 
-/// List all platform events (for the decisions reducer).
-pub async fn list_all_platform_events(pool: &DbPool) -> Result<Vec<Event>, SchedulerError> {
+/// List platform/message events scoped to a set of execution IDs (for the decisions reducer).
+pub async fn list_platform_events_for_executions(
+    pool: &DbPool,
+    execution_ids: &[String],
+) -> Result<Vec<Event>, SchedulerError> {
+    if execution_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    let placeholders: Vec<&str> = execution_ids.iter().map(|_| "?").collect();
+    let in_clause = placeholders.join(", ");
     let sql = format!(
         "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {created_fmt} as created_at \
-         FROM events WHERE event_type IN ('platform', 'message') ORDER BY id ASC"
+         FROM events WHERE execution_id IN ({in_clause}) AND event_type IN ('platform', 'message') ORDER BY id ASC"
     );
-    let rows = sqlx::query(&pool.prepare_query(&sql))
-        .fetch_all(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("list_all_platform_events failed: {e}")))?;
+    let prepared = pool.prepare_query(&sql);
+
+    let mut q = sqlx::query(&prepared);
+    for id in execution_ids {
+        q = q.bind(id);
+    }
+
+    let rows = q.fetch_all(pool.as_ref()).await.map_err(|e| {
+        SchedulerError::Database(format!("list_platform_events_for_executions failed: {e}"))
+    })?;
     rows.into_iter().map(parse_event_row).collect()
 }
 

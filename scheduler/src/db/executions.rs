@@ -220,6 +220,37 @@ pub async fn get_in_tx(
     parse_execution_row(row)
 }
 
+/// List IDs of active (non-terminal) executions.
+pub async fn list_active_ids(pool: &DbPool) -> Result<Vec<String>, SchedulerError> {
+    let sql = pool.prepare_query(
+        "SELECT id FROM executions WHERE outcome IS NULL AND desired != 'terminate'",
+    );
+    let rows = sqlx::query(&sql)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list active execution ids failed: {e}")))?;
+    Ok(rows.iter().map(|r| r.get("id")).collect())
+}
+
+/// List IDs of the most recent terminal executions.
+pub async fn list_recent_terminal_ids(
+    pool: &DbPool,
+    limit: i64,
+) -> Result<Vec<String>, SchedulerError> {
+    let sql = pool.prepare_query(
+        "SELECT id FROM executions WHERE outcome IS NOT NULL OR desired = 'terminate' \
+         ORDER BY created_at DESC, id DESC LIMIT ?",
+    );
+    let rows = sqlx::query(&sql)
+        .bind(limit)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("list recent terminal execution ids failed: {e}"))
+        })?;
+    Ok(rows.iter().map(|r| r.get("id")).collect())
+}
+
 fn parse_execution_row(row: sqlx::any::AnyRow) -> Result<Execution, SchedulerError> {
     Ok(Execution {
         id: row.get("id"),
