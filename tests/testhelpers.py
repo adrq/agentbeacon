@@ -453,6 +453,28 @@ def wait_for_port(
     return False
 
 
+# Max bytes of a captured scheduler/orchestrator log to surface in a
+# startup-failure diagnostic. Under the high-volume logging this redirection
+# guards against the file can grow large, so we only read the tail.
+_LOG_TAIL_BYTES = 256 * 1024
+
+
+def _read_log_tail(log_path: str, max_bytes: int = _LOG_TAIL_BYTES) -> str:
+    """Return the last ``max_bytes`` of a captured process log for diagnostics."""
+    try:
+        size = os.path.getsize(log_path)
+        with open(log_path, errors="replace") as f:
+            truncated = size > max_bytes
+            if truncated:
+                f.seek(size - max_bytes)
+            data = f.read()
+    except OSError:
+        return "<process log unavailable>"
+    if truncated:
+        return f"... [truncated to last {max_bytes} bytes]\n{data}"
+    return data
+
+
 def start_scheduler(
     port: int, base_dir: Path = None, db_url: str = None, env: dict = None
 ) -> tuple[subprocess.Popen, str | None]:
@@ -487,22 +509,44 @@ def start_scheduler(
     if env:
         scheduler_env.update(env)
 
-    scheduler_process = subprocess.Popen(
-        [
-            "./bin/agentbeacon",
-            "--port",
-            str(port),
-            "--db-url",
-            db_url,
-            "--max-workers",
-            "0",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=base_dir,
-        env=scheduler_env,
+    # Redirect stdout+stderr to a per-scheduler temp log file rather than an
+    # unread subprocess.PIPE: under load a high-volume process can fill an
+    # undrained pipe's OS buffer and block on write. A file lets the OS drain
+    # output to disk while keeping it readable for diagnostics.
+    log_file = tempfile.NamedTemporaryFile(
+        mode="w+", suffix=".log", prefix=f"scheduler-{port}-", delete=False
     )
+    log_path = log_file.name
+
+    try:
+        scheduler_process = subprocess.Popen(
+            [
+                "./bin/agentbeacon",
+                "--port",
+                str(port),
+                "--db-url",
+                db_url,
+                "--max-workers",
+                "0",
+            ],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=base_dir,
+            env=scheduler_env,
+        )
+    except Exception:
+        # Popen failed (e.g. missing binary / bad cwd) — don't leak the log file.
+        log_file.close()
+        try:
+            os.unlink(log_path)
+        except OSError:
+            pass
+        raise
+    # Stash the log handle/path on the process so scheduler_context can close
+    # and remove it during teardown.
+    scheduler_process.log_file = log_file
+    scheduler_process.log_path = log_path
 
     # Wait for scheduler ready
     if not wait_for_port(port, timeout=15):
@@ -512,7 +556,20 @@ def start_scheduler(
             scheduler_process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             scheduler_process.kill()
-        raise RuntimeError("Scheduler failed to start within timeout")
+            try:
+                scheduler_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        # Surface a bounded tail of the captured output, then clean up.
+        captured = _read_log_tail(log_path)
+        log_file.close()
+        try:
+            os.unlink(log_path)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"Scheduler failed to start within timeout. Output (tail):\n{captured}"
+        )
 
     return scheduler_process, temp_db_path
 
@@ -561,6 +618,19 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
         # Cleanup
         if scheduler_process:
             cleanup_processes([scheduler_process])
+            # Close and remove the captured scheduler log file (see start_scheduler).
+            log_file = getattr(scheduler_process, "log_file", None)
+            if log_file is not None:
+                try:
+                    log_file.close()
+                except OSError:
+                    pass
+            log_path = getattr(scheduler_process, "log_path", None)
+            if log_path:
+                try:
+                    os.unlink(log_path)
+                except OSError:
+                    pass
         if temp_db_path:
             cleanup_files([temp_db_path])
         if wiki_index_dir:
@@ -972,14 +1042,36 @@ def start_orchestrator(
     if idle_timeout is not None:
         cmd.extend(["--idle-timeout", idle_timeout])
 
-    orchestrator_proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-        cwd=base_dir,
+    # Redirect stdout+stderr to a per-orchestrator temp log file rather than an
+    # unread subprocess.PIPE — an undrained PIPE fills the OS buffer under load
+    # and BLOCKS the process on write. Output stays readable via the log file
+    # (see orchestrator_context's "orchestrator_log").
+    log_file = tempfile.NamedTemporaryFile(
+        mode="w+", suffix=".log", prefix=f"orchestrator-{port}-", delete=False
     )
+    log_path = log_file.name
+
+    try:
+        orchestrator_proc = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            cwd=base_dir,
+        )
+    except Exception:
+        # Popen failed (e.g. missing binary / bad cwd) — don't leak the log file.
+        log_file.close()
+        try:
+            os.unlink(log_path)
+        except OSError:
+            pass
+        raise
+    # Stash the log handle/path so orchestrator_context can expose it to tests
+    # and close+remove it during teardown.
+    orchestrator_proc.log_file = log_file
+    orchestrator_proc.log_path = log_path
     return orchestrator_proc
 
 
@@ -1075,8 +1167,10 @@ def orchestrator_context(
 
         # Wait for scheduler to be ready
         if not wait_for_port(allocated_port, timeout=15):
+            captured = _read_log_tail(orchestrator_proc.log_path)
             raise RuntimeError(
-                f"AgentBeacon did not start on port {allocated_port} within 15 seconds"
+                f"AgentBeacon did not start on port {allocated_port} within 15 "
+                f"seconds. Output (tail):\n{captured}"
             )
 
         # Give agentbeacon time to spawn all workers
@@ -1095,6 +1189,7 @@ def orchestrator_context(
         yield {
             "orchestrator": orchestrator_proc,
             "orchestrator_pid": orchestrator_pid,
+            "orchestrator_log": orchestrator_proc.log_path,
             "port": allocated_port,
             "url": f"http://localhost:{allocated_port}",
             "tracker": tracker,
@@ -1107,6 +1202,22 @@ def orchestrator_context(
         # Cleanup all tracked processes
         if tracker:
             tracker.cleanup_all()
+
+        # Close and remove the captured orchestrator log file (see
+        # start_orchestrator).
+        if orchestrator_proc is not None:
+            log_file = getattr(orchestrator_proc, "log_file", None)
+            if log_file is not None:
+                try:
+                    log_file.close()
+                except OSError:
+                    pass
+            log_path = getattr(orchestrator_proc, "log_path", None)
+            if log_path:
+                try:
+                    os.unlink(log_path)
+                except OSError:
+                    pass
 
         # Cleanup temporary database file
         if temp_db_path:

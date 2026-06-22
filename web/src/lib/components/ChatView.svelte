@@ -29,11 +29,16 @@
     sessionIdentity?: Map<string, SessionIdentity>;
     agentPool?: AgentPoolEntry[];
     eventFilter?: EventFilter;
+    // True only when the *viewed* session has a final outcome (no more events
+    // will arrive for it). Gates flushing genuinely-orphaned tool_results — see
+    // parseEntries. Session-scoped, NOT execution-wide: a completed viewed
+    // session must surface true orphans even if a sibling is still running.
+    viewedSessionSettled?: boolean;
     onfilterchange?: (filter: EventFilter) => void;
     onthreadopen?: (sessionA: string, sessionB: string) => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', onfilterchange, onthreadopen }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', viewedSessionSettled = false, onfilterchange, onthreadopen }: Props = $props();
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let virtualizer: VirtualizerHandle | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
@@ -313,7 +318,7 @@
     | { type: 'lateral'; senderName: string; senderSessionId: string | null; text: string; time: string; key: string }
     | { type: 'state'; text: string; time: string; key: string }
     | { type: 'tool'; icon: string; text: string; time: string; key: string }
-    | { type: 'tool_group'; group: ToolGroupEntry; key: string }
+    | { type: 'tool_group'; group: ToolGroupEntry; key: string; orphan?: boolean }
     | { type: 'tool_stream'; groups: ToolGroupEntry[]; live: boolean; key: string }
     | { type: 'thinking'; data: NormalizedThinking; time: string; key: string; isStreaming?: boolean; startedAt?: string; durationMs?: number }
     | { type: 'data_fallback'; data: Record<string, unknown>; time: string; key: string }
@@ -338,6 +343,28 @@
   function parseEntries(evs: Event[]): ChatEntry[] {
     const entries: ChatEntry[] = [];
     const toolGroups = new Map<string, ToolGroupEntry>();
+    // Order-independent matching: a tool_result whose tool_use hasn't been
+    // seen yet is stashed here keyed by tool_use_id, then attached when the call
+    // appears. This heals already-persisted inversions (a tool_result at a lower
+    // events.id than its own tool_use — the "stuck RUNNING tool call" bug).
+    // keyBase is the result event's id, for a stable unique key if it must be
+    // rendered as a true orphan at end-of-parse. index is the entries position
+    // the result occupied chronologically (entries are only appended during the
+    // loop, so this stays valid), used to splice a genuine orphan back at its
+    // original position instead of at the end.
+    interface PendingResult { result: NormalizedToolResult; time: string; keyBase: string; index: number }
+    const pendingResults = new Map<string, PendingResult>();
+    // Attach a stashed result onto an existing group and clear it. Attaches
+    // ONLY — never pushes a new entry — so it is safe to call on the hidden
+    // TodoWrite / tool_call_update paths (suppresses an early orphan without
+    // surfacing content). Mutates the same ToolGroupEntry already pushed into
+    // `entries`, so groupToolStreams later sees the merged state.
+    function drainPendingResult(id: string, group: ToolGroupEntry): void {
+      const pending = id ? pendingResults.get(id) : undefined;
+      if (!pending) return;
+      group.result = pending.result;
+      pendingResults.delete(id);
+    }
     const agentLabel = viewedSession ? agentName(viewedSession.agent_id) : (leadSession ? agentName(leadSession.agent_id) : 'Agent');
     let seq = 0;
     let lastAgentSessionId: string | null = null;
@@ -507,9 +534,13 @@
                       status: (['pending', 'in_progress', 'completed'].includes(t.status) ? t.status : 'pending') as TodoItem['status'],
                     }));
                     entries.push({ type: 'todo_write', todos, time, key: `${ev.id}-${seq++}` });
-                    // Register in toolGroups so tool_result merges silently (no orphan entry)
+                    // Register in toolGroups so tool_result merges silently (no orphan entry).
+                    // Drain any already-seen result purely to suppress an early orphan —
+                    // TodoWrite renders no visible tool_group, so the content stays hidden.
                     if (norm.toolCallId) {
-                      toolGroups.set(norm.toolCallId, { call: norm, time });
+                      const group: ToolGroupEntry = { call: norm, time };
+                      toolGroups.set(norm.toolCallId, group);
+                      drainPendingResult(norm.toolCallId, group);
                     }
                     break;
                   }
@@ -526,11 +557,16 @@
                       ...(norm.kind ? { kind: norm.kind } : {}),
                       status: norm.status ?? existing.call.status,
                     };
+                    // Attach a result that arrived before this update; no new entry.
+                    drainPendingResult(norm.toolCallId, existing);
                     break;
                   }
                   const group: ToolGroupEntry = { call: norm, time };
                   toolGroups.set(norm.toolCallId, group);
                   entries.push({ type: 'tool_group', group, key: `${ev.id}-${seq++}` });
+                  // Attach a result that was persisted before this tool_use (the
+                  // inverted-order case) so the single card renders completed.
+                  drainPendingResult(norm.toolCallId, group);
                 } else {
                   // No toolCallId — ungroupable, standalone group
                   entries.push({ type: 'tool_group', group: { call: norm, time }, key: `${ev.id}-${seq++}` });
@@ -545,10 +581,16 @@
                     existing.result = norm;
                     break;
                   }
+                  // tool_use not seen yet (inverted persisted order). Stash and
+                  // attach when the call appears, instead of rendering an orphan
+                  // that would never match with its later tool_use.
+                  pendingResults.set(norm.toolCallId, { result: norm, time, keyBase: String(ev.id), index: entries.length });
+                  break;
                 }
-                // Orphan result — standalone group with synthetic call
+                // No tool_use_id — ungroupable; keep the existing orphan path so
+                // multiple id-less results never collide under an empty key.
                 const group: ToolGroupEntry = {
-                  call: { normalized: 'tool_call', toolCallId: norm.toolCallId ?? '', title: norm.isError ? 'Error' : 'Result' },
+                  call: { normalized: 'tool_call', toolCallId: '', title: norm.isError ? 'Error' : 'Result' },
                   result: norm,
                   time,
                 };
@@ -639,6 +681,30 @@
         }
       }
     }
+
+    // Genuinely-orphaned results (tool_use never arrived). While the viewed
+    // session is live, hold them \u2014 a tool_use that simply hasn't streamed in yet
+    // would otherwise flash a spurious orphan, and the next parse self-heals.
+    // Once the viewed session has an outcome, surface them at their ORIGINAL
+    // chronological position (not appended at the end, which would lose ordering
+    // and let groupToolStreams sweep them into a misleading trailing stream).
+    // Splice ascending by recorded index; each prior insertion shifts the rest
+    // by one, tracked via offset.
+    if (viewedSessionSettled && pendingResults.size > 0) {
+      const orphans = [...pendingResults.values()].sort((a, b) => a.index - b.index);
+      let offset = 0;
+      for (const pending of orphans) {
+        const group: ToolGroupEntry = {
+          call: { normalized: 'tool_call', toolCallId: pending.result.toolCallId, title: pending.result.isError ? 'Error' : 'Result' },
+          result: pending.result,
+          time: pending.time,
+        };
+        // orphan: true keeps groupToolStreams from coalescing an unmatched
+        // result into a tool_stream even when it is adjacent to a real tool run.
+        entries.splice(pending.index + offset, 0, { type: 'tool_group', group, key: `${pending.keyBase}-orphan-${seq++}`, orphan: true });
+        offset++;
+      }
+    }
     return entries;
   }
 
@@ -673,19 +739,26 @@
     const result: ChatEntry[] = [];
     let i = 0;
     while (i < entries.length) {
-      if (entries[i].type === 'tool_group') {
+      const entry = entries[i];
+      // Orphan (unmatched) tool_results always render as their own standalone
+      // Result/Error card — never coalesced into a tool_stream, regardless of
+      // adjacency to real tool calls (a stream would hide that the result never
+      // matched a call and inflate the count). They fall through to the else.
+      if (entry.type === 'tool_group' && !entry.orphan) {
         // Collect tool_group entries, skipping running/idle state entries.
-        // Stop at other state entries to preserve chronological ordering.
+        // Stop at other state entries (and at orphan groups) to preserve
+        // chronological ordering.
         const runIndices: number[] = [];
         let j = i;
         while (j < entries.length) {
-          if (entries[j].type === 'tool_group') {
+          const e = entries[j];
+          if (e.type === 'tool_group' && !e.orphan) {
             runIndices.push(j);
             j++;
-          } else if (entries[j].type === 'state' && isBenignState(entries[j])) {
+          } else if (e.type === 'state' && isBenignState(e)) {
             j++; // skip benign
           } else {
-            break; // non-benign state or other entry — stop the run
+            break; // non-benign state, orphan group, or other entry — stop the run
           }
         }
         // Check if trailing (for live indicator)

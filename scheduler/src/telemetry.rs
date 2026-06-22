@@ -5,7 +5,12 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 /// Logs include: timestamp, level, message, module, execution_id, workflow_id
 /// Default level: INFO, configurable via RUST_LOG env var
 pub fn init_telemetry() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Default to info, but quiet Tantivy's per-commit INFO bookkeeping
+    // (Preparing commit / committing / garbage collection / merges) which
+    // otherwise floods stdout. An explicit RUST_LOG still wins entirely
+    // (e.g. RUST_LOG=tantivy=info brings it back).
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,tantivy=warn"));
 
     tracing_subscriber::registry()
         .with(filter)

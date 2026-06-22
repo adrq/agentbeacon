@@ -550,6 +550,14 @@
 
   // Events for the currently viewed session
   let activeSessionId = $derived($selectedSessionId ?? leadSession?.id ?? null);
+  // Whether the viewed session is finished (outcome set). Scoped to the
+  // single session, not execution-wide, so orphaned tool_results surface
+  // correctly even while sibling sessions are still running.
+
+  let viewedSessionSettled = $derived.by(() => {
+    const s = detail?.sessions.find(s => s.id === activeSessionId);
+    return s ? (s.outcome != null) : false;
+  });
   const eventsQuery = sessionEventsQuery(
     () => activeSessionId,
     () => isSettled,
@@ -793,7 +801,7 @@
       {:else if viewMode === 'log'}
         <EventsTimeline {events} {agents} sessions={detail.sessions} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} />
       {:else if viewMode === 'chat'}
-        <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} />
+        <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} {viewedSessionSettled} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} />
       {:else if viewMode === 'diff'}
         <DiffPanel sessionId={activeSessionId} {isTerminal} />
       {/if}

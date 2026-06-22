@@ -327,6 +327,33 @@ async function main(): Promise<void> {
     // when the SDK omits it.
     let lastFinalOutput: string | null = null;
 
+    // Flush the buffered assistant content as a single persisted
+    // (non-ephemeral) message and capture its text for the result fallback.
+    // No-op when nothing is buffered, which makes the streamed (message_stop),
+    // non-streamed (stop_reason) and defensive (result) call sites idempotent:
+    // whichever fires first persists the content and clears the buffer; the
+    // rest become no-ops, so a turn never emits a duplicate final message.
+    const flushPendingAssistant = (): void => {
+      if (!pendingAssistant) return;
+      const flushed = pendingAssistant;
+      emit({
+        type: "message",
+        role: "assistant",
+        content: flushed,
+      });
+      lastFinalOutput = flushed
+        .filter(
+          (b): b is { type: string; text: string } =>
+            typeof b === "object" &&
+            b !== null &&
+            (b as { type?: unknown }).type === "text" &&
+            typeof (b as { text?: unknown }).text === "string",
+        )
+        .map((b) => b.text)
+        .join("");
+      pendingAssistant = null;
+    };
+
     try {
       for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
         currentAc = new AbortController();
@@ -367,6 +394,15 @@ async function main(): Promise<void> {
             settingSources: ["project"],
             stderr: (data: string) => process.stderr.write(data),
             disallowedTools: DISALLOWED_ORCHESTRATION_TOOLS,
+            // Disable Claude's auto-memory: it writes a per-session memory store
+            // (~/.claude/projects/<cwd>/memory/) that is invisible to other
+            // agents, so nothing must be silently persisted there. The env var
+            // is the hard gate; the settings flags are the documented disable
+            // (autoMemoryEnabled stops read+write) and stop background
+            // auto-dream consolidation (autoDreamEnabled). Spread process.env so
+            // env replacement keeps PATH/HOME/API keys for the subprocess.
+            env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+            settings: { autoMemoryEnabled: false, autoDreamEnabled: false },
           };
 
           if (startCmd.mcpServers) options.mcpServers = startCmd.mcpServers;
@@ -490,6 +526,16 @@ async function main(): Promise<void> {
               // assistant messages (not cumulative snapshots), so we must
               // collect all blocks and flush together on message_stop.
               pendingAssistant = [...(pendingAssistant ?? []), ...content];
+
+              // Non-streamed turns deliver a COMPLETE assistant message
+              // (inner.stop_reason set, e.g. "end_turn") with no
+              // content_block deltas and no message_stop. Flush it now;
+              // streamed per-block messages carry a null stop_reason until
+              // their final, so this stays inert until the turn is complete,
+              // and clearing the buffer makes the message_stop path a no-op.
+              if (inner?.stop_reason != null) {
+                flushPendingAssistant();
+              }
             } else if (msg.type === "user") {
               const content =
                 "message" in msg &&
@@ -502,6 +548,18 @@ async function main(): Promise<void> {
                   (b: Record<string, unknown>) => b?.type === "tool_result",
                 );
                 if (toolResults.length > 0) {
+                  // A tool_result implies its tool_use was already delivered on a
+                  // prior assistant message and is sitting in pendingAssistant.
+                  // Flush it now so the tool_use is persisted BEFORE the
+                  // tool_result, regardless of whether message_stop has arrived
+                  // yet — 0.3.156 races message_stop against this user message,
+                  // and emitting the result first persists it at a lower msg_seq
+                  // than its own tool_use (the "stuck RUNNING tool call" bug).
+                  // Guarded on tool_result presence so non-tool user messages
+                  // never force an early flush; the helper is a no-op when the
+                  // buffer is empty, so this stays idempotent with the
+                  // stop_reason / message_stop / result flush sites.
+                  flushPendingAssistant();
                   emit({
                     type: "message",
                     role: "assistant",
@@ -510,8 +568,18 @@ async function main(): Promise<void> {
                 }
               }
             } else if (msg.type === "result") {
-              // Discard any unflushed assistant snapshot — if message_stop was
-              // missed, the content is incomplete and should not be persisted.
+              const resultSubtype = (msg as unknown as Record<string, unknown>)
+                .subtype;
+              // On a successful result, flush any complete buffered assistant
+              // content not already flushed (some turns finish without a
+              // message_stop). Incomplete/error-path buffers stay discarded.
+              if (resultSubtype === "success" && pendingAssistant?.length) {
+                process.stderr.write(
+                  "[claude] recovered assistant message that arrived without message_stop\n",
+                );
+                flushPendingAssistant();
+              }
+              // Discard anything still unflushed (incomplete / error-path content).
               pendingAssistant = null;
               // Capture then clear the executor-owned fallback so the next
               // turn starts clean. Any stale value from an earlier turn must
@@ -626,26 +694,9 @@ async function main(): Promise<void> {
               } else if (event && event.type === "message_stop") {
                 // message_stop confirms the buffered assistant is the final
                 // snapshot for this API call. Flush it as a persisted message
-                // and capture its text as fallback for result.result.
-                if (pendingAssistant) {
-                  const flushed = pendingAssistant;
-                  emit({
-                    type: "message",
-                    role: "assistant",
-                    content: flushed,
-                  });
-                  lastFinalOutput = flushed
-                    .filter(
-                      (b): b is { type: string; text: string } =>
-                        typeof b === "object" &&
-                        b !== null &&
-                        (b as { type?: unknown }).type === "text" &&
-                        typeof (b as { text?: unknown }).text === "string",
-                    )
-                    .map((b) => b.text)
-                    .join("");
-                  pendingAssistant = null;
-                }
+                // and capture its text as fallback for result.result. No-op if
+                // a stop_reason flush already persisted this turn's content.
+                flushPendingAssistant();
               } else if (event) {
                 // Any other stream_event subtype (message_start,
                 // content_block_start/stop, message_delta, future ones)
