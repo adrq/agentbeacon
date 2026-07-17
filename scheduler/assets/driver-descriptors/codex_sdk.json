@@ -5,6 +5,7 @@
     "type": "object",
     "properties": {
       "model": { "type": "string" },
+      "model_reasoning_effort": { "type": "string" },
       "command": { "type": "string" },
       "args": { "type": "array", "items": { "type": "string" } },
       "timeout": { "type": "integer", "minimum": 1 },
@@ -27,6 +28,17 @@
       "support_status": "supported",
       "secret": false,
       "suggestions_source": "model-catalog"
+    },
+    {
+      "pointer": "/properties/model_reasoning_effort",
+      "label": "Reasoning effort",
+      "help_text": "Reasoning effort for the model (e.g. low, medium, high, xhigh, max). Leave empty for the model's default. Values are model-dependent; 'ultra' is not recommended.",
+      "group": "basic",
+      "widget": "text",
+      "storage": "config",
+      "support_status": "supported",
+      "secret": false,
+      "suggestions_source": null
     },
     {
       "pointer": "/properties/sandbox_policy",

@@ -52,6 +52,7 @@ pub struct CodexConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
     pub model: Option<String>,
+    pub model_reasoning_effort: Option<String>,
     pub system_prompt: Option<String>,
     #[serde(default = "default_approval_policy")]
     pub approval_policy: String,
@@ -249,6 +250,10 @@ fn write_config_toml(
 
     if let Some(ref model) = config.model {
         root.insert("model".into(), Tv::String(model.clone()));
+    }
+
+    if let Some(ref effort) = config.model_reasoning_effort {
+        root.insert("model_reasoning_effort".into(), Tv::String(effort.clone()));
     }
 
     root.insert(
