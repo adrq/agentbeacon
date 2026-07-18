@@ -1,12 +1,11 @@
 export type EventFilter = 'all' | 'messages' | 'tools' | 'errors' | 'status' | 'debug';
 
 export const EVENT_FILTER_GROUPS: Record<Exclude<EventFilter, 'all' | 'debug'>, Set<string>> = {
-  // 'compaction' is in both messages and status: it renders as an inline divider
-  // in the chat flow (messages) and represents a system status event (status).
-  messages: new Set(['agent', 'user', 'lateral', 'thinking', 'child_response', 'compaction']),
+  // In both messages and status: compaction, model_fallback, model_no_fallback.
+  messages: new Set(['agent', 'user', 'lateral', 'thinking', 'child_response', 'compaction', 'model_fallback', 'model_no_fallback']),
   tools:    new Set(['tool_group', 'tool_stream', 'todo_write']),
   errors:   new Set(['error']),
-  status:   new Set(['state', 'tool', 'fyi', 'compaction']),
+  status:   new Set(['state', 'tool', 'fyi', 'compaction', 'model_fallback', 'model_no_fallback']),
 };
 
 // Entry types hidden from the curated "All" view but shown under "Debug".

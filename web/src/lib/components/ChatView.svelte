@@ -2,7 +2,7 @@
   import type { Event, Agent, AgentPoolEntry, SessionSummary, AgentType, TodoItem, UsageState, SessionIdentity } from '../types';
   import AgentPill from './AgentPill.svelte';
   import CopyButton from './CopyButton.svelte';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData, isModelRefusalFallbackData, isModelRefusalNoFallbackData, refusalModelName, refusalDisplayText } from '../types';
   import { formatTokens } from '../format';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
@@ -329,7 +329,9 @@
     | { type: 'todo_write'; todos: TodoItem[]; time: string; key: string }
     | { type: 'user_image'; mimeType: string; bytes: string; name?: string; time: string; key: string }
     | { type: 'lateral_image'; senderName: string; senderSessionId: string | null; mimeType: string; bytes: string; name?: string; time: string; key: string }
-    | { type: 'compaction'; time: string; key: string };
+    | { type: 'compaction'; time: string; key: string }
+    | { type: 'model_fallback'; originalModel: string; fallbackModel: string; category?: string; content?: string; time: string; key: string }
+    | { type: 'model_no_fallback'; originalModel: string; category?: string; time: string; key: string };
 
   function resolveAgentType(sessionId: string | null): AgentType {
     const session = sessions.find(s => s.id === sessionId);
@@ -487,6 +489,32 @@
               entries.push({
                 type: 'compaction' as const,
                 key: `${ev.id}-compact-${seq++}`,
+                time,
+              });
+              continue;
+            }
+
+            // Model refusal-fallback banner
+            if (isModelRefusalFallbackData(d as unknown as import('../types').DataPartPayload)) {
+              const mf = d as unknown as import('../types').ModelFallbackData;
+              entries.push({
+                type: 'model_fallback' as const,
+                originalModel: refusalModelName(mf.original_model),
+                fallbackModel: refusalModelName(mf.fallback_model),
+                category: refusalDisplayText(mf.api_refusal_category),
+                content: refusalDisplayText(mf.content),
+                key: `${ev.id}-fallback-${seq++}`,
+                time,
+              });
+              continue;
+            }
+            if (isModelRefusalNoFallbackData(d as unknown as import('../types').DataPartPayload)) {
+              const mf = d as unknown as import('../types').ModelNoFallbackData;
+              entries.push({
+                type: 'model_no_fallback' as const,
+                originalModel: refusalModelName(mf.original_model),
+                category: refusalDisplayText(mf.api_refusal_category),
+                key: `${ev.id}-nofallback-${seq++}`,
                 time,
               });
               continue;
@@ -1044,6 +1072,21 @@
           <div class="chat-row compaction-row" role="separator" aria-label="Context was compacted">
             <div class="compaction-divider">
               <span class="compaction-label">context compacted</span>
+            </div>
+          </div>
+        {:else if entry.type === 'model_fallback'}
+          <div class="chat-row model-fallback-row" role="status">
+            <div class="model-fallback-banner">
+              <div>Model fallback — switched from {entry.originalModel} to {entry.fallbackModel} after a content refusal.</div>
+              {#if entry.category}<div class="model-fallback-detail">Category: {entry.category}.</div>{/if}
+              {#if entry.content}<div class="model-fallback-detail">{entry.content}</div>{/if}
+            </div>
+          </div>
+        {:else if entry.type === 'model_no_fallback'}
+          <div class="chat-row model-fallback-row" role="status">
+            <div class="model-fallback-banner">
+              <div>Model declined ({entry.originalModel}) — content refusal, no fallback available.</div>
+              {#if entry.category}<div class="model-fallback-detail">Category: {entry.category}.</div>{/if}
             </div>
           </div>
         {/if}
@@ -1941,6 +1984,25 @@
     color: hsl(var(--muted-foreground));
     white-space: nowrap;
     text-transform: lowercase;
+  }
+
+  .model-fallback-row {
+    padding: 0.5rem 1rem;
+  }
+
+  .model-fallback-banner {
+    display: block;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.375rem;
+    font-size: 0.8125rem;
+    color: hsl(var(--status-attention));
+    background: hsl(var(--status-attention) / 0.12);
+    border: 1px solid hsl(var(--status-attention) / 0.4);
+  }
+
+  .model-fallback-detail {
+    margin-top: 0.25rem;
+    opacity: 0.85;
   }
 
   @media (max-width: 768px) {

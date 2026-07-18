@@ -66,6 +66,13 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "EnterWorktree", // We manage worktrees externally
   "ExitWorktree", // We manage worktrees externally
   "AskUserQuestion", // We manage user interaction externally
+  "Artifact", // Publishes content to claude.ai
+  "SendFeedback", // Sends feedback to Anthropic
+  "ClaudeDesign", // Design/canvas feature
+  "Projects", // claude.ai Projects integration
+  "ProposeSkills", // Proposes skills
+  "ShowOnboardingRolePicker", // User-interaction UI
+  "ReportFindings", // Code-review findings emit
 ];
 
 // --- Command queue (single stdin listener, cancel as side-effect) ---
@@ -402,7 +409,13 @@ async function main(): Promise<void> {
             // auto-dream consolidation (autoDreamEnabled). Spread process.env so
             // env replacement keeps PATH/HOME/API keys for the subprocess.
             env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
-            settings: { autoMemoryEnabled: false, autoDreamEnabled: false },
+            settings: {
+              autoMemoryEnabled: false,
+              autoDreamEnabled: false,
+              disableArtifact: true,
+              feedbackDrafts: "off",
+              workflowKeywordTriggerEnabled: false,
+            },
           };
 
           if (startCmd.mcpServers) options.mcpServers = startCmd.mcpServers;

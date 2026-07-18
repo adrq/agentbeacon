@@ -107,6 +107,24 @@ fn claude_models() -> Vec<ModelSuggestion> {
             recommended: None,
         },
         ModelSuggestion {
+            id: "fable".to_string(),
+            label: "Claude Fable (alias)".to_string(),
+            description: Some("Alias — resolves to current Fable".to_string()),
+            recommended: None,
+        },
+        ModelSuggestion {
+            id: "claude-sonnet-5".to_string(),
+            label: "Claude Sonnet 5".to_string(),
+            description: None,
+            recommended: None,
+        },
+        ModelSuggestion {
+            id: "claude-fable-5".to_string(),
+            label: "Claude Fable 5".to_string(),
+            description: None,
+            recommended: None,
+        },
+        ModelSuggestion {
             id: "claude-opus-4-8".to_string(),
             label: "Claude Opus 4.8".to_string(),
             description: None,

@@ -227,6 +227,8 @@ export type DataPartPayload =
   | UsageUpdateData
   | UsageSnapshotData
   | CompactionData
+  | ModelFallbackData
+  | ModelNoFallbackData
   | { type: string; [key: string]: unknown };
 
 export interface EscalateData {
@@ -309,6 +311,25 @@ export interface UsageSnapshotData {
 export interface CompactionData {
   type: 'compaction';
   trigger: string;
+}
+
+// A model_refusal_fallback system event.
+export interface ModelFallbackData {
+  type: 'system';
+  subtype: 'model_refusal_fallback';
+  original_model?: string;
+  fallback_model?: string;
+  content?: string;
+  api_refusal_category?: string | null;
+}
+
+// A model_refusal_no_fallback system event.
+export interface ModelNoFallbackData {
+  type: 'system';
+  subtype: 'model_refusal_no_fallback';
+  original_model?: string;
+  content?: string;
+  api_refusal_category?: string | null;
 }
 
 export interface NormalizedUsage {
@@ -453,6 +474,29 @@ export function isUsageSnapshotData(d: DataPartPayload): d is UsageSnapshotData 
 
 export function isCompactionData(d: DataPartPayload): d is CompactionData {
   return d.type === 'compaction';
+}
+
+// Type guards keyed on type + subtype.
+export function isModelRefusalFallbackData(d: DataPartPayload): d is ModelFallbackData {
+  const x = d as { type?: string; subtype?: string };
+  return x.type === 'system' && x.subtype === 'model_refusal_fallback';
+}
+
+export function isModelRefusalNoFallbackData(
+  d: DataPartPayload,
+): d is ModelNoFallbackData {
+  const x = d as { type?: string; subtype?: string };
+  return x.type === 'system' && x.subtype === 'model_refusal_no_fallback';
+}
+
+// Returns the model name, or 'Unknown model' when absent or blank.
+export function refusalModelName(v: unknown): string {
+  return typeof v === 'string' && v.trim() !== '' ? v : 'Unknown model';
+}
+
+// Returns a non-empty string, or undefined.
+export function refusalDisplayText(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() !== '' ? v : undefined;
 }
 
 // Wiki types

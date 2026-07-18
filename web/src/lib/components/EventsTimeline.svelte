@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Event, Agent, AgentPoolEntry, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData } from '../types';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData, isModelRefusalFallbackData, isModelRefusalNoFallbackData, refusalModelName, refusalDisplayText } from '../types';
   import { normalizeDataPart } from '../normalize';
   import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
   import { api } from '../api';
@@ -206,6 +206,40 @@
               iconClass: 'state-change',
               text: 'Context compacted',
               entryType: 'state',
+            });
+            continue;
+          }
+
+          if (isModelRefusalFallbackData(d as unknown as import('../types').DataPartPayload)) {
+            const mf = d as unknown as import('../types').ModelFallbackData;
+            const from = refusalModelName(mf.original_model);
+            const to = refusalModelName(mf.fallback_model);
+            const cat = refusalDisplayText(mf.api_refusal_category);
+            const content = refusalDisplayText(mf.content);
+            let text = `Model fallback — switched from ${from} to ${to} after a content refusal.`;
+            if (cat) text += ` Category: ${cat}.`;
+            if (content) text += ` ${content}`;
+            entries.push({
+              key, time,
+              icon: '\u26A0',
+              iconClass: 'warning',
+              text,
+              entryType: 'model_fallback',
+            });
+            continue;
+          }
+          if (isModelRefusalNoFallbackData(d as unknown as import('../types').DataPartPayload)) {
+            const mf = d as unknown as import('../types').ModelNoFallbackData;
+            const from = refusalModelName(mf.original_model);
+            const cat = refusalDisplayText(mf.api_refusal_category);
+            let text = `Model declined (${from}) — content refusal, no fallback available.`;
+            if (cat) text += ` Category: ${cat}.`;
+            entries.push({
+              key, time,
+              icon: '\u26A0',
+              iconClass: 'warning',
+              text,
+              entryType: 'model_no_fallback',
             });
             continue;
           }
@@ -421,6 +455,7 @@
 
   .ev-icon.state-change { color: hsl(var(--muted-foreground)); }
   .ev-icon.error { color: hsl(var(--status-danger)); }
+  .ev-icon.warning { color: hsl(var(--status-attention)); }
   .ev-icon.question { color: hsl(var(--status-attention)); }
   .ev-icon.fyi { color: hsl(var(--status-working)); }
   .ev-icon.delegate { color: hsl(var(--status-working)); }
