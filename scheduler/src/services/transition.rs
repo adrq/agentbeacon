@@ -460,10 +460,11 @@ async fn set_desired(
             }
 
             let drain_sql = pool.prepare_query("DELETE FROM task_queue WHERE session_id = ?");
-            let _ = sqlx::query(&drain_sql)
+            sqlx::query(&drain_sql)
                 .bind(&session.id)
                 .execute(&mut *tx)
-                .await;
+                .await
+                .map_err(|_| Rejected::InvalidTransition("drain queue failed".into()))?;
 
             let stop_event = serde_json::json!({"desired": "stop", "desired_by": desired_by});
             let event_str = serde_json::to_string(&stop_event).unwrap_or_default();

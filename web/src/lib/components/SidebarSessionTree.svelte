@@ -3,6 +3,7 @@
   import { buildTree, partitionChildren, terminalSummaryText, containsSession, type TreeNode } from '../utils/treeLayout';
   import AgentPill from './AgentPill.svelte';
   import { formatTokens } from '../format';
+  import { sessionStatusLabel } from '../sessionStatus';
   import { api } from '../api';
   import { toasts } from '../stores/toasts';
   import CopyButton from './CopyButton.svelte';
@@ -171,7 +172,7 @@
         <AgentPill name={identity.agentName} />
       {/if}
     </span>
-    <span class="node-status">{s.status}</span>
+    <span class="node-status">{sessionStatusLabel(s.status, s.desired_by, s.status)}</span>
     {#if usagePct !== null}
       <span
         class="context-bar"

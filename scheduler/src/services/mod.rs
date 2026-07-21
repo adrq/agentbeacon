@@ -7,5 +7,6 @@ pub mod messaging;
 pub mod model_catalog;
 pub mod notification;
 pub mod reconciler;
+pub mod restart_park;
 pub mod sandbox;
 pub mod transition;

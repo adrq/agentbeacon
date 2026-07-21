@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SessionSummary, SessionIdentity } from '../types';
   import AgentPill from './AgentPill.svelte';
+  import { sessionStatusLabel } from '../sessionStatus';
 
   interface Props {
     session: SessionSummary;
@@ -27,19 +28,7 @@
   let agentDisplayName = $derived(identity?.agentName ?? agentFallback);
   let role = $derived(identity?.role ?? '');
 
-  const statusLabels: Record<string, string> = {
-    'working': 'Working',
-    'awaiting_input': 'Turn Complete',
-    'idle': 'Idle',
-    'stopped': 'Stopped',
-    'unassigned': 'Unassigned',
-    'crashed': 'Crashed',
-    'completed': 'Completed',
-    'failed': 'Failed',
-    'canceled': 'Canceled',
-  };
-
-  let statusText = $derived(statusLabels[session.status] ?? session.status);
+  let statusText = $derived(sessionStatusLabel(session.status, session.desired_by));
   let isTerminal = $derived(session.outcome != null);
 
   let elapsed = $derived(formatDuration(session.created_at, isTerminal ? session.updated_at : null, now));

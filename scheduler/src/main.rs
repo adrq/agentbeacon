@@ -139,6 +139,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .context("Failed to run database migrations")?;
     info!("Database migrations completed successfully");
 
+    let _pause_summary = services::restart_park::park_live_sessions_on_boot(&db_pool).await;
+
     info!("Initializing task queue...");
     let task_queue = Arc::new(TaskQueue::new(db_pool.clone()));
     let queue_len = task_queue

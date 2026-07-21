@@ -683,6 +683,86 @@ pub async fn find_crashed_workerless(pool: &DbPool) -> Result<Vec<Session>, Sche
     rows.into_iter().map(parse_session_row).collect()
 }
 
+#[derive(Debug, Clone)]
+pub struct RestartPauseCandidate {
+    pub id: String,
+    pub execution_id: String,
+    pub parent_session_id: Option<String>,
+    pub command_has_payload: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionAncestryNode {
+    pub id: String,
+    pub execution_id: String,
+    pub parent_session_id: Option<String>,
+    pub desired: String,
+    pub outcome: Option<String>,
+}
+
+pub async fn find_restart_pause_candidates(
+    pool: &DbPool,
+) -> Result<Vec<RestartPauseCandidate>, SchedulerError> {
+    let sql = pool.prepare_query(
+        "SELECT s.id, s.execution_id, s.parent_session_id, s.command_has_payload \
+         FROM sessions s \
+         JOIN executions e ON e.id = s.execution_id \
+         WHERE s.desired = 'run' AND s.outcome IS NULL \
+           AND e.desired = 'run' AND e.outcome IS NULL \
+         ORDER BY s.created_at ASC",
+    );
+    let rows = sqlx::query(&sql)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("find_restart_pause_candidates failed: {e}"))
+        })?;
+    Ok(rows
+        .into_iter()
+        .map(|r| RestartPauseCandidate {
+            id: r.get("id"),
+            execution_id: r.get("execution_id"),
+            parent_session_id: r.get("parent_session_id"),
+            command_has_payload: r
+                .try_get::<bool, _>("command_has_payload")
+                .unwrap_or_else(|_| r.get::<i32, _>("command_has_payload") != 0),
+        })
+        .collect())
+}
+
+pub async fn load_session_ancestry(
+    pool: &DbPool,
+    execution_ids: &[String],
+) -> Result<Vec<SessionAncestryNode>, SchedulerError> {
+    if execution_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let placeholders: Vec<&str> = execution_ids.iter().map(|_| "?").collect();
+    let in_clause = placeholders.join(", ");
+    let sql = pool.prepare_query(&format!(
+        "SELECT id, execution_id, parent_session_id, desired, outcome \
+         FROM sessions WHERE execution_id IN ({in_clause})"
+    ));
+    let mut q = sqlx::query(&sql);
+    for id in execution_ids {
+        q = q.bind(id);
+    }
+    let rows = q
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("load_session_ancestry failed: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SessionAncestryNode {
+            id: r.get("id"),
+            execution_id: r.get("execution_id"),
+            parent_session_id: r.get("parent_session_id"),
+            desired: r.get("desired"),
+            outcome: r.get("outcome"),
+        })
+        .collect())
+}
+
 /// Count pending turns (task_queue entries) for a session
 pub async fn count_pending_turns(pool: &DbPool, session_id: &str) -> Result<i64, SchedulerError> {
     let query = pool.prepare_query("SELECT COUNT(*) as cnt FROM task_queue WHERE session_id = ?");
