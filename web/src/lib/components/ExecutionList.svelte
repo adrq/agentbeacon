@@ -8,14 +8,6 @@
   import ExecutionListItem from './ExecutionListItem.svelte';
   import { useQueryClient } from '@tanstack/svelte-query';
 
-  const statusOrder: Record<string, number> = {
-    'awaiting_input': 0,
-    'working': 1,
-    'completed': 3,
-    'failed': 4,
-    'canceled': 5,
-  };
-
   const queryClient = useQueryClient();
   const projects = projectsQuery();
   const execsQuery = executionsQuery(() => $selectedFilterProjectId);
@@ -48,9 +40,18 @@
     { value: 'fail', label: 'Fail' },
   ] as const;
 
+  // Priority tier (lower sorts higher): executions needing a response first,
+  // then running, then idle, then finished.
+  function priorityTier(e: import('../types').Execution): number {
+    if ($executionsWithQuestions.has(e.id)) return 0; // needs a response
+    if (e.status === 'working') return 1;              // running
+    if (e.status === 'awaiting_input') return 2;       // idle
+    return 3;                                          // finished
+  }
+
   let sorted = $derived([...executions].sort((a, b) => {
-    const orderDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
-    if (orderDiff !== 0) return orderDiff;
+    const tierDiff = priorityTier(a) - priorityTier(b);
+    if (tierDiff !== 0) return tierDiff;
     return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
   }));
 
