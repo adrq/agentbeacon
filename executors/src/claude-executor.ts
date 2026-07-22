@@ -433,7 +433,11 @@ async function main(): Promise<void> {
           }
           if (startCmd.resumeSessionId)
             options.resume = startCmd.resumeSessionId;
-          if (startCmd.thinking) options.thinking = startCmd.thinking;
+          // Default to summarized adaptive thinking; the agent's config overrides it.
+          options.thinking = startCmd.thinking ?? {
+            type: "adaptive",
+            display: "summarized",
+          };
           if (startCmd.effort) options.effort = startCmd.effort;
           options.includePartialMessages = true;
 
