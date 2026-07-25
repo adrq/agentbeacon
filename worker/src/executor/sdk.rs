@@ -455,6 +455,7 @@ async fn background_task(
                                 if let Ok(init) = serde_json::from_value::<InitEvent>(event) {
                                     agent_session_id = Some(init.session_id.clone());
                                     started = true;
+                                    turn_active = true;
                                     let _ = event_tx.send(AgentEvent::Init { session_id: init.session_id });
 
                                     // Flush any prompts that arrived before init

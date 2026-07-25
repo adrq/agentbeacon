@@ -576,6 +576,7 @@ async fn run_session(
                     Some(AgentEvent::Init { session_id: sid }) => {
                         silence_deadline = None;
                         agent_session_id = Some(sid);
+                        executor_running = true;
                         if poll_fut.is_none() {
                             let report = ExecutorReport {
                                 session_id: session_id.to_string(),

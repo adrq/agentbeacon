@@ -694,6 +694,8 @@ def start_worker_with_retry_config(
     retry_delay_ms: int = 100,
     interval: str = "1s",
     base_dir: Path = None,
+    extra_env: dict = None,
+    extra_args: list = None,
 ) -> subprocess.Popen:
     """Start worker with custom retry configuration for fast tests.
 
@@ -704,6 +706,10 @@ def start_worker_with_retry_config(
         retry_delay_ms: Delay between retries in milliseconds (default: 100)
         interval: Sync interval (default: "1s")
         base_dir: Base directory for the project
+        extra_env: Additional environment variables for the worker process
+            (inherited by the executor subprocess)
+        extra_args: Additional CLI args appended to the worker command line
+            (e.g. ["--inactivity-timeout", "1s"])
 
     Returns:
         subprocess.Popen: The worker process
@@ -717,21 +723,27 @@ def start_worker_with_retry_config(
 
     # Copy current environment for pytest context
     worker_env = os.environ.copy()
+    if extra_env:
+        worker_env.update(extra_env)
+
+    cmd = [
+        "./bin/agentbeacon-worker",
+        "--scheduler-url",
+        scheduler_url,
+        "--interval",
+        interval,
+        "--startup-max-attempts",
+        str(startup_attempts),
+        "--reconnect-max-attempts",
+        str(reconnect_attempts),
+        "--retry-delay",
+        f"{retry_delay_ms}ms",
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
 
     worker_process = subprocess.Popen(
-        [
-            "./bin/agentbeacon-worker",
-            "--scheduler-url",
-            scheduler_url,
-            "--interval",
-            interval,
-            "--startup-max-attempts",
-            str(startup_attempts),
-            "--reconnect-max-attempts",
-            str(reconnect_attempts),
-            "--retry-delay",
-            f"{retry_delay_ms}ms",
-        ],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
