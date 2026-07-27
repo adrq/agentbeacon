@@ -670,6 +670,8 @@ export interface DecisionBatchResponse {
   answer: string | null;
   answered_at: string | null;
   dismissed_at: string | null;
+  // Present and true only when this answer's text was truncated; absent otherwise.
+  truncated?: boolean;
   created_at: string;
 }
 

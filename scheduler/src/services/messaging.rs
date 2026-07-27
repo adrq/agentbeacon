@@ -91,7 +91,7 @@ pub async fn deliver_message(
         db_pool,
         &session.execution_id,
         &session.id,
-        transition::Action::SendMessage(delivery_payload),
+        transition::Action::SendMessage(transition::SendMessageArgs::plain(delivery_payload)),
     )
     .await
     .map_err(|e| match e {

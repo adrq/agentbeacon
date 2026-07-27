@@ -4,6 +4,10 @@ use sqlx::{Acquire, Executor};
 use super::DbPool;
 use crate::error::SchedulerError;
 
+/// Highest schema version this binary ships; also the PostgreSQL `application_name` tag
+/// (`agentbeacon-schema{LATEST_SCHEMA_VERSION}`).
+pub const LATEST_SCHEMA_VERSION: i32 = 24;
+
 /// Embedded migration files
 const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");
 const MIGRATION_0002: &str =
@@ -164,248 +168,276 @@ fn replace_timestamp_with_timestamptz(sql: &str) -> String {
     replace_type_with_tokenizer(sql, "TIMESTAMP", "TIMESTAMPTZ")
 }
 
-/// Run all pending migrations on the database
+/// One ordered migration step: a SQL file or the 0024 Rust code-step. Both flow through a single
+/// version-ordered loop, so the code-step sits between v23 and any future step by construction.
+enum MigrationStep {
+    Sql(&'static str),
+    Code0024,
+}
+
+/// The ordered migration steps this binary ships: SQL 1..23, then the 0024 code-step.
+// v2/v3/... use a separate PostgreSQL migration file vs SQLite; v1 is shared.
+fn default_migration_steps(is_postgres: bool) -> Vec<(MigrationStep, i32)> {
+    let pick = |pg: &'static str, lite: &'static str| if is_postgres { pg } else { lite };
+    vec![
+        (MigrationStep::Sql(MIGRATION_0001), 1),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0002_PG, MIGRATION_0002)),
+            2,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0003_PG, MIGRATION_0003)),
+            3,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0004_PG, MIGRATION_0004)),
+            4,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0005_PG, MIGRATION_0005)),
+            5,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0006_PG, MIGRATION_0006)),
+            6,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0007_PG, MIGRATION_0007)),
+            7,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0008_PG, MIGRATION_0008)),
+            8,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0009_PG, MIGRATION_0009)),
+            9,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0010_PG, MIGRATION_0010)),
+            10,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0011_PG, MIGRATION_0011)),
+            11,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0012_PG, MIGRATION_0012)),
+            12,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0013_PG, MIGRATION_0013)),
+            13,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0014_PG, MIGRATION_0014)),
+            14,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0015_PG, MIGRATION_0015)),
+            15,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0016_PG, MIGRATION_0016)),
+            16,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0017_PG, MIGRATION_0017)),
+            17,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0018_PG, MIGRATION_0018)),
+            18,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0019_PG, MIGRATION_0019)),
+            19,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0020_PG, MIGRATION_0020)),
+            20,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0021_PG, MIGRATION_0021)),
+            21,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0022_PG, MIGRATION_0022)),
+            22,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0023_PG, MIGRATION_0023)),
+            23,
+        ),
+        (MigrationStep::Code0024, 24),
+    ]
+}
+
+/// Run all pending migrations on the database.
 pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError> {
-    // Detect database type from provided URL
-    // PostgreSQL supports both postgres:// and postgresql:// schemes (RFC 3986)
+    // PostgreSQL supports both postgres:// and postgresql:// schemes (RFC 3986).
     let is_postgres =
         database_url.starts_with("postgres:") || database_url.starts_with("postgresql:");
-
-    // Get current migration version (0 if no migrations applied yet)
     let current_version = get_current_version(pool).await.unwrap_or(0);
+    run_migration_steps(
+        pool,
+        is_postgres,
+        current_version,
+        default_migration_steps(is_postgres),
+    )
+    .await
+}
 
-    // List of all migrations in order
-    // v2 uses a separate PG migration (ALTER RENAME COLUMN) vs SQLite (recreate-table)
-    let migration_0002 = if is_postgres {
-        MIGRATION_0002_PG
-    } else {
-        MIGRATION_0002
-    };
-    let migration_0003 = if is_postgres {
-        MIGRATION_0003_PG
-    } else {
-        MIGRATION_0003
-    };
-    let migration_0004 = if is_postgres {
-        MIGRATION_0004_PG
-    } else {
-        MIGRATION_0004
-    };
-    let migration_0005 = if is_postgres {
-        MIGRATION_0005_PG
-    } else {
-        MIGRATION_0005
-    };
-    let migration_0006 = if is_postgres {
-        MIGRATION_0006_PG
-    } else {
-        MIGRATION_0006
-    };
-    let migration_0007 = if is_postgres {
-        MIGRATION_0007_PG
-    } else {
-        MIGRATION_0007
-    };
-    let migration_0008 = if is_postgres {
-        MIGRATION_0008_PG
-    } else {
-        MIGRATION_0008
-    };
-    let migration_0009 = if is_postgres {
-        MIGRATION_0009_PG
-    } else {
-        MIGRATION_0009
-    };
-    let migration_0010 = if is_postgres {
-        MIGRATION_0010_PG
-    } else {
-        MIGRATION_0010
-    };
-    let migration_0011 = if is_postgres {
-        MIGRATION_0011_PG
-    } else {
-        MIGRATION_0011
-    };
-    let migration_0012 = if is_postgres {
-        MIGRATION_0012_PG
-    } else {
-        MIGRATION_0012
-    };
-    let migration_0013 = if is_postgres {
-        MIGRATION_0013_PG
-    } else {
-        MIGRATION_0013
-    };
-    let migration_0014 = if is_postgres {
-        MIGRATION_0014_PG
-    } else {
-        MIGRATION_0014
-    };
-    let migration_0015 = if is_postgres {
-        MIGRATION_0015_PG
-    } else {
-        MIGRATION_0015
-    };
-    let migration_0016 = if is_postgres {
-        MIGRATION_0016_PG
-    } else {
-        MIGRATION_0016
-    };
-    let migration_0017 = if is_postgres {
-        MIGRATION_0017_PG
-    } else {
-        MIGRATION_0017
-    };
-    let migration_0018 = if is_postgres {
-        MIGRATION_0018_PG
-    } else {
-        MIGRATION_0018
-    };
-    let migration_0019 = if is_postgres {
-        MIGRATION_0019_PG
-    } else {
-        MIGRATION_0019
-    };
-    let migration_0020 = if is_postgres {
-        MIGRATION_0020_PG
-    } else {
-        MIGRATION_0020
-    };
-    let migration_0021 = if is_postgres {
-        MIGRATION_0021_PG
-    } else {
-        MIGRATION_0021
-    };
-    let migration_0022 = if is_postgres {
-        MIGRATION_0022_PG
-    } else {
-        MIGRATION_0022
-    };
-    let migration_0023 = if is_postgres {
-        MIGRATION_0023_PG
-    } else {
-        MIGRATION_0023
-    };
-    let migrations = vec![
-        (MIGRATION_0001, 1),
-        (migration_0002, 2),
-        (migration_0003, 3),
-        (migration_0004, 4),
-        (migration_0005, 5),
-        (migration_0006, 6),
-        (migration_0007, 7),
-        (migration_0008, 8),
-        (migration_0009, 9),
-        (migration_0010, 10),
-        (migration_0011, 11),
-        (migration_0012, 12),
-        (migration_0013, 13),
-        (migration_0014, 14),
-        (migration_0015, 15),
-        (migration_0016, 16),
-        (migration_0017, 17),
-        (migration_0018, 18),
-        (migration_0019, 19),
-        (migration_0020, 20),
-        (migration_0021, 21),
-        (migration_0022, 22),
-        (migration_0023, 23),
-    ];
-
-    // Process each migration
-    for (migration_sql, version) in migrations {
-        // Skip already-applied migrations (makes runner idempotent)
+/// Apply the given steps in version order, skipping already-applied versions (idempotent).
+async fn run_migration_steps(
+    pool: &DbPool,
+    is_postgres: bool,
+    current_version: i32,
+    steps: Vec<(MigrationStep, i32)>,
+) -> Result<(), SchedulerError> {
+    for (step, version) in steps {
         if version <= current_version {
             continue;
         }
-
-        // Migration 0002 uses DROP TABLE which triggers CASCADE with foreign_keys ON.
-        // Disable FKs before the migration and re-enable after.
-        let needs_fk_disable = !is_postgres
-            && (version == 2
-                || version == 5
-                || version == 14
-                || version == 17
-                || version == 19
-                || version == 22);
-
-        // Adapt migration for database-specific syntax
-        let migration = if is_postgres {
-            // Replace SQLite-specific syntax with PostgreSQL equivalents
-            // 1. AUTOINCREMENT -> SERIAL for auto-increment columns
-            // 2. INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
-            // 3. TIMESTAMP -> TIMESTAMPTZ for timezone-aware storage (fixes timezone bug)
-            //    Uses sqlparser tokenizer to handle all cases: TIMESTAMP, TIMESTAMP,
-            //    TIMESTAMP), TIMESTAMP;, etc. Prevents timezone shifts on non-UTC servers.
-            let m = migration_sql
-                .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-                .replace(
-                    &format!("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ({version}, CURRENT_TIMESTAMP)"),
-                    &format!("INSERT INTO schema_migrations (version, applied_at) VALUES ({version}, CURRENT_TIMESTAMP) ON CONFLICT (version) DO NOTHING")
-                );
-
-            // Use tokenizer to replace all TIMESTAMP → TIMESTAMPTZ comprehensively
-            replace_timestamp_with_timestamptz(&m)
-        } else {
-            // SQLite: Replace semantic types with storage types for schema metadata compatibility
-            // 1. BOOLEAN → INTEGER (SQLite stores booleans as 0/1)
-            // 2. TIMESTAMP → TEXT (we store RFC3339 strings)
-            let m = replace_boolean_with_integer(migration_sql);
-            replace_timestamp_with_text(&m)
-        };
-
-        // Remove comments first, then split by semicolon
-        let cleaned_migration = migration
-            .lines()
-            .filter(|line| {
-                let trimmed = line.trim();
-                !trimmed.is_empty() && !trimmed.starts_with("--")
-            })
-            .collect::<Vec<&str>>()
-            .join("\n");
-
-        let statements: Vec<&str> = cleaned_migration
-            .split(';')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        // Acquire a single connection — PRAGMA and transaction MUST share it.
-        let mut conn = pool.as_ref().acquire().await.map_err(|e| {
-            SchedulerError::Database(format!(
-                "acquire connection for migration v{version} failed: {e}"
-            ))
-        })?;
-
-        if needs_fk_disable {
-            conn.execute("PRAGMA foreign_keys = OFF")
-                .await
-                .map_err(|e| {
-                    SchedulerError::Database(format!("disable foreign_keys failed: {e}"))
-                })?;
+        match step {
+            MigrationStep::Sql(migration_sql) => {
+                apply_sql_migration(pool, is_postgres, migration_sql, version).await?;
+            }
+            MigrationStep::Code0024 => run_code_step_0024(pool).await?,
         }
+    }
+    Ok(())
+}
 
-        let tx_result = execute_migration_version(&mut conn, version, &statements).await;
+/// Apply one SQL migration: adapt dialect, split statements, and run them in a per-version
+/// transaction on a single connection, toggling foreign_keys around the versions that need it.
+async fn apply_sql_migration(
+    pool: &DbPool,
+    is_postgres: bool,
+    migration_sql: &str,
+    version: i32,
+) -> Result<(), SchedulerError> {
+    // Migration 0002 uses DROP TABLE which triggers CASCADE with foreign_keys ON.
+    // Disable FKs before the migration and re-enable after.
+    let needs_fk_disable = !is_postgres
+        && (version == 2
+            || version == 5
+            || version == 14
+            || version == 17
+            || version == 19
+            || version == 22);
 
-        // ALWAYS re-enable FKs on the SAME connection.
-        if needs_fk_disable && let Err(fk_err) = conn.execute("PRAGMA foreign_keys = ON").await {
-            tracing::error!("failed to re-enable foreign_keys: {fk_err}");
-            // Detach the poisoned connection so it is NOT returned to the pool.
-            conn.detach();
-            let msg = if let Err(ref mig_err) = tx_result {
-                format!(
-                    "migration v{version} failed: {mig_err}; \
-                     additionally, FK re-enable failed: {fk_err}"
-                )
-            } else {
-                format!("enable foreign_keys failed after migration v{version}: {fk_err}")
-            };
-            return Err(SchedulerError::Database(msg));
-        }
+    // Adapt migration for database-specific syntax
+    let migration = if is_postgres {
+        // Replace SQLite-specific syntax with PostgreSQL equivalents
+        // 1. AUTOINCREMENT -> SERIAL for auto-increment columns
+        // 2. INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
+        // 3. TIMESTAMP -> TIMESTAMPTZ for timezone-aware storage (fixes timezone bug)
+        //    Uses sqlparser tokenizer to handle all cases: TIMESTAMP, TIMESTAMP,
+        //    TIMESTAMP), TIMESTAMP;, etc. Prevents timezone shifts on non-UTC servers.
+        let m = migration_sql
+            .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+            .replace(
+                &format!("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ({version}, CURRENT_TIMESTAMP)"),
+                &format!("INSERT INTO schema_migrations (version, applied_at) VALUES ({version}, CURRENT_TIMESTAMP) ON CONFLICT (version) DO NOTHING")
+            );
 
-        tx_result?;
+        // Use tokenizer to replace all TIMESTAMP → TIMESTAMPTZ comprehensively
+        replace_timestamp_with_timestamptz(&m)
+    } else {
+        // SQLite: Replace semantic types with storage types for schema metadata compatibility
+        // 1. BOOLEAN → INTEGER (SQLite stores booleans as 0/1)
+        // 2. TIMESTAMP → TEXT (we store RFC3339 strings)
+        let m = replace_boolean_with_integer(migration_sql);
+        replace_timestamp_with_text(&m)
+    };
+
+    // Remove comments first, then split by semicolon
+    let cleaned_migration = migration
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && !trimmed.starts_with("--")
+        })
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    let statements: Vec<&str> = cleaned_migration
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Acquire a single connection — PRAGMA and transaction MUST share it.
+    let mut conn = pool.as_ref().acquire().await.map_err(|e| {
+        SchedulerError::Database(format!(
+            "acquire connection for migration v{version} failed: {e}"
+        ))
+    })?;
+
+    if needs_fk_disable {
+        conn.execute("PRAGMA foreign_keys = OFF")
+            .await
+            .map_err(|e| SchedulerError::Database(format!("disable foreign_keys failed: {e}")))?;
     }
 
+    let tx_result = execute_migration_version(&mut conn, version, &statements).await;
+
+    // ALWAYS re-enable FKs on the SAME connection.
+    if needs_fk_disable && let Err(fk_err) = conn.execute("PRAGMA foreign_keys = ON").await {
+        tracing::error!("failed to re-enable foreign_keys: {fk_err}");
+        // Detach the poisoned connection so it is NOT returned to the pool.
+        conn.detach();
+        let msg = if let Err(ref mig_err) = tx_result {
+            format!(
+                "migration v{version} failed: {mig_err}; \
+                 additionally, FK re-enable failed: {fk_err}"
+            )
+        } else {
+            format!("enable foreign_keys failed after migration v{version}: {fk_err}")
+        };
+        return Err(SchedulerError::Database(msg));
+    }
+
+    tx_result?;
+    Ok(())
+}
+
+/// Migration 0024 code-step: backfill markers and record the version.
+async fn run_code_step_0024(pool: &DbPool) -> Result<(), SchedulerError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin migration v24 tx failed: {e}")))?;
+
+    // The wrapper owns the offline/lock deadline and re-checks it through the version-record
+    // INSERT and COMMIT, so the whole 0024 transaction (not just the scan) stays bounded.
+    let deadline = Some(crate::db::backfill::offline_deadline());
+    let stats = crate::db::backfill::run_backfill_0024(pool, &mut tx, deadline).await?;
+
+    crate::db::backfill::enforce_deadline(pool, &mut tx, deadline).await?;
+    let insert_sql = pool.prepare_query(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES (?, CURRENT_TIMESTAMP)",
+    );
+    sqlx::query(&insert_sql)
+        .bind(24_i32)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("record migration v24 failed: {e}")))?;
+
+    crate::db::backfill::enforce_deadline(pool, &mut tx, deadline).await?;
+    tx.commit()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("commit migration v24 failed: {e}")))?;
+
+    tracing::info!(
+        "migration 0024 backfill: {} markers synthesized ({} sources seen, {} already covered, \
+         {} skipped: no representable marker within cap)",
+        stats.markers_synthesized,
+        stats.sources_seen,
+        stats.already_covered,
+        stats.envelope_oversize_skipped,
+    );
     Ok(())
 }
 

@@ -43,6 +43,7 @@
             answer: d.answer,
             answeredAt: d.answered_at,
             dismissedAt: d.dismissed_at,
+            truncated: d.truncated ?? false,
             createdAt: d.created_at,
           });
         }

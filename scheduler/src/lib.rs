@@ -5,6 +5,7 @@ pub mod db;
 pub mod error;
 pub mod process_group;
 pub mod queue;
+pub mod resolution;
 pub mod search;
 pub mod services;
 pub mod slugs;

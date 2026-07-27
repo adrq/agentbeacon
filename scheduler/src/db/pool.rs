@@ -127,6 +127,24 @@ impl DbPool {
     }
 }
 
+/// Return the URL with `application_name` set to `name`, replacing any existing value.
+fn force_pg_application_name(url: &str, name: &str) -> String {
+    let (base, query) = match url.split_once('?') {
+        Some((b, q)) => (b, Some(q)),
+        None => (url, None),
+    };
+    let mut params: Vec<String> = query
+        .map(|q| {
+            q.split('&')
+                .filter(|p| !p.is_empty() && !p.starts_with("application_name="))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    params.push(format!("application_name={name}"));
+    format!("{base}?{}", params.join("&"))
+}
+
 /// Convert ? placeholders to $N for PostgreSQL using sqlparser for correctness
 ///
 /// This function uses sqlparser's tokenizer to safely identify SQL placeholders
@@ -210,6 +228,21 @@ pub async fn create(database_url: &str) -> Result<DbPool, SchedulerError> {
     } else {
         DbType::Sqlite
     };
+
+    // Set application_name to the shipped schema version on PostgreSQL connections, replacing
+    // any application_name in the caller URL.
+    let connect_url = if is_postgres {
+        force_pg_application_name(
+            database_url,
+            &format!(
+                "agentbeacon-schema{}",
+                super::migrations::LATEST_SCHEMA_VERSION
+            ),
+        )
+    } else {
+        database_url.to_string()
+    };
+    let database_url = connect_url.as_str();
 
     let pool = if is_sqlite {
         // SQLite configuration: max 1 connection (single-writer limitation)

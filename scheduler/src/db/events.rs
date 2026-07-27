@@ -88,7 +88,7 @@ pub async fn list_by_execution(
         .await
         .map_err(|e| SchedulerError::Database(format!("list events failed: {e}")))?;
 
-    rows.into_iter().map(parse_event_row).collect()
+    collect_events(rows)
 }
 
 pub async fn list_by_session(
@@ -108,7 +108,7 @@ pub async fn list_by_session(
         .await
         .map_err(|e| SchedulerError::Database(format!("list events failed: {e}")))?;
 
-    rows.into_iter().map(parse_event_row).collect()
+    collect_events(rows)
 }
 
 pub async fn list_by_execution_since(
@@ -131,7 +131,7 @@ pub async fn list_by_execution_since(
         .await
         .map_err(|e| SchedulerError::Database(format!("list events since failed: {e}")))?;
 
-    rows.into_iter().map(parse_event_row).collect()
+    collect_events(rows)
 }
 
 /// List message events for a session, optionally filtered by event ID.
@@ -167,108 +167,148 @@ pub async fn list_messages_by_session(
         .await
         .map_err(|e| SchedulerError::Database(format!("list messages by session failed: {e}")))?;
 
-    rows.into_iter().map(parse_event_row).collect()
+    collect_events(rows)
 }
 
-/// Find escalation events matching a specific batch_id by scanning JSON payloads.
-pub async fn find_by_batch_id(pool: &DbPool, batch_id: &str) -> Result<Vec<Event>, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    // Use bare batch_id in LIKE — handles both compact and pretty-printed JSON
-    let pattern = format!("%{batch_id}%");
-    let sql = format!(
-        "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {created_fmt} as created_at \
-         FROM events WHERE event_type = 'platform' AND payload LIKE ? ORDER BY id ASC"
-    );
-    let rows = sqlx::query(&pool.prepare_query(&sql))
-        .bind(&pattern)
-        .fetch_all(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("find_by_batch_id failed: {e}")))?;
-
-    let mut results = Vec::new();
-    for row in rows {
-        let event = parse_event_row(row)?;
-        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload)
-            && let Some(parts) = payload.get("parts").and_then(|p| p.as_array())
-        {
-            for part in parts {
-                if let Some(data) = part.get("data")
-                    && data.get("type").and_then(|t| t.as_str()) == Some("escalate")
-                    && data.get("batch_id").and_then(|b| b.as_str()) == Some(batch_id)
-                {
-                    results.push(event);
-                    break;
-                }
-            }
-        }
-    }
-    Ok(results)
+/// The execution and session that own a batch.
+pub struct BatchOwner {
+    pub execution_id: String,
+    pub session_id: String,
 }
 
-pub struct BatchResolution {
-    pub resolution_type: String,
-    pub event: Event,
-}
-
-/// Find the first resolution event (answer or dismiss) for a batch_id.
-pub async fn find_resolution_for_batch(
+/// Resolve the execution and session that own a batch (LIKE-prefiltered, parse-verified).
+/// Streams the prefiltered rows and returns the first parse-verified owner.
+pub async fn find_batch_owner(
     pool: &DbPool,
     batch_id: &str,
-) -> Result<Option<BatchResolution>, SchedulerError> {
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
-    let pattern = format!("%{batch_id}%");
-    let sql = format!(
-        "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {created_fmt} as created_at \
-         FROM events WHERE event_type IN ('platform', 'message') AND payload LIKE ? ORDER BY id ASC"
-    );
-    let rows = sqlx::query(&pool.prepare_query(&sql))
-        .bind(&pattern)
-        .fetch_all(pool.as_ref())
-        .await
-        .map_err(|e| SchedulerError::Database(format!("find_resolution_for_batch failed: {e}")))?;
+) -> Result<Option<BatchOwner>, SchedulerError> {
+    use futures_util::TryStreamExt;
 
-    for row in rows {
-        let event = parse_event_row(row)?;
-        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload)
-            && let Some(parts) = payload.get("parts").and_then(|p| p.as_array())
+    let pattern = crate::resolution::like_pattern_for_batch_id(batch_id);
+    let sql = pool.prepare_query(
+        "SELECT e.execution_id AS execution_id, e.session_id AS session_id, e.payload AS payload \
+         FROM events e JOIN sessions s ON s.id = e.session_id AND s.execution_id = e.execution_id \
+         WHERE e.event_type = 'platform' AND e.payload LIKE ? ESCAPE '\\' ORDER BY e.id ASC",
+    );
+    let mut stream = sqlx::query(&sql).bind(&pattern).fetch(pool.as_ref());
+    while let Some(row) = stream
+        .try_next()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("find_batch_owner failed: {e}")))?
+    {
+        let execution_id: String = row.get("execution_id");
+        let session_id: Option<String> = row.get("session_id");
+        let Some(session_id) = session_id else {
+            continue;
+        };
+        // An undecodable payload (invalid-UTF-8 BLOB) parse-skips, same as malformed JSON.
+        let Ok(payload) = row.try_get::<String, _>("payload") else {
+            continue;
+        };
+        if crate::resolution::escalate_parts(&payload)
+            .iter()
+            .any(|p| p.batch_id == batch_id)
         {
-            for part in parts {
-                if let Some(data) = part.get("data") {
-                    let data_type = data.get("type").and_then(|t| t.as_str());
-                    let data_batch = data.get("batch_id").and_then(|b| b.as_str());
-                    if data_batch == Some(batch_id) {
-                        match data_type {
-                            Some("question_answer") | Some("question_dismiss") => {
-                                return Ok(Some(BatchResolution {
-                                    resolution_type: data_type.unwrap().to_string(),
-                                    event,
-                                }));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
+            return Ok(Some(BatchOwner {
+                execution_id,
+                session_id,
+            }));
         }
     }
     Ok(None)
 }
 
-/// List platform/message events scoped to a set of execution IDs (for the decisions reducer).
+/// The winning resolution (answer or dismiss) for a batch.
+pub struct ResolutionOutcome {
+    pub kind: crate::resolution::ResolutionKind,
+}
+
+/// Find the resolution event for a batch within a held transaction.
+pub async fn find_resolution_for_batch_in_tx(
+    pool: &DbPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    owner_execution_id: &str,
+    owner_session_id: &str,
+    batch_id: &str,
+) -> Result<Option<ResolutionOutcome>, SchedulerError> {
+    let pattern = crate::resolution::like_pattern_for_batch_id(batch_id);
+    let sql = pool.prepare_query(
+        "SELECT id, session_id, payload FROM events \
+         WHERE execution_id = ? AND event_type = 'platform' AND payload LIKE ? ESCAPE '\\' \
+         ORDER BY id ASC",
+    );
+    let rows = sqlx::query(&sql)
+        .bind(owner_execution_id)
+        .bind(&pattern)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| {
+            SchedulerError::Database(format!("find_resolution_for_batch_in_tx failed: {e}"))
+        })?;
+
+    let mut best: Option<(
+        crate::resolution::OrderKey,
+        crate::resolution::ResolutionKind,
+    )> = None;
+    for row in rows {
+        let row_session: Option<String> = row.get("session_id");
+        if row_session.as_deref() != Some(owner_session_id) {
+            continue;
+        }
+        let id: i64 = row.get("id");
+        // An undecodable payload (invalid-UTF-8 BLOB) parse-skips, same as malformed JSON.
+        let Ok(payload) = row.try_get::<String, _>("payload") else {
+            continue;
+        };
+        let Some(parts) = crate::resolution::parse_parts(&payload) else {
+            continue;
+        };
+        for cand in crate::resolution::resolution_candidates(&parts, id) {
+            if cand.batch_id != batch_id {
+                continue;
+            }
+            if best.as_ref().is_none_or(|(bk, _)| cand.order_key < *bk) {
+                best = Some((cand.order_key, cand.kind));
+            }
+        }
+    }
+    Ok(best.map(|(_, kind)| ResolutionOutcome { kind }))
+}
+
+/// A windowed platform event with its session-coherence flag projected inline.
+pub struct WindowEvent {
+    pub event: Event,
+    /// True if the event's session is non-null and belongs to the event's execution.
+    pub session_coherent: bool,
+}
+
+/// List platform events for the given executions, each with its session-coherence flag.
 pub async fn list_platform_events_for_executions(
     pool: &DbPool,
     execution_ids: &[String],
-) -> Result<Vec<Event>, SchedulerError> {
+) -> Result<Vec<WindowEvent>, SchedulerError> {
     if execution_ids.is_empty() {
         return Ok(vec![]);
     }
 
-    let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
+    // created_at is qualified to the events alias so the sessions join cannot make it
+    // ambiguous (sessions also has a created_at column).
+    let created_expr = if pool.is_postgres() {
+        "to_char(e.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"
+    } else {
+        "strftime('%Y-%m-%dT%H:%M:%SZ', e.created_at)"
+    };
     let placeholders: Vec<&str> = execution_ids.iter().map(|_| "?").collect();
     let in_clause = placeholders.join(", ");
     let sql = format!(
-        "SELECT id, execution_id, session_id, event_type, payload, msg_seq, {created_fmt} as created_at \
-         FROM events WHERE execution_id IN ({in_clause}) AND event_type IN ('platform', 'message') ORDER BY id ASC"
+        "SELECT e.id AS id, e.execution_id AS execution_id, e.session_id AS session_id, \
+         e.event_type AS event_type, e.payload AS payload, e.msg_seq AS msg_seq, \
+         {created_expr} AS created_at, \
+         CASE WHEN s.id IS NOT NULL THEN 1 ELSE 0 END AS session_coherent \
+         FROM events e \
+         LEFT JOIN sessions s ON s.id = e.session_id AND s.execution_id = e.execution_id \
+         WHERE e.execution_id IN ({in_clause}) AND e.event_type = 'platform' \
+         ORDER BY e.id ASC"
     );
     let prepared = pool.prepare_query(&sql);
 
@@ -280,17 +320,47 @@ pub async fn list_platform_events_for_executions(
     let rows = q.fetch_all(pool.as_ref()).await.map_err(|e| {
         SchedulerError::Database(format!("list_platform_events_for_executions failed: {e}"))
     })?;
-    rows.into_iter().map(parse_event_row).collect()
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let session_coherent = row
+            .try_get::<bool, _>("session_coherent")
+            .unwrap_or_else(|_| row.get::<i32, _>("session_coherent") != 0);
+        // A row with an undecodable payload parse-skips, same as malformed JSON.
+        if let Some(event) = parse_event_row(row)? {
+            out.push(WindowEvent {
+                event,
+                session_coherent,
+            });
+        }
+    }
+    Ok(out)
 }
 
-fn parse_event_row(row: sqlx::any::AnyRow) -> Result<Event, SchedulerError> {
-    Ok(Event {
+/// Parse one event row, or None when its payload is undecodable (an invalid-UTF-8 BLOB).
+// A corrupt-payload row parse-skips, same domain rule as malformed JSON, so one bad row never
+// 500s a whole listing.
+fn parse_event_row(row: sqlx::any::AnyRow) -> Result<Option<Event>, SchedulerError> {
+    let Ok(payload) = row.try_get::<String, _>("payload") else {
+        return Ok(None);
+    };
+    Ok(Some(Event {
         id: row.get("id"),
         execution_id: row.get("execution_id"),
         session_id: row.get("session_id"),
         event_type: row.get("event_type"),
-        payload: row.get("payload"),
+        payload,
         msg_seq: row.get("msg_seq"),
         created_at: parse_timestamp(&row, "created_at")?,
-    })
+    }))
+}
+
+/// Parse a set of event rows, skipping any with an undecodable payload.
+fn collect_events(rows: Vec<sqlx::any::AnyRow>) -> Result<Vec<Event>, SchedulerError> {
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let Some(event) = parse_event_row(row)? {
+            out.push(event);
+        }
+    }
+    Ok(out)
 }

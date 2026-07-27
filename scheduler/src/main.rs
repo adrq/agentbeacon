@@ -69,6 +69,12 @@ struct Cli {
     /// Show installed SDK status without installing (use with --setup)
     #[arg(long, requires = "setup", help_heading = "Setup")]
     status: bool,
+
+    /// Audit the database for orphan answer sources (post-cutover detector), then exit.
+    /// Read-only; runs no migrations. Exit 0 = none, 1 = orphans found, 2 = error.
+    /// Emits one NDJSON object per orphan on stdout; diagnostics go to stderr.
+    #[arg(long, help_heading = "Admin")]
+    detect_orphans: bool,
 }
 
 #[tokio::main]
@@ -79,7 +85,25 @@ async fn main() -> Result<()> {
         return run_scheduler_setup(&cli);
     }
 
+    if cli.detect_orphans {
+        sqlx::any::install_default_drivers();
+        let db_url = detector_db_url(
+            cli.db_url
+                .clone()
+                .unwrap_or_else(|| format!("sqlite://scheduler-{}.db", cli.port)),
+        );
+        let code = db::detector::run_orphan_detector(&db_url).await;
+        std::process::exit(code);
+    }
+
     telemetry::init_telemetry();
+
+    if std::env::var_os("AGENTBEACON_TEST_FAIL_AT").is_some() {
+        warn!(
+            "AGENTBEACON_TEST_FAIL_AT is set — a test-only transaction failpoint is active; \
+             unset it outside tests"
+        );
+    }
 
     sqlx::any::install_default_drivers();
 
@@ -90,6 +114,27 @@ async fn main() -> Result<()> {
     );
 
     bootstrap(cli).await
+}
+
+/// Normalize a detector target URL.
+fn detector_db_url(url: String) -> String {
+    if !url.starts_with("sqlite:") {
+        return url;
+    }
+    let (base, query) = match url.split_once('?') {
+        Some((b, q)) => (b.to_string(), Some(q)),
+        None => (url.clone(), None),
+    };
+    let mut params: Vec<String> = query
+        .map(|q| {
+            q.split('&')
+                .filter(|p| !p.is_empty() && !p.starts_with("mode="))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    params.push("mode=ro".to_string());
+    format!("{base}?{}", params.join("&"))
 }
 
 fn run_scheduler_setup(cli: &Cli) -> Result<()> {

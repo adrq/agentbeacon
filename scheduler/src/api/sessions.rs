@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
 };
@@ -114,35 +114,28 @@ async fn session_events(
     Ok(Json(events.into_iter().map(Into::into).collect()))
 }
 
-/// Extract batch_id from a question_answer data part, if present.
-/// Returns Err if multiple question_answer parts are found — a single request
-/// must not resolve more than one batch.
-fn extract_question_answer_batch_id(
-    parts: &[serde_json::Value],
-) -> Result<Option<String>, &'static str> {
-    let mut found: Option<String> = None;
-    for part in parts {
-        if let Some(data) = part.get("data")
-            && data.get("type").and_then(|t| t.as_str()) == Some("question_answer")
-        {
-            if found.is_some() {
-                return Err("message must contain at most one question_answer part");
-            }
-            found = data
-                .get("batch_id")
-                .and_then(|b| b.as_str())
-                .map(String::from);
-        }
+/// True if the Authorization header carries a valid agent-session bearer token.
+async fn is_agent_session_bearer(headers: &HeaderMap, state: &AppState) -> bool {
+    if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
+        && auth.len() > 7
+        && auth[..7].eq_ignore_ascii_case("bearer ")
+    {
+        let token = &auth[7..];
+        return db::sessions::get_by_id(&state.db_pool, token).await.is_ok();
     }
-    Ok(found)
+    false
 }
 
 /// Post a user message to a session (POST /api/sessions/{id}/message)
 async fn post_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<PostMessageRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
+    use crate::resolution::{self, AnswerValidation};
+    use crate::services::transition;
+
     if req.parts.is_empty() {
         return Err(SchedulerError::ValidationFailed(
             "parts must be non-empty".to_string(),
@@ -155,30 +148,71 @@ async fn post_message(
         ));
     }
 
-    let answer_batch_id = extract_question_answer_batch_id(&req.parts)
-        .map_err(|msg| SchedulerError::ValidationFailed(msg.to_string()))?;
-    if let Some(ref batch_id) = answer_batch_id {
-        let batch_events = db::events::find_by_batch_id(&state.db_pool, batch_id).await?;
-        if batch_events.is_empty() {
-            return Err(SchedulerError::NotFound(format!(
-                "batch {batch_id} does not exist"
-            )));
+    let resolution_marker = match resolution::validate_live_answer(&req.parts) {
+        AnswerValidation::NotAnAnswer => None,
+        AnswerValidation::MultipleParts => {
+            return Err(SchedulerError::ValidationFailed(
+                "message must contain at most one question_answer part".to_string(),
+            ));
         }
-        if db::events::find_resolution_for_batch(&state.db_pool, batch_id)
-            .await?
-            .is_some()
-        {
-            return Err(SchedulerError::Conflict("batch is already resolved".into()));
+        AnswerValidation::MissingBatchId => {
+            return Err(SchedulerError::ValidationFailed(
+                "question_answer part requires a string batch_id".to_string(),
+            ));
         }
-    }
+        AnswerValidation::SenderPresent => {
+            return Err(SchedulerError::ValidationFailed(
+                "question_answer cannot carry a sender part".to_string(),
+            ));
+        }
+        AnswerValidation::MalformedParts => {
+            return Err(SchedulerError::ValidationFailed(
+                "message parts must be objects with object data members".to_string(),
+            ));
+        }
+        AnswerValidation::Valid {
+            batch_id,
+            answer_text,
+        } => {
+            if resolution::reserved_envelope_exceeds_cap(&batch_id, answer_text.as_deref()) {
+                return Err(SchedulerError::ValidationFailed(
+                    "answer text exceeds maximum length".to_string(),
+                ));
+            }
+            let owner = db::events::find_batch_owner(&state.db_pool, &batch_id)
+                .await?
+                .ok_or_else(|| {
+                    SchedulerError::NotFound(format!("batch {batch_id} does not exist"))
+                })?;
+            if owner.session_id != id {
+                return Err(SchedulerError::Conflict(
+                    "batch belongs to a different session".to_string(),
+                ));
+            }
+            if is_agent_session_bearer(&headers, &state).await {
+                return Err(SchedulerError::Forbidden(
+                    "answering is not available via agent session auth".to_string(),
+                ));
+            }
+            Some(transition::ResolutionMarker {
+                batch_id,
+                owner_execution_id: owner.execution_id,
+                owner_session_id: owner.session_id,
+                answer_text,
+            })
+        }
+    };
 
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
     let msg_payload = common::a2a::message_payload(common::a2a::role::USER, req.parts.clone());
     let delivery_payload = json!({"message": msg_payload});
 
-    use crate::services::transition;
-    let action = transition::Action::SendMessage(delivery_payload);
+    let action = transition::Action::SendMessage(transition::SendMessageArgs {
+        payload: delivery_payload,
+        resolution: resolution_marker,
+        emit_message_delivered: true,
+    });
     let event_id =
         match transition::transition(&state.db_pool, &session.execution_id, &session.id, action)
             .await
@@ -189,6 +223,12 @@ async fn post_message(
                 return Err(SchedulerError::Conflict(
                     "session or execution cannot accept messages".into(),
                 ));
+            }
+            Err(transition::Rejected::AlreadyResolved) => {
+                return Err(SchedulerError::Conflict("batch is already resolved".into()));
+            }
+            Err(transition::Rejected::NotFound) => {
+                return Err(SchedulerError::NotFound("session does not exist".into()));
             }
             Err(e) => {
                 return Err(SchedulerError::Database(format!(
@@ -201,23 +241,6 @@ async fn post_message(
         session.execution_id.clone(),
         event_id,
     ));
-
-    let platform_payload = json!({"type": "message_delivered"});
-    let platform_event_id = db::events::insert(
-        &state.db_pool,
-        &session.execution_id,
-        Some(&session.id),
-        "platform",
-        &serde_json::to_string(&platform_payload).unwrap(),
-    )
-    .await
-    .unwrap_or(0);
-    if platform_event_id > 0 {
-        let _ = state.event_broadcast.send(EventNotification::persisted(
-            session.execution_id.clone(),
-            platform_event_id,
-        ));
-    }
 
     state.task_queue.wake_waiters();
 

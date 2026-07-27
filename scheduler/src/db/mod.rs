@@ -1,6 +1,8 @@
 pub mod agents;
 pub mod artifacts;
+pub mod backfill;
 pub mod config;
+pub mod detector;
 pub mod drivers;
 pub mod events;
 pub mod execution_agents;

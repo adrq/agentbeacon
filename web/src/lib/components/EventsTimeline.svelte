@@ -61,8 +61,21 @@
     entryType: string;
   }
 
+  // True for internal question-answer platform records.
+  function isResolutionMarkerEvent(ev: Event): boolean {
+    if (ev.event_type !== 'platform' || !ev.payload || typeof ev.payload !== 'object') return false;
+    const parts = (ev.payload as { parts?: Array<Record<string, unknown>> }).parts;
+    if (!Array.isArray(parts)) return false;
+    return parts.some(
+      p => (p?.data as Record<string, unknown> | undefined)?.type === 'question_answer'
+    );
+  }
+
   function parseEventParts(ev: Event, seenToolCalls: Set<string>): ParsedEvent[] {
     const time = formatTime(ev.created_at);
+
+    // Hide internal question-answer platform records from the timeline.
+    if (isResolutionMarkerEvent(ev)) return [];
 
     if (isStateChangePayload(ev.payload)) {
       const p = ev.payload;

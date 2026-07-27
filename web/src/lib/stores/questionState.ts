@@ -16,6 +16,7 @@ export interface DecisionBatch {
   answer: string | null;
   answeredAt: string | null;
   dismissedAt: string | null;
+  truncated: boolean;
   createdAt: string;
 }
 
@@ -41,6 +42,7 @@ function mapResponseToBatch(d: DecisionBatchResponse): DecisionBatch {
     answer: d.answer,
     answeredAt: d.answered_at,
     dismissedAt: d.dismissed_at,
+    truncated: d.truncated ?? false,
     createdAt: d.created_at,
   };
 }

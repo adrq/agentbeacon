@@ -53,9 +53,14 @@
       {/each}
 
       <div class="past-resolution">
-        {#if item.status === 'answered' && item.answer}
-          <span class="resolution-label answered-label">Answer:</span>
-          <span class="resolution-value">{item.answer}</span>
+        {#if item.status === 'answered'}
+          {#if item.answer}
+            <span class="resolution-label answered-label">Answer:</span>
+            <span class="resolution-value">{item.answer}</span>
+          {/if}
+          {#if item.truncated}
+            <span class="truncated-note" title="This answer was shortened when migrated to the new decisions format.">answer truncated during migration</span>
+          {/if}
         {:else if item.status === 'dismissed'}
           <span class="resolution-label dismissed-label">Dismissed</span>
         {:else if item.status === 'expired'}
@@ -208,6 +213,14 @@
 
   .answered-label {
     color: hsl(var(--status-success));
+  }
+
+  .truncated-note {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.72rem;
+    font-style: italic;
+    color: hsl(var(--muted-foreground));
   }
 
   .dismissed-label {

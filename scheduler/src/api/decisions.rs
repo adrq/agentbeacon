@@ -1,12 +1,24 @@
 use std::collections::HashMap;
 
 use axum::{Json, Router, extract::Query, extract::State, http::StatusCode, routing::get};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::db;
 use crate::error::SchedulerError;
+use crate::resolution::{self, OrderKey, ResolutionKind};
 use crate::services::messaging;
+
+/// Normalize a timestamp to UTC RFC3339 with a `Z` suffix; use `fallback` when `raw` is
+/// absent or not valid RFC3339.
+fn normalize_resolved_at(raw: Option<&str>, fallback: DateTime<Utc>) -> String {
+    let dt = raw
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or(fallback);
+    dt.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
 
 #[derive(Deserialize)]
 pub struct DecisionsQuery {
@@ -44,6 +56,9 @@ pub struct DecisionBatch {
     pub answer: Option<String>,
     pub answered_at: Option<String>,
     pub dismissed_at: Option<String>,
+    /// Present (and true) only when this answer's text was truncated; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
     pub created_at: String,
 }
 
@@ -70,7 +85,7 @@ async fn get_decisions(
     let resolved_limit = params.resolved_limit.unwrap_or(20).max(0);
 
     // Fast path: specific execution_id requested — query that single execution directly
-    let events = if let Some(ref exec_id) = params.execution_id {
+    let mut events = if let Some(ref exec_id) = params.execution_id {
         db::events::list_platform_events_for_executions(
             &state.db_pool,
             std::slice::from_ref(exec_id),
@@ -95,38 +110,32 @@ async fn get_decisions(
         all_events
     };
 
-    // Phase 1: collect escalation events grouped by batch_id
+    events.sort_by_key(|we| we.event.id);
+
     let mut batches: HashMap<String, PendingBatch> = HashMap::new();
 
-    for event in &events {
-        // Escalation events must be platform events from agents
-        if event.event_type != "platform" {
+    for we in &events {
+        let event = &we.event;
+        if !we.session_coherent {
+            continue;
+        }
+        let escalates = resolution::escalate_parts(&event.payload);
+        if escalates.is_empty() {
             continue;
         }
         let payload: serde_json::Value = match serde_json::from_str(&event.payload) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        if role != "ROLE_AGENT" {
-            continue;
-        }
-        let parts = match payload.get("parts").and_then(|p| p.as_array()) {
-            Some(p) => p,
-            None => continue,
-        };
-        for part in parts {
-            let data = match part.get("data") {
-                Some(d) => d,
-                None => continue,
-            };
-            let data_type = data.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            if data_type != "escalate" {
+        let parts = payload.get("parts").and_then(|p| p.as_array());
+        let event_session = event.session_id.as_deref().unwrap_or("");
+
+        for ep in escalates {
+            let Some(data) = parts
+                .and_then(|ps| ps.get(ep.part_ordinal as usize))
+                .and_then(|p| p.get("data"))
+            else {
                 continue;
-            }
-            let batch_id = match data.get("batch_id").and_then(|b| b.as_str()) {
-                Some(b) => b.to_string(),
-                None => continue,
             };
             let batch_size = data.get("batch_size").and_then(|s| s.as_u64()).unwrap_or(1) as usize;
             let batch_index = data
@@ -161,7 +170,7 @@ async fn get_decisions(
             });
 
             let entry = batches
-                .entry(batch_id.clone())
+                .entry(ep.batch_id.clone())
                 .or_insert_with(|| PendingBatch {
                     execution_id: event.execution_id.clone(),
                     session_id: event.session_id.clone().unwrap_or_default(),
@@ -173,7 +182,6 @@ async fn get_decisions(
                 });
 
             // Ignore events with conflicting batch_size or session_id
-            let event_session = event.session_id.as_deref().unwrap_or("");
             if entry.batch_size != batch_size || entry.session_id != event_session {
                 continue;
             }
@@ -195,79 +203,47 @@ async fn get_decisions(
         }
     }
 
-    // Phase 2: scan for resolutions (answer/dismiss) — first-resolution-wins by event ID
-    let mut resolutions: HashMap<String, (String, String, i64)> = HashMap::new(); // batch_id -> (type, timestamp, event_id)
+    struct WinningResolution {
+        order_key: OrderKey,
+        kind: ResolutionKind,
+        answer_text: Option<String>,
+        resolved_at_raw: Option<String>,
+        truncated: bool,
+        marker_created_at: DateTime<Utc>,
+    }
+    let mut resolutions: HashMap<String, WinningResolution> = HashMap::new();
 
-    for event in &events {
-        let payload: serde_json::Value = match serde_json::from_str(&event.payload) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let parts = match payload.get("parts").and_then(|p| p.as_array()) {
-            Some(p) => p,
-            None => continue,
-        };
-
-        // Defense-in-depth: skip events containing multiple question_answer parts.
-        // The POST endpoint rejects these, but if one slips through, ignoring it
-        // prevents a single event from resolving multiple batches.
-        let qa_count = parts
-            .iter()
-            .filter(|p| {
-                p.get("data")
-                    .and_then(|d| d.get("type"))
-                    .and_then(|t| t.as_str())
-                    == Some("question_answer")
-            })
-            .count();
-        if qa_count > 1 {
+    for we in &events {
+        let event = &we.event;
+        let Some(parts) = resolution::parse_parts(&event.payload) else {
             continue;
-        }
-
-        for part in parts {
-            let data = match part.get("data") {
-                Some(d) => d,
-                None => continue,
-            };
-            let data_type = data.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            if data_type != "question_answer" && data_type != "question_dismiss" {
+        };
+        for cand in resolution::resolution_candidates(&parts, event.id) {
+            let Some(owner) = batches.get(&cand.batch_id) else {
                 continue;
-            }
-            // Dismissals must come from platform events (the dismiss endpoint).
-            // Reject question_dismiss in message events to prevent forged dismissals.
-            if data_type == "question_dismiss" && event.event_type != "platform" {
-                continue;
-            }
-            let batch_id = match data.get("batch_id").and_then(|b| b.as_str()) {
-                Some(b) => b.to_string(),
-                None => continue,
             };
-
-            // First-resolution-wins: only store if not already resolved or this event is earlier
-            if let Some(existing) = resolutions.get(&batch_id)
-                && event.id >= existing.2
+            // Exact identity match: never collapse a NULL session into an empty-string owner.
+            if event.execution_id != owner.execution_id
+                || event.session_id.as_deref() != Some(owner.session_id.as_str())
             {
                 continue;
             }
-
-            // For answers, extract the text from the text part of the message
-            let answer_text = if data_type == "question_answer" {
-                parts
-                    .iter()
-                    .find_map(|p| p.get("text").and_then(|t| t.as_str()))
-                    .map(String::from)
-            } else {
-                None
-            };
-
-            resolutions.insert(
-                batch_id,
-                (
-                    format!("{}|{}", data_type, answer_text.unwrap_or_default()),
-                    event.created_at.to_rfc3339(),
-                    event.id,
-                ),
-            );
+            let wins = resolutions
+                .get(&cand.batch_id)
+                .is_none_or(|existing| cand.order_key < existing.order_key);
+            if wins {
+                resolutions.insert(
+                    cand.batch_id.clone(),
+                    WinningResolution {
+                        order_key: cand.order_key,
+                        kind: cand.kind,
+                        answer_text: cand.answer_text.clone(),
+                        resolved_at_raw: cand.resolved_at_raw.clone(),
+                        truncated: cand.truncated,
+                        marker_created_at: event.created_at,
+                    },
+                );
+            }
         }
     }
 
@@ -334,29 +310,38 @@ async fn get_decisions(
             continue;
         }
 
-        let resolution = resolutions.get(batch_id);
-        let (status, answer, answered_at, dismissed_at) = match resolution {
-            Some((type_and_answer, timestamp, _)) => {
-                if type_and_answer.starts_with("question_answer") {
-                    let answer_text = type_and_answer
-                        .strip_prefix("question_answer|")
-                        .unwrap_or("")
-                        .to_string();
-                    let answer_opt = if answer_text.is_empty() {
-                        None
-                    } else {
-                        Some(answer_text)
-                    };
+        let (status, answer, answered_at, dismissed_at, truncated) = match resolutions.get(batch_id)
+        {
+            Some(res) => match res.kind {
+                ResolutionKind::Answer => {
+                    let answered_at = normalize_resolved_at(
+                        res.resolved_at_raw.as_deref(),
+                        res.marker_created_at,
+                    );
+                    // Only surface truncation when it happened (absent => false).
+                    let truncated = if res.truncated { Some(true) } else { None };
                     (
                         "answered".to_string(),
-                        answer_opt,
-                        Some(timestamp.clone()),
+                        res.answer_text.clone(),
+                        Some(answered_at),
+                        None,
+                        truncated,
+                    )
+                }
+                ResolutionKind::Dismiss => {
+                    // Dismissals have no embedded timestamp; use the event's created_at.
+                    let dismissed_at = res
+                        .marker_created_at
+                        .to_rfc3339_opts(SecondsFormat::Secs, true);
+                    (
+                        "dismissed".to_string(),
+                        None,
+                        None,
+                        Some(dismissed_at),
                         None,
                     )
-                } else {
-                    ("dismissed".to_string(), None, None, Some(timestamp.clone()))
                 }
-            }
+            },
             None => {
                 // Unresolved batches from terminal executions are expired, not actionable
                 let status = if is_terminal {
@@ -364,7 +349,7 @@ async fn get_decisions(
                 } else {
                     "pending".to_string()
                 };
-                (status, None, None, None)
+                (status, None, None, None, None)
             }
         };
 
@@ -397,6 +382,7 @@ async fn get_decisions(
             answer,
             answered_at,
             dismissed_at,
+            truncated,
             created_at: batch.created_at.clone(),
         });
     }

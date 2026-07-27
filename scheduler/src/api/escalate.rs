@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::api::auth::{McpRole, McpSession};
@@ -154,56 +155,77 @@ async fn dismiss(
         }
     }
 
-    // Find escalation events for this batch_id to validate it exists and get context
-    let batch_events = db::events::find_by_batch_id(&state.db_pool, &batch_id).await?;
-    if batch_events.is_empty() {
+    // An empty batch_id can never own a batch; reject before the owner lookup (its LIKE
+    // pattern would otherwise match every payload).
+    if batch_id.is_empty() {
         return Err(SchedulerError::NotFound(format!(
-            "batch_id {batch_id} not found"
+            "batch {batch_id} does not exist"
         )));
     }
 
-    let first_event = &batch_events[0];
-    let execution_id = &first_event.execution_id;
-    let session_id = first_event.session_id.as_deref();
+    let owner = db::events::find_batch_owner(&state.db_pool, &batch_id)
+        .await?
+        .ok_or_else(|| SchedulerError::NotFound(format!("batch {batch_id} does not exist")))?;
 
-    // Best-effort pre-checks — the reducer handles rare race duplicates
-    let execution = db::executions::get_by_id(&state.db_pool, execution_id).await?;
-    if execution.outcome.is_some() || execution.desired == "terminate" {
+    // Open a transaction on the owner execution for the checks and insert below.
+    let mut tx = db::executions::begin_execution_tx(&state.db_pool, &owner.execution_id)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin dismiss tx: {e}")))?;
+
+    let tx_exec = db::executions::get_in_tx(&state.db_pool, &mut tx, &owner.execution_id)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("recheck execution: {e}")))?;
+    if tx_exec.outcome.is_some() || tx_exec.desired == "terminate" {
+        let _ = tx.rollback().await;
         return Ok((
             StatusCode::OK,
             Json(json!({"status": "expired", "message": "execution is terminal"})),
         ));
     }
 
-    if let Some(resolution) =
-        db::events::find_resolution_for_batch(&state.db_pool, &batch_id).await?
+    if let Some(resolution) = db::events::find_resolution_for_batch_in_tx(
+        &state.db_pool,
+        &mut tx,
+        &owner.execution_id,
+        &owner.session_id,
+        &batch_id,
+    )
+    .await?
     {
-        if resolution.resolution_type == "question_dismiss" {
-            return Ok((StatusCode::OK, Json(json!({"status": "already_dismissed"}))));
-        } else {
-            return Ok((StatusCode::OK, Json(json!({"status": "already_resolved"}))));
-        }
+        let _ = tx.rollback().await;
+        let status = match resolution.kind {
+            crate::resolution::ResolutionKind::Dismiss => "already_dismissed",
+            crate::resolution::ResolutionKind::Answer => "already_resolved",
+        };
+        return Ok((StatusCode::OK, Json(json!({"status": status}))));
     }
 
-    // Simple event write — no lock, no transaction. Rare race duplicates are
-    // harmless; the reducer (GET /api/decisions) applies first-resolution-wins.
-    let dismiss_data = json!({"type": "question_dismiss", "batch_id": batch_id});
     let event_payload = json!({
         "role": "ROLE_USER",
-        "parts": [{"data": dismiss_data}]
+        "parts": [{"data": {"type": "question_dismiss", "batch_id": batch_id}}]
     });
-    let event_id = db::events::insert(
-        &state.db_pool,
-        execution_id,
-        session_id,
-        "platform",
-        &serde_json::to_string(&event_payload).unwrap(),
-    )
-    .await?;
+    let event_sql = state.db_pool.prepare_query(
+        "INSERT INTO events (execution_id, session_id, event_type, payload) \
+         VALUES (?, ?, 'platform', ?) RETURNING id",
+    );
+    let event_id: i64 = sqlx::query(&event_sql)
+        .bind(&owner.execution_id)
+        .bind(&owner.session_id)
+        .bind(serde_json::to_string(&event_payload).unwrap())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("insert dismiss failed: {e}")))?
+        .try_get("id")
+        .unwrap_or(0);
 
-    let _ = state
-        .event_broadcast
-        .send(EventNotification::persisted(execution_id.clone(), event_id));
+    tx.commit()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("commit dismiss tx: {e}")))?;
+
+    let _ = state.event_broadcast.send(EventNotification::persisted(
+        owner.execution_id.clone(),
+        event_id,
+    ));
     Ok((StatusCode::OK, Json(json!({"status": "dismissed"}))))
 }
 

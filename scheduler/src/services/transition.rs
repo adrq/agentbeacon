@@ -12,13 +12,41 @@ pub struct CrashMeta {
     pub stderr: Option<String>,
 }
 
+/// A resolution marker to persist alongside an answer message.
+#[derive(Debug, Clone)]
+pub struct ResolutionMarker {
+    pub batch_id: String,
+    pub owner_execution_id: String,
+    pub owner_session_id: String,
+    pub answer_text: Option<String>,
+}
+
+/// Arguments for `Action::SendMessage`.
+#[derive(Debug)]
+pub struct SendMessageArgs {
+    pub payload: serde_json::Value,
+    pub resolution: Option<ResolutionMarker>,
+    pub emit_message_delivered: bool,
+}
+
+impl SendMessageArgs {
+    /// A plain message with no resolution marker and no delivery signal.
+    pub fn plain(payload: serde_json::Value) -> Self {
+        Self {
+            payload,
+            resolution: None,
+            emit_message_delivered: false,
+        }
+    }
+}
+
 /// Actions that can be applied to a session via the transition function.
 #[derive(Debug)]
 pub enum Action {
     /// Set desired state. `desired_by` identifies who triggered the change.
     SetDesired(Desired, String),
     /// Enqueue a message to the session's task_queue.
-    SendMessage(serde_json::Value),
+    SendMessage(SendMessageArgs),
     /// Create a child session and enqueue its prompt.
     Delegate(String, serde_json::Value),
     /// Worker reports executor state change.
@@ -73,6 +101,8 @@ pub enum Rejected {
     WriteBarrier,
     /// Entity not found.
     NotFound,
+    /// The batch was already resolved by a committed answer or dismiss.
+    AlreadyResolved,
     /// Invalid transition (with reason).
     InvalidTransition(String),
 }
@@ -83,6 +113,7 @@ impl std::fmt::Display for Rejected {
             Self::Ratchet => write!(f, "already terminated"),
             Self::WriteBarrier => write!(f, "session or execution is terminal"),
             Self::NotFound => write!(f, "not found"),
+            Self::AlreadyResolved => write!(f, "batch is already resolved"),
             Self::InvalidTransition(reason) => write!(f, "invalid transition: {reason}"),
         }
     }
@@ -229,8 +260,8 @@ pub async fn transition(
             set_desired(pool, &session, desired, &desired_by).await?;
             Ok(None)
         }
-        Action::SendMessage(payload) => {
-            let event_id = send_message(pool, &session, payload).await?;
+        Action::SendMessage(args) => {
+            let event_id = send_message(pool, &session, args).await?;
             Ok(Some(event_id))
         }
         Action::Delegate(_agent_id, _prompt) => {
@@ -631,13 +662,19 @@ async fn write_parent_notification_in_tx(
     Ok(())
 }
 
-/// SendMessage — enqueue a message to the session's task_queue.
-/// If the session is stopped, atomically resume it.
+/// SendMessage — enqueue a message to the session's task_queue, resuming a stopped session.
+/// Optionally records a resolution marker and a `message_delivered` row for the same message.
 async fn send_message(
     pool: &DbPool,
     session: &db::sessions::Session,
-    payload: serde_json::Value,
+    args: SendMessageArgs,
 ) -> Result<i64, Rejected> {
+    let SendMessageArgs {
+        payload,
+        resolution,
+        emit_message_delivered,
+    } = args;
+
     if session.desired == "terminate" || session.outcome.is_some() {
         return Err(Rejected::WriteBarrier);
     }
@@ -672,6 +709,22 @@ async fn send_message(
         return Err(Rejected::WriteBarrier);
     }
 
+    if let Some(marker) = &resolution {
+        let existing = db::events::find_resolution_for_batch_in_tx(
+            pool,
+            &mut tx,
+            &marker.owner_execution_id,
+            &marker.owner_session_id,
+            &marker.batch_id,
+        )
+        .await
+        .map_err(|_| Rejected::InvalidTransition("resolution recheck failed".into()))?;
+        if existing.is_some() {
+            let _ = tx.rollback().await;
+            return Err(Rejected::AlreadyResolved);
+        }
+    }
+
     if tx_session.desired == "stop" {
         let sql = pool.prepare_query(
             "UPDATE sessions SET desired = 'run', desired_by = 'user:send_message', \
@@ -704,25 +757,84 @@ async fn send_message(
     } else {
         payload_json.clone()
     };
-    let event_sql = pool.prepare_query(
+    let created_fmt = pool.format_timestamp(db::TimestampColumn::CreatedAt);
+    let event_sql = pool.prepare_query(&format!(
         "INSERT INTO events (execution_id, session_id, event_type, payload) \
-         VALUES (?, ?, 'message', ?) RETURNING id",
-    );
-    let event_id: i64 = sqlx::query(&event_sql)
+         VALUES (?, ?, 'message', ?) RETURNING id, {created_fmt} AS created_at"
+    ));
+    let message_row = sqlx::query(&event_sql)
         .bind(&session.execution_id)
         .bind(&session.id)
         .bind(&event_payload_str)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|_| Rejected::InvalidTransition("insert message event failed".into()))?
-        .try_get("id")
-        .unwrap_or(0);
+        .map_err(|_| Rejected::InvalidTransition("insert message event failed".into()))?;
+    let event_id: i64 = message_row.try_get("id").unwrap_or(0);
+
+    if let Some(marker) = &resolution {
+        if event_id <= 0 {
+            let _ = tx.rollback().await;
+            return Err(Rejected::InvalidTransition(format!(
+                "message event id {event_id} is non-positive: the events id sequence is corrupt \
+                 and a resolution marker's embedded id would never validate (readers require id > \
+                 0). Repair the events id sequence (e.g. reset events_id_seq) and retry"
+            )));
+        }
+        let resolved_at: String = message_row.try_get("created_at").unwrap_or_default();
+        let marker_payload = crate::resolution::marker_payload(
+            &marker.batch_id,
+            event_id,
+            &resolved_at,
+            marker.answer_text.as_deref(),
+            false,
+        );
+        let marker_str = serde_json::to_string(&marker_payload)
+            .map_err(|_| Rejected::InvalidTransition("serialize marker failed".into()))?;
+        let marker_sql = pool.prepare_query(
+            "INSERT INTO events (execution_id, session_id, event_type, payload) \
+             VALUES (?, ?, 'platform', ?)",
+        );
+        sqlx::query(&marker_sql)
+            .bind(&marker.owner_execution_id)
+            .bind(&marker.owner_session_id)
+            .bind(&marker_str)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Rejected::InvalidTransition("insert marker failed".into()))?;
+        test_failpoint("marker_insert")?;
+    }
+
+    if emit_message_delivered {
+        let delivered = serde_json::json!({"type": "message_delivered"});
+        let delivered_str = serde_json::to_string(&delivered).unwrap_or_default();
+        let delivered_sql = pool.prepare_query(
+            "INSERT INTO events (execution_id, session_id, event_type, payload) \
+             VALUES (?, ?, 'platform', ?)",
+        );
+        sqlx::query(&delivered_sql)
+            .bind(&session.execution_id)
+            .bind(&session.id)
+            .bind(&delivered_str)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Rejected::InvalidTransition("insert message_delivered failed".into()))?;
+        test_failpoint("message_delivered_insert")?;
+    }
 
     tx.commit()
         .await
         .map_err(|_| Rejected::InvalidTransition("commit tx failed".into()))?;
 
     Ok(event_id)
+}
+
+fn test_failpoint(site: &str) -> Result<(), Rejected> {
+    if std::env::var("AGENTBEACON_TEST_FAIL_AT").as_deref() == Ok(site) {
+        return Err(Rejected::InvalidTransition(format!(
+            "test failpoint at {site}"
+        )));
+    }
+    Ok(())
 }
 
 /// Worker reports executor state change. Guarded by worker_id ownership.
