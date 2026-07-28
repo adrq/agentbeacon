@@ -125,6 +125,12 @@ fn claude_models() -> Vec<ModelSuggestion> {
             recommended: None,
         },
         ModelSuggestion {
+            id: "claude-opus-5".to_string(),
+            label: "Claude Opus 5".to_string(),
+            description: None,
+            recommended: None,
+        },
+        ModelSuggestion {
             id: "claude-opus-4-8".to_string(),
             label: "Claude Opus 4.8".to_string(),
             description: None,
