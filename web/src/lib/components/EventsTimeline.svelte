@@ -1,21 +1,30 @@
 <script lang="ts">
-  import { tick } from 'svelte';
   import type { Event, Agent, AgentPoolEntry, SessionSummary, AgentType } from '../types';
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData, isModelRefusalFallbackData, isModelRefusalNoFallbackData, refusalModelName, refusalDisplayText } from '../types';
   import { normalizeDataPart } from '../normalize';
   import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
-  import { api } from '../api';
+  import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
 
   interface Props {
     events: Event[];
     agents?: Agent[];
     sessions?: SessionSummary[];
+    sessionId?: string | null;
     agentPool?: AgentPoolEntry[];
     eventFilter?: EventFilter;
     onfilterchange?: (filter: EventFilter) => void;
+    // Fired once after the first render frame has committed and the initial
+    // scroll is applied, so a parent placeholder can be dropped without a blank
+    // frame or scroll jump.
+    onready?: () => void;
   }
 
-  let { events, agents = [], sessions = [], agentPool, eventFilter = 'all', onfilterchange }: Props = $props();
+  let { events, agents = [], sessions = [], sessionId = null, agentPool, eventFilter = 'all', onfilterchange, onready }: Props = $props();
+
+  let readySignaled = false;
+  function signalReady() {
+    if (!readySignaled) { readySignaled = true; onready?.(); }
+  }
 
   function resolveAgentType(sessionId: string | null): AgentType {
     const session = sessions.find(s => s.id === sessionId);
@@ -26,7 +35,9 @@
     return (globalAgent?.agent_type as AgentType) ?? 'claude_sdk';
   }
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
+  let virtualizer: VirtualizerHandle | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
+  let prevScrollSessionId: string | null = null;
 
   function handleScroll() {
     if (!scrollContainer) return;
@@ -34,18 +45,58 @@
     shouldAutoScroll = scrollHeight - scrollTop - clientHeight < 40;
   }
 
+  // iOS Safari can blank the viewport if scrollToIndex fires during inertia
+  // scrolling (virtua #483). Stopping momentum first avoids the issue.
+  function scrollToBottom() {
+    if (!scrollContainer) return;
+    scrollContainer.scrollTop = scrollContainer.scrollTop;
+    if (virtualizer && filteredParsed.length > 0) {
+      virtualizer.scrollToIndex(filteredParsed.length - 1, { align: 'end' });
+    } else {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    }
+  }
+
+  // Reset auto-scroll on session switch; the events-length effect handles the
+  // initial mount. The setTimeout lets Firefox finish restoring scroll position.
+  $effect(() => {
+    if (!sessionId) return;
+    const isSwitch = prevScrollSessionId !== null && sessionId !== prevScrollSessionId;
+    prevScrollSessionId = sessionId;
+    if (!isSwitch) return;
+    shouldAutoScroll = true;
+    let cancelled = false;
+    const timerId = setTimeout(() => {
+      if (!cancelled) scrollToBottom();
+    }, 50);
+    return () => { cancelled = true; clearTimeout(timerId); };
+  });
+
+  let scrollRafId = 0;
   $effect(() => {
     const _len = events.length; // dependency: re-run when any event arrives
+    const _filter = eventFilter; // dependency: scroll to bottom on filter change
     if (shouldAutoScroll && scrollContainer) {
-      tick().then(() => {
-        if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      if (scrollRafId) cancelAnimationFrame(scrollRafId);
+      scrollRafId = requestAnimationFrame(() => {
+        if (shouldAutoScroll) scrollToBottom();
+        scrollRafId = 0;
+        signalReady();
       });
+    } else {
+      signalReady();
     }
   });
 
+  $effect(() => {
+    return () => {
+      if (scrollRafId) cancelAnimationFrame(scrollRafId);
+    };
+  });
+
+  const TIME_FMT = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' });
   function formatTime(iso: string): string {
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return TIME_FMT.format(new Date(iso));
   }
 
   function truncate(text: string, max: number): string {
@@ -368,13 +419,22 @@
     {#if filteredParsed.length === 0}
       <div class="timeline-empty">{parsed.length === 0 ? 'No events yet' : 'No matching events'}</div>
     {:else}
-      {#each filteredParsed as ev (ev.key)}
-        <div class="timeline-entry" class:error-entry={ev.iconClass === 'error'}>
-          <span class="ev-time">{ev.time}</span>
-          <span class="ev-icon {ev.iconClass}">{ev.icon}</span>
-          <span class="ev-text">{ev.text}</span>
-        </div>
-      {/each}
+      {#key `${sessionId}-${eventFilter}`}
+        <Virtualizer
+          data={filteredParsed}
+          getKey={(ev) => ev.key}
+          scrollRef={scrollContainer}
+          bind:this={virtualizer}
+        >
+          {#snippet children(ev, _index)}
+            <div class="timeline-entry" class:error-entry={ev.iconClass === 'error'}>
+              <span class="ev-time">{ev.time}</span>
+              <span class="ev-icon {ev.iconClass}">{ev.icon}</span>
+              <span class="ev-text">{ev.text}</span>
+            </div>
+          {/snippet}
+        </Virtualizer>
+      {/key}
     {/if}
   </div>
 </div>

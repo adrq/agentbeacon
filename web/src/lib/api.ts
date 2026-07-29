@@ -320,8 +320,8 @@ export class AgentBeaconAPI {
     return this.fetchJSON<Session[]>(`/sessions${qs ? `?${qs}` : ''}`);
   }
 
-  async getSessionEvents(sessionId: string): Promise<Event[]> {
-    return this.fetchJSON<Event[]>(`/sessions/${sessionId}/events`);
+  async getSessionEvents(sessionId: string, signal?: AbortSignal): Promise<Event[]> {
+    return this.fetchJSON<Event[]>(`/sessions/${sessionId}/events`, { signal });
   }
 
   async terminateSession(sessionId: string): Promise<{ terminated: boolean }> {

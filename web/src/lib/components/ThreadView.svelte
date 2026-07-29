@@ -9,12 +9,12 @@
     sessionA: string;
     sessionB: string;
     sessionIdentity: Map<string, SessionIdentity>;
-    isTerminal: boolean;
+    sessionSettled: (sessionId: string) => boolean;
     sseActive: boolean;
     onclose: () => void;
   }
 
-  let { sessionA, sessionB, sessionIdentity, isTerminal, sseActive, onclose }: Props = $props();
+  let { sessionA, sessionB, sessionIdentity, sessionSettled, sseActive, onclose }: Props = $props();
 
   interface ThreadEntry {
     eventId: number;
@@ -24,8 +24,8 @@
     time: string;
   }
 
-  const eventsAQuery = sessionEventsQuery(() => sessionA, () => isTerminal, () => sseActive);
-  const eventsBQuery = sessionEventsQuery(() => sessionB, () => isTerminal, () => sseActive);
+  const eventsAQuery = sessionEventsQuery(() => sessionA, () => sessionSettled(sessionA), () => sseActive);
+  const eventsBQuery = sessionEventsQuery(() => sessionB, () => sessionSettled(sessionB), () => sseActive);
 
   let loading = $derived(eventsAQuery.isLoading || eventsBQuery.isLoading);
   let error = $derived(eventsAQuery.error?.message ?? eventsBQuery.error?.message ?? null);

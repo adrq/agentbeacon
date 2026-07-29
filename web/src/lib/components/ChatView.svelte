@@ -36,9 +36,18 @@
     viewedSessionSettled?: boolean;
     onfilterchange?: (filter: EventFilter) => void;
     onthreadopen?: (sessionA: string, sessionB: string) => void;
+    // Fired once after the first render frame has committed and the initial
+    // scroll is applied, so a parent placeholder can be dropped without a blank
+    // frame or scroll jump.
+    onready?: () => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', viewedSessionSettled = false, onfilterchange, onthreadopen }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', viewedSessionSettled = false, onfilterchange, onthreadopen, onready }: Props = $props();
+
+  let readySignaled = false;
+  function signalReady() {
+    if (!readySignaled) { readySignaled = true; onready?.(); }
+  }
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let virtualizer: VirtualizerHandle | undefined = $state(undefined);
   let shouldAutoScroll = $state(true);
@@ -283,7 +292,10 @@
           scrollToBottom();
         }
         scrollRafId = 0;
+        signalReady();
       });
+    } else {
+      signalReady();
     }
   });
 

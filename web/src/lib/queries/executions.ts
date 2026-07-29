@@ -37,8 +37,17 @@ export function sessionEventsQuery(
 ) {
   return createQuery(() => ({
     queryKey: ['session-events', sessionId()],
-    queryFn: () => api.getSessionEvents(sessionId()!),
+    queryFn: ({ signal }) => api.getSessionEvents(sessionId()!, signal),
     enabled: !!sessionId(),
+    // Settled sessions are immutable: never refetch on remount. Live sessions
+    // rely on SSE + the poll below, so a longer staleTime only suppresses
+    // redundant refetch-on-remount during rapid navigation.
+    staleTime: () => (isTerminal?.() ? Infinity : 30_000),
+    // Release large parsed histories sooner than the 5-min default to bound
+    // retained peak memory.
+    gcTime: 120_000,
+    // Skip deep structural comparison of freshly-parsed large histories.
+    structuralSharing: false,
     refetchInterval: () => {
       if (isTerminal?.()) return false;
       if (sseActive?.()) return false;

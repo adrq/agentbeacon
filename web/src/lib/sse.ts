@@ -1,4 +1,5 @@
 import type { Event as BeaconEvent, EphemeralEvent } from './types';
+import { streamUrl } from './sseBatch';
 
 export interface SSEConnection {
   close: () => void;
@@ -32,13 +33,16 @@ export function connectExecutionSSE(
   let backoffTimer: ReturnType<typeof setTimeout> | undefined;
   let inBackoff = false;
   let source: EventSource | null = null;
+  // Highest persisted event id seen on this stream. Manual/backoff reconnects
+  // resume from here so they don't replay from the original REST cursor.
+  let maxSeenEventId = lastEventId ?? 0;
 
   const base = `/api/executions/${encodeURIComponent(executionId)}/events/stream`;
-  const url = lastEventId ? `${base}?since=${lastEventId}` : base;
 
   function createSource() {
     if (closed) return;
     inBackoff = false;
+    const url = streamUrl(base, maxSeenEventId);
     source = new EventSource(url);
 
     source.onopen = () => {
@@ -53,6 +57,9 @@ export function connectExecutionSSE(
       consecutiveErrors = 0;
       try {
         const event: BeaconEvent = JSON.parse(msg.data);
+        if (typeof event.id === 'number' && event.id > maxSeenEventId) {
+          maxSeenEventId = event.id;
+        }
         onEvent(event);
       } catch {
         // Malformed JSON — skip

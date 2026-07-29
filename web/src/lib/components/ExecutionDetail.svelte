@@ -8,6 +8,7 @@
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { connectExecutionSSE, type SSEConnection } from '../sse';
+  import { SSEBatcher } from '../sseBatch';
   import { untrack } from 'svelte';
   import StatusBadge from './StatusBadge.svelte';
   import QuestionBanner from './QuestionBanner.svelte';
@@ -108,6 +109,14 @@
   let sseReconnecting = $state(false);
   let sseConnection = $state<SSEConnection | null>(null);
 
+  // Records the execution whose active-session history has loaded into cache,
+  // so SSE connects with a correct cursor instead of replaying from zero. Set
+  // once per execution (on the current session's successful load) and reset on
+  // execution change, so a stale prior query observer cannot re-arm it during
+  // the switch. Declared here — before the $effect.pre reset block that assigns
+  // it.
+  let initialLoadedExecId = $state<string | null>(null);
+
   // Tracks event ids whose usage/compaction side effects have been applied.
   // De-dupes between the SSE callback (live events) and the polling fallback
   // $effect. Needed because SSE reconnect backfills already-polled events,
@@ -134,6 +143,8 @@
       persistedTextLen.clear();
       ephemeralBuffers = new Map();
       ephemeralThinkingBuffers = new Map();
+      settledThinkingDurations = new Map();
+      initialLoadedExecId = null;
       sseReconnecting = false;
       sseConnection = null;
     }
@@ -173,12 +184,12 @@
     } catch { /* navigation unavailable */ }
   }
 
-  // Initialize: URL hash param takes priority, then localStorage, then default 'log'
+  // Initialize: URL hash param takes priority, then localStorage, then default 'chat'
   let hashMode = typeof window !== 'undefined' ? getHashViewParam() : null;
   let storedMode: string | null = null;
   try { storedMode = typeof window !== 'undefined' ? localStorage.getItem('agentbeacon-event-view-mode') : null; } catch { /* localStorage unavailable */ }
   let viewMode = $state<ViewMode>(
-    hashMode ?? (storedMode && validModes.has(storedMode) ? storedMode as ViewMode : 'log')
+    hashMode ?? (storedMode && validModes.has(storedMode) ? storedMode as ViewMode : 'chat')
   );
 
   $effect(() => {
@@ -279,20 +290,36 @@
     }
   }
 
-  // Track when the initial REST events query has loaded so SSE can skip replay
-  let initialEventsLoaded = $state(false);
+  // Mark the execution's initial history as loaded (see initialLoadedExecId).
   $effect(() => {
-    if (eventsQuery.isSuccess && !initialEventsLoaded) {
-      initialEventsLoaded = true;
+    if (eventsQuery.isSuccess && activeSessionId && initialLoadedExecId !== executionId) {
+      initialLoadedExecId = executionId;
     }
   });
+
+  // rAF-batched flush with a latency watchdog so background tabs (throttled
+  // rAF) and sparse delivery still flush promptly.
+  function createFlushScheduler() {
+    let raf = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return {
+      request(flush: () => void) {
+        if (!raf) raf = requestAnimationFrame(() => { raf = 0; flush(); });
+        if (timer === undefined) timer = setTimeout(() => { timer = undefined; flush(); }, 32);
+      },
+      cancel() {
+        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+      },
+    };
+  }
 
   // SSE connection lifecycle — stay live until tree is fully settled
   $effect(() => {
     const execId = executionId;
     const settled = isSettled;
     const stillLoading = detailQuery.isLoading;
-    if (settled || stillLoading || poolQuery.isLoading || !initialEventsLoaded) {
+    if (settled || stillLoading || poolQuery.isLoading || initialLoadedExecId !== executionId) {
       sseActive = false;
       return;
     }
@@ -305,34 +332,39 @@
       return 0;
     });
 
+    // Connection-local batcher: buffers cache writes and flushes them in one
+    // write per session. Created inside the effect so it cannot outlive the
+    // connection across execution switches.
+    const scheduler = createFlushScheduler();
+    const batcher = new SSEBatcher<BeaconEvent>(
+      {
+        getExisting: (key) => queryClient.getQueryData<BeaconEvent[]>(['session-events', key]),
+        appendNew: (key, evs) => {
+          queryClient.setQueryData(['session-events', key], (old: BeaconEvent[] | undefined) => {
+            if (!old) return evs;
+            const ids = new Set(old.map(e => e.id));
+            const add = evs.filter(e => !ids.has(e.id));
+            return add.length ? [...old, ...add] : old;
+          });
+        },
+      },
+      scheduler,
+    );
+
     const conn = connectExecutionSSE(
       execId,
       (event: BeaconEvent) => {
-        // Capture whether this is a new event or an SSE replay/dedupe hit.
-        // Replays (backoff reconnect, manual reconnect — no Last-Event-ID
-        // preservation) can redeliver already-processed events. All
-        // downstream side effects (usage accumulators, ephemeral text
-        // length counters) must run only for new events, or they
-        // double-count.
-        let isNewEvent = true;
-        queryClient.setQueryData(
-          ['session-events', event.session_id],
-          (old: BeaconEvent[] | undefined) => {
-            if (!old) return [event];
-            if (old.some(e => e.id === event.id)) {
-              isNewEvent = false;
-              return old;
-            }
-            return [...old, event];
-          },
-        );
-
-        // Usage accumulation carries its own per-event dedupe set, so it
-        // must run for both fresh and replayed events — specifically, an
-        // SSE reconnect that backfills events already delivered via
-        // polling would otherwise never reach it under the isNewEvent gate.
+        // Usage accumulation carries its own per-event dedupe set, so it must
+        // run for both fresh and replayed events — an SSE reconnect backfills
+        // events already delivered via polling.
         applyUsageFromEvent(event);
 
+        // Newness is decided synchronously here so the side effects below run
+        // in delivery order; only the cache write is batched. Replays (backoff
+        // or manual reconnect) can redeliver already-processed events, and the
+        // side effects below must run only on first delivery or they
+        // double-count.
+        const isNewEvent = batcher.enqueue(event);
         if (!isNewEvent) return;
 
         if (event.event_type === 'message' && event.session_id) {
@@ -501,16 +533,22 @@
         sseReconnecting = false;
       },
       () => {
+        // Flush buffered writes before the cursor may advance on reconnect.
+        batcher.flush();
         sseActive = false;
         sseReconnecting = false;
       },
-      () => { sseReconnecting = true; },
+      () => {
+        batcher.flush();
+        sseReconnecting = true;
+      },
       maxEventId || undefined,
     );
     sseConnection = conn;
 
     return () => {
       conn.close();
+      batcher.dispose();
       sseActive = false;
       sseReconnecting = false;
       sseConnection = null;
@@ -560,10 +598,59 @@
   });
   const eventsQuery = sessionEventsQuery(
     () => activeSessionId,
-    () => isSettled,
+    () => viewedSessionSettled,
     () => sseActive,
   );
   let events = $derived(eventsQuery.data ?? []);
+
+  // Events-panel loading placeholder (Log + Chat). Shown only on the first open
+  // of a session this visit (no cached events) with a large history, where the
+  // synchronous transform would otherwise freeze the panel. Phases: fetch (no
+  // data yet) → prepare (count shown, transform deferred one painted frame) →
+  // mounting (view built underneath, placeholder held until its first scrolled
+  // frame) → live (view only).
+  type PanelPhase = 'fetch' | 'prepare' | 'mounting' | 'live';
+  const PREPARE_EVENT_THRESHOLD = 2000;
+  let panelPhase = $state<PanelPhase>('live');
+  let pendingCount = $state(0);
+  let prepareRaf = 0;
+  let showEventsPanelView = $derived(panelPhase === 'mounting' || panelPhase === 'live');
+
+  function onPanelReady() {
+    if (panelPhase === 'mounting') panelPhase = 'live';
+  }
+
+  // Pick the phase when the viewed session changes: cached history mounts
+  // instantly; otherwise start in the fetch phase.
+  $effect(() => {
+    const id = activeSessionId;
+    if (prepareRaf) { cancelAnimationFrame(prepareRaf); prepareRaf = 0; }
+    if (!id) { panelPhase = 'live'; return; }
+    const cached = untrack(() => queryClient.getQueryData<BeaconEvent[]>(['session-events', id]));
+    panelPhase = cached && cached.length ? 'live' : 'fetch';
+  });
+
+  // When the fetch resolves: small histories mount synchronously (no blink);
+  // large ones show the count, then defer the transform past a painted frame
+  // (double rAF) so the placeholder is actually visible.
+  $effect(() => {
+    const n = events.length;
+    if (untrack(() => panelPhase) !== 'fetch' || !eventsQuery.isSuccess) return;
+    if (n > PREPARE_EVENT_THRESHOLD) {
+      pendingCount = n;
+      panelPhase = 'prepare';
+      prepareRaf = requestAnimationFrame(() => {
+        prepareRaf = requestAnimationFrame(() => {
+          prepareRaf = 0;
+          if (untrack(() => panelPhase) === 'prepare') panelPhase = 'mounting';
+        });
+      });
+    } else {
+      panelPhase = 'live';
+    }
+  });
+
+  $effect(() => () => { if (prepareRaf) cancelAnimationFrame(prepareRaf); });
 
   // Drive usage/compaction accumulation from the polling cache so the
   // context indicator works even when SSE is unavailable (permanent
@@ -586,21 +673,14 @@
   // polling fallback $effect (above). The per-event dedupe set guarantees
   // each event contributes exactly once regardless of delivery path.
 
-  let inputSessionId = $derived(
-    detail?.sessions.find(s => !s.parent_session_id)?.id ?? activeSessionId
-  );
-  const inputEventsQuery = sessionEventsQuery(
-    () => inputSessionId !== activeSessionId ? inputSessionId : null,
-    () => isSettled,
-    () => sseActive,
-  );
-  let inputEvents = $derived(
-    inputSessionId === activeSessionId ? events : (inputEventsQuery.data ?? [])
-  );
-
   function agentName(agentId: string): string {
     const agent = agents.find(a => a.id === agentId);
     return agent?.name ?? agentId.slice(0, 8);
+  }
+
+  // Per-session settled check for the thread view's two history queries.
+  function sessionSettled(id: string): boolean {
+    return detail?.sessions.find(s => s.id === id)?.outcome != null;
   }
 
   // Terminate execution (covers both cancel and complete)
@@ -730,7 +810,7 @@
       <div class="action-error">{recoverError}</div>
     {/if}
 
-    <QuestionBanner execution={detail.execution} sessions={detail.sessions} events={inputEvents} {agents} />
+    <QuestionBanner execution={detail.execution} />
 
     {#if showOverview}
       <ExecutionOrgChart
@@ -794,16 +874,29 @@
           sessionA={threadTarget.sessionA}
           sessionB={threadTarget.sessionB}
           {sessionIdentity}
-          {isTerminal}
+          {sessionSettled}
           {sseActive}
           onclose={() => { threadTarget = null; }}
         />
-      {:else if viewMode === 'log'}
-        <EventsTimeline {events} {agents} sessions={detail.sessions} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} />
-      {:else if viewMode === 'chat'}
-        <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} {viewedSessionSettled} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} />
       {:else if viewMode === 'diff'}
         <DiffPanel sessionId={activeSessionId} {isTerminal} />
+      {:else}
+        <div class="events-panel">
+          {#if showEventsPanelView}
+            {#if viewMode === 'log'}
+              <EventsTimeline {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} onready={onPanelReady} />
+            {:else}
+              <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} {viewedSessionSettled} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} onready={onPanelReady} />
+            {/if}
+          {/if}
+          {#if panelPhase !== 'live'}
+            <div class="events-loading" class:is-overlay={panelPhase === 'mounting'} aria-live="polite">
+              <div class="events-loading-box">
+                {#if panelPhase === 'fetch'}Loading session&#8230;{:else}Loading <span class="events-loading-count">{pendingCount}</span> events&#8230;{/if}
+              </div>
+            </div>
+          {/if}
+        </div>
       {/if}
     {/if}
   </div>
@@ -1011,6 +1104,49 @@
     justify-content: center;
     font-size: 0.875rem;
     color: hsl(var(--muted-foreground));
+  }
+
+  .events-panel {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .events-loading {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Held over the mounting view so its first frame + scroll land unseen. */
+  .events-loading.is-overlay {
+    position: absolute;
+    inset: 0;
+    background: hsl(var(--background));
+    z-index: 2;
+  }
+
+  .events-loading-box {
+    padding: 0.375rem 0.75rem;
+    border-radius: var(--radius);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+    animation: events-loading-pulse 2s ease-in-out infinite;
+  }
+
+  .events-loading-count {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  @keyframes events-loading-pulse {
+    0%, 100% { box-shadow: 0 0 0 1px hsl(var(--border)); }
+    50% { box-shadow: 0 0 8px 1px hsl(var(--muted-foreground) / 0.25); }
   }
 
   .detail-error {

@@ -1,13 +1,10 @@
 <script lang="ts">
-  import type { Execution, SessionSummary, Event, Agent } from '../types';
+  import type { Execution } from '../types';
   import { pendingDecisions } from '../stores/questionState';
   import { actionPanelCollapsed, userExplicitlyCollapsed } from '../stores/appState';
 
   interface Props {
     execution: Execution;
-    sessions: SessionSummary[];
-    events: Event[];
-    agents: Agent[];
   }
 
   let { execution }: Props = $props();
