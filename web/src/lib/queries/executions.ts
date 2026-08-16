@@ -4,10 +4,13 @@ import { api } from '../api';
 
 export function executionsQuery(projectId?: () => string | null | undefined) {
   return createQuery(() => ({
-    queryKey: ['executions', { projectId: projectId?.() ?? undefined }],
+    queryKey: ['executions', { projectId: projectId?.() || undefined }],
     queryFn: () => api.getExecutions({
-      project_id: projectId?.() ?? undefined,
+      project_id: projectId?.() || undefined,
     }),
+    // A caller that asked to filter waits until it has something to filter by.
+    // Callers that pass no getter are asking for everything and run.
+    enabled: projectId === undefined || !!projectId(),
     refetchInterval: 5000,
     gcTime: 10_000,
   }));

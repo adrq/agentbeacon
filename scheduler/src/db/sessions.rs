@@ -143,6 +143,50 @@ pub async fn get_by_id(pool: &DbPool, id: &str) -> Result<Session, SchedulerErro
     parse_session_row(row)
 }
 
+/// The project a usable session belongs to, read on a held transaction.
+///
+/// None when the session cannot be used for auth, or when its execution is
+/// not scoped to a project.
+pub async fn live_project_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    pool: &DbPool,
+    session_id: &str,
+) -> Result<Option<String>, SchedulerError> {
+    let row = sqlx::query(&pool.prepare_query(
+        "SELECT e.project_id as project_id FROM sessions s \
+         JOIN executions e ON e.id = s.execution_id \
+         WHERE s.id = ? \
+           AND s.desired <> 'terminate' AND s.outcome IS NULL \
+           AND e.desired <> 'terminate' AND e.outcome IS NULL",
+    ))
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| SchedulerError::Database(format!("resolve live session failed: {e}")))?;
+    Ok(row.and_then(|r| r.get::<Option<String>, _>("project_id")))
+}
+
+/// True when `session_id` names a session usable for auth, and whose
+/// execution is too, read on a held transaction.
+pub async fn is_live_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    pool: &DbPool,
+    session_id: &str,
+) -> Result<bool, SchedulerError> {
+    let row = sqlx::query(&pool.prepare_query(
+        "SELECT 1 as present FROM sessions s \
+         JOIN executions e ON e.id = s.execution_id \
+         WHERE s.id = ? \
+           AND s.desired <> 'terminate' AND s.outcome IS NULL \
+           AND e.desired <> 'terminate' AND e.outcome IS NULL",
+    ))
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| SchedulerError::Database(format!("check session liveness failed: {e}")))?;
+    Ok(row.is_some())
+}
+
 pub async fn list_by_execution(
     pool: &DbPool,
     execution_id: &str,

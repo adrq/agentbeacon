@@ -43,7 +43,10 @@ async fn detect(db_url: &str) -> Result<i32, SchedulerError> {
     let version = super::migrations::get_current_version(&pool)
         .await
         .unwrap_or(0);
-    if version < 24 {
+    let applied = super::migrations::applied_versions(&pool)
+        .await
+        .unwrap_or_default();
+    if !applied.contains(&24) {
         eprintln!(
             "orphan detector: schema version {version} is below 24; run the 0024 migration first"
         );

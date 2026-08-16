@@ -4,6 +4,7 @@ import type {
   CreateExecutionResponse, PostMessageResponse, DiffResponse, WorktreeInfo, BranchesResponse,
   McpServer, McpServerPoolEntry,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
+  PatchWikiPageRequest, WikiSearchResult, WikiAccess, ShareTag, ShareTagMember,
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
   DecisionBatchResponse,
 } from './types';
@@ -68,6 +69,7 @@ export class AgentBeaconAPI {
   async createProject(req: {
     name: string;
     path: string;
+    slug?: string;
   }): Promise<Project & { warning?: string }> {
     return this.fetchJSON('/projects', {
       method: 'POST',
@@ -78,6 +80,7 @@ export class AgentBeaconAPI {
   async updateProject(id: string, req: {
     name?: string;
     path?: string;
+    slug?: string;
     settings?: Record<string, unknown>;
   }): Promise<Project> {
     return this.fetchJSON(`/projects/${id}`, {
@@ -395,9 +398,8 @@ export class AgentBeaconAPI {
   }
 
   // Wiki
-  async listWikiPages(projectId: string, q?: string): Promise<WikiPageListItem[]> {
-    const params = q ? `?q=${encodeURIComponent(q)}` : '';
-    return this.fetchJSON<WikiPageListItem[]>(`/projects/${projectId}/wiki/pages${params}`);
+  async listWikiPages(projectId: string): Promise<WikiPageListItem[]> {
+    return this.fetchJSON<WikiPageListItem[]>(`/projects/${projectId}/wiki/pages`);
   }
 
   async getWikiPage(projectId: string, slug: string): Promise<WikiPage> {
@@ -408,6 +410,57 @@ export class AgentBeaconAPI {
     return this.fetchJSON<WikiPage>(`/projects/${projectId}/wiki/pages/${slug}`, {
       method: 'PUT',
       body: JSON.stringify(req),
+    });
+  }
+
+  async patchWikiPage(projectId: string, slug: string, req: PatchWikiPageRequest): Promise<WikiPage> {
+    return this.fetchJSON<WikiPage>(`/projects/${projectId}/wiki/pages/${slug}`, {
+      method: 'PATCH',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async searchWiki(q: string, opts?: {
+    project?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<WikiSearchResult[]> {
+    const search = new URLSearchParams({ q });
+    if (opts?.project) search.set('project', opts.project);
+    if (opts?.limit != null) search.set('limit', String(opts.limit));
+    if (opts?.offset != null) search.set('offset', String(opts.offset));
+    return this.fetchJSON<WikiSearchResult[]>(`/wiki/search?${search.toString()}`);
+  }
+
+  // Share tags — operator-level administration, not scoped to a project
+  async listShareTags(): Promise<ShareTag[]> {
+    return this.fetchJSON<ShareTag[]>('/wiki/tags');
+  }
+
+  async addShareTagMember(tagId: string, req: {
+    project: string;
+    access_level: WikiAccess;
+    acknowledge_share?: boolean;
+  }): Promise<ShareTagMember & { id: string; tag_id: string; created_at: string }> {
+    return this.fetchJSON(`/wiki/tags/${tagId}/members`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async updateShareTagMember(tagId: string, project: string, req: {
+    access_level: WikiAccess;
+    acknowledge_share?: boolean;
+  }): Promise<ShareTagMember & { id: string; tag_id: string; created_at: string }> {
+    return this.fetchJSON(`/wiki/tags/${tagId}/members/${project}`, {
+      method: 'PATCH',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async removeShareTagMember(tagId: string, project: string): Promise<void> {
+    return this.fetchNoContent(`/wiki/tags/${tagId}/members/${project}`, {
+      method: 'DELETE',
     });
   }
 

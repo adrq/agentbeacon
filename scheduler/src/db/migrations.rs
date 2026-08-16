@@ -1,12 +1,14 @@
+use std::collections::HashSet;
+
 use sqlx::pool::PoolConnection;
-use sqlx::{Acquire, Executor};
+use sqlx::{Acquire, Executor, Row};
 
 use super::DbPool;
 use crate::error::SchedulerError;
 
 /// Highest schema version this binary ships; also the PostgreSQL `application_name` tag
 /// (`agentbeacon-schema{LATEST_SCHEMA_VERSION}`).
-pub const LATEST_SCHEMA_VERSION: i32 = 24;
+pub const LATEST_SCHEMA_VERSION: i32 = 27;
 
 /// Embedded migration files
 const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");
@@ -58,6 +60,10 @@ const MIGRATION_0022: &str = include_str!("../../migrations/0022_sandbox_policy.
 const MIGRATION_0022_PG: &str = include_str!("../../migrations/0022_pg_sandbox_policy.sql");
 const MIGRATION_0023: &str = include_str!("../../migrations/0023_briefing_defaults.sql");
 const MIGRATION_0023_PG: &str = include_str!("../../migrations/0023_pg_briefing_defaults.sql");
+const MIGRATION_0025: &str = include_str!("../../migrations/0025_wiki_sharing.sql");
+const MIGRATION_0025_PG: &str = include_str!("../../migrations/0025_pg_wiki_sharing.sql");
+const MIGRATION_0027: &str = include_str!("../../migrations/0027_project_slug_not_null.sql");
+const MIGRATION_0027_PG: &str = include_str!("../../migrations/0027_pg_project_slug_not_null.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -79,7 +85,6 @@ fn replace_type_with_tokenizer(sql: &str, from_type: &str, to_type: &str) -> Str
     let tokens = match tokenizer.tokenize() {
         Ok(tokens) => tokens,
         Err(_) => {
-            // Fallback for malformed SQL
             return sql.to_string();
         }
     };
@@ -89,9 +94,7 @@ fn replace_type_with_tokenizer(sql: &str, from_type: &str, to_type: &str) -> Str
 
     for token in tokens {
         if let Token::Word(ref w) = token {
-            // Only replace uppercase type keyword
             if w.value == from_type {
-                // Only replace if previous WORD token exists (column/table name)
                 let should_replace = prev_word_token.is_some();
 
                 if should_replace {
@@ -100,10 +103,8 @@ fn replace_type_with_tokenizer(sql: &str, from_type: &str, to_type: &str) -> Str
                     continue;
                 }
             }
-            // Update prev_word_token for any Word token
             prev_word_token = Some(token.clone());
         }
-        // Preserve all other tokens
         result.push_str(&token.to_string());
     }
 
@@ -168,15 +169,15 @@ fn replace_timestamp_with_timestamptz(sql: &str) -> String {
     replace_type_with_tokenizer(sql, "TIMESTAMP", "TIMESTAMPTZ")
 }
 
-/// One ordered migration step: a SQL file or the 0024 Rust code-step. Both flow through a single
-/// version-ordered loop, so the code-step sits between v23 and any future step by construction.
+/// One ordered migration step: a SQL file or a Rust code-step.
 enum MigrationStep {
     Sql(&'static str),
     Code0024,
+    Code0026,
 }
 
-/// The ordered migration steps this binary ships: SQL 1..23, then the 0024 code-step.
-// v2/v3/... use a separate PostgreSQL migration file vs SQLite; v1 is shared.
+/// The ordered migration steps this binary ships: SQL 1..23, the 0024 code-step, SQL 25,
+/// the 0026 code-step, then SQL 27.
 fn default_migration_steps(is_postgres: bool) -> Vec<(MigrationStep, i32)> {
     let pick = |pg: &'static str, lite: &'static str| if is_postgres { pg } else { lite };
     vec![
@@ -270,33 +271,58 @@ fn default_migration_steps(is_postgres: bool) -> Vec<(MigrationStep, i32)> {
             23,
         ),
         (MigrationStep::Code0024, 24),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0025_PG, MIGRATION_0025)),
+            25,
+        ),
+        (MigrationStep::Code0026, 26),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0027_PG, MIGRATION_0027)),
+            27,
+        ),
     ]
 }
 
 /// Run all pending migrations on the database.
 pub async fn run(pool: &DbPool, database_url: &str) -> Result<(), SchedulerError> {
-    // PostgreSQL supports both postgres:// and postgresql:// schemes (RFC 3986).
     let is_postgres =
         database_url.starts_with("postgres:") || database_url.starts_with("postgresql:");
-    let current_version = get_current_version(pool).await.unwrap_or(0);
+    let applied = applied_versions(pool).await.unwrap_or_default();
     run_migration_steps(
         pool,
         is_postgres,
-        current_version,
+        &applied,
         default_migration_steps(is_postgres),
     )
     .await
 }
 
-/// Apply the given steps in version order, skipping already-applied versions (idempotent).
+/// Apply the given steps in version order, skipping already-applied versions.
 async fn run_migration_steps(
     pool: &DbPool,
     is_postgres: bool,
-    current_version: i32,
+    applied: &HashSet<i32>,
     steps: Vec<(MigrationStep, i32)>,
 ) -> Result<(), SchedulerError> {
+    let highest_applied = applied.iter().copied().max().unwrap_or(0);
+
+    for (step, version) in &steps {
+        if applied.contains(version) || *version > highest_applied {
+            continue;
+        }
+        if matches!(step, MigrationStep::Sql(_)) {
+            return Err(SchedulerError::Database(format!(
+                "migration history is not contiguous: version {version} is missing while \
+                 version {highest_applied} is recorded. Schema migration {version} cannot be \
+                 replayed, because its statements assume the schema it created is absent. \
+                 Restore the schema_migrations row for version {version} if that migration \
+                 did run, or restore the database to a consistent backup."
+            )));
+        }
+    }
+
     for (step, version) in steps {
-        if version <= current_version {
+        if applied.contains(&version) {
             continue;
         }
         match step {
@@ -304,6 +330,7 @@ async fn run_migration_steps(
                 apply_sql_migration(pool, is_postgres, migration_sql, version).await?;
             }
             MigrationStep::Code0024 => run_code_step_0024(pool).await?,
+            MigrationStep::Code0026 => run_code_step_0026(pool).await?,
         }
     }
     Ok(())
@@ -317,24 +344,16 @@ async fn apply_sql_migration(
     migration_sql: &str,
     version: i32,
 ) -> Result<(), SchedulerError> {
-    // Migration 0002 uses DROP TABLE which triggers CASCADE with foreign_keys ON.
-    // Disable FKs before the migration and re-enable after.
     let needs_fk_disable = !is_postgres
         && (version == 2
             || version == 5
             || version == 14
             || version == 17
             || version == 19
-            || version == 22);
+            || version == 22
+            || version == 27);
 
-    // Adapt migration for database-specific syntax
     let migration = if is_postgres {
-        // Replace SQLite-specific syntax with PostgreSQL equivalents
-        // 1. AUTOINCREMENT -> SERIAL for auto-increment columns
-        // 2. INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
-        // 3. TIMESTAMP -> TIMESTAMPTZ for timezone-aware storage (fixes timezone bug)
-        //    Uses sqlparser tokenizer to handle all cases: TIMESTAMP, TIMESTAMP,
-        //    TIMESTAMP), TIMESTAMP;, etc. Prevents timezone shifts on non-UTC servers.
         let m = migration_sql
             .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
             .replace(
@@ -342,17 +361,12 @@ async fn apply_sql_migration(
                 &format!("INSERT INTO schema_migrations (version, applied_at) VALUES ({version}, CURRENT_TIMESTAMP) ON CONFLICT (version) DO NOTHING")
             );
 
-        // Use tokenizer to replace all TIMESTAMP → TIMESTAMPTZ comprehensively
         replace_timestamp_with_timestamptz(&m)
     } else {
-        // SQLite: Replace semantic types with storage types for schema metadata compatibility
-        // 1. BOOLEAN → INTEGER (SQLite stores booleans as 0/1)
-        // 2. TIMESTAMP → TEXT (we store RFC3339 strings)
         let m = replace_boolean_with_integer(migration_sql);
         replace_timestamp_with_text(&m)
     };
 
-    // Remove comments first, then split by semicolon
     let cleaned_migration = migration
         .lines()
         .filter(|line| {
@@ -368,7 +382,6 @@ async fn apply_sql_migration(
         .filter(|s| !s.is_empty())
         .collect();
 
-    // Acquire a single connection — PRAGMA and transaction MUST share it.
     let mut conn = pool.as_ref().acquire().await.map_err(|e| {
         SchedulerError::Database(format!(
             "acquire connection for migration v{version} failed: {e}"
@@ -383,10 +396,8 @@ async fn apply_sql_migration(
 
     let tx_result = execute_migration_version(&mut conn, version, &statements).await;
 
-    // ALWAYS re-enable FKs on the SAME connection.
     if needs_fk_disable && let Err(fk_err) = conn.execute("PRAGMA foreign_keys = ON").await {
         tracing::error!("failed to re-enable foreign_keys: {fk_err}");
-        // Detach the poisoned connection so it is NOT returned to the pool.
         conn.detach();
         let msg = if let Err(ref mig_err) = tx_result {
             format!(
@@ -410,8 +421,6 @@ async fn run_code_step_0024(pool: &DbPool) -> Result<(), SchedulerError> {
         .await
         .map_err(|e| SchedulerError::Database(format!("begin migration v24 tx failed: {e}")))?;
 
-    // The wrapper owns the offline/lock deadline and re-checks it through the version-record
-    // INSERT and COMMIT, so the whole 0024 transaction (not just the scan) stays bounded.
     let deadline = Some(crate::db::backfill::offline_deadline());
     let stats = crate::db::backfill::run_backfill_0024(pool, &mut tx, deadline).await?;
 
@@ -438,6 +447,32 @@ async fn run_code_step_0024(pool: &DbPool) -> Result<(), SchedulerError> {
         stats.already_covered,
         stats.envelope_oversize_skipped,
     );
+    Ok(())
+}
+
+/// Migration 0026 code-step: give every project a slug, then record the version.
+async fn run_code_step_0026(pool: &DbPool) -> Result<(), SchedulerError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin migration v26 tx failed: {e}")))?;
+
+    let filled = super::projects::backfill_slugs(pool, &mut tx).await?;
+
+    let insert_sql = pool.prepare_query(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES (?, CURRENT_TIMESTAMP)",
+    );
+    sqlx::query(&insert_sql)
+        .bind(26_i32)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("record migration v26 failed: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("commit migration v26 failed: {e}")))?;
+
+    tracing::info!("migration 0026 backfill: {filled} project slugs filled");
     Ok(())
 }
 
@@ -469,13 +504,35 @@ async fn execute_migration_version(
         .map_err(|e| SchedulerError::Database(format!("commit migration v{version} failed: {e}")))
 }
 
+/// Every schema version recorded as applied.
+pub async fn applied_versions(pool: &DbPool) -> Result<HashSet<i32>, SchedulerError> {
+    let rows = sqlx::query("SELECT version FROM schema_migrations")
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("load applied migrations failed: {e}")))?;
+
+    Ok(rows.iter().map(|r| r.get::<i32, _>("version")).collect())
+}
+
 /// Check if migrations have been applied (for validation/testing)
 pub async fn get_current_version(pool: &DbPool) -> Result<i32, SchedulerError> {
-    // Try to query the schema_migrations table
     let result = sqlx::query_scalar::<_, i32>("SELECT MAX(version) FROM schema_migrations")
         .fetch_optional(pool.as_ref())
         .await
         .map_err(|e| SchedulerError::Database(format!("check migration version failed: {e}")))?;
 
     Ok(result.unwrap_or(0))
+}
+
+/// Driver registration shared with other modules' tests.
+pub mod tests_support {
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    pub fn install_drivers() {
+        INIT.call_once(|| {
+            sqlx::any::install_default_drivers();
+        });
+    }
 }

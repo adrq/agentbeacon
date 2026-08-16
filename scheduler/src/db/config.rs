@@ -17,6 +17,22 @@ pub struct Config {
 
 /// Get configuration value by name
 #[allow(clippy::uninlined_format_args)] // SQL string building requires explicit formatting
+/// One config value, read on a held transaction.
+// A caller deciding under locks must read through the transaction: the value it
+// sampled before those locks can be stale by the time they are granted.
+pub async fn value_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    pool: &DbPool,
+    name: &str,
+) -> Result<Option<String>, SchedulerError> {
+    let row = sqlx::query(&pool.prepare_query("SELECT value FROM config WHERE name = ?"))
+        .bind(name)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("read config in transaction failed: {e}")))?;
+    Ok(row.map(|r| r.get("value")))
+}
+
 pub async fn get(pool: &DbPool, name: &str) -> Result<Config, SchedulerError> {
     // Format timestamps as RFC3339 for cross-database compatibility
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);

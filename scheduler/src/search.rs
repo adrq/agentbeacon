@@ -1,10 +1,12 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Mutex;
+use std::sync::{Arc, OnceLock};
 
-use tantivy::collector::TopDocs;
+use tantivy::collector::{Count, TopDocs};
 use tantivy::directory::MmapDirectory;
-use tantivy::query::QueryParser;
+use tantivy::query::{
+    BooleanQuery, BoostQuery, ConstScoreQuery, Occur, Query, TermQuery, TermSetQuery,
+};
 use tantivy::schema::Value;
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions,
@@ -15,13 +17,18 @@ use tracing::warn;
 use crate::db::wiki::WikiPage;
 use crate::error::SchedulerError;
 
-// -- Error types --
+/// Child of the configured root that holds the index.
+const INDEX_CHILD: &str = "index";
+/// Prefix reserved for directories this binary creates under the root.
+const OWNED_TEMP_PREFIX: &str = ".wiki-index-";
+
+/// Weight applied to title matches relative to body matches.
+const TITLE_BOOST: f32 = 2.0;
 
 #[derive(Debug)]
 pub enum SearchError {
     Tantivy(String),
     Io(std::io::Error),
-    QueryParse(String),
 }
 
 impl std::fmt::Display for SearchError {
@@ -29,7 +36,6 @@ impl std::fmt::Display for SearchError {
         match self {
             SearchError::Tantivy(msg) => write!(f, "tantivy error: {msg}"),
             SearchError::Io(e) => write!(f, "I/O error: {e}"),
-            SearchError::QueryParse(msg) => write!(f, "query parse error: {msg}"),
         }
     }
 }
@@ -52,24 +58,65 @@ impl From<SearchError> for SchedulerError {
     }
 }
 
-// -- Result types --
-
 pub struct WikiSearchResult {
+    pub page_id: String,
+    pub project_id: String,
     pub slug: String,
     pub title: String,
     pub revision_number: i64,
     pub updated_by: Option<String>,
     pub updated_at: String,
+    pub tags: Vec<String>,
     pub score: f32,
 }
 
-// -- Schema fields --
+/// The set of documents a caller may match.
+///
+/// `projects` grants every page owned by those projects. `tagged` grants pages
+/// owned by a specific project and carrying a specific tag, as explicit pairs.
+#[derive(Debug, Default, Clone)]
+pub struct SearchScope {
+    pub projects: Vec<String>,
+    pub tagged: Vec<(String, String)>,
+}
+
+impl SearchScope {
+    pub fn is_empty(&self) -> bool {
+        self.projects.is_empty() && self.tagged.is_empty()
+    }
+
+    /// Narrow to a single project, keeping only what the scope already granted.
+    pub fn narrowed_to(&self, project_id: &str) -> Self {
+        Self {
+            projects: self
+                .projects
+                .iter()
+                .filter(|p| String::as_str(p) == project_id)
+                .cloned()
+                .collect(),
+            tagged: self
+                .tagged
+                .iter()
+                .filter(|(p, _)| p == project_id)
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
+/// A page and the tag names attached to it, as indexed.
+pub struct IndexedPage<'a> {
+    pub page: &'a WikiPage,
+    pub tags: &'a [String],
+}
 
 struct WikiFields {
     page_id: Field,
+    project_id: Field,
     slug: Field,
     title: Field,
     body: Field,
+    tags: Field,
     revision_number: Field,
     updated_by: Field,
     updated_at: Field,
@@ -78,13 +125,12 @@ struct WikiFields {
 fn build_schema() -> (Schema, WikiFields) {
     let mut builder = Schema::builder();
 
-    // page_id: STRING (indexed, not tokenized) + STORED — used for delete_term
     let page_id = builder.add_text_field("page_id", STRING | STORED);
 
-    // slug: STRING + STORED — result identification
+    let project_id = builder.add_text_field("project_id", STRING | STORED);
+
     let slug = builder.add_text_field("slug", STRING | STORED);
 
-    // title: TEXT (tokenized) + STORED — BM25 search + display
     let title_options = TextOptions::default()
         .set_indexing_options(
             TextFieldIndexing::default()
@@ -94,7 +140,6 @@ fn build_schema() -> (Schema, WikiFields) {
         .set_stored();
     let title = builder.add_text_field("title", title_options);
 
-    // body: TEXT (tokenized), NOT stored — BM25 search only
     let body_options = TextOptions::default().set_indexing_options(
         TextFieldIndexing::default()
             .set_tokenizer("default")
@@ -102,16 +147,19 @@ fn build_schema() -> (Schema, WikiFields) {
     );
     let body = builder.add_text_field("body", body_options);
 
-    // Metadata fields: stored only (i64 for revision, STRING for others)
+    let tags = builder.add_text_field("tags", STRING | STORED);
+
     let revision_number = builder.add_i64_field("revision_number", STORED);
     let updated_by = builder.add_text_field("updated_by", STRING | STORED);
     let updated_at = builder.add_text_field("updated_at", STRING | STORED);
 
     let fields = WikiFields {
         page_id,
+        project_id,
         slug,
         title,
         body,
+        tags,
         revision_number,
         updated_by,
         updated_at,
@@ -120,17 +168,12 @@ fn build_schema() -> (Schema, WikiFields) {
     (builder.build(), fields)
 }
 
-// -- Per-project index --
-
-struct ProjectIndex {
-    _index: Index,
+struct GlobalIndex {
+    index: Index,
     reader: IndexReader,
     writer: Mutex<IndexWriter>,
     fields: WikiFields,
-    query_parser: QueryParser,
 }
-
-// -- Main search index --
 
 #[derive(Clone)]
 pub struct WikiSearchIndex {
@@ -139,7 +182,8 @@ pub struct WikiSearchIndex {
 
 struct WikiSearchIndexInner {
     data_dir: PathBuf,
-    indices: RwLock<HashMap<String, Arc<ProjectIndex>>>,
+    index: OnceLock<Arc<GlobalIndex>>,
+    init_lock: Mutex<()>,
 }
 
 impl WikiSearchIndex {
@@ -147,33 +191,43 @@ impl WikiSearchIndex {
         Self {
             inner: Arc::new(WikiSearchIndexInner {
                 data_dir,
-                indices: RwLock::new(HashMap::new()),
+                index: OnceLock::new(),
+                init_lock: Mutex::new(()),
             }),
         }
     }
 
-    /// Search wiki pages by query string. Returns results ranked by BM25 score.
+    /// Search wiki pages within `scope`, ranked by BM25 then project then slug.
     pub fn search(
         &self,
-        project_id: &str,
+        scope: &SearchScope,
         query: &str,
         limit: usize,
+        offset: usize,
     ) -> Result<Vec<WikiSearchResult>, SchedulerError> {
-        let project_index = self.get_or_create_index(project_id)?;
-        let searcher = project_index.reader.searcher();
+        let index = self.get_or_create_index()?;
 
-        let (parsed_query, parse_errors) = project_index.query_parser.parse_query_lenient(query);
+        let Some(scope_query) = self.scope_query(&index, scope) else {
+            return Ok(Vec::new());
+        };
+        let Some(terms_query) = self.terms_query(&index, query) else {
+            return Ok(Vec::new());
+        };
 
-        if !parse_errors.is_empty() {
-            warn!(
-                query = %query,
-                errors = ?parse_errors,
-                "wiki search query parse warnings"
-            );
+        let combined =
+            BooleanQuery::new(vec![(Occur::Must, scope_query), (Occur::Must, terms_query)]);
+
+        let searcher = index.reader.searcher();
+
+        let matched = searcher
+            .search(&combined, &Count)
+            .map_err(|e| SearchError::Tantivy(e.to_string()))?;
+        if matched == 0 || offset >= matched {
+            return Ok(Vec::new());
         }
 
         let top_docs = searcher
-            .search(&parsed_query, &TopDocs::with_limit(limit))
+            .search(&combined, &TopDocs::with_limit(matched))
             .map_err(|e| SearchError::Tantivy(e.to_string()))?;
 
         let mut results = Vec::with_capacity(top_docs.len());
@@ -181,85 +235,121 @@ impl WikiSearchIndex {
             let doc: TantivyDocument = searcher
                 .doc(doc_address)
                 .map_err(|e| SearchError::Tantivy(e.to_string()))?;
-
-            let slug = doc
-                .get_first(project_index.fields.slug)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let title = doc
-                .get_first(project_index.fields.title)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let revision_number = doc
-                .get_first(project_index.fields.revision_number)
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-
-            let updated_by: Option<String> = doc
-                .get_first(project_index.fields.updated_by)
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            let updated_at = doc
-                .get_first(project_index.fields.updated_at)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            results.push(WikiSearchResult {
-                slug,
-                title,
-                revision_number,
-                updated_by,
-                updated_at,
-                score,
-            });
+            results.push(read_result(&doc, &index.fields, score));
         }
 
-        Ok(results)
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.project_id.cmp(&b.project_id))
+                .then_with(|| a.slug.cmp(&b.slug))
+        });
+
+        Ok(results.into_iter().skip(offset).take(limit).collect())
+    }
+
+    /// Boolean query matching everything the scope grants.
+    fn scope_query(&self, index: &GlobalIndex, scope: &SearchScope) -> Option<Box<dyn Query>> {
+        if scope.is_empty() {
+            return None;
+        }
+
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+
+        if !scope.projects.is_empty() {
+            let terms = scope
+                .projects
+                .iter()
+                .map(|p| Term::from_field_text(index.fields.project_id, p))
+                .collect::<Vec<_>>();
+            clauses.push((Occur::Should, Box::new(TermSetQuery::new(terms))));
+        }
+
+        for (project_id, tag) in &scope.tagged {
+            let pair = BooleanQuery::new(vec![
+                (
+                    Occur::Must,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(index.fields.project_id, project_id),
+                        IndexRecordOption::Basic,
+                    )) as Box<dyn Query>,
+                ),
+                (
+                    Occur::Must,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(index.fields.tags, tag),
+                        IndexRecordOption::Basic,
+                    )) as Box<dyn Query>,
+                ),
+            ]);
+            clauses.push((Occur::Should, Box::new(pair)));
+        }
+
+        Some(Box::new(ConstScoreQuery::new(
+            Box::new(BooleanQuery::new(clauses)),
+            0.0,
+        )))
+    }
+
+    /// One SHOULD clause per token per searched field, or `None` if the query
+    /// yields no tokens.
+    fn terms_query(&self, index: &GlobalIndex, query: &str) -> Option<Box<dyn Query>> {
+        let mut analyzer = index.index.tokenizers().get("default")?;
+        let mut token_stream = analyzer.token_stream(query);
+
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        while let Some(token) = token_stream.next() {
+            clauses.push((
+                Occur::Should,
+                Box::new(BoostQuery::new(
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(index.fields.title, &token.text),
+                        IndexRecordOption::WithFreqsAndPositions,
+                    )),
+                    TITLE_BOOST,
+                )) as Box<dyn Query>,
+            ));
+            clauses.push((
+                Occur::Should,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(index.fields.body, &token.text),
+                    IndexRecordOption::WithFreqsAndPositions,
+                )) as Box<dyn Query>,
+            ));
+            clauses.push((
+                Occur::Should,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(index.fields.slug, &token.text),
+                    IndexRecordOption::Basic,
+                )) as Box<dyn Query>,
+            ));
+        }
+
+        if clauses.is_empty() {
+            return None;
+        }
+        Some(Box::new(BooleanQuery::new(clauses)))
     }
 
     /// Index a wiki page (create or update). Deletes old doc by page_id term, adds new doc, commits.
-    pub fn index_page(&self, project_id: &str, page: &WikiPage) -> Result<(), SchedulerError> {
-        let project_index = self.get_or_create_index(project_id)?;
-        let mut writer = project_index
+    pub fn index_page(&self, page: &WikiPage, tags: &[String]) -> Result<(), SchedulerError> {
+        let index = self.get_or_create_index()?;
+        let mut writer = index
             .writer
             .lock()
             .map_err(|e| SearchError::Tantivy(format!("writer lock poisoned: {e}")))?;
 
-        // Delete any existing doc with this page_id
-        let term = Term::from_field_text(project_index.fields.page_id, &page.id);
-        writer.delete_term(term);
-
-        // Add new document
-        let mut doc = TantivyDocument::new();
-        doc.add_text(project_index.fields.page_id, &page.id);
-        doc.add_text(project_index.fields.slug, &page.slug);
-        doc.add_text(project_index.fields.title, &page.title);
-        doc.add_text(project_index.fields.body, &page.body);
-        doc.add_i64(project_index.fields.revision_number, page.revision_number);
-        if let Some(ref updated_by) = page.updated_by {
-            doc.add_text(project_index.fields.updated_by, updated_by);
-        }
-        doc.add_text(
-            project_index.fields.updated_at,
-            page.updated_at.to_rfc3339(),
-        );
-
+        writer.delete_term(Term::from_field_text(index.fields.page_id, &page.id));
         writer
-            .add_document(doc)
+            .add_document(build_document(&index.fields, page, tags))
             .map_err(|e| SearchError::Tantivy(e.to_string()))?;
         writer
             .commit()
             .map_err(|e| SearchError::Tantivy(e.to_string()))?;
         drop(writer);
 
-        // Reload reader for immediate search consistency
-        project_index
+        index
             .reader
             .reload()
             .map_err(|e| SearchError::Tantivy(e.to_string()))?;
@@ -268,22 +358,20 @@ impl WikiSearchIndex {
     }
 
     /// Remove a page from the search index by page_id term.
-    pub fn remove_page(&self, project_id: &str, page_id: &str) -> Result<(), SchedulerError> {
-        let project_index = self.get_or_create_index(project_id)?;
-        let mut writer = project_index
+    pub fn remove_page(&self, page_id: &str) -> Result<(), SchedulerError> {
+        let index = self.get_or_create_index()?;
+        let mut writer = index
             .writer
             .lock()
             .map_err(|e| SearchError::Tantivy(format!("writer lock poisoned: {e}")))?;
 
-        let term = Term::from_field_text(project_index.fields.page_id, page_id);
-        writer.delete_term(term);
-
+        writer.delete_term(Term::from_field_text(index.fields.page_id, page_id));
         writer
             .commit()
             .map_err(|e| SearchError::Tantivy(e.to_string()))?;
         drop(writer);
 
-        project_index
+        index
             .reader
             .reload()
             .map_err(|e| SearchError::Tantivy(e.to_string()))?;
@@ -291,15 +379,10 @@ impl WikiSearchIndex {
         Ok(())
     }
 
-    /// Rebuild the index for a project from a full set of pages.
-    /// Uses delete_all_documents + re-add + commit (no directory drop/recreate to avoid lock conflicts).
-    pub fn rebuild_project(
-        &self,
-        project_id: &str,
-        pages: &[WikiPage],
-    ) -> Result<(), SchedulerError> {
-        let project_index = self.get_or_create_index(project_id)?;
-        let mut writer = project_index
+    /// Replace the whole index: one delete, every page added, one commit.
+    pub fn rebuild_all(&self, pages: &[IndexedPage<'_>]) -> Result<(), SchedulerError> {
+        let index = self.get_or_create_index()?;
+        let mut writer = index
             .writer
             .lock()
             .map_err(|e| SearchError::Tantivy(format!("writer lock poisoned: {e}")))?;
@@ -308,23 +391,9 @@ impl WikiSearchIndex {
             .delete_all_documents()
             .map_err(|e| SearchError::Tantivy(format!("delete_all_documents failed: {e}")))?;
 
-        for page in pages {
-            let mut doc = TantivyDocument::new();
-            doc.add_text(project_index.fields.page_id, &page.id);
-            doc.add_text(project_index.fields.slug, &page.slug);
-            doc.add_text(project_index.fields.title, &page.title);
-            doc.add_text(project_index.fields.body, &page.body);
-            doc.add_i64(project_index.fields.revision_number, page.revision_number);
-            if let Some(ref updated_by) = page.updated_by {
-                doc.add_text(project_index.fields.updated_by, updated_by);
-            }
-            doc.add_text(
-                project_index.fields.updated_at,
-                page.updated_at.to_rfc3339(),
-            );
-
+        for entry in pages {
             writer
-                .add_document(doc)
+                .add_document(build_document(&index.fields, entry.page, entry.tags))
                 .map_err(|e| SearchError::Tantivy(e.to_string()))?;
         }
 
@@ -333,7 +402,7 @@ impl WikiSearchIndex {
             .map_err(|e| SearchError::Tantivy(e.to_string()))?;
         drop(writer);
 
-        project_index
+        index
             .reader
             .reload()
             .map_err(|e| SearchError::Tantivy(e.to_string()))?;
@@ -341,69 +410,87 @@ impl WikiSearchIndex {
         Ok(())
     }
 
-    /// Get or create a per-project index. Uses double-checked locking for thread safety.
-    fn get_or_create_index(&self, project_id: &str) -> Result<Arc<ProjectIndex>, SchedulerError> {
-        // Fast path: read lock
+    /// Build a fresh index beside the current one and swap it in.
+    fn replace_index(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        schema: Schema,
+    ) -> Result<Index, SchedulerError> {
+        let token = uuid::Uuid::new_v4().to_string();
+        let staging = root.join(format!("{OWNED_TEMP_PREFIX}new-{token}"));
+        std::fs::create_dir_all(&staging).map_err(SearchError::Io)?;
+
         {
-            let indices =
-                self.inner.indices.read().map_err(|e| {
-                    SearchError::Tantivy(format!("indices read lock poisoned: {e}"))
-                })?;
-            if let Some(idx) = indices.get(project_id) {
-                return Ok(Arc::clone(idx));
+            let mmap =
+                MmapDirectory::open(&staging).map_err(|e| SearchError::Tantivy(e.to_string()))?;
+            Index::create(mmap, schema, tantivy::IndexSettings::default())
+                .map_err(|e| SearchError::Tantivy(e.to_string()))?;
+        }
+
+        let discarded = root.join(format!("{OWNED_TEMP_PREFIX}old-{token}"));
+        if dir.exists() {
+            std::fs::rename(dir, &discarded).map_err(SearchError::Io)?;
+        }
+        if let Err(e) = std::fs::rename(&staging, dir) {
+            if discarded.exists() {
+                let _ = std::fs::rename(&discarded, dir);
             }
+            return Err(SearchError::Io(e).into());
         }
 
-        // Slow path: write lock, re-check (TOCTOU safe)
-        let mut indices = self
+        if discarded.exists() {
+            warn!(
+                path = %discarded.display(),
+                "superseded wiki search index kept aside; remove it by hand once you are sure of its contents"
+            );
+        }
+
+        let mmap = MmapDirectory::open(dir).map_err(|e| SearchError::Tantivy(e.to_string()))?;
+        Index::open(mmap).map_err(|e| SearchError::Tantivy(e.to_string()).into())
+    }
+
+    fn get_or_create_index(&self) -> Result<Arc<GlobalIndex>, SchedulerError> {
+        if let Some(index) = self.inner.index.get() {
+            return Ok(Arc::clone(index));
+        }
+
+        let _guard = self
             .inner
-            .indices
-            .write()
-            .map_err(|e| SearchError::Tantivy(format!("indices write lock poisoned: {e}")))?;
+            .init_lock
+            .lock()
+            .map_err(|e| SearchError::Tantivy(format!("index init lock poisoned: {e}")))?;
 
-        if let Some(idx) = indices.get(project_id) {
-            return Ok(Arc::clone(idx));
+        if let Some(index) = self.inner.index.get() {
+            return Ok(Arc::clone(index));
         }
 
-        let project_dir = self.inner.data_dir.join(project_id);
-
-        // Defense-in-depth: ensure resolved path is inside data_dir
-        if !project_dir.starts_with(&self.inner.data_dir) {
-            return Err(SearchError::Tantivy(
-                "project_id resolved outside index data directory".into(),
-            )
-            .into());
-        }
-
-        std::fs::create_dir_all(&project_dir).map_err(SearchError::Io)?;
+        let root = &self.inner.data_dir;
+        std::fs::create_dir_all(root).map_err(SearchError::Io)?;
+        let dir = root.join(INDEX_CHILD);
 
         let (schema, fields) = build_schema();
 
-        let index = if project_dir.join("meta.json").exists() {
-            let dir = MmapDirectory::open(&project_dir)
-                .map_err(|e| SearchError::Tantivy(e.to_string()))?;
-            match Index::open(dir) {
-                Ok(idx) => idx,
+        let existing = if dir.join("meta.json").exists() {
+            let mmap =
+                MmapDirectory::open(&dir).map_err(|e| SearchError::Tantivy(e.to_string()))?;
+            match Index::open(mmap) {
+                Ok(idx) if idx.schema() == schema => Some(idx),
+                Ok(_) => {
+                    warn!("wiki search index schema differs from this binary, rebuilding");
+                    None
+                }
                 Err(e) => {
-                    // Corrupt index — remove and recreate fresh
-                    warn!(
-                        project_id = %project_id,
-                        error = %e,
-                        "corrupt wiki search index, recreating"
-                    );
-                    std::fs::remove_dir_all(&project_dir).map_err(SearchError::Io)?;
-                    std::fs::create_dir_all(&project_dir).map_err(SearchError::Io)?;
-                    let dir = MmapDirectory::open(&project_dir)
-                        .map_err(|e| SearchError::Tantivy(e.to_string()))?;
-                    Index::create(dir, schema, tantivy::IndexSettings::default())
-                        .map_err(|e| SearchError::Tantivy(e.to_string()))?
+                    warn!(error = %e, "corrupt wiki search index, rebuilding");
+                    None
                 }
             }
         } else {
-            let dir = MmapDirectory::open(&project_dir)
-                .map_err(|e| SearchError::Tantivy(e.to_string()))?;
-            Index::create(dir, schema, tantivy::IndexSettings::default())
-                .map_err(|e| SearchError::Tantivy(e.to_string()))?
+            None
+        };
+
+        let index = match existing {
+            Some(idx) => idx,
+            None => Self::replace_index(root, &dir, schema)?,
         };
 
         let reader = index
@@ -413,21 +500,66 @@ impl WikiSearchIndex {
             .map_err(|e: tantivy::TantivyError| SearchError::Tantivy(e.to_string()))?;
 
         let writer: IndexWriter = index
-            .writer(15_000_000) // 15MB heap budget (per-project indexes are small)
+            .writer(50_000_000)
             .map_err(|e| SearchError::Tantivy(e.to_string()))?;
 
-        let mut query_parser = QueryParser::for_index(&index, vec![fields.title, fields.body]);
-        query_parser.set_field_boost(fields.title, 2.0);
-
-        let project_index = Arc::new(ProjectIndex {
-            _index: index,
+        let global = Arc::new(GlobalIndex {
+            index,
             reader,
             writer: Mutex::new(writer),
             fields,
-            query_parser,
         });
 
-        indices.insert(project_id.to_string(), Arc::clone(&project_index));
-        Ok(project_index)
+        let _ = self.inner.index.set(Arc::clone(&global));
+        Ok(global)
+    }
+}
+
+fn build_document(fields: &WikiFields, page: &WikiPage, tags: &[String]) -> TantivyDocument {
+    let mut doc = TantivyDocument::new();
+    doc.add_text(fields.page_id, &page.id);
+    doc.add_text(fields.project_id, &page.project_id);
+    doc.add_text(fields.slug, &page.slug);
+    doc.add_text(fields.title, &page.title);
+    doc.add_text(fields.body, &page.body);
+    for tag in tags {
+        doc.add_text(fields.tags, tag);
+    }
+    doc.add_i64(fields.revision_number, page.revision_number);
+    if let Some(ref updated_by) = page.updated_by {
+        doc.add_text(fields.updated_by, updated_by);
+    }
+    doc.add_text(fields.updated_at, page.updated_at.to_rfc3339());
+    doc
+}
+
+fn read_result(doc: &TantivyDocument, fields: &WikiFields, score: f32) -> WikiSearchResult {
+    let text = |field: Field| {
+        doc.get_first(field)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    WikiSearchResult {
+        page_id: text(fields.page_id),
+        project_id: text(fields.project_id),
+        slug: text(fields.slug),
+        title: text(fields.title),
+        revision_number: doc
+            .get_first(fields.revision_number)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+        updated_by: doc
+            .get_first(fields.updated_by)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        updated_at: text(fields.updated_at),
+        tags: doc
+            .get_all(fields.tags)
+            .filter_map(|v| v.as_str())
+            .map(|s| s.to_string())
+            .collect(),
+        score,
     }
 }

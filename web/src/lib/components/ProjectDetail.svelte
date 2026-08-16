@@ -1,9 +1,10 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
-  import { projectDetailQuery, deleteProjectMutation, projectAgentsQuery, addProjectAgentMutation, removeProjectAgentMutation } from '../queries/projects';
+  import { projectDetailQuery, projectsQuery, deleteProjectMutation, projectAgentsQuery, addProjectAgentMutation, removeProjectAgentMutation } from '../queries/projects';
+  import { shareTagsQuery } from '../queries/wiki';
   import { agentsQuery } from '../queries/agents';
   import { mcpServersQuery, projectMcpServersQuery, addProjectMcpServerMutation, removeProjectMcpServerMutation } from '../queries/mcp-servers';
-  import type { AgentPoolEntry, McpServerPoolEntry, Execution, SessionSummary, ExecutionDisplayStatus } from '../types';
+  import type { AgentPoolEntry, McpServerPoolEntry, Execution, SessionSummary, ExecutionDisplayStatus, WikiAccess } from '../types';
   import { executionsQuery, executionDetailQuery } from '../queries/executions';
   import { router } from '../router';
   import Button from './ui/button.svelte';
@@ -19,21 +20,54 @@
   let { projectId }: Props = $props();
 
   const projectQuery = projectDetailQuery(() => projectId);
+  // Child queries key on project_id, so they use the loaded project's id and
+  // stay empty until it exists.
+  let canonicalId = $derived(projectQuery.data?.id ?? null);
   const agents = agentsQuery();
-  const projectExecsQuery = executionsQuery(() => projectId);
+  const projectExecsQuery = executionsQuery(() => canonicalId);
   const deleteMut = deleteProjectMutation();
-  const poolQuery = projectAgentsQuery(() => projectId);
+  const poolQuery = projectAgentsQuery(() => canonicalId);
   const addPoolMut = addProjectAgentMutation();
   const removePoolMut = removeProjectAgentMutation();
 
   let project = $derived(projectQuery.data ?? null);
+
+  const allProjects = projectsQuery();
+  const shareTags = shareTagsQuery();
+
+  interface ProjectShare {
+    tag: string;
+    access: WikiAccess;
+    partners: { id: string; name: string }[];
+  }
+
+  // Every share tag this project is a member of, including one whose other
+  // members have not joined yet.
+  let projectShares = $derived.by<ProjectShare[]>(() => {
+    if (!project) return [];
+    const ownId = project.id;
+    const shares: ProjectShare[] = [];
+    for (const tag of shareTags.data ?? []) {
+      const own = tag.members.find(m => m.project_id === ownId);
+      if (!own) continue;
+      const partners = tag.members
+        .filter(m => m.project_id !== ownId)
+        .map(m => ({
+          id: m.project_id,
+          name: (allProjects.data ?? []).find(p => p.id === m.project_id)?.name ?? m.project_slug,
+        }));
+      shares.push({ tag: tag.tag, access: own.access_level, partners });
+    }
+    return shares;
+  });
+
   let showDeleteConfirm = $state(false);
   let deleteError: string | null = $state(null);
   let showAddAgent = $state(false);
   let showAddMcpServer = $state(false);
 
   const allMcpServers = mcpServersQuery();
-  const mcpPoolQuery = projectMcpServersQuery(() => projectId);
+  const mcpPoolQuery = projectMcpServersQuery(() => canonicalId);
   const addMcpPoolMut = addProjectMcpServerMutation();
   const removeMcpPoolMut = removeProjectMcpServerMutation();
 
@@ -264,7 +298,9 @@
   async function handleDelete() {
     deleteError = null;
     try {
-      await deleteMut.mutateAsync(projectId);
+      // By the loaded project's id, not the route segment.
+      if (!project) return;
+      await deleteMut.mutateAsync(project.id);
       router.navigate('/projects');
     } catch (e) {
       deleteError = e instanceof Error ? e.message : 'Failed to delete';
@@ -283,8 +319,8 @@
       <div class="header-top">
         <h2 class="detail-title">{project.name}</h2>
         <div class="header-actions">
-          <Button variant="ghost" size="sm" onclick={() => { openSearchTab(projectId); router.navigate('#/wiki'); }}>Wiki</Button>
-          <Button variant="ghost" size="sm" onclick={() => router.navigate(`/projects/${projectId}/edit`)}>Edit</Button>
+          <Button variant="ghost" size="sm" onclick={() => { openSearchTab(project.id); router.navigate('#/wiki'); }}>Wiki</Button>
+          <Button variant="ghost" size="sm" onclick={() => router.navigate(`/projects/${project.id}/edit`)}>Edit</Button>
           <Button variant="ghost" size="sm" onclick={() => showDeleteConfirm = true}>Delete</Button>
         </div>
       </div>
@@ -294,6 +330,10 @@
     </div>
 
     <div class="info-section">
+      <div class="info-row">
+        <span class="info-label">Slug</span>
+        <span class="info-value mono">{project.slug}</span>
+      </div>
       <div class="info-row">
         <span class="info-label">Path</span>
         <span class="info-value mono">{project.path}</span>
@@ -308,6 +348,33 @@
       </div>
     </div>
 
+    <section class="sharing-section">
+      <h3 class="section-heading">Sharing</h3>
+      {#if projectShares.length === 0}
+        <p class="empty-text">This project belongs to no share tags.</p>
+      {:else}
+        <ul class="share-list">
+          {#each projectShares as share (share.tag)}
+            <li class="share-row">
+              <span class="share-tag">{share.tag}</span>
+              <span class="share-access">{share.access}</span>
+              <span class="share-partners">
+                {#if share.partners.length === 0}
+                  No other members yet
+                {:else}
+                  Shared with
+                  {#each share.partners as partner, i (partner.id)}
+                    {#if i > 0}, {/if}<a class="share-partner" href="#/projects/{partner.id}">{partner.name}</a>
+                  {/each}
+                {/if}
+              </span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <a class="share-manage" href="#/settings">Manage in Settings</a>
+    </section>
+
     <div class="pool-section">
       <h3 class="section-heading">Agent Pool</h3>
       {#if poolAgents.length === 0}
@@ -320,7 +387,7 @@
               <button
                 class="pool-tag-remove"
                 title="Remove {agent.name} from pool"
-                onclick={() => removePoolMut.mutate({ projectId, agentId: agent.agent_id })}
+                onclick={() => removePoolMut.mutate({ projectId: project.id, agentId: agent.agent_id })}
               >&times;</button>
             </span>
           {/each}
@@ -332,7 +399,7 @@
           onchange={(e) => {
             const agentId = e.currentTarget.value;
             if (agentId) {
-              addPoolMut.mutate({ projectId, agentId });
+              addPoolMut.mutate({ projectId: project.id, agentId });
               e.currentTarget.value = '';
               showAddAgent = false;
             }
@@ -360,7 +427,7 @@
               <button
                 class="pool-tag-remove"
                 title="Remove {server.name} from pool"
-                onclick={() => removeMcpPoolMut.mutate({ projectId, mcpServerId: server.mcp_server_id })}
+                onclick={() => removeMcpPoolMut.mutate({ projectId: project.id, mcpServerId: server.mcp_server_id })}
               >&times;</button>
             </span>
           {/each}
@@ -372,7 +439,7 @@
           onchange={(e) => {
             const mcpServerId = e.currentTarget.value;
             if (mcpServerId) {
-              addMcpPoolMut.mutate({ projectId, mcpServerId });
+              addMcpPoolMut.mutate({ projectId: project.id, mcpServerId });
               e.currentTarget.value = '';
               showAddMcpServer = false;
             }
@@ -634,6 +701,68 @@
 
   .pool-section {
     margin-bottom: 1.5rem;
+  }
+
+  .sharing-section {
+    display: block;
+    margin-bottom: 1.5rem;
+  }
+
+  .share-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .share-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    color: hsl(var(--foreground));
+  }
+
+  .share-tag {
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: hsl(var(--primary) / 0.1);
+    color: hsl(var(--primary));
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+
+  .share-access {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .share-partners {
+    color: hsl(var(--muted-foreground));
+    font-size: 0.75rem;
+  }
+
+  .share-partner {
+    color: hsl(var(--primary));
+    text-decoration: none;
+  }
+
+  .share-partner:hover {
+    text-decoration: underline;
+  }
+
+  .share-manage {
+    font-size: 0.75rem;
+    color: hsl(var(--primary));
+    text-decoration: none;
+  }
+
+  .share-manage:hover {
+    text-decoration: underline;
   }
 
   .pool-tags {

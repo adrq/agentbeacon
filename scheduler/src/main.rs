@@ -220,22 +220,25 @@ async fn bootstrap(cli: Cli) -> Result<()> {
     info!(dir = %wiki_index_dir, "Initializing wiki search index");
 
     let rebuild_start = std::time::Instant::now();
-    let project_ids = db::wiki::projects_with_pages(&db_pool)
+    let pages = db::wiki::list_all_pages_for_indexing(&db_pool)
         .await
-        .context("Failed to query projects with wiki pages")?;
-    let mut total_pages = 0usize;
-    for pid in &project_ids {
-        let pages = db::wiki::list_pages_for_indexing(&db_pool, pid)
-            .await
-            .context("Failed to load wiki pages for indexing")?;
-        total_pages += pages.len();
-        wiki_search
-            .rebuild_project(pid, &pages)
-            .context("Failed to rebuild wiki search index")?;
-    }
+        .context("Failed to load wiki pages for indexing")?;
+    let tags_by_page = db::wiki::tags_by_page(&db_pool)
+        .await
+        .context("Failed to load wiki page tags for indexing")?;
+    let no_tags: Vec<String> = Vec::new();
+    let entries: Vec<scheduler::search::IndexedPage<'_>> = pages
+        .iter()
+        .map(|page| scheduler::search::IndexedPage {
+            page,
+            tags: tags_by_page.get(&page.id).unwrap_or(&no_tags),
+        })
+        .collect();
+    wiki_search
+        .rebuild_all(&entries)
+        .context("Failed to rebuild wiki search index")?;
     info!(
-        projects = project_ids.len(),
-        pages = total_pages,
+        pages = entries.len(),
         elapsed_ms = rebuild_start.elapsed().as_millis(),
         "Wiki search index rebuild complete"
     );

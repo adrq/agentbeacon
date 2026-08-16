@@ -1604,8 +1604,8 @@ def seed_project(
 
     with db_conn(db_url) as conn:
         conn.execute(
-            "INSERT INTO projects (id, name, path, settings) VALUES (?, ?, ?, '{}')",
-            (project_id, name, path),
+            "INSERT INTO projects (id, name, slug, path, settings) VALUES (?, ?, ?, ?, '{}')",
+            (project_id, name, project_id, path),
         )
         if agent_ids:
             for aid in agent_ids:

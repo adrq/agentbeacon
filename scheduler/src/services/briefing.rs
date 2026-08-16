@@ -80,18 +80,25 @@ Discover sessions in your execution:\n\
   curl \"$AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/sessions\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
 \n\
+Search the wiki (prefer this over listing pages):\n\
+  curl \"$AGENTBEACON_API_BASE/api/wiki/search?q=<terms>\" \\\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
+- Results may include pages owned by other projects; each carries its owning project. \
+Fetch a page to see your access level.\n\
+\n\
 Read a wiki page:\n\
   curl \"$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
+- For a page owned by another project, replace $AGENTBEACON_PROJECT_ID with that project's slug \
+(shown in search results). You may edit it if your access level says read_write.\n\
 \n\
-Write a wiki page (full rewrite or create):\n\
+Create a wiki page:\n\
   curl -X PUT \"$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
     -d \"{\\\"title\\\": \\\"Page Title\\\", \\\"body\\\": \\\"Content here\\\"}\"\n\
-- Include revision_number from GET response when updating an existing page.\n\
 \n\
-Edit a wiki page (targeted find/replace -- prefer this over PUT when updating an existing page):\n\
+Edit a wiki page (targeted find/replace -- the only way to update an existing page):\n\
   curl -X PATCH \"$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
     -H \"Content-Type: application/json\" \\\n\

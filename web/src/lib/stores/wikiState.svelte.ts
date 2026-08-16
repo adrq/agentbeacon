@@ -8,6 +8,8 @@ export interface WikiTab {
   projectId?: string;
   projectName?: string;
   slug?: string;
+  /** The page this tab was opened on. A slug is reusable; this is not. */
+  pageId?: string;
   title: string;
   editorDraft?: string;
   editorBaseRevision?: number;
@@ -23,12 +25,26 @@ function makeSearchTab(projectId?: string): WikiTab {
   return { id: generateId(), type: 'search', title: 'Search', projectId };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** True when a project reference is a UUID rather than a reusable slug. */
+export function isProjectUuid(value: string | undefined): boolean {
+  return !!value && UUID_RE.test(value);
+}
+
 function loadTabs(): WikiTab[] {
   const raw = safeGetItem(STORAGE_KEY);
   if (!raw) return [makeSearchTab()];
   try {
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      // Entries that predate canonicalisation may hold a slug; those are
+      // dropped rather than resolved.
+      const usable = parsed.filter(
+        (t: WikiTab) => t.type !== 'page' || isProjectUuid(t.projectId),
+      );
+      if (usable.length > 0) return usable;
+    }
   } catch { /* corrupted */ }
   return [makeSearchTab()];
 }
@@ -66,11 +82,16 @@ export function getActiveTab(): WikiTab {
   return tabs.find(t => t.id === activeTabId) ?? tabs[0];
 }
 
-export function openPage(projectId: string, slug: string, title: string, isCreate?: boolean, projectName?: string): void {
+export function openPage(projectId: string, slug: string, title: string, isCreate?: boolean, projectName?: string, pageId?: string): void {
   const existing = tabs.find(t => t.type === 'page' && t.projectId === projectId && t.slug === slug);
   if (existing) {
     if (isCreate && !existing.isCreate) {
+      // Keep the existing page id.
       tabs = tabs.map(t => t.id === existing.id ? { ...t, isCreate: true } : t);
+      persistTabs();
+    }
+    if (pageId && !existing.pageId) {
+      tabs = tabs.map(t => t.id === existing.id ? { ...t, pageId } : t);
       persistTabs();
     }
     if (projectName && !existing.projectName) {
@@ -82,11 +103,19 @@ export function openPage(projectId: string, slug: string, title: string, isCreat
     return;
   }
   const key = dedupKey(projectId, slug);
-  const newTab: WikiTab = { id: key, type: 'page', projectId, projectName, slug, title, isCreate };
+  const newTab: WikiTab = { id: key, type: 'page', projectId, projectName, slug, title, isCreate, pageId };
   tabs = [...tabs, newTab];
   activeTabId = newTab.id;
   persistTabs();
   persistActiveTab();
+}
+
+/** Record which page a tab resolved to, once the page itself has loaded. */
+export function setTabPageId(id: string, pageId: string): void {
+  const tab = tabs.find(t => t.id === id);
+  if (!tab || tab.pageId === pageId) return;
+  tabs = tabs.map(t => t.id === id ? { ...t, pageId } : t);
+  persistTabs();
 }
 
 export function closeTab(id: string): void {

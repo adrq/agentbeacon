@@ -1,5 +1,6 @@
 <script lang="ts">
   import McpServersSection from './McpServersSection.svelte';
+  import ShareTagsSection from './ShareTagsSection.svelte';
   import { escalationNotificationsEnabled, turnCompleteNotificationsEnabled } from '../stores/appState';
   import { requestNotificationPermission } from '../adapters/standalone';
 
@@ -62,6 +63,15 @@
       <h3 class="section-heading">Integrations</h3>
       <p class="section-description">Manage external tool server connections.</p>
       <McpServersSection />
+    </section>
+
+    <section id="wiki-sharing" class="settings-section">
+      <h3 class="section-heading">Share Tags</h3>
+      <p class="section-description">
+        A project admitted to a tag sees every page carrying it, and its own tagged pages
+        become visible to the other members.
+      </p>
+      <ShareTagsSection />
     </section>
   </div>
 </div>

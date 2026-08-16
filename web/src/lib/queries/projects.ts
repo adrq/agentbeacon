@@ -19,7 +19,7 @@ export function projectDetailQuery(id: () => string | null) {
 export function createProjectMutation() {
   const queryClient = useQueryClient();
   return createMutation(() => ({
-    mutationFn: (req: { name: string; path: string }) =>
+    mutationFn: (req: { name: string; path: string; slug?: string }) =>
       api.createProject(req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -32,7 +32,7 @@ export function updateProjectMutation() {
   return createMutation(() => ({
     mutationFn: (args: {
       id: string;
-      req: { name?: string; path?: string; settings?: Record<string, unknown> };
+      req: { name?: string; path?: string; slug?: string; settings?: Record<string, unknown> };
     }) => api.updateProject(args.id, args.req),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });

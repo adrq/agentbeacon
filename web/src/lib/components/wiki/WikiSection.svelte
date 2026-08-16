@@ -12,8 +12,9 @@
   let tabs = $derived(getWikiTabs());
   let activeId = $derived(getActiveTabId());
 
-  function projectName(id: string): string | undefined {
-    return (projects.data ?? []).find(p => p.id === id)?.name;
+  // A tab may address its project by id or by slug.
+  function projectName(idOrSlug: string): string | undefined {
+    return (projects.data ?? []).find(p => p.id === idOrSlug || p.slug === idOrSlug)?.name;
   }
 
   // Hash a string to a hue (0-360) for per-project badge colors
@@ -45,10 +46,25 @@
     openSearchTab();
   }
 
+  // Route segments may be a slug; tabs store the id.
+  function canonicalProjectId(segment: string): string | null {
+    const list = projects.data ?? [];
+    return list.find(p => p.id === segment || p.slug === segment)?.id ?? null;
+  }
+
+  // Deep link waiting on the project list.
+  let pendingRoute: { segment: string; slug: string } | null = $state(null);
+
   // Handle deep links: URL -> open tab
   function handleWikiRoute(route: RouteState) {
     if (route.section === 'wiki' && route.projectId && route.wikiSlug) {
-      openPage(route.projectId, route.wikiSlug, route.wikiSlug, undefined, projectName(route.projectId));
+      const id = canonicalProjectId(route.projectId);
+      if (!id) {
+        pendingRoute = { segment: route.projectId, slug: route.wikiSlug };
+        return;
+      }
+      pendingRoute = null;
+      openPage(id, route.wikiSlug, route.wikiSlug, undefined, projectName(id));
     } else if (route.section === 'wiki') {
       const activeTab = tabs.find(t => t.id === activeId);
       if (!activeTab || activeTab.type !== 'search') {
@@ -68,9 +84,18 @@
   $effect(() => {
     const projectList = projects.data;
     if (!projectList?.length) return;
+    // The list has arrived, so a held deep link can open now.
+    if (pendingRoute) {
+      const id = canonicalProjectId(pendingRoute.segment);
+      if (id) {
+        const slug = pendingRoute.slug;
+        pendingRoute = null;
+        openPage(id, slug, slug, undefined, projectName(id));
+      }
+    }
     for (const tab of tabs) {
       if (tab.type === 'page' && tab.projectId && !tab.projectName) {
-        const name = projectList.find(p => p.id === tab.projectId)?.name;
+        const name = projectName(tab.projectId);
         if (name) updateTabProjectName(tab.id, name);
       }
     }
@@ -140,10 +165,13 @@
 
     {#each tabs as tab (tab.id)}
       <Tabs.Content value={tab.id} class="wiki-tab-content">
-        {#if tab.type === 'search'}
-          <WikiSearchTab tabId={tab.id} initialProjectId={tab.projectId} />
-        {:else if tab.type === 'page' && tab.projectId && tab.slug}
-          <WikiPageView tabId={tab.id} projectId={tab.projectId} slug={tab.slug} />
+        <!-- Only the active tab is mounted; drafts live in the tab store. -->
+        {#if tab.id === activeId}
+          {#if tab.type === 'search'}
+            <WikiSearchTab tabId={tab.id} initialProjectId={tab.projectId} />
+          {:else if tab.type === 'page' && tab.projectId && tab.slug}
+            <WikiPageView tabId={tab.id} projectId={tab.projectId} slug={tab.slug} />
+          {/if}
         {/if}
       </Tabs.Content>
     {/each}

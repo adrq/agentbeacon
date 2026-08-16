@@ -31,6 +31,7 @@ export type AgentType = 'claude_sdk' | 'codex_sdk' | 'copilot_sdk' | 'acp';
 
 export interface Project {
   id: string;
+  slug: string;
   name: string;
   path: string;
   settings: Record<string, unknown>;
@@ -500,9 +501,12 @@ export function refusalDisplayText(v: unknown): string | undefined {
 }
 
 // Wiki types
+export type WikiAccess = 'read' | 'read_write';
+
 export interface WikiPage {
   id: string;
   project_id: string;
+  project_slug: string;
   slug: string;
   title: string;
   body: string;
@@ -512,16 +516,34 @@ export interface WikiPage {
   created_at: string;
   updated_at: string;
   tags: string[];
+  access: WikiAccess;
 }
 
 export interface WikiPageListItem {
+  page_id: string;
+  project_id: string;
+  project_slug: string;
   slug: string;
   title: string;
   revision_number: number;
-  updated_by: string | null;
+  updated_by?: string | null;
   updated_at: string;
-  score?: number;
   tags: string[];
+  access: WikiAccess;
+}
+
+// A hit from the cross-project search route; carries the owning project.
+export interface WikiSearchResult {
+  page_id: string;
+  project_id: string;
+  project_slug: string;
+  slug: string;
+  title: string;
+  revision_number: number;
+  updated_at: string;
+  updated_by: string | null;
+  tags: string[];
+  score: number;
 }
 
 export interface WikiRevision {
@@ -544,14 +566,65 @@ export interface WikiRevisionListItem {
 export interface PutWikiPageRequest {
   title: string;
   body: string;
-  revision_number?: number | null;
   summary?: string;
   tags?: string[];
+  acknowledge_share?: boolean;
+}
+
+export interface WikiEdit {
+  old_string: string;
+  new_string: string;
+  replace_all?: boolean;
+}
+
+export interface PatchWikiPageRequest {
+  revision_number: number;
+  edits?: WikiEdit[];
+  title?: { old: string; new: string };
+  add_tags?: string[];
+  remove_tags?: string[];
+  summary?: string;
+  acknowledge_share?: boolean;
 }
 
 export interface WikiTag {
   name: string;
+  tag_id: string;
+  shared: boolean;
   page_count: number;
+}
+
+export interface ShareTagMember {
+  project_id: string;
+  project_slug: string;
+  access_level: WikiAccess;
+}
+
+export interface ShareTag {
+  tag_id: string;
+  tag: string;
+  members: ShareTagMember[];
+}
+
+export interface ExposedPage {
+  slug: string;
+  title: string;
+}
+
+// Pages a single project contributes to a membership change.
+export interface ExposureGroup {
+  project: string;
+  page_count: number;
+  pages: ExposedPage[];
+}
+
+export interface MembershipConfirmation {
+  error: 'membership_requires_confirmation';
+  tag: string;
+  exposes_to_joiner?: ExposureGroup[];
+  exposes_from_joiner?: { page_count: number; pages: ExposedPage[] };
+  grants_write?: ExposureGroup[];
+  remedy?: string;
 }
 
 export interface WikiSubscription {

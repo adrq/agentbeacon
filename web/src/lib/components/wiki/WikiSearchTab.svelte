@@ -1,6 +1,6 @@
 <script lang="ts">
   import { projectsQuery } from '../../queries/projects';
-  import { wikiPagesQuery } from '../../queries/wiki';
+  import { wikiPagesQuery, wikiSearchQuery } from '../../queries/wiki';
   import { openPage, updateTabProjectId } from '../../stores/wikiState.svelte';
 
   interface Props {
@@ -10,6 +10,18 @@
 
   let { tabId, initialProjectId }: Props = $props();
 
+  // A row always carries the project that owns the page, which is not
+  // necessarily the project being browsed.
+  interface ResultRow {
+    pageId: string;
+    projectId: string;
+    projectSlug: string;
+    slug: string;
+    title: string;
+    revisionNumber: number;
+    updatedAt: string;
+  }
+
   let selectedProjectId = $state<string | null>(initialProjectId ?? null);
   let searchText = $state('');
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -17,14 +29,11 @@
 
   const projects = projectsQuery();
 
-  // Auto-select first project if none selected or selected project no longer exists
+  // Drop a selection whose project has gone away; never pick one for the user.
   $effect(() => {
     const projectList = projects.data ?? [];
-    if (projectList.length === 0) return;
-    if (!selectedProjectId) {
-      selectedProjectId = projectList[0].id;
-      updateTabProjectId(tabId, selectedProjectId);
-    } else if (!projectList.some(p => p.id === selectedProjectId)) {
+    if (projectList.length === 0 || !selectedProjectId) return;
+    if (!projectList.some(p => p.id === selectedProjectId)) {
       selectedProjectId = null;
       updateTabProjectId(tabId, null);
     }
@@ -38,20 +47,51 @@
     return () => { if (debounceTimer) clearTimeout(debounceTimer); };
   });
 
-  const pagesQuery = wikiPagesQuery(
-    () => selectedProjectId,
+  let searching = $derived(debouncedQuery.trim().length > 0);
+
+  // Browsing lists a project's pages; searching goes to the search route, which
+  // spans projects unless narrowed to the selected one.
+  const pagesQuery = wikiPagesQuery(() => (searching ? null : selectedProjectId));
+
+  const searchResults = wikiSearchQuery(
     () => debouncedQuery || undefined,
+    () => selectedProjectId ?? undefined,
   );
 
-  let pages = $derived(pagesQuery.data ?? []);
+  let activeQuery = $derived(searching ? searchResults : pagesQuery);
 
-  function selectedProjectName(): string | undefined {
-    return (projects.data ?? []).find(p => p.id === selectedProjectId)?.name;
+  let rows = $derived<ResultRow[]>(
+    searching
+      ? (searchResults.data ?? []).map(r => ({
+          pageId: r.page_id,
+          projectId: r.project_id,
+          projectSlug: r.project_slug,
+          slug: r.slug,
+          title: r.title,
+          revisionNumber: r.revision_number,
+          updatedAt: r.updated_at,
+        }))
+      : (pagesQuery.data ?? []).map(p => ({
+          pageId: p.page_id,
+          projectId: p.project_id,
+          projectSlug: p.project_slug,
+          slug: p.slug,
+          title: p.title,
+          revisionNumber: p.revision_number,
+          updatedAt: p.updated_at,
+        })),
+  );
+
+  function projectName(id: string): string | undefined {
+    return (projects.data ?? []).find(p => p.id === id)?.name;
   }
 
-  function handleResultClick(slug: string, title: string) {
-    if (!selectedProjectId) return;
-    openPage(selectedProjectId, slug, title, undefined, selectedProjectName());
+  function selectedProjectSlug(): string | undefined {
+    return (projects.data ?? []).find(p => p.id === selectedProjectId)?.slug;
+  }
+
+  function handleResultClick(row: ResultRow) {
+    openPage(row.projectId, row.slug, row.title, undefined, projectName(row.projectId), row.pageId);
   }
 
   function formatDate(iso: string): string {
@@ -80,7 +120,7 @@
     slugError = '';
     showCreateForm = false;
     // Open as a new page tab with create intent
-    openPage(selectedProjectId, newSlug, newSlug, true, selectedProjectName());
+    openPage(selectedProjectId, newSlug, newSlug, true, projectName(selectedProjectId));
   }
 </script>
 
@@ -118,7 +158,7 @@
       onchange={(e) => { selectedProjectId = e.currentTarget.value || null; updateTabProjectId(tabId, selectedProjectId); }}
       aria-label="Select project"
     >
-      <option value="" disabled>Select a project...</option>
+      <option value="">All projects</option>
       {#each projects.data ?? [] as project}
         <option value={project.id}>{project.name}</option>
       {/each}
@@ -151,13 +191,13 @@
   {/if}
 
   <div class="results-area">
-    {#if !selectedProjectId}
-      <div class="empty-state">Select a project to browse wiki pages.</div>
-    {:else if pagesQuery.isLoading}
+    {#if !selectedProjectId && !searching}
+      <div class="empty-state">Search every project, or pick one to browse its pages.</div>
+    {:else if activeQuery.isLoading}
       <div class="empty-state">Loading...</div>
-    {:else if pagesQuery.isError}
-      <div class="empty-state">Failed to load pages: {pagesQuery.error?.message ?? 'Unknown error'}</div>
-    {:else if pages.length === 0}
+    {:else if activeQuery.isError}
+      <div class="empty-state">Failed to load pages: {activeQuery.error?.message ?? 'Unknown error'}</div>
+    {:else if rows.length === 0}
       <div class="empty-state">
         {#if searchText}
           No pages matching "{searchText}".
@@ -167,16 +207,20 @@
       </div>
     {:else}
       <ul class="results-list">
-        {#each pages as page}
+        {#each rows as row (`${row.projectId}:${row.slug}`)}
           <li>
-            <button class="result-item" onclick={() => handleResultClick(page.slug, page.title)}>
-              <div class="result-title">{page.title}</div>
+            <button class="result-item" onclick={() => handleResultClick(row)}>
+              <div class="result-title">{row.title}</div>
               <div class="result-meta">
-                <span>{page.slug}</span>
+                {#if row.projectSlug !== selectedProjectSlug()}
+                  <span class="result-project">{row.projectSlug}</span>
+                  <span class="meta-sep">&middot;</span>
+                {/if}
+                <span>{row.slug}</span>
                 <span class="meta-sep">&middot;</span>
-                <span>rev {page.revision_number}</span>
+                <span>rev {row.revisionNumber}</span>
                 <span class="meta-sep">&middot;</span>
-                <span>{formatDate(page.updated_at)}</span>
+                <span>{formatDate(row.updatedAt)}</span>
               </div>
             </button>
           </li>
@@ -331,6 +375,14 @@
 
   .meta-sep {
     opacity: 0.5;
+  }
+
+  .result-project {
+    padding: 0 0.25rem;
+    border-radius: var(--radius-sm);
+    background: hsl(var(--muted) / 0.6);
+    color: hsl(var(--foreground));
+    font-family: var(--font-mono);
   }
 
   .create-page-link {

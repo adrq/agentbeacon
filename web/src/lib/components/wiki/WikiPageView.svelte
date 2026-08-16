@@ -2,8 +2,9 @@
   import { onMount } from 'svelte';
   import { AlertDialog } from 'bits-ui';
   import { ApiError } from '../../api';
-  import { wikiPageQuery, putWikiPageMutation, deleteWikiPageMutation } from '../../queries/wiki';
-  import { closeTab, clearTabCreateFlag, updateTabDraft, updateTabEditMeta, updateTabTitle, getWikiTabs } from '../../stores/wikiState.svelte';
+  import { wikiPageQuery, putWikiPageMutation, patchWikiPageMutation, deleteWikiPageMutation, shareTagsQuery } from '../../queries/wiki';
+  import type { PatchWikiPageRequest } from '../../types';
+  import { isProjectUuid, closeTab, clearTabCreateFlag, updateTabDraft, updateTabEditMeta, updateTabTitle, getWikiTabs, setTabPageId } from '../../stores/wikiState.svelte';
   import { projectsQuery } from '../../queries/projects';
   import Markdown from '../Markdown.svelte';
   import WikiHistory from './WikiHistory.svelte';
@@ -18,8 +19,10 @@
 
   const pageQuery = wikiPageQuery(() => projectId, () => slug);
   const putMut = putWikiPageMutation();
+  const patchMut = patchWikiPageMutation();
   const deleteMut = deleteWikiPageMutation();
   const projects = projectsQuery();
+  const shareTags = shareTagsQuery();
 
   let page = $derived(pageQuery.data ?? null);
   let tabIsCreate = $derived(getWikiTabs().find(t => t.id === tabId)?.isCreate ?? false);
@@ -37,9 +40,46 @@
 
   let isNewPage = $derived(confirmedNewPage);
 
+  // Match by id first, by slug only when no id is available.
+  let owningProject = $derived.by(() => {
+    const list = projects.data ?? [];
+    const id = page?.project_id ?? (isProjectUuid(projectId) ? projectId : undefined);
+    if (id) return list.find(p => p.id === id) ?? null;
+    const slug = page?.project_slug ?? projectId;
+    return list.find(p => p.slug === slug) ?? null;
+  });
+
+  let tabProjectName = $derived(getWikiTabs().find(t => t.id === tabId)?.projectName);
+
   let projectName = $derived(
-    (projects.data ?? []).find(p => p.id === projectId)?.name ?? projectId.slice(0, 8)
+    owningProject?.name ?? page?.project_slug ?? tabProjectName ?? projectId
   );
+
+  function memberDisplayName(memberProjectId: string, memberProjectSlug: string): string {
+    return (projects.data ?? []).find(p => p.id === memberProjectId)?.name ?? memberProjectSlug;
+  }
+
+  // Tags on this page that reach another project, and the projects they reach.
+  let sharedVia = $derived.by(() => {
+    const tags: string[] = [];
+    const partners = new Map<string, string>();
+    if (!page) return { tags, partners: [] as string[] };
+    const owner = page.project_id;
+    for (const tagName of page.tags) {
+      const entry = (shareTags.data ?? []).find(t => t.tag === tagName);
+      if (!entry) continue;
+      if (!entry.members.some(m => m.project_id === owner)) continue;
+      const others = entry.members.filter(m => m.project_id !== owner);
+      if (others.length === 0) continue;
+      tags.push(tagName);
+      for (const m of others) {
+        partners.set(m.project_id, memberDisplayName(m.project_id, m.project_slug));
+      }
+    }
+    return { tags, partners: [...partners.values()] };
+  });
+
+  let plainTags = $derived((page?.tags ?? []).filter(t => !sharedVia.tags.includes(t)));
 
   let editing = $state(false);
   let editView = $state<'edit' | 'preview'>('edit');
@@ -52,6 +92,10 @@
   let saveError = $state<string | null>(null);
   let showConflictDialog = $state(false);
   let editBaseRevision = $state<number | null>(null);
+  // The content an update is expressed against: PATCH replaces a body by naming
+  // the text it expects to find.
+  let editBaseBody = $state('');
+  let editBaseTitle = $state('');
   let viewEl = $state<HTMLDivElement>();
 
   // Focus the container so arrow-key scrolling works without clicking first
@@ -91,11 +135,33 @@
     }
   });
 
-  // When a draft was restored but page data arrives later, initialize edit metadata.
-  // If a create-draft tab finds the page already exists (created by someone else),
-  // exit edit mode and clear the stale draft to prevent silent overwrite.
+  // The page this tab was opened on.
+  let expectedPageId = $state<string | undefined>(undefined);
+  let substituted = $state(false);
+  onMount(() => {
+    expectedPageId = getWikiTabs().find(t => t.id === tabId)?.pageId;
+  });
+
   $effect(() => {
-    if (page && editing && editBaseRevision === null) {
+    if (!page) return;
+    if (expectedPageId && page.id !== expectedPageId) {
+      // A different page occupies this slug.
+      substituted = true;
+      editing = false;
+      return;
+    }
+    substituted = false;
+    if (!expectedPageId) {
+      // No id recorded yet: adopt the one that loaded.
+      expectedPageId = page.id;
+    }
+    setTabPageId(tabId, page.id);
+  });
+
+  // Initialize edit metadata once page data arrives for a restored draft, or
+  // drop a create draft whose page now exists.
+  $effect(() => {
+    if (page && editing && !substituted && editBaseRevision === null) {
       if (tabIsCreate) {
         editing = false;
         draftContent = '';
@@ -107,6 +173,16 @@
       }
       draftTitle = draftTitle || page.title;
       editBaseRevision = page.revision_number;
+      editBaseBody = page.body;
+      editBaseTitle = page.title;
+    }
+  });
+
+  // Restored drafts need a baseline body to diff against.
+  $effect(() => {
+    if (page && editing && !substituted && !isNewPage && !editBaseBody) {
+      editBaseBody = page.body;
+      editBaseTitle = editBaseTitle || page.title;
     }
   });
 
@@ -121,12 +197,15 @@
   });
 
   function startEditing() {
+    if (substituted) return;
     if (!page) return;
     showHistory = false;
     draftContent = page.body;
     draftTitle = page.title;
     editSummary = '';
     editBaseRevision = page.revision_number;
+    editBaseBody = page.body;
+    editBaseTitle = page.title;
     editing = true;
     editView = 'edit';
     saveError = null;
@@ -142,6 +221,8 @@
     editing = false;
     draftContent = '';
     editSummary = '';
+    editBaseBody = '';
+    editBaseTitle = '';
     saveError = null;
     updateTabDraft(tabId, '');
     updateTabEditMeta(tabId, undefined, undefined);
@@ -160,37 +241,69 @@
     }, 500);
   }
 
+  function errorType(e: ApiError): string {
+    try { return JSON.parse(e.body).error ?? ''; } catch { return ''; }
+  }
+
   async function handleSave() {
+    // Refused here; the draft is kept.
+    if (substituted) return;
     saveError = null;
-    const req = {
-      title: draftTitle || slug,
-      body: draftContent,
-      summary: editSummary || undefined,
-      revision_number: isNewPage ? undefined : (editBaseRevision ?? undefined),
-    };
+    const title = draftTitle || slug;
 
     try {
-      await putMut.mutateAsync({ projectId, slug, req });
-      editing = false;
-      draftContent = '';
-      editSummary = '';
-      updateTabDraft(tabId, '');
-      updateTabEditMeta(tabId, undefined, undefined);
-      clearTabCreateFlag(tabId);
-      updateTabTitle(tabId, req.title);
+      if (isNewPage) {
+        await putMut.mutateAsync({
+          projectId,
+          slug,
+          req: { title, body: draftContent, summary: editSummary || undefined },
+        });
+      } else {
+        const bodyChanged = draftContent !== editBaseBody;
+        const titleChanged = title !== editBaseTitle;
+        if (!bodyChanged && !titleChanged) {
+          finishEditing(title);
+          return;
+        }
+        const req: PatchWikiPageRequest = {
+          revision_number: editBaseRevision ?? page?.revision_number ?? 1,
+          summary: editSummary || undefined,
+        };
+        if (bodyChanged) {
+          req.edits = [{ old_string: editBaseBody, new_string: draftContent }];
+        }
+        if (titleChanged) {
+          req.title = { old: editBaseTitle, new: title };
+        }
+        await patchMut.mutateAsync({ projectId, slug, req });
+      }
+      finishEditing(title);
     } catch (e: unknown) {
-      if (e instanceof ApiError && e.status === 409) {
-        let errorType = '';
-        try { errorType = JSON.parse(e.body).error; } catch { /* fallback */ }
-        if (errorType === 'slug_exists') {
+      if (e instanceof ApiError && (e.status === 409 || e.status === 422)) {
+        const type = errorType(e);
+        if (type === 'slug_exists') {
           saveError = 'A page with this slug already exists.';
-        } else {
+        } else if (type === 'revision_conflict' || type === 'edit_failed' || type === 'title_mismatch') {
           showConflictDialog = true;
+        } else {
+          saveError = e.message;
         }
       } else {
         saveError = e instanceof Error ? e.message : 'Failed to save';
       }
     }
+  }
+
+  function finishEditing(title: string) {
+    editing = false;
+    draftContent = '';
+    editSummary = '';
+    editBaseBody = '';
+    editBaseTitle = '';
+    updateTabDraft(tabId, '');
+    updateTabEditMeta(tabId, undefined, undefined);
+    clearTabCreateFlag(tabId);
+    updateTabTitle(tabId, title);
   }
 
   async function handleConflictReload() {
@@ -200,6 +313,8 @@
       draftContent = pageQuery.data.body;
       draftTitle = pageQuery.data.title;
       editBaseRevision = pageQuery.data.revision_number;
+      editBaseBody = pageQuery.data.body;
+      editBaseTitle = pageQuery.data.title;
       updateTabDraft(tabId, pageQuery.data.body);
       updateTabEditMeta(tabId, pageQuery.data.revision_number, pageQuery.data.title);
     }
@@ -209,12 +324,16 @@
     showConflictDialog = false;
     await pageQuery.refetch();
     if (pageQuery.data) {
+      // Rebase onto the latest revision before saving again.
       editBaseRevision = pageQuery.data.revision_number;
+      editBaseBody = pageQuery.data.body;
+      editBaseTitle = pageQuery.data.title;
       updateTabEditMeta(tabId, pageQuery.data.revision_number, draftTitle);
     }
   }
 
   async function handleDelete() {
+    if (substituted) return;
     deleteError = null;
     try {
       await deleteMut.mutateAsync({ projectId, slug });
@@ -320,6 +439,18 @@
           <span>{page.updated_by}</span>
         {/if}
       </div>
+      {#if sharedVia.tags.length > 0}
+        <div class="share-indicator">
+          Shared via {sharedVia.tags.join(', ')} with {sharedVia.partners.join(', ')}
+        </div>
+      {/if}
+      {#if plainTags.length > 0}
+        <div class="page-tags">
+          {#each plainTags as tag}
+            <span class="page-tag">{tag}</span>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     {#if showHistory}
@@ -354,8 +485,8 @@
           <input class="summary-input" type="text" placeholder="Edit summary (optional)" aria-label="Edit summary" bind:value={editSummary} />
           <div class="editor-actions">
             <button class="cancel-btn" onclick={cancelEditing}>Cancel</button>
-            <button class="save-btn" disabled={putMut.isPending} onclick={handleSave}>
-              {putMut.isPending ? 'Saving...' : 'Save'}
+            <button class="save-btn" disabled={patchMut.isPending} onclick={handleSave}>
+              {patchMut.isPending ? 'Saving...' : 'Save'}
             </button>
           </div>
         </div>
@@ -496,6 +627,32 @@
 
   .meta-sep {
     opacity: 0.5;
+  }
+
+  .share-indicator {
+    margin-top: 0.375rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: hsl(var(--primary) / 0.08);
+    color: hsl(var(--primary));
+    font-size: 0.6875rem;
+    display: inline-block;
+  }
+
+  .page-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-top: 0.375rem;
+  }
+
+  .page-tag {
+    padding: 0.125rem 0.375rem;
+    border-radius: var(--radius-sm);
+    background: hsl(var(--muted) / 0.6);
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-family: var(--font-mono);
   }
 
   .page-body {

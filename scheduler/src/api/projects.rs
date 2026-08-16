@@ -19,6 +19,7 @@ use crate::error::SchedulerError;
 pub struct ProjectResponse {
     pub id: String,
     pub name: String,
+    pub slug: String,
     pub path: String,
     pub settings: serde_json::Value,
     pub is_git: bool,
@@ -35,6 +36,7 @@ impl ProjectResponse {
         Self {
             id: p.id,
             name: p.name,
+            slug: p.slug,
             path: p.path,
             settings,
             is_git,
@@ -46,16 +48,24 @@ impl ProjectResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateProjectRequest {
     pub name: String,
     pub path: String,
+    pub slug: Option<String>,
 }
 
+/// Every field is optional, so an unrecognised key is the only signal that a
+/// caller meant something the server does not offer.
+// Without this a misspelled `slug` is dropped and the response is a 200
+// describing the unchanged project, which reads as success.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateProjectRequest {
     pub name: Option<String>,
     pub path: Option<String>,
     pub settings: Option<serde_json::Value>,
+    pub slug: Option<String>,
 }
 
 async fn create_project(
@@ -96,7 +106,30 @@ async fn create_project(
     };
 
     let id = Uuid::new_v4().to_string();
-    let project = db::projects::create(&state.db_pool, &id, name, &canonical_str, None).await?;
+
+    // An explicit slug is validated as given; a derived one already conforms.
+    // Present-but-blank is not the same as absent: it goes to the validator and
+    // is rejected there, rather than being read as "no slug supplied" and
+    // quietly deriving one.
+    let slug = match req.slug.as_deref().map(str::trim) {
+        Some(supplied) => {
+            let validated = db::projects::validate_slug(supplied)?;
+            if db::projects::is_uuid_shaped(&validated) {
+                return Err(SchedulerError::ValidationFailed(
+                    "slug must not have the shape of a project id".into(),
+                ));
+            }
+            validated
+        }
+        None => db::projects::derive_slug(name, &id),
+    };
+
+    if db::projects::slug_taken(&state.db_pool, &slug, None).await? {
+        return Err(SchedulerError::Conflict("slug_exists".into()));
+    }
+
+    let project =
+        db::projects::create(&state.db_pool, &id, name, &slug, &canonical_str, None).await?;
 
     // Seed project_agents with all enabled agents
     let all_agents = db::agents::list(&state.db_pool).await?;
@@ -130,7 +163,7 @@ async fn get_project(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<ProjectResponse>, SchedulerError> {
-    let project = db::projects::get_by_id(&state.db_pool, &id).await?;
+    let project = db::projects::resolve(&state.db_pool, &id).await?;
     Ok(Json(ProjectResponse::from_project(project, None)))
 }
 
@@ -139,6 +172,9 @@ async fn update_project(
     AxumPath(id): AxumPath<String>,
     Json(req): Json<UpdateProjectRequest>,
 ) -> Result<Json<ProjectResponse>, SchedulerError> {
+    let existing = db::projects::resolve(&state.db_pool, &id).await?;
+    let id = existing.id.clone();
+
     // Validate name if provided
     if let Some(ref name) = req.name {
         let name = name.trim();
@@ -177,12 +213,32 @@ async fn update_project(
 
     let trimmed_name = req.name.as_ref().map(|n| n.trim().to_string());
 
+    // A slug with the shape of a project id is accepted only as this project's
+    // own id. Present-but-blank is rejected rather than treated as absent, so
+    // the same request shape means the same thing here as it does on create.
+    let slug = match req.slug.as_deref().map(str::trim) {
+        Some(supplied) => {
+            let validated = db::projects::validate_slug(supplied)?;
+            if db::projects::is_uuid_shaped(&validated) && validated != id {
+                return Err(SchedulerError::ValidationFailed(
+                    "slug must not have the shape of another project's id".into(),
+                ));
+            }
+            if db::projects::slug_taken(&state.db_pool, &validated, Some(&id)).await? {
+                return Err(SchedulerError::Conflict("slug_exists".into()));
+            }
+            Some(validated)
+        }
+        None => None,
+    };
+
     let project = db::projects::update(
         &state.db_pool,
         &id,
         trimmed_name.as_deref(),
         canonical_path.as_deref(),
         settings_json.as_deref(),
+        slug.as_deref(),
     )
     .await?;
 
@@ -193,7 +249,8 @@ async fn delete_project(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    db::projects::soft_delete(&state.db_pool, &id).await?;
+    let project = db::projects::resolve(&state.db_pool, &id).await?;
+    db::projects::soft_delete(&state.db_pool, &project.id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -204,8 +261,8 @@ async fn list_project_agents(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Vec<db::project_agents::AgentPoolEntry>>, SchedulerError> {
     // Verify project exists
-    db::projects::get_by_id(&state.db_pool, &id).await?;
-    let entries = db::project_agents::list_by_project(&state.db_pool, &id).await?;
+    let project = db::projects::resolve(&state.db_pool, &id).await?;
+    let entries = db::project_agents::list_by_project(&state.db_pool, &project.id).await?;
     Ok(Json(entries))
 }
 
@@ -220,7 +277,7 @@ async fn add_project_agent(
     Json(req): Json<AddProjectAgentRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
     // Verify project exists
-    db::projects::get_by_id(&state.db_pool, &id).await?;
+    let project = db::projects::resolve(&state.db_pool, &id).await?;
     // Verify agent exists and is enabled
     let agent = db::agents::get_by_id(&state.db_pool, &req.agent_id).await?;
     if !agent.enabled {
@@ -229,7 +286,7 @@ async fn add_project_agent(
             req.agent_id
         )));
     }
-    db::project_agents::insert(&state.db_pool, &id, &req.agent_id).await?;
+    db::project_agents::insert(&state.db_pool, &project.id, &req.agent_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -237,8 +294,8 @@ async fn remove_project_agent(
     State(state): State<AppState>,
     AxumPath((id, agent_id)): AxumPath<(String, String)>,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    db::projects::get_by_id(&state.db_pool, &id).await?;
-    let deleted = db::project_agents::delete(&state.db_pool, &id, &agent_id).await?;
+    let project = db::projects::resolve(&state.db_pool, &id).await?;
+    let deleted = db::project_agents::delete(&state.db_pool, &project.id, &agent_id).await?;
     if !deleted {
         return Err(SchedulerError::NotFound(format!(
             "agent {agent_id} not in project pool"
@@ -253,8 +310,8 @@ async fn list_project_mcp_servers(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Vec<db::project_mcp_servers::McpServerPoolEntry>>, SchedulerError> {
-    db::projects::get_by_id(&state.db_pool, &id).await?;
-    let entries = db::project_mcp_servers::list_by_project(&state.db_pool, &id).await?;
+    let project = db::projects::resolve(&state.db_pool, &id).await?;
+    let entries = db::project_mcp_servers::list_by_project(&state.db_pool, &project.id).await?;
     Ok(Json(entries))
 }
 
@@ -268,10 +325,10 @@ async fn add_project_mcp_server(
     AxumPath(id): AxumPath<String>,
     Json(req): Json<AddProjectMcpServerRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    db::projects::get_by_id(&state.db_pool, &id).await?;
+    let project = db::projects::resolve(&state.db_pool, &id).await?;
     // Verify MCP server exists
     db::mcp_servers::get_by_id(&state.db_pool, &req.mcp_server_id).await?;
-    db::project_mcp_servers::insert(&state.db_pool, &id, &req.mcp_server_id).await?;
+    db::project_mcp_servers::insert(&state.db_pool, &project.id, &req.mcp_server_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -279,8 +336,9 @@ async fn remove_project_mcp_server(
     State(state): State<AppState>,
     AxumPath((id, mcp_server_id)): AxumPath<(String, String)>,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    db::projects::get_by_id(&state.db_pool, &id).await?;
-    let deleted = db::project_mcp_servers::delete(&state.db_pool, &id, &mcp_server_id).await?;
+    let project = db::projects::resolve(&state.db_pool, &id).await?;
+    let deleted =
+        db::project_mcp_servers::delete(&state.db_pool, &project.id, &mcp_server_id).await?;
     if !deleted {
         return Err(SchedulerError::NotFound(format!(
             "MCP server {mcp_server_id} not in project pool"

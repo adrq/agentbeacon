@@ -4,7 +4,7 @@ import { apiPost, apiGet, apiDelete } from './helpers';
 
 const API_URL = process.env.API_URL ?? 'http://localhost:9456';
 
-interface Project { id: string; name: string }
+interface Project { id: string; name: string; slug: string }
 interface WikiPage { slug: string; title: string; body: string; revision_number: number }
 
 const createdProjectIds: string[] = [];
@@ -17,6 +17,16 @@ async function apiPut(path: string, body: unknown) {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`API PUT ${path} failed: ${res.status}`);
+  return res.json();
+}
+
+async function apiPatch(path: string, body: unknown) {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`API PATCH ${path} failed: ${res.status}`);
   return res.json();
 }
 
@@ -211,16 +221,16 @@ test('wiki save page updates content', async ({ page }) => {
 test('wiki history shows revisions', async ({ page }) => {
   const project = await createTestProject('Wiki History Test');
   await createTestPage(project.id, 'history-page', 'History Page', '# Version 1');
-  await apiPut(`/api/projects/${project.id}/wiki/pages/history-page`, {
-    title: 'History Page',
-    body: '# Version 2',
+  // PUT is create-only; updates go through PATCH, and a whole-body replacement
+  // is one edit naming the current body.
+  await apiPatch(`/api/projects/${project.id}/wiki/pages/history-page`, {
     revision_number: 1,
+    edits: [{ old_string: '# Version 1', new_string: '# Version 2' }],
     summary: 'Second revision',
   });
-  await apiPut(`/api/projects/${project.id}/wiki/pages/history-page`, {
-    title: 'History Page',
-    body: '# Version 3',
+  await apiPatch(`/api/projects/${project.id}/wiki/pages/history-page`, {
     revision_number: 2,
+    edits: [{ old_string: '# Version 2', new_string: '# Version 3' }],
     summary: 'Third revision',
   });
 
@@ -389,4 +399,69 @@ test('wiki cross-section link from project detail', async ({ page }) => {
 
   await expect(page.getByRole('combobox', { name: 'Select project' })).toHaveValue(project.id, { timeout: 10000 });
   await expect(page.getByRole('button', { name: /Linked Page/ })).toBeVisible();
+});
+
+// --- Cross-project wiki sharing ---
+
+interface WikiTag { tag_id: string; tag: string }
+
+/**
+ * Bring a tag into existence by tagging a page — there is no tag-creation route
+ * — then resolve its id from `GET /api/wiki/tags`, which lists every tag.
+ */
+async function seedTag(tagName: string): Promise<string> {
+  const nursery = await createTestProject(`Tag Seed ${tagName}`);
+  await apiPut(`/api/projects/${nursery.id}/wiki/pages/seed-${tagName}`, {
+    title: `Seed ${tagName}`,
+    body: 'tag seed page, deliberately unshared',
+    tags: [tagName],
+  });
+  const tags: WikiTag[] = await apiGet('/api/wiki/tags');
+  const found = tags.find(t => t.tag === tagName);
+  if (!found) throw new Error(`tag ${tagName} not found after seeding`);
+  return found.tag_id;
+}
+
+/** Designate a share tag by admitting each member. There is no batch endpoint. */
+async function createSharedProjectPair(tagName: string) {
+  const owner = await createTestProject(`Share Owner ${Date.now()}`);
+  const member = await createTestProject(`Share Member ${Date.now()}`);
+  const tagId = await seedTag(tagName);
+  for (const [project, access_level] of [[owner.id, 'read_write'], [member.id, 'read']]) {
+    await apiPost(`/api/wiki/tags/${tagId}/members`, {
+      project,
+      access_level,
+      acknowledge_share: true,
+    });
+  }
+  // No explicit tag cleanup: cleanupTestData() soft-deletes every project, which
+  // deactivates the memberships and so retires the share tag with them.
+  return { owner, member, tagId };
+}
+
+async function createSharedPage(projectId: string, slug: string, title: string, body: string, tag: string) {
+  return apiPut(`/api/projects/${projectId}/wiki/pages/${slug}`, {
+    title,
+    body,
+    tags: [tag],
+    acknowledge_share: true,
+    summary: 'test setup',
+  });
+}
+
+/** Run a search from the global #/wiki surface and wait for a named result. */
+async function searchWiki(page: Page, terms: string, expected: RegExp) {
+  await page.getByRole('textbox', { name: 'Search wiki pages' }).fill(terms);
+  await expect(page.getByRole('button', { name: expected })).toBeVisible({ timeout: 10000 });
+}
+
+test('wiki global search spans projects without selecting one', async ({ page }) => {
+  const tag = `e2e-global-${Date.now()}`;
+  const { owner, member } = await createSharedProjectPair(tag);
+  await createSharedPage(owner.id, 'shared-doc', 'Shared Doc', '# Shared\nGlobalsearchbody.', tag);
+  await createTestPage(member.id, 'member-doc', 'Member Doc', '# Member\nGlobalsearchbody.');
+
+  await gotoWiki(page);
+  await searchWiki(page, 'Globalsearchbody', /Shared Doc/);
+  await expect(page.getByRole('button', { name: /Member Doc/ })).toBeVisible();
 });

@@ -17,6 +17,7 @@ pub mod projects;
 pub mod sessions;
 pub mod task_queue;
 pub mod wiki;
+pub mod wiki_sharing;
 
 pub use pool::{DbPool, TimestampColumn};
 
