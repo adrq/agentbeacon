@@ -133,3 +133,148 @@ test('sidebar sorts pending-question above working above idle above terminal', a
   const titles = await page.locator('.exec-list .exec-item .exec-title').allTextContents();
   expect(titles).toEqual([TITLE_PENDING, TITLE_WORKING, TITLE_IDLE, TITLE_COMPLETED]);
 });
+
+const FLIPPER_EXEC_ID = 'exec-flipper';
+const STALE_EXEC_ID = 'exec-stale-newer';
+const UNTOUCHED_EXEC_ID = 'exec-untouched-older';
+const TITLE_FLIPPER = 'Flipper Exec';
+const TITLE_STALE = 'Stale Newer Exec';
+const TITLE_UNTOUCHED = 'Untouched Older Exec';
+
+// `updated_at` does not reflect every activity, so an execution that was just
+// worked on can carry an older `updated_at` than one nobody has touched in a
+// while. The client-side activity high-water mark must keep it on top once it
+// goes idle and both land in the same tier.
+test('recently active execution stays above an idle one with a newer updated_at', async ({ page }) => {
+  let flipperStatus = 'working';
+
+  // Payload order deliberately contradicts both the expected order and the
+  // `updated_at` order: the untouched pair never changes status, so it must fall
+  // back to `updated_at`. If observation stamped executions on first sight they
+  // would all tie and the sort would silently degrade to this array order.
+  await page.route('**/api/executions*', route => {
+    if (route.request().method() !== 'GET') {
+      route.continue();
+      return;
+    }
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([
+        makeExecution({
+          id: UNTOUCHED_EXEC_ID,
+          title: TITLE_UNTOUCHED,
+          status: 'awaiting_input',
+          updated_at: '2026-07-24T10:00:00Z',
+        }),
+        makeExecution({
+          id: STALE_EXEC_ID,
+          title: TITLE_STALE,
+          status: 'awaiting_input',
+          updated_at: '2026-07-24T12:00:00Z',
+        }),
+        makeExecution({
+          id: FLIPPER_EXEC_ID,
+          title: TITLE_FLIPPER,
+          status: flipperStatus,
+          updated_at: '2026-07-24T09:00:00Z',
+        }),
+      ]),
+    });
+  });
+  await page.route('**/api/decisions*', route => {
+    if (route.request().method() === 'GET') {
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ decisions: [] }) });
+    } else {
+      route.continue();
+    }
+  });
+
+  await page.goto('/#/executions');
+  await expect(page.locator('.exec-list')).toBeVisible();
+
+  const items = page.locator('.exec-list .exec-item');
+  await expect(items).toHaveCount(3);
+  expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
+    .toEqual([TITLE_FLIPPER, TITLE_STALE, TITLE_UNTOUCHED]);
+
+  // Same order below, but earned by recency rather than tier: once the flipper
+  // goes idle all three are tier 2.
+  flipperStatus = 'awaiting_input';
+  await expect(
+    items.filter({ hasText: TITLE_FLIPPER }).locator('.exec-status')
+  ).toHaveText('turn complete', { timeout: 15_000 });
+
+  expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
+    .toEqual([TITLE_FLIPPER, TITLE_STALE, TITLE_UNTOUCHED]);
+});
+
+const EARLY_EXEC_ID = 'exec-early-working';
+const LATE_EXEC_ID = 'exec-late-working';
+const TITLE_EARLY = 'Early Working Exec';
+const TITLE_LATE = 'Late Working Exec';
+
+// Within the running tier, the execution that most recently started working
+// sorts first. Stamping on every poll while `working` instead of only on the
+// transition into it would give both the same timestamp and collapse this to
+// payload order.
+test('concurrently working executions order by when they started working', async ({ page }) => {
+  let earlyStatus = 'awaiting_input';
+  let lateStatus = 'awaiting_input';
+
+  // The execution that starts working later is listed first in the payload and
+  // carries the older `updated_at`, so neither payload order nor `updated_at`
+  // can produce the expected order by accident.
+  await page.route('**/api/executions*', route => {
+    if (route.request().method() !== 'GET') {
+      route.continue();
+      return;
+    }
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([
+        makeExecution({
+          id: EARLY_EXEC_ID,
+          title: TITLE_EARLY,
+          status: earlyStatus,
+          updated_at: '2026-07-24T12:00:00Z',
+        }),
+        makeExecution({
+          id: LATE_EXEC_ID,
+          title: TITLE_LATE,
+          status: lateStatus,
+          updated_at: '2026-07-24T09:00:00Z',
+        }),
+      ]),
+    });
+  });
+  await page.route('**/api/decisions*', route => {
+    if (route.request().method() === 'GET') {
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ decisions: [] }) });
+    } else {
+      route.continue();
+    }
+  });
+
+  await page.goto('/#/executions');
+  await expect(page.locator('.exec-list')).toBeVisible();
+
+  const items = page.locator('.exec-list .exec-item');
+  await expect(items).toHaveCount(2);
+  // Baseline: both idle and unstamped, so `updated_at` decides.
+  expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
+    .toEqual([TITLE_EARLY, TITLE_LATE]);
+
+  // Separate polls, so the two transitions land at distinguishable times.
+  earlyStatus = 'working';
+  await expect(
+    items.filter({ hasText: TITLE_EARLY }).locator('.exec-status')
+  ).toHaveText('working', { timeout: 15_000 });
+
+  lateStatus = 'working';
+  await expect(
+    items.filter({ hasText: TITLE_LATE }).locator('.exec-status')
+  ).toHaveText('working', { timeout: 15_000 });
+
+  expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
+    .toEqual([TITLE_LATE, TITLE_EARLY]);
+});

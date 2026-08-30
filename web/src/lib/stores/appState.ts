@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { Theme, NavSection, ExecutionPrefill, RouteMode, UsageState } from '../types';
+import type { Theme, NavSection, ExecutionPrefill, RouteMode, UsageState, Execution } from '../types';
 
 export function safeGetItem(key: string): string | null {
   try { return typeof window !== 'undefined' ? localStorage.getItem(key) : null; } catch { return null; }
@@ -81,3 +81,33 @@ export const homeFeedFilter = writable<HomeFeedFilter>(null);
 
 export const selectedSessionId = writable<string | null>(null);
 export const usageBySession = writable<Map<string, UsageState>>(new Map());
+
+// Ordering the sidebar by `updated_at` alone goes stale: it does not move when an
+// execution is messaged. In-memory only — after a reload the map is empty and
+// ordering falls back to `updated_at`.
+export const executionActivity = writable<Map<string, number>>(new Map());
+
+const lastObservedStatus = new Map<string, string>();
+
+export function observeExecutionStatuses(execs: Pick<Execution, 'id' | 'status'>[]): void {
+  const now = Date.now();
+  const stamped: string[] = [];
+
+  for (const e of execs) {
+    const previous = lastObservedStatus.get(e.id);
+    lastObservedStatus.set(e.id, e.status);
+    // A first sighting stamped would give every execution the same timestamp,
+    // tying every comparison and collapsing the tiebreak to array order.
+    if (previous === undefined) continue;
+    // Re-stamping every poll while `working` would tie the running tier the same
+    // way; a change out of `working` already stamps.
+    if (previous !== e.status) stamped.push(e.id);
+  }
+
+  if (stamped.length === 0) return; // avoid churning subscribers on quiet polls
+  executionActivity.update(current => {
+    const next = new Map(current);
+    for (const id of stamped) next.set(id, now);
+    return next;
+  });
+}

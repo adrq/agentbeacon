@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { selectedFilterProjectId, selectedExecutionId, selectedSessionId, usageBySession } from '../stores/appState';
+  import { selectedFilterProjectId, selectedExecutionId, selectedSessionId, usageBySession, executionActivity, observeExecutionStatuses } from '../stores/appState';
   import { executionsQuery, executionDetailQuery, executionAgentsQuery, executionSessionsQuery, buildSessionIdentityMap } from '../queries/executions';
   import { projectsQuery } from '../queries/projects';
   import { agentsQuery } from '../queries/agents';
@@ -49,10 +49,16 @@
     return 3;                                          // finished
   }
 
+  $effect(() => { observeExecutionStatuses(executions); });
+
+  function lastActiveAt(e: import('../types').Execution): number {
+    return Math.max($executionActivity.get(e.id) ?? 0, new Date(e.updated_at).getTime());
+  }
+
   let sorted = $derived([...executions].sort((a, b) => {
     const tierDiff = priorityTier(a) - priorityTier(b);
     if (tierDiff !== 0) return tierDiff;
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    return lastActiveAt(b) - lastActiveAt(a);
   }));
 
   let statusFiltered = $derived(
