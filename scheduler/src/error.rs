@@ -6,9 +6,15 @@ use axum::{
 use serde_json::json;
 use thiserror::Error;
 
+use crate::api::problem::Problem;
+
 /// Scheduler error types with contextual wrapping
 #[derive(Debug, Error)]
 pub enum SchedulerError {
+    /// An RFC 9457 problem raised by a call site that knows the exact code.
+    #[error("{}", .0.code().as_str())]
+    Problem(Box<Problem>),
+
     #[error("database error: {0}")]
     Database(String),
 
@@ -34,6 +40,7 @@ pub enum SchedulerError {
 impl IntoResponse for SchedulerError {
     fn into_response(self) -> Response {
         match self {
+            SchedulerError::Problem(problem) => (*problem).into_response(),
             SchedulerError::NotFound(msg) => {
                 (StatusCode::NOT_FOUND, Json(json!({"error": msg}))).into_response()
             }

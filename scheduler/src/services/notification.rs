@@ -61,7 +61,7 @@ pub async fn deliver_to_parent(
             "message": turn_output,
         }))],
     );
-    match db::events::insert(
+    match db::events::insert_locked(
         db_pool,
         &child_session.execution_id,
         Some(&parent_id),
@@ -70,10 +70,10 @@ pub async fn deliver_to_parent(
     )
     .await
     {
-        Ok(event_id) => {
+        Ok(inserted) => {
             let _ = event_broadcast.send(EventNotification::persisted(
                 child_session.execution_id.clone(),
-                event_id,
+                inserted.id,
             ));
         }
         Err(e) => {

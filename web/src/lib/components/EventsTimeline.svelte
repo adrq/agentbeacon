@@ -4,6 +4,8 @@
   import { normalizeDataPart } from '../normalize';
   import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
+  import { api } from '../api';
+  import { isUnsupportedSchema } from '../eventSchema';
 
   interface Props {
     events: Event[];
@@ -24,6 +26,30 @@
   let readySignaled = false;
   function signalReady() {
     if (!readySignaled) { readySignaled = true; onready?.(); }
+  }
+
+  // Rows the user asked to see whole, keyed by event id.
+  let fullPayloads = $state<Map<string, Event>>(new Map());
+  let loadingFull = $state<Set<string>>(new Set());
+
+  async function loadFull(executionId: string, eventId: string) {
+    if (loadingFull.has(eventId) || fullPayloads.has(eventId)) return;
+    loadingFull = new Set(loadingFull).add(eventId);
+    try {
+      const full = await api.getExecutionEvent(executionId, eventId);
+      fullPayloads = new Map(fullPayloads).set(eventId, full);
+    } catch {
+      // Leave the affordance in place so the user can retry.
+    } finally {
+      const next = new Set(loadingFull);
+      next.delete(eventId);
+      loadingFull = next;
+    }
+  }
+
+  /** Serve the full row once it has been fetched. */
+  function resolveEvent(ev: Event): Event {
+    return fullPayloads.get(ev.id) ?? ev;
   }
 
   function resolveAgentType(sessionId: string | null): AgentType {
@@ -110,6 +136,9 @@
     iconClass: string;
     text: string;
     entryType: string;
+    // Present on entries that carry a fetch-full affordance: shortened rows and
+    // rows this client cannot parse.
+    truncatedOf?: { executionId: string; eventId: string };
   }
 
   // True for internal question-answer platform records.
@@ -178,12 +207,11 @@
             entries.push({ key, time, icon: '\u2192', iconClass: 'delegate', text: `Delegated to ${del.agent}`, entryType: 'tool' });
           } else if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
             const ask = d as unknown as import('../types').EscalateData;
-            if (ask.batch_index === 0) {
-              if (ask.importance === 'fyi') {
-                entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(ask.question, 80)}`, entryType: 'fyi' });
-              } else {
-                entries.push({ key, time, icon: '\u26A0', iconClass: 'question', text: `Asked: "${truncate(ask.question, 80)}"`, entryType: 'tool' });
-              }
+            const first = ask.questions?.[0]?.question ?? '';
+            if (ask.importance === 'fyi') {
+              entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(first, 80)}`, entryType: 'fyi' });
+            } else {
+              entries.push({ key, time, icon: '\u26A0', iconClass: 'question', text: `Asked: "${truncate(first, 80)}"`, entryType: 'tool' });
             }
           }
         }
@@ -234,13 +262,14 @@
           // Platform events
           if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
             const ask = d as unknown as import('../types').EscalateData;
-            if (ask.batch_index > 0) continue;
+            const asked = ask.questions ?? [];
+            const first = asked[0]?.question ?? '';
             if (ask.importance === 'fyi') {
-              entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(ask.question, 80)}`, entryType: 'fyi' });
+              entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: `FYI: ${truncate(first, 80)}`, entryType: 'fyi' });
             } else {
-              const qText = ask.batch_size > 1
-                ? `Asked ${ask.batch_size} questions: "${truncate(ask.question, 60)}" + ${ask.batch_size - 1} more`
-                : `Asked: "${truncate(ask.question, 80)}"`;
+              const qText = asked.length > 1
+                ? `Asked ${asked.length} questions: "${truncate(first, 60)}" + ${asked.length - 1} more`
+                : `Asked: "${truncate(first, 80)}"`;
               entries.push({ key, time, icon: '\u26A0', iconClass: 'question', text: qText, entryType: 'tool' });
             }
             continue;
@@ -385,18 +414,59 @@
     return [];
   }
 
+  // Kinds with a dedicated renderer; anything else is displayed generically.
+  const KNOWN_EVENT_TYPES = new Set(['message', 'state_change', 'platform', 'escalate']);
+
   function parseAllEvents(evs: Event[]): ParsedEvent[] {
     const entries: ParsedEvent[] = [];
     const seenToolCalls = new Set<string>();
 
     for (const ev of evs) {
+      const time = formatTime(ev.created_at);
+      // A payload this client cannot parse is rendered generically, before
+      // anything reads inside it.
+      if (isUnsupportedSchema(ev)) {
+        entries.push({
+          key: `${ev.id}-schema`,
+          time,
+          icon: '?',
+          iconClass: 'state-change',
+          text: `Unsupported event format (${ev.event_type})`,
+          entryType: 'state',
+          truncatedOf: { executionId: ev.execution_id, eventId: ev.id },
+        });
+        continue;
+      }
+      if (ev.truncated) {
+        entries.push({
+          key: `${ev.id}-truncated`,
+          time,
+          icon: '\u2026',
+          iconClass: 'state-change',
+          text: 'Shortened for delivery.',
+          entryType: 'state',
+          truncatedOf: { executionId: ev.execution_id, eventId: ev.id },
+        });
+      }
+      if (!KNOWN_EVENT_TYPES.has(ev.event_type)) {
+        entries.push({
+          key: `${ev.id}-unknown`,
+          time,
+          icon: '?',
+          iconClass: 'state-change',
+          text: `Unsupported event (${ev.event_type})`,
+          entryType: 'state',
+          truncatedOf: { executionId: ev.execution_id, eventId: ev.id },
+        });
+        continue;
+      }
       const parts = parseEventParts(ev, seenToolCalls);
       entries.push(...parts);
     }
     return entries;
   }
 
-  let parsed = $derived(parseAllEvents(events));
+  let parsed = $derived(parseAllEvents(events.map(resolveEvent)));
 
   let filteredParsed = $derived(
     parsed.filter(entry => matchesFilter(entry.entryType, eventFilter))
@@ -431,6 +501,17 @@
               <span class="ev-time">{ev.time}</span>
               <span class="ev-icon {ev.iconClass}">{ev.icon}</span>
               <span class="ev-text">{ev.text}</span>
+              {#if ev.truncatedOf}
+                {@const target = ev.truncatedOf}
+                <button
+                  type="button"
+                  class="load-full-btn"
+                  disabled={loadingFull.has(target.eventId)}
+                  onclick={() => loadFull(target.executionId, target.eventId)}
+                >
+                  {loadingFull.has(target.eventId) ? 'Loading…' : 'Load full content'}
+                </button>
+              {/if}
             </div>
           {/snippet}
         </Virtualizer>
@@ -465,6 +546,22 @@
     color: hsl(var(--primary));
     border-color: hsl(var(--primary) / 0.3);
     font-weight: 600;
+  }
+
+  .load-full-btn {
+    font-size: 0.6875rem;
+    margin-left: 0.5rem;
+    padding: 0.0625rem 0.375rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius-sm);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    cursor: pointer;
+  }
+
+  .load-full-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   .timeline-section {

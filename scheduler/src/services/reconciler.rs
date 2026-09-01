@@ -90,10 +90,10 @@ pub async fn reconcile(
                 pool.prepare_query("SELECT COUNT(*) as cnt FROM task_queue WHERE session_id = ?");
             let tx_pending: i64 = sqlx::query(&tx_pending_sql)
                 .bind(&session.id)
-                .fetch_one(&mut *repair_tx)
+                .fetch_one(&mut **repair_tx)
                 .await
                 .map(|r| r.get::<i64, _>("cnt"))
-                .unwrap_or(0);
+                .map_err(|e| SchedulerError::Database(format!("count pending turns: {e}")))?;
             let outcome = if transition::is_quiescent(&tx_session, tx_pending) {
                 "completed"
             } else {
@@ -123,98 +123,130 @@ pub async fn reconcile(
             sqlx::query(&sql)
                 .bind(outcome)
                 .bind(&session.id)
-                .execute(&mut *repair_tx)
+                .execute(&mut **repair_tx)
                 .await
                 .map_err(|e| SchedulerError::Database(format!("repair outcome failed: {e}")))?;
 
-            if let Some(exec_outcome) = &exec_outcome {
-                let exec_sql = pool.prepare_query(
-                    "UPDATE executions SET desired = 'terminate', outcome = ?, \
-                     updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
-                     WHERE id = ? AND outcome IS NULL",
-                );
-                sqlx::query(&exec_sql)
-                    .bind(exec_outcome)
-                    .bind(&session.execution_id)
-                    .execute(&mut *repair_tx)
-                    .await
-                    .map_err(|e| {
-                        SchedulerError::Database(format!("repair execution outcome failed: {e}"))
-                    })?;
-                emit_execution_repair_event(
+            if let Some(ref exec_outcome) = exec_outcome {
+                transition::write_execution_terminal_in_tx(
                     pool,
                     &mut repair_tx,
                     &session.execution_id,
                     exec_outcome,
                 )
-                .await;
+                .await?;
             }
+
             repair_tx
                 .commit()
                 .await
                 .map_err(|e| SchedulerError::Database(format!("commit repair tx: {e}")))?;
         } else {
-            let outcome = if transition::is_quiescent(session, pending_turns) {
-                "completed"
-            } else {
-                "canceled"
-            };
-            let sql = pool.prepare_query(
-                "UPDATE sessions SET outcome = ?, \
-                 desired_by = COALESCE(desired_by, 'system:repair'), \
-                 desired_at = COALESCE(desired_at, CURRENT_TIMESTAMP), \
-                 updated_at = CURRENT_TIMESTAMP, \
-                 completed_at = CURRENT_TIMESTAMP WHERE id = ? AND outcome IS NULL",
-            );
-            sqlx::query(&sql)
-                .bind(outcome)
-                .bind(&session.id)
-                .execute(pool.as_ref())
-                .await
-                .map_err(|e| SchedulerError::Database(format!("repair outcome failed: {e}")))?;
+            let mut repair_tx =
+                db::executions::begin_execution_tx(pool, &session.execution_id).await?;
+            let repaired = async {
+                let current = db::sessions::get_in_tx(pool, &mut repair_tx, &session.id).await?;
+                if current.outcome.is_some() || current.desired != "terminate" {
+                    return Ok(());
+                }
+                let count_sql = pool
+                    .prepare_query("SELECT COUNT(*) as cnt FROM task_queue WHERE session_id = ?");
+                let tx_pending: i64 = sqlx::query(&count_sql)
+                    .bind(&current.id)
+                    .fetch_one(&mut **repair_tx)
+                    .await
+                    .map(|r| r.get::<i64, _>("cnt"))
+                    .map_err(|e| SchedulerError::Database(format!("repair pending count: {e}")))?;
+                let outcome = if transition::is_quiescent(&current, tx_pending) {
+                    "completed"
+                } else {
+                    "canceled"
+                };
+                let sql = pool.prepare_query(
+                    "UPDATE sessions SET outcome = ?, \
+                     desired_by = COALESCE(desired_by, 'system:repair'), \
+                     desired_at = COALESCE(desired_at, CURRENT_TIMESTAMP), \
+                     updated_at = CURRENT_TIMESTAMP, \
+                     completed_at = CURRENT_TIMESTAMP \
+                     WHERE id = ? AND outcome IS NULL AND desired = 'terminate' \
+                     AND executor_state = ?",
+                );
+                sqlx::query(&sql)
+                    .bind(outcome)
+                    .bind(&current.id)
+                    .bind(&current.executor_state)
+                    .execute(&mut **repair_tx)
+                    .await
+                    .map_err(|e| SchedulerError::Database(format!("repair outcome failed: {e}")))?;
+                Ok::<(), SchedulerError>(())
+            }
+            .await;
+            match repaired {
+                Ok(()) => repair_tx
+                    .commit()
+                    .await
+                    .map_err(|e| SchedulerError::Database(format!("commit repair tx: {e}")))?,
+                Err(e) => {
+                    let _ = repair_tx.rollback().await;
+                    return Err(e);
+                }
+            }
         }
         return Ok(ReconcilerAction::Repaired);
     }
 
     if session.outcome.is_some() && session.desired != "terminate" {
-        let sql = pool.prepare_query(
-            "UPDATE sessions SET desired = 'terminate', \
-             desired_by = COALESCE(desired_by, 'system:repair'), \
-             desired_at = COALESCE(desired_at, CURRENT_TIMESTAMP), \
-             updated_at = CURRENT_TIMESTAMP \
-             WHERE id = ? AND desired != 'terminate'",
-        );
-        sqlx::query(&sql)
-            .bind(&session.id)
-            .execute(pool.as_ref())
-            .await
-            .map_err(|e| SchedulerError::Database(format!("repair desired failed: {e}")))?;
-
-        if session.parent_session_id.is_none() && execution.outcome.is_none() {
-            let mut repair_tx =
-                db::executions::begin_execution_tx(pool, &session.execution_id).await?;
-            let exec_outcome =
-                transition::derive_execution_outcome(pool, &mut repair_tx, &session.execution_id)
-                    .await?;
-            let exec_sql = pool.prepare_query(
-                "UPDATE executions SET desired = 'terminate', outcome = ?, \
-                 updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
-                 WHERE id = ? AND outcome IS NULL",
+        let mut repair_tx = db::executions::begin_execution_tx(pool, &session.execution_id).await?;
+        let repair = async {
+            let current = db::sessions::get_in_tx(pool, &mut repair_tx, &session.id).await?;
+            if current.outcome.is_none() || current.desired == "terminate" {
+                return Ok(());
+            }
+            let sql = pool.prepare_query(
+                "UPDATE sessions SET desired = 'terminate', \
+                 desired_by = COALESCE(desired_by, 'system:repair'), \
+                 desired_at = COALESCE(desired_at, CURRENT_TIMESTAMP), \
+                 updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ? AND desired != 'terminate' AND outcome IS NOT NULL",
             );
-            sqlx::query(&exec_sql)
-                .bind(&exec_outcome)
-                .bind(&session.execution_id)
-                .execute(&mut *repair_tx)
+            let repaired = sqlx::query(&sql)
+                .bind(&session.id)
+                .execute(&mut **repair_tx)
                 .await
-                .map_err(|e| {
-                    SchedulerError::Database(format!("repair execution outcome failed: {e}"))
-                })?;
-            emit_execution_repair_event(pool, &mut repair_tx, &session.execution_id, &exec_outcome)
-                .await;
-            repair_tx
+                .map_err(|e| SchedulerError::Database(format!("repair desired failed: {e}")))?;
+            if repaired.rows_affected() == 0 {
+                return Ok(());
+            }
+
+            let tx_exec =
+                db::executions::get_in_tx(pool, &mut repair_tx, &session.execution_id).await?;
+            if current.parent_session_id.is_none() && tx_exec.outcome.is_none() {
+                let derived = transition::derive_execution_outcome(
+                    pool,
+                    &mut repair_tx,
+                    &session.execution_id,
+                )
+                .await?;
+                transition::write_execution_terminal_in_tx(
+                    pool,
+                    &mut repair_tx,
+                    &session.execution_id,
+                    &derived,
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        .await;
+        match repair {
+            Ok(()) => repair_tx
                 .commit()
                 .await
-                .map_err(|e| SchedulerError::Database(format!("commit repair tx: {e}")))?;
+                .map_err(|e| SchedulerError::Database(format!("commit repair tx: {e}")))?,
+            Err(e) => {
+                let _ = repair_tx.rollback().await;
+                return Err(e);
+            }
         }
         return Ok(ReconcilerAction::Repaired);
     }
@@ -234,21 +266,13 @@ pub async fn reconcile(
         let exec_outcome =
             transition::derive_execution_outcome(pool, &mut repair_tx, &session.execution_id)
                 .await?;
-        let sql = pool.prepare_query(
-            "UPDATE executions SET desired = 'terminate', outcome = ?, \
-             updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
-             WHERE id = ? AND outcome IS NULL",
-        );
-        sqlx::query(&sql)
-            .bind(&exec_outcome)
-            .bind(&session.execution_id)
-            .execute(&mut *repair_tx)
-            .await
-            .map_err(|e| {
-                SchedulerError::Database(format!("repair execution outcome failed: {e}"))
-            })?;
-        emit_execution_repair_event(pool, &mut repair_tx, &session.execution_id, &exec_outcome)
-            .await;
+        transition::write_execution_terminal_in_tx(
+            pool,
+            &mut repair_tx,
+            &session.execution_id,
+            &exec_outcome,
+        )
+        .await?;
         repair_tx
             .commit()
             .await
@@ -289,7 +313,7 @@ pub async fn reconcile(
             );
             let result = sqlx::query(&clear_sql)
                 .bind(&session.id)
-                .execute(&mut *repair_tx)
+                .execute(&mut **repair_tx)
                 .await
                 .map_err(|e| SchedulerError::Database(format!("clear stale command: {e}")))?;
             if result.rows_affected() == 0 {
@@ -317,7 +341,7 @@ pub async fn reconcile(
                         let event_payload = serde_json::json!({
                             "message": "Agent recovered from a crash. A message may have been lost."
                         });
-                        let _ = db::events::insert(
+                        let _ = db::events::insert_locked(
                             pool,
                             &session.execution_id,
                             Some(&session.id),
@@ -376,19 +400,7 @@ pub async fn reconcile(
     match (session.desired.as_str(), session.executor_state.as_str()) {
         ("run", "unassigned") => {
             if is_agent_deleted(pool, &session.agent_id).await {
-                transition::transition(
-                    pool,
-                    &session.execution_id,
-                    &session.id,
-                    transition::Action::SetDesired(
-                        transition::Desired::Terminate,
-                        "system:agent_deleted".to_string(),
-                    ),
-                )
-                .await
-                .map_err(|e| {
-                    SchedulerError::Database(format!("agent-deleted terminate failed: {e}"))
-                })?;
+                terminate_and_cascade(pool, session, "system:agent_deleted").await?;
                 return Ok(ReconcilerAction::Mutated);
             }
             if (pending_turns > 0 || session.agent_session_id.is_some()) && command_ok && exec_alive
@@ -415,19 +427,7 @@ pub async fn reconcile(
 
         ("run", "crashed") => {
             if is_agent_deleted(pool, &session.agent_id).await {
-                transition::transition(
-                    pool,
-                    &session.execution_id,
-                    &session.id,
-                    transition::Action::SetDesired(
-                        transition::Desired::Terminate,
-                        "system:agent_deleted".to_string(),
-                    ),
-                )
-                .await
-                .map_err(|e| {
-                    SchedulerError::Database(format!("agent-deleted terminate failed: {e}"))
-                })?;
+                terminate_and_cascade(pool, session, "system:agent_deleted").await?;
                 return Ok(ReconcilerAction::Mutated);
             }
             if recoverable(pool, session, pending_turns).await? {
@@ -439,24 +439,31 @@ pub async fn reconcile(
                 )
                 .await
                 .map_err(|e| SchedulerError::Database(format!("retry recovery failed: {e}")))?;
-                let recovery_event = serde_json::json!({
-                    "executor_state": "unassigned",
-                    "recovery_attempt": session.recovery_attempts + 1,
-                });
-                let _ = db::events::insert(
-                    pool,
-                    &session.execution_id,
-                    Some(&session.id),
-                    "state_change",
-                    &serde_json::to_string(&recovery_event).unwrap_or_default(),
-                )
-                .await;
                 Ok(ReconcilerAction::Mutated)
             } else {
+                match transition::terminate_session_failed(
+                    pool,
+                    &session.execution_id,
+                    &session.id,
+                    "system:crash_unrecoverable",
+                    true,
+                )
+                .await
+                {
+                    Ok(()) => {}
+                    Err(transition::Rejected::Ratchet) => {
+                        return Ok(ReconcilerAction::NoAction);
+                    }
+                    Err(e) => {
+                        return Err(SchedulerError::Database(format!(
+                            "terminate failed failed: {e:?}"
+                        )));
+                    }
+                };
                 let event = serde_json::json!({
                     "message": "Agent session failed permanently. Work or messages may have been lost."
                 });
-                let _ = db::events::insert(
+                let _ = db::events::insert_locked(
                     pool,
                     &session.execution_id,
                     Some(&session.id),
@@ -464,14 +471,8 @@ pub async fn reconcile(
                     &serde_json::to_string(&event).unwrap_or_default(),
                 )
                 .await;
-                transition::transition(
-                    pool,
-                    &session.execution_id,
-                    &session.id,
-                    transition::Action::TerminateFailed("system:crash_unrecoverable".to_string()),
-                )
-                .await
-                .map_err(|e| SchedulerError::Database(format!("terminate failed failed: {e}")))?;
+                let fresh = db::sessions::get_by_id(pool, &session.id).await?;
+                cascade_children(pool, &fresh).await?;
                 Ok(ReconcilerAction::Mutated)
             }
         }
@@ -600,7 +601,7 @@ async fn issue_assign(
     };
     let row = sqlx::query(select_query)
         .bind(&session.id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("select task failed: {e}")))?;
 
@@ -622,7 +623,7 @@ async fn issue_assign(
         };
         sqlx::query(delete_query)
             .bind(row_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| SchedulerError::Database(format!("delete task failed: {e}")))?;
 
@@ -661,14 +662,14 @@ async fn issue_assign(
             .bind(has_payload)
             .bind(wid)
             .bind(&session.id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
     } else {
         sqlx::query(&sql)
             .bind(&token)
             .bind(has_payload)
             .bind(&session.id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
     }
     .map_err(|e| SchedulerError::Database(format!("issue assign failed: {e}")))?;
@@ -698,7 +699,7 @@ async fn issue_assign(
         );
         sqlx::query(&seq_sql)
             .bind(&session.id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await
             .ok()
             .and_then(|row| row.try_get::<i64, _>("next_seq").ok())
@@ -715,7 +716,7 @@ async fn issue_assign(
         );
         let rows = sqlx::query(&mcp_sql)
             .bind(pid)
-            .fetch_all(&mut *tx)
+            .fetch_all(&mut **tx)
             .await
             .map_err(|e| {
                 SchedulerError::Database(format!("list project MCP servers failed: {e}"))
@@ -793,7 +794,7 @@ async fn issue_feed_turn(
     };
     let row = sqlx::query(select_query)
         .bind(&session.id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("select task failed: {e}")))?;
 
@@ -820,7 +821,7 @@ async fn issue_feed_turn(
     };
     sqlx::query(delete_query)
         .bind(row_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("delete task failed: {e}")))?;
 
@@ -835,7 +836,7 @@ async fn issue_feed_turn(
         .bind(&token)
         .bind(&session.id)
         .bind(&session.worker_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("issue feed_turn failed: {e}")))?;
 
@@ -880,7 +881,7 @@ async fn issue_stop_turn(
         .bind(&token)
         .bind(&session.id)
         .bind(&session.worker_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("issue stop_turn failed: {e}")))?;
 
@@ -922,7 +923,7 @@ async fn issue_cancel(
         .bind(&token)
         .bind(&session.id)
         .bind(&session.worker_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("issue cancel failed: {e}")))?;
 
@@ -943,9 +944,27 @@ async fn issue_cancel(
     })
 }
 
-/// Cascade terminate to non-terminal children.
-///
-/// Called from API handlers after setting desired=terminate on a session.
+/// Terminate a session and its subtree.
+async fn terminate_and_cascade(
+    pool: &DbPool,
+    session: &db::sessions::Session,
+    desired_by: &str,
+) -> Result<(), SchedulerError> {
+    match transition::terminate_session(pool, &session.execution_id, &session.id, desired_by).await
+    {
+        Ok(()) => {}
+        Err(transition::Rejected::Ratchet) => {}
+        Err(e) => {
+            return Err(SchedulerError::Database(format!(
+                "{desired_by} terminate failed: {e:?}"
+            )));
+        }
+    }
+    let fresh = db::sessions::get_by_id(pool, &session.id).await?;
+    cascade_children(pool, &fresh).await
+}
+
+/// Cascade terminate to non-terminal descendants.
 pub async fn cascade_children(
     pool: &DbPool,
     session: &db::sessions::Session,
@@ -953,7 +972,7 @@ pub async fn cascade_children(
     let children = db::sessions::get_children(pool, &session.id).await?;
     for child in &children {
         if child.outcome.is_none() && child.desired != "terminate" {
-            let _ = transition::transition(
+            let result = transition::transition(
                 pool,
                 &session.execution_id,
                 &child.id,
@@ -963,12 +982,58 @@ pub async fn cascade_children(
                 ),
             )
             .await;
-            if let Ok(fresh_child) = db::sessions::get_by_id(pool, &child.id).await {
-                Box::pin(cascade_children(pool, &fresh_child)).await?;
+            if let Err(e) = result {
+                let settled = matches!(e, transition::Rejected::Ratchet)
+                    && db::sessions::get_by_id(pool, &child.id)
+                        .await
+                        .is_ok_and(|c| c.desired == "terminate");
+                if !settled {
+                    return Err(SchedulerError::Database(format!(
+                        "cascade to {} failed: {e:?}",
+                        child.id
+                    )));
+                }
             }
         }
+        let fresh_child = db::sessions::get_by_id(pool, &child.id).await?;
+        Box::pin(cascade_children(pool, &fresh_child)).await?;
     }
     Ok(())
+}
+
+/// Repair the execution of a root session that is already terminal.
+pub async fn repair_execution_for_terminal_root(
+    pool: &DbPool,
+    root_session_id: &str,
+) -> Result<(), SchedulerError> {
+    let session = db::sessions::get_by_id(pool, root_session_id).await?;
+    let mut tx = db::executions::begin_execution_tx(pool, &session.execution_id).await?;
+    let repaired = async {
+        let tx_root = db::sessions::get_in_tx(pool, &mut tx, root_session_id).await?;
+        if tx_root.outcome.is_none() || tx_root.desired != "terminate" {
+            return Ok(());
+        }
+        let tx_exec = db::executions::get_in_tx(pool, &mut tx, &session.execution_id).await?;
+        if tx_exec.outcome.is_some() {
+            return Ok(());
+        }
+        let derived =
+            transition::derive_execution_outcome(pool, &mut tx, &session.execution_id).await?;
+        transition::write_execution_terminal_in_tx(pool, &mut tx, &session.execution_id, &derived)
+            .await
+            .map(|_| ())
+    }
+    .await;
+    match repaired {
+        Ok(()) => tx
+            .commit()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("commit repair tx: {e}"))),
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
 }
 
 /// Finalize a terminal session.
@@ -976,27 +1041,57 @@ pub async fn finalize(
     pool: &DbPool,
     session: &db::sessions::Session,
 ) -> Result<(), SchedulerError> {
-    db::task_queue::delete_by_session(pool, &session.id).await?;
+    let mut tx = db::executions::begin_execution_tx(pool, &session.execution_id).await?;
+    let outcome = async {
+        let current = match db::sessions::get_in_tx(pool, &mut tx, &session.id).await {
+            Ok(current) => current,
+            Err(SchedulerError::NotFound(_)) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if current.desired != "terminate" {
+            tracing::debug!(
+                session_id = %current.id,
+                desired = %current.desired,
+                "finalize skipped: the session is no longer terminating"
+            );
+            return Ok(());
+        }
 
-    notify_parent_of_crash(pool, session).await?;
+        db::task_queue::delete_by_session_in_tx(pool, &mut tx, &current.id).await?;
 
-    if session.worker_id.is_some() {
-        let sql = pool.prepare_query(
-            "UPDATE sessions SET worker_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        );
-        sqlx::query(&sql)
-            .bind(&session.id)
-            .execute(pool.as_ref())
-            .await
-            .map_err(|e| SchedulerError::Database(format!("clear worker_id failed: {e}")))?;
+        notify_parent_of_crash_in_tx(pool, &mut tx, &current).await?;
+
+        if current.worker_id.is_some() {
+            let sql = pool.prepare_query(
+                "UPDATE sessions SET worker_id = NULL, updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ?",
+            );
+            sqlx::query(&sql)
+                .bind(&current.id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| SchedulerError::Database(format!("clear worker_id failed: {e}")))?;
+        }
+        Ok(())
     }
+    .await;
 
-    Ok(())
+    match outcome {
+        Ok(()) => tx
+            .commit()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("commit finalize tx: {e}"))),
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
 }
 
 /// Notify parent session of child crash (idempotent).
-async fn notify_parent_of_crash(
+async fn notify_parent_of_crash_in_tx(
     pool: &DbPool,
+    tx: &mut db::executions::ExecutionTx<'_>,
     session: &db::sessions::Session,
 ) -> Result<(), SchedulerError> {
     tracing::debug!(
@@ -1023,19 +1118,6 @@ async fn notify_parent_of_crash(
         return Ok(());
     }
 
-    let parent = match db::sessions::get_by_id(pool, parent_id).await {
-        Ok(p) => p,
-        Err(_) => return Ok(()),
-    };
-    if parent.outcome.is_some() {
-        return Ok(());
-    }
-
-    let execution = db::executions::get_by_id(pool, &session.execution_id).await?;
-    if execution.desired == "terminate" || execution.outcome.is_some() {
-        return Ok(());
-    }
-
     let text = format!("Child session {} crashed.", session.id);
     let notification = serde_json::json!({
         "message": {
@@ -1059,32 +1141,31 @@ async fn notify_parent_of_crash(
     });
     let event_str = serde_json::to_string(&event_payload).unwrap_or_default();
 
-    let mut tx = db::executions::begin_execution_tx(pool, &session.execution_id)
-        .await
-        .map_err(|e| SchedulerError::Database(format!("begin crash notify tx: {e}")))?;
-
-    let tx_exec = db::executions::get_in_tx(pool, &mut tx, &session.execution_id).await?;
+    let tx_exec = db::executions::get_in_tx(pool, &mut *tx, &session.execution_id).await?;
     if tx_exec.desired == "terminate" || tx_exec.outcome.is_some() {
-        let _ = tx.rollback().await;
         return Ok(());
     }
-    let tx_parent = db::sessions::get_in_tx(pool, &mut tx, parent_id).await?;
+    let tx_parent = match db::sessions::get_in_tx(pool, &mut *tx, parent_id).await {
+        Ok(parent) => parent,
+        Err(SchedulerError::NotFound(_)) => return Ok(()),
+        Err(e) => return Err(e),
+    };
     if tx_parent.outcome.is_some() || tx_parent.desired == "terminate" {
-        let _ = tx.rollback().await;
         return Ok(());
     }
 
     let notify_sql = pool.prepare_query(
         "UPDATE sessions SET parent_notified = TRUE, updated_at = CURRENT_TIMESTAMP \
-         WHERE id = ? AND parent_notified = FALSE",
+         WHERE id = ? AND parent_notified = FALSE \
+         AND desired = 'terminate' AND outcome IS NOT NULL AND desired_by = ?",
     );
     let notify_result = sqlx::query(&notify_sql)
         .bind(&session.id)
-        .execute(&mut *tx)
+        .bind(desired_by)
+        .execute(&mut ***tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("CAS parent_notified: {e}")))?;
     if notify_result.rows_affected() == 0 {
-        let _ = tx.rollback().await;
         return Ok(());
     }
 
@@ -1096,7 +1177,7 @@ async fn notify_parent_of_crash(
         );
         let resume_result = sqlx::query(&resume_sql)
             .bind(parent_id)
-            .execute(&mut *tx)
+            .execute(&mut ***tx)
             .await
             .map_err(|e| SchedulerError::Database(format!("auto-resume parent failed: {e}")))?;
 
@@ -1104,19 +1185,17 @@ async fn notify_parent_of_crash(
             let resume_event =
                 serde_json::json!({"desired": "run", "desired_by": "system:child_crash_notify"});
             let resume_event_str = serde_json::to_string(&resume_event).unwrap_or_default();
-            let sc_sql = pool.prepare_query(
-                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                 VALUES (?, ?, 'state_change', ?)",
-            );
-            sqlx::query(&sc_sql)
-                .bind(&session.execution_id)
-                .bind(parent_id)
-                .bind(&resume_event_str)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| {
-                    SchedulerError::Database(format!("auto-resume state_change event: {e}"))
-                })?;
+            db::events::insert_in_tx(
+                pool,
+                &mut *tx,
+                Some(parent_id),
+                "state_change",
+                &resume_event_str,
+            )
+            .await
+            .map_err(|e| {
+                SchedulerError::Database(format!("auto-resume state_change event: {e}"))
+            })?;
         }
     }
 
@@ -1128,23 +1207,13 @@ async fn notify_parent_of_crash(
         .bind(parent_id)
         .bind(&notification_str)
         .bind(&source)
-        .execute(&mut *tx)
+        .execute(&mut ***tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("enqueue parent notification: {e}")))?;
 
-    let event_sql = pool.prepare_query(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, 'platform', ?)",
-    );
-    let _ = sqlx::query(&event_sql)
-        .bind(&session.execution_id)
-        .bind(parent_id)
-        .bind(&event_str)
-        .execute(&mut *tx)
-        .await;
-
-    tx.commit()
+    db::events::insert_in_tx(pool, &mut *tx, Some(parent_id), "platform", &event_str)
         .await
-        .map_err(|e| SchedulerError::Database(format!("commit crash notify tx: {e}")))?;
+        .map_err(|e| SchedulerError::Database(format!("persist crash notice event: {e}")))?;
 
     Ok(())
 }
@@ -1181,29 +1250,4 @@ async fn build_driver_info_in_tx(
         "platform": platform,
         "config": config,
     }))
-}
-
-/// Emit an execution-level state_change event inside a repair transaction.
-pub async fn emit_execution_repair_event(
-    pool: &DbPool,
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
-    execution_id: &str,
-    outcome: &str,
-) {
-    let event = serde_json::json!({
-        "desired": "terminate",
-        "outcome": outcome,
-        "repair": true,
-    });
-    let event_str = serde_json::to_string(&event).unwrap_or_default();
-    let sql = pool.prepare_query(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) \
-         VALUES (?, ?, 'state_change', ?) RETURNING id",
-    );
-    let _ = sqlx::query(&sql)
-        .bind(execution_id)
-        .bind(None::<&str>)
-        .bind(&event_str)
-        .execute(&mut **tx)
-        .await;
 }

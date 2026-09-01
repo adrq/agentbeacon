@@ -193,7 +193,15 @@ pub async fn worker_sync(
         let mut turn_result_stale_worker = false;
         let mut ack_stale_worker = false;
 
-        for attempt in 0..=3u32 {
+        let attempts = if result_tx_execution_id.is_some() {
+            0..=3u32
+        } else {
+            #[allow(clippy::reversed_empty_ranges)]
+            {
+                1..=0u32
+            }
+        };
+        for attempt in attempts {
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(
                     50 * (1u64 << (attempt - 1)),
@@ -208,21 +216,19 @@ pub async fn worker_sync(
                 let mut turn_result_stale_worker_local = false;
                 let mut skip_reconciler_local = false;
 
-                let mut tx = if let Some(ref exec_id) = result_tx_execution_id {
-                    db::executions::begin_execution_tx(pool, exec_id)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::warn!(attempt, error = %e, "begin execution tx failed")
-                        })
-                        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                            e.to_string().into()
-                        })?
-                } else {
-                    pool.begin()
-                        .await
-                        .inspect_err(|e| tracing::warn!(attempt, error = %e, "begin tx failed"))
-                        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
-                };
+                let exec_id = result_tx_execution_id
+                    .as_deref()
+                    .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+                        "no execution for result transaction".into()
+                    })?;
+                let mut tx = db::executions::begin_execution_tx(pool, exec_id)
+                    .await
+                    .inspect_err(|e| {
+                        tracing::warn!(attempt, error = %e, "begin execution tx failed")
+                    })
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                        e.to_string().into()
+                    })?;
 
                 let mut tx_child_session: Option<db::sessions::Session> = None;
                 if let Some(result) = &req.turn_result
@@ -313,7 +319,7 @@ pub async fn worker_sync(
                                 );
                                 let resume_result = sqlx::query(&resume_sql)
                                     .bind(parent_id)
-                                    .execute(&mut *tx)
+                                    .execute(&mut **tx)
                                     .await
                                     .inspect_err(|e| {
                                         tracing::warn!(attempt, error = %e, "auto-resume parent failed")
@@ -328,15 +334,13 @@ pub async fn worker_sync(
                                     let resume_event = serde_json::json!({"desired": "run", "desired_by": "system:turn_complete_notify"});
                                     let resume_event_str =
                                         serde_json::to_string(&resume_event).unwrap_or_default();
-                                    let sc_sql = pool.prepare_query(
-                                        "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                                         VALUES (?, ?, 'state_change', ?)",
-                                    );
-                                    sqlx::query(&sc_sql)
-                                        .bind(&session.execution_id)
-                                        .bind(parent_id)
-                                        .bind(&resume_event_str)
-                                        .execute(&mut *tx)
+                                    db::events::insert_in_tx(
+                                        pool,
+                                        &mut tx,
+                                        Some(parent_id),
+                                        "state_change",
+                                        &resume_event_str,
+                                    )
                                         .await
                                         .inspect_err(|e| {
                                             tracing::warn!(
@@ -378,7 +382,7 @@ pub async fn worker_sync(
                                 .bind(parent_id)
                                 .bind(&payload_json)
                                 .bind(&source)
-                                .execute(&mut *tx)
+                                .execute(&mut **tx)
                                 .await
                                 .inspect_err(|e| {
                                     tracing::warn!(
@@ -396,15 +400,13 @@ pub async fn worker_sync(
                             });
                             let platform_str =
                                 serde_json::to_string(&platform_payload).unwrap_or_default();
-                            let event_sql = pool.prepare_query(
-                                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                                 VALUES (?, ?, 'platform', ?) RETURNING id",
-                            );
-                            sqlx::query(&event_sql)
-                                .bind(&session.execution_id)
-                                .bind(parent_id)
-                                .bind(&platform_str)
-                                .execute(&mut *tx)
+                            db::events::insert_in_tx(
+                                pool,
+                                &mut tx,
+                                Some(parent_id),
+                                "platform",
+                                &platform_str,
+                            )
                                 .await
                                 .inspect_err(|e| {
                                     tracing::warn!(
@@ -422,16 +424,17 @@ pub async fn worker_sync(
                             });
                             let platform_str =
                                 serde_json::to_string(&platform_payload).unwrap_or_default();
-                            let event_sql = pool.prepare_query(
-                                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                                 VALUES (?, ?, 'platform', ?) RETURNING id",
-                            );
-                            let _ = sqlx::query(&event_sql)
-                                .bind(&session.execution_id)
-                                .bind(&session.id)
-                                .bind(&platform_str)
-                                .execute(&mut *tx)
-                                .await;
+                            db::events::insert_in_tx(
+                                pool,
+                                &mut tx,
+                                Some(&session.id),
+                                "platform",
+                                &platform_str,
+                            )
+                            .await
+                            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                                format!("persist crash notice event: {e}").into()
+                            })?;
                         }
                     }
                 }
@@ -635,7 +638,7 @@ async fn process_executor_report(
 /// SSE broadcast is caller's responsibility post-commit.
 async fn process_turn_result_in_tx(
     pool: &db::DbPool,
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut db::executions::ExecutionTx<'_>,
     session: &db::sessions::Session,
     result: &TurnResult,
 ) -> Result<(), String> {
@@ -645,31 +648,26 @@ async fn process_turn_result_in_tx(
                 .map_err(|e| format!("serialize message failed: {e}"))?;
 
             if let Some(seq) = msg.msg_seq {
-                let sql = pool.prepare_query(
-                    "INSERT INTO events (execution_id, session_id, event_type, payload, msg_seq) \
-                     VALUES (?, ?, 'message', ?, ?) \
-                     ON CONFLICT (session_id, msg_seq) DO NOTHING",
-                );
-                sqlx::query(&sql)
-                    .bind(&session.execution_id)
-                    .bind(&session.id)
-                    .bind(&payload_str)
-                    .bind(seq)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|e| format!("insert message event failed: {e}"))?;
+                db::events::insert_with_dedup_in_tx(
+                    pool,
+                    &mut *tx,
+                    &session.id,
+                    "message",
+                    &payload_str,
+                    seq,
+                )
+                .await
+                .map_err(|e| format!("insert message event failed: {e}"))?;
             } else {
-                let sql = pool.prepare_query(
-                    "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                     VALUES (?, ?, 'message', ?)",
-                );
-                sqlx::query(&sql)
-                    .bind(&session.execution_id)
-                    .bind(&session.id)
-                    .bind(&payload_str)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|e| format!("insert message event failed: {e}"))?;
+                db::events::insert_in_tx(
+                    pool,
+                    &mut *tx,
+                    Some(&session.id),
+                    "message",
+                    &payload_str,
+                )
+                .await
+                .map_err(|e| format!("insert message event failed: {e}"))?;
             }
         }
 
@@ -679,16 +677,9 @@ async fn process_turn_result_in_tx(
                 "error_kind": result.error_kind,
             });
             let payload_str = serde_json::to_string(&error_payload).unwrap_or_default();
-            let sql = pool.prepare_query(
-                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                 VALUES (?, ?, 'platform', ?)",
-            );
-            let _ = sqlx::query(&sql)
-                .bind(&session.execution_id)
-                .bind(&session.id)
-                .bind(&payload_str)
-                .execute(&mut **tx)
-                .await;
+            db::events::insert_in_tx(pool, &mut *tx, Some(&session.id), "platform", &payload_str)
+                .await
+                .map_err(|e| format!("persist turn error event: {e}"))?;
         }
     }
 
@@ -704,7 +695,7 @@ enum AckResult {
 /// Process command acknowledgment inside caller's transaction.
 async fn process_command_ack_in_tx(
     pool: &db::DbPool,
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut db::executions::ExecutionTx<'_>,
     worker_id: &str,
     ack_token: &str,
 ) -> Result<AckResult, String> {
@@ -713,7 +704,7 @@ async fn process_command_ack_in_tx(
     );
     let row = sqlx::query(&sql)
         .bind(ack_token)
-        .fetch_optional(&mut **tx)
+        .fetch_optional(&mut ***tx)
         .await
         .map_err(|e| format!("query command_token failed: {e}"))?;
 
@@ -757,7 +748,7 @@ async fn process_command_ack_in_tx(
     let ack_result = sqlx::query(&clear_sql)
         .bind(&session_id)
         .bind(ack_token)
-        .execute(&mut **tx)
+        .execute(&mut ***tx)
         .await
         .map_err(|e| format!("clear command fields failed: {e}"))?;
 
@@ -912,7 +903,7 @@ async fn run_reconciler_for_worker(
                         let event_payload = serde_json::json!({
                             "message": "Agent recovered from a crash. A message may have been lost."
                         });
-                        let _ = db::events::insert(
+                        let _ = db::events::insert_locked(
                             pool,
                             &session.execution_id,
                             Some(&session.id),
@@ -1108,6 +1099,28 @@ pub async fn worker_event(
     }
 
     if request.ephemeral {
+        let owner = db::sessions::get_by_id(&state.db_pool, &request.session_id).await;
+        match owner {
+            Ok(s) if s.worker_id.as_deref() == Some(&request.worker_id) => {}
+            Ok(s) => {
+                tracing::debug!(
+                    "ephemeral worker_event dropped: session {} owned by {:?}, event from {}",
+                    request.session_id,
+                    s.worker_id,
+                    request.worker_id
+                );
+                state.supervisor.kill_worker(&request.worker_id).await;
+                return Ok(StatusCode::OK);
+            }
+            Err(crate::error::SchedulerError::NotFound(_)) => return Ok(StatusCode::OK),
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("ephemeral event: {e}"),
+                ));
+            }
+        }
+
         let _ = state
             .event_broadcast
             .send(crate::app::EventNotification::ephemeral(
@@ -1119,26 +1132,75 @@ pub async fn worker_event(
                 },
             ));
     } else {
-        let event_id = db::events::insert_with_dedup(
+        let mut tx = db::executions::begin_execution_tx(&state.db_pool, &execution_id)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("insert event: {e}"),
+                )
+            })?;
+        match db::sessions::get_in_tx(&state.db_pool, &mut tx, &request.session_id).await {
+            Ok(s) if s.worker_id.as_deref() == Some(&request.worker_id) => {}
+            Ok(s) => {
+                let _ = tx.rollback().await;
+                tracing::debug!(
+                    "worker_event dropped: worker_id changed inside tx for session {}, owned by {:?}, event from {}",
+                    request.session_id,
+                    s.worker_id,
+                    request.worker_id
+                );
+                state.supervisor.kill_worker(&request.worker_id).await;
+                return Ok(StatusCode::OK);
+            }
+            Err(crate::error::SchedulerError::NotFound(_)) => {
+                let _ = tx.rollback().await;
+                return Ok(StatusCode::OK);
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("insert event: {e}"),
+                ));
+            }
+        }
+
+        let inserted = db::events::insert_with_dedup_in_tx(
             &state.db_pool,
-            &execution_id,
+            &mut tx,
             &request.session_id,
             "message",
             &payload_str,
             request.msg_seq,
         )
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("insert event: {e}"),
-            )
-        })?;
+        .await;
+        let inserted = match inserted {
+            Ok(inserted) => {
+                tx.commit().await.map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("insert event: {e}"),
+                    )
+                })?;
+                inserted
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("insert event: {e}"),
+                ));
+            }
+        };
 
-        if let Some(eid) = event_id {
+        if let Some(inserted) = inserted {
             let _ = state
                 .event_broadcast
-                .send(crate::app::EventNotification::persisted(execution_id, eid));
+                .send(crate::app::EventNotification::persisted(
+                    execution_id,
+                    inserted.id,
+                ));
         }
     }
 

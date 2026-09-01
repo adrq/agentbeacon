@@ -71,7 +71,7 @@ pub async fn park_live_sessions_on_boot(pool: &DbPool) -> RestartPauseSummary {
                 "message": format!("{pending} queued message(s) discarded on server restart.")
             });
             let payload_str = serde_json::to_string(&payload).unwrap_or_default();
-            if let Err(e) = db::events::insert(
+            if let Err(e) = db::events::insert_locked(
                 pool,
                 &cand.execution_id,
                 Some(&cand.id),
@@ -94,7 +94,7 @@ pub async fn park_live_sessions_on_boot(pool: &DbPool) -> RestartPauseSummary {
                 "message": "Agent recovered from a crash. A message may have been lost."
             });
             let payload_str = serde_json::to_string(&payload).unwrap_or_default();
-            let _ = db::events::insert(
+            let _ = db::events::insert_locked(
                 pool,
                 &cand.execution_id,
                 Some(&cand.id),
@@ -160,7 +160,7 @@ async fn note_left_running(
     summary.failures.push(cand.id.clone());
     let payload = serde_json::json!({"message": "Session left running after server restart."});
     let payload_str = serde_json::to_string(&payload).unwrap_or_default();
-    let _ = db::events::insert(
+    let _ = db::events::insert_locked(
         pool,
         &cand.execution_id,
         Some(&cand.id),

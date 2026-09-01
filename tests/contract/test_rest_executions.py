@@ -1,4 +1,4 @@
-"""Contract tests for POST /api/executions and GET /api/executions/{id}."""
+"""Contract tests for POST /api/v1/executions and GET /api/v1/executions/{id}."""
 
 import tempfile
 
@@ -32,7 +32,7 @@ def test_create_execution_nonexistent_agent_returns_400(test_database):
     """Nonexistent root_agent_id returns 400 (validation error), not 404."""
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
-            f"{ctx['url']}/api/executions",
+            f"{ctx['url']}/api/v1/executions",
             json={
                 "root_agent_id": "nonexistent-id",
                 "agent_ids": ["nonexistent-id"],
@@ -50,7 +50,7 @@ def test_create_execution_disabled_agent_returns_400(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="disabled-agent", enabled=False)
 
         resp = httpx.post(
-            f"{ctx['url']}/api/executions",
+            f"{ctx['url']}/api/v1/executions",
             json={
                 "root_agent_id": agent_id,
                 "agent_ids": [agent_id],
@@ -65,5 +65,5 @@ def test_create_execution_disabled_agent_returns_400(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_get_execution_nonexistent_returns_404(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        resp = httpx.get(f"{ctx['url']}/api/executions/nonexistent-id", timeout=5)
+        resp = httpx.get(f"{ctx['url']}/api/v1/executions/nonexistent-id", timeout=5)
         assert resp.status_code == 404

@@ -7,14 +7,14 @@ const createdAgentIds: string[] = [];
 
 async function cleanupTestAgents() {
   for (const id of createdAgentIds) {
-    try { await apiDelete(`/api/agents/${id}`); } catch { /* best effort */ }
+    try { await apiDelete(`/api/v1/agents/${id}`); } catch { /* best effort */ }
   }
   createdAgentIds.length = 0;
 
-  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  const agents: { id: string; name: string }[] = await apiGet('/api/v1/agents');
   for (const agent of agents) {
     if (TEST_AGENT_NAMES.includes(agent.name)) {
-      try { await apiDelete(`/api/agents/${agent.id}`); } catch { /* best effort */ }
+      try { await apiDelete(`/api/v1/agents/${agent.id}`); } catch { /* best effort */ }
     }
   }
 }
@@ -70,7 +70,7 @@ test('deep link to agent detail', async ({ page }) => {
   await cleanupTestAgents();
 
   const driverId = await ensureDriver('acp');
-  const agent = await apiPost('/api/agents', {
+  const agent = await apiPost('/api/v1/agents', {
     name: 'Deep Link Agent',
     driver_id: driverId,
     config: { command: 'echo', args: [], timeout: 60 },

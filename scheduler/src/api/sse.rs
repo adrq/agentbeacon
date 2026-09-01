@@ -1,139 +1,131 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use axum::{Router, response::IntoResponse};
-use serde::Deserialize;
 use tokio::sync::broadcast;
 
-use crate::api::types::EventResponse;
+use crate::api::problem::{Problem, ProblemCode};
+use crate::api::types::EventV1;
+use crate::api::versions::EVENTS_MAX_PAGE;
 use crate::app::AppState;
 use crate::db;
 use crate::error::SchedulerError;
 
-/// SSE route: `GET /api/executions/{id}/events/stream`
+/// Catch-up interval for the event stream.
+const CATCH_UP_INTERVAL: Duration = Duration::from_secs(15);
+
+/// SSE route: `GET /api/v1/executions/{id}/events/stream`
 pub fn routes() -> Router<AppState> {
     Router::new().route(
-        "/api/executions/{id}/events/stream",
+        "/executions/{id}/events/stream",
         get(execution_event_stream),
     )
-}
-
-#[derive(Deserialize)]
-struct StreamQuery {
-    since: Option<i64>,
 }
 
 async fn execution_event_stream(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(params): Query<StreamQuery>,
-    headers: HeaderMap,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    // Verify execution exists (404 if not)
-    db::executions::get_by_id(&state.db_pool, &id).await?;
-
-    // Parse Last-Event-ID header for reconnection, or ?since= query param for initial connect.
-    // Header takes precedence (set automatically by EventSource on reconnect).
-    let since_id: i64 = headers
-        .get("Last-Event-ID")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .or(params.since)
-        .unwrap_or(0);
+    db::executions::get_by_id(&state.db_pool, &id)
+        .await
+        .map_err(|e| match e {
+            SchedulerError::NotFound(_) => SchedulerError::Problem(Box::new(
+                Problem::new(ProblemCode::ResourceNotFound).with_detail("no execution has this id"),
+            )),
+            other => other,
+        })?;
 
     let pool = state.db_pool.clone();
     let exec_id = id.clone();
+
     let mut rx = state.event_broadcast.subscribe();
-    let mut last_sent_id = since_id;
+
+    let position = db::events::max_id_for_execution(&pool, &exec_id).await?;
+    let mut last_sent_id = position.unwrap_or(0);
 
     let stream = async_stream::stream! {
-        // Backfill: send all events since since_id
-        match db::events::list_by_execution_since(&pool, &exec_id, last_sent_id).await {
-            Ok(events) => {
-                for event in &events {
+        let history_before = position.and_then(|id| id.checked_add(1));
+        let position_payload = serde_json::json!({
+            "position": position.map(|id| id.to_string()),
+            "history_before": history_before.map(|id| id.to_string()),
+        });
+        yield Ok::<Event, Infallible>(
+            Event::default()
+                .event("position")
+                .data(position_payload.to_string()),
+        );
+
+        let mut interval = tokio::time::interval(CATCH_UP_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+
+        loop {
+            let mut ephemeral = None;
+            tokio::select! {
+                received = rx.recv() => match received {
+                    Ok(notification) => {
+                        if notification.execution_id != exec_id { continue; }
+                        ephemeral = notification.ephemeral;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, execution_id = %exec_id, "SSE receiver lagged, closing");
+                        return;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                },
+                _ = interval.tick() => {}
+            }
+
+            if let Some(eph) = ephemeral
+                && let Ok(json) = serde_json::to_string(&serde_json::json!({
+                    "session_id": eph.session_id,
+                    "msg_seq": eph.msg_seq,
+                    "payload": eph.payload,
+                }))
+            {
+                yield Ok::<Event, Infallible>(
+                    Event::default().event("ephemeral").data(json)
+                );
+            }
+
+            loop {
+                let batch = db::events::list_by_execution_after(
+                    &pool, &exec_id, last_sent_id, EVENTS_MAX_PAGE,
+                ).await;
+                let batch = match batch {
+                    Ok(batch) => batch,
+                    Err(e) => {
+                        tracing::error!(execution_id = %exec_id, error = %e, "SSE read failed");
+                        let problem = Problem::new(ProblemCode::InternalError)
+                            .with_detail("the event stream could not be read");
+                        yield Ok::<Event, Infallible>(
+                            Event::default()
+                                .event("protocol_error")
+                                .data(problem.to_value().to_string()),
+                        );
+                        return;
+                    }
+                };
+                let short_read = (batch.scanned() as i64) < EVENTS_MAX_PAGE;
+                let highest_scanned = batch.highest_id();
+                for event in &batch.events {
+                    let terminal = is_terminal_event(event);
                     if let Some(sse_event) = sse_event_from_db_event(event) {
                         last_sent_id = event.id;
                         yield Ok::<Event, Infallible>(sse_event);
+                    } else {
+                        last_sent_id = event.id;
                     }
+                    if terminal { return; }
                 }
-                if has_terminal_event(&events) { return; }
-
-                // If backfill returned no new events, the client may have already
-                // received the terminal event (reconnect with Last-Event-ID past it).
-                // Check execution status directly to avoid hanging forever.
-                if events.is_empty()
-                    && let Ok(exec) = db::executions::get_by_id(&pool, &exec_id).await
-                    && exec.outcome.is_some()
-                {
-                    return;
+                if let Some(highest) = highest_scanned {
+                    last_sent_id = last_sent_id.max(highest);
                 }
-            }
-            Err(e) => {
-                tracing::error!("SSE backfill failed: {e}");
-                return;
-            }
-        }
-
-        // Live: wait for broadcast notifications
-        loop {
-            match rx.recv().await {
-                Ok(notification) => {
-                    if notification.execution_id != exec_id { continue; }
-
-                    // Ephemeral events: yield directly as named SSE event, no DB query
-                    if let Some(ref eph) = notification.ephemeral {
-                        if let Ok(json) = serde_json::to_string(&serde_json::json!({
-                            "session_id": eph.session_id,
-                            "msg_seq": eph.msg_seq,
-                            "payload": eph.payload,
-                        })) {
-                            yield Ok::<Event, Infallible>(
-                                Event::default().event("ephemeral").data(json)
-                            );
-                        }
-                        continue;
-                    }
-
-                    // Persisted events: query DB as before
-                    match db::events::list_by_execution_since(&pool, &exec_id, last_sent_id).await {
-                        Ok(events) => {
-                            for event in &events {
-                                if let Some(sse_event) = sse_event_from_db_event(event) {
-                                    last_sent_id = event.id;
-                                    yield Ok::<Event, Infallible>(sse_event);
-                                }
-                            }
-                            if has_terminal_event(&events) { return; }
-                        }
-                        Err(e) => {
-                            tracing::error!("SSE query failed: {e}");
-                            return;
-                        }
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(lagged = n, "SSE receiver lagged, backfilling from DB");
-                    match db::events::list_by_execution_since(&pool, &exec_id, last_sent_id).await {
-                        Ok(events) => {
-                            for event in &events {
-                                if let Some(sse_event) = sse_event_from_db_event(event) {
-                                    last_sent_id = event.id;
-                                    yield Ok::<Event, Infallible>(sse_event);
-                                }
-                            }
-                            if has_terminal_event(&events) { return; }
-                        }
-                        Err(e) => {
-                            tracing::error!("SSE backfill after lag failed: {e}");
-                            return;
-                        }
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => return,
+                if short_read { break; }
             }
         }
     };
@@ -148,15 +140,10 @@ async fn execution_event_stream(
     ))
 }
 
-/// Convert a DB event into an SSE Event.
-/// Uses `id:` for Last-Event-ID reconnection, `data:` contains full JSON.
-/// No `event:` field — all events go through the default `onmessage` handler.
-/// Returns None on serialization failure — caller should skip the event
-/// rather than send empty data (which would advance Last-Event-ID and
-/// permanently lose the event on reconnect).
+/// Convert a DB event into an SSE Event carrying the same record REST serves.
 fn sse_event_from_db_event(event: &db::events::Event) -> Option<Event> {
-    let response = EventResponse::from(event.clone());
-    match serde_json::to_string(&response) {
+    let record = EventV1::from(event.clone());
+    match serde_json::to_string(&record) {
         Ok(json) => Some(Event::default().id(event.id.to_string()).data(json)),
         Err(e) => {
             tracing::warn!(event_id = event.id, error = %e, "failed to serialize SSE event, skipping");
@@ -165,21 +152,18 @@ fn sse_event_from_db_event(event: &db::events::Event) -> Option<Event> {
     }
 }
 
-/// Check if any event in the batch is an execution-level terminal state_change.
+/// Check if an event is an execution-level terminal state_change.
 /// Session-level terminal events (session_id is Some) are ignored — a child
 /// session completing does not mean the execution is done.
-fn has_terminal_event(events: &[db::events::Event]) -> bool {
-    events.iter().any(|e| {
-        e.session_id.is_none()
-            && e.event_type == "state_change"
-            && serde_json::from_str::<serde_json::Value>(&e.payload)
-                .ok()
-                .is_some_and(|v| {
-                    // Current format uses "outcome"; legacy events may use "to"
-                    let outcome = v.get("outcome").and_then(|t| t.as_str());
-                    let to = v.get("to").and_then(|t| t.as_str());
-                    let terminal = outcome.or(to);
-                    matches!(terminal, Some("completed" | "failed" | "canceled"))
-                })
-    })
+fn is_terminal_event(event: &db::events::Event) -> bool {
+    event.session_id.is_none()
+        && event.event_type == "state_change"
+        && serde_json::from_str::<serde_json::Value>(&event.payload)
+            .ok()
+            .is_some_and(|v| {
+                let outcome = v.get("outcome").and_then(|t| t.as_str());
+                let to = v.get("to").and_then(|t| t.as_str());
+                let terminal = outcome.or(to);
+                matches!(terminal, Some("completed" | "failed" | "canceled"))
+            })
 }

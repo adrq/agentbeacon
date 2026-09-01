@@ -10,7 +10,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::api::types::{EventResponse, SessionResponse};
+use crate::api::problem::{Problem, ProblemCode};
+use crate::api::types::SessionResponse;
 use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
@@ -72,7 +73,7 @@ struct DiffResponse {
     content_identical: bool,
 }
 
-/// Get a single session by ID (GET /api/sessions/{id})
+/// Get a single session by ID (GET /api/v1/sessions/{id})
 async fn get_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -85,7 +86,7 @@ async fn get_session(
     Ok(Json(resp))
 }
 
-/// List sessions with optional filters (GET /api/sessions)
+/// List sessions with optional filters (GET /api/v1/sessions)
 async fn list_sessions(
     State(state): State<AppState>,
     Query(query): Query<ListSessionsQuery>,
@@ -103,30 +104,53 @@ async fn list_sessions(
     Ok(Json(responses))
 }
 
-/// Get events for a session (GET /api/sessions/{id}/events)
+/// Get a bounded window of events for a session
+/// (GET /api/v1/sessions/{id}/events)
 async fn session_events(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<EventResponse>>, SchedulerError> {
+    Query(query): Query<crate::api::types::EventPageQuery>,
+) -> Result<Json<crate::api::types::PageV1<crate::api::types::EventV1>>, SchedulerError> {
+    use crate::api::types::{EventWindow, event_page};
+
     db::sessions::get_by_id(&state.db_pool, &id).await?;
 
-    let events = db::events::list_by_session(&state.db_pool, &id).await?;
-    Ok(Json(events.into_iter().map(Into::into).collect()))
+    let (window, limit) = query.resolve()?;
+    let events = match window {
+        EventWindow::Before(before) => {
+            db::events::list_by_session_before(&state.db_pool, &id, before, limit + 1).await?
+        }
+        EventWindow::After(after) => {
+            db::events::list_by_session_after(&state.db_pool, &id, after, limit + 1).await?
+        }
+    };
+    Ok(Json(event_page(events, limit, &window)))
 }
 
 /// True if the Authorization header carries a valid agent-session bearer token.
-async fn is_agent_session_bearer(headers: &HeaderMap, state: &AppState) -> bool {
-    if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
-        && auth.len() > 7
-        && auth[..7].eq_ignore_ascii_case("bearer ")
-    {
-        let token = &auth[7..];
-        return db::sessions::get_by_id(&state.db_pool, token).await.is_ok();
+pub async fn is_agent_session_bearer(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<bool, SchedulerError> {
+    let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
+        return Ok(false);
+    };
+    if auth.len() <= 7 || !auth[..7].eq_ignore_ascii_case("bearer ") {
+        return Ok(false);
     }
-    false
+    bearer_names_a_session(&state.db_pool, &auth[7..]).await
 }
 
-/// Post a user message to a session (POST /api/sessions/{id}/message)
+/// Whether `token` names an existing session.
+async fn bearer_names_a_session(pool: &db::DbPool, token: &str) -> Result<bool, SchedulerError> {
+    match db::sessions::get_by_id(pool, token).await {
+        Ok(_) => Ok(true),
+        Err(SchedulerError::NotFound(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Post a user message to a session (POST /api/v1/sessions/{id}/message)
 async fn post_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -155,9 +179,9 @@ async fn post_message(
                 "message must contain at most one question_answer part".to_string(),
             ));
         }
-        AnswerValidation::MissingBatchId => {
+        AnswerValidation::MissingEscalationEventId => {
             return Err(SchedulerError::ValidationFailed(
-                "question_answer part requires a string batch_id".to_string(),
+                "question_answer part requires a string escalation_event_id".to_string(),
             ));
         }
         AnswerValidation::SenderPresent => {
@@ -171,33 +195,37 @@ async fn post_message(
             ));
         }
         AnswerValidation::Valid {
-            batch_id,
+            escalation_event_id,
             answer_text,
         } => {
-            if resolution::reserved_envelope_exceeds_cap(&batch_id, answer_text.as_deref()) {
-                return Err(SchedulerError::ValidationFailed(
-                    "answer text exceeds maximum length".to_string(),
-                ));
+            if resolution::reserved_envelope_exceeds_cap(answer_text.as_deref()) {
+                return Err(SchedulerError::Problem(Box::new(
+                    Problem::new(ProblemCode::DecisionAnswerTooLarge)
+                        .with_detail("answer text exceeds the maximum length"),
+                )));
             }
-            let owner = db::events::find_batch_owner(&state.db_pool, &batch_id)
+            let escalation = db::events::get_escalation(&state.db_pool, escalation_event_id)
                 .await?
                 .ok_or_else(|| {
-                    SchedulerError::NotFound(format!("batch {batch_id} does not exist"))
+                    SchedulerError::Problem(Box::new(
+                        Problem::new(ProblemCode::DecisionNotFound)
+                            .with_detail("no decision has this id"),
+                    ))
                 })?;
-            if owner.session_id != id {
-                return Err(SchedulerError::Conflict(
-                    "batch belongs to a different session".to_string(),
-                ));
+            if escalation.session_id != id {
+                return Err(SchedulerError::Problem(Box::new(
+                    Problem::new(ProblemCode::DecisionWrongSession)
+                        .with_detail("this decision belongs to a different session"),
+                )));
             }
-            if is_agent_session_bearer(&headers, &state).await {
-                return Err(SchedulerError::Forbidden(
-                    "answering is not available via agent session auth".to_string(),
-                ));
+            if is_agent_session_bearer(&headers, &state).await? {
+                return Err(SchedulerError::Problem(Box::new(
+                    Problem::new(ProblemCode::AuthForbidden)
+                        .with_detail("answering is not available via agent session auth"),
+                )));
             }
             Some(transition::ResolutionMarker {
-                batch_id,
-                owner_execution_id: owner.execution_id,
-                owner_session_id: owner.session_id,
+                escalation,
                 answer_text,
             })
         }
@@ -224,8 +252,27 @@ async fn post_message(
                     "session or execution cannot accept messages".into(),
                 ));
             }
-            Err(transition::Rejected::AlreadyResolved) => {
-                return Err(SchedulerError::Conflict("batch is already resolved".into()));
+            Err(transition::Rejected::AlreadyResolved(cand)) => {
+                return Err(SchedulerError::Problem(Box::new(
+                    Problem::new(ProblemCode::DecisionAlreadyResolved)
+                        .with_detail("this decision was already resolved")
+                        .with_extension(
+                            "resolution",
+                            crate::api::escalate::resolution_extension(&cand),
+                        ),
+                )));
+            }
+            Err(transition::Rejected::DecisionExpired) => {
+                return Err(SchedulerError::Problem(Box::new(
+                    Problem::new(ProblemCode::DecisionExpired)
+                        .with_detail("the execution this decision belongs to has ended"),
+                )));
+            }
+            Err(transition::Rejected::ExecutionTerminated) => {
+                return Err(SchedulerError::Problem(Box::new(
+                    Problem::new(ProblemCode::ExecutionTerminated)
+                        .with_detail("this execution has ended"),
+                )));
             }
             Err(transition::Rejected::NotFound) => {
                 return Err(SchedulerError::NotFound("session does not exist".into()));
@@ -247,7 +294,7 @@ async fn post_message(
     Ok((
         StatusCode::OK,
         Json(json!({
-            "event_id": event_id,
+            "event_id": event_id.to_string(),
             "session_status": "working",
             "execution_status": "working",
         })),
@@ -270,15 +317,15 @@ async fn terminate_session(
     let session = db::sessions::get_by_id(&state.db_pool, &id).await?;
 
     use crate::services::{reconciler, transition};
-    let already_terminated = match transition::transition(
+    let already_terminated = match transition::terminate_session(
         &state.db_pool,
         &session.execution_id,
         &session.id,
-        transition::Action::SetDesired(transition::Desired::Terminate, "user".to_string()),
+        "user",
     )
     .await
     {
-        Ok(_) => false,
+        Ok(()) => false,
         Err(transition::Rejected::Ratchet) => true,
         Err(e) => {
             return Err(SchedulerError::Database(format!(
@@ -288,48 +335,11 @@ async fn terminate_session(
     };
 
     if already_terminated && session.parent_session_id.is_none() {
-        let exec = db::executions::get_by_id(&state.db_pool, &session.execution_id).await?;
-        if exec.outcome.is_none() {
-            let mut fix_tx =
-                db::executions::begin_execution_tx(&state.db_pool, &session.execution_id)
-                    .await
-                    .map_err(|e| SchedulerError::Database(format!("begin fix tx: {e}")))?;
-            let tx_root = db::sessions::get_in_tx(&state.db_pool, &mut fix_tx, &session.id)
-                .await
-                .map_err(|e| SchedulerError::Database(format!("recheck root: {e}")))?;
-            if tx_root.outcome.is_none() || tx_root.desired != "terminate" {
-                let _ = fix_tx.rollback().await;
-            } else {
-                let derived = transition::derive_execution_outcome(
-                    &state.db_pool,
-                    &mut fix_tx,
-                    &session.execution_id,
-                )
-                .await?;
-                let fix_sql = state.db_pool.prepare_query(
-                    "UPDATE executions SET desired = 'terminate', outcome = ?, \
-                     updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
-                     WHERE id = ? AND outcome IS NULL",
-                );
-                let _ = sqlx::query(&fix_sql)
-                    .bind(&derived)
-                    .bind(&session.execution_id)
-                    .execute(&mut *fix_tx)
-                    .await;
-                reconciler::emit_execution_repair_event(
-                    &state.db_pool,
-                    &mut fix_tx,
-                    &session.execution_id,
-                    &derived,
-                )
-                .await;
-                let _ = fix_tx.commit().await;
-            }
-        }
+        reconciler::repair_execution_for_terminal_root(&state.db_pool, &session.id).await?;
     }
 
     let fresh = db::sessions::get_by_id(&state.db_pool, &id).await?;
-    let _ = reconciler::cascade_children(&state.db_pool, &fresh).await;
+    reconciler::cascade_children(&state.db_pool, &fresh).await?;
 
     state.task_queue.wake_waiters();
 
@@ -341,7 +351,7 @@ async fn terminate_session(
     Ok(Json(json!({"terminated": true})))
 }
 
-/// Continue from a terminal session (POST /api/sessions/{id}/continue)
+/// Continue from a terminal session (POST /api/v1/sessions/{id}/continue)
 /// Creates a new sibling session under the same parent.
 #[derive(Debug, Deserialize)]
 struct ContinueFromRequest {
@@ -462,7 +472,7 @@ async fn continue_from_handler(
     );
     let recheck = sqlx::query(&recheck_sql)
         .bind(&id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("recheck old session: {e}")))?;
 
@@ -480,7 +490,7 @@ async fn continue_from_handler(
         pool.prepare_query("SELECT desired, outcome FROM executions WHERE id = ?");
     let exec_row = sqlx::query(&exec_recheck_sql)
         .bind(&old_session.execution_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("recheck execution: {e}")))?;
     let exec_desired: String = exec_row.get("desired");
@@ -496,7 +506,7 @@ async fn continue_from_handler(
         pool.prepare_query("SELECT desired, outcome FROM sessions WHERE id = ?");
     let parent_row = sqlx::query(&parent_recheck_sql)
         .bind(&parent_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("recheck parent: {e}")))?;
     let parent_desired: String = parent_row.get("desired");
@@ -512,7 +522,7 @@ async fn continue_from_handler(
         pool.prepare_query("SELECT enabled FROM agents WHERE id = ? AND deleted_at IS NULL");
     let agent_row = sqlx::query(&agent_sql)
         .bind(&old_session.agent_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("recheck agent: {e}")))?;
     match agent_row {
@@ -539,7 +549,7 @@ async fn continue_from_handler(
         pool.prepare_query("SELECT slug FROM sessions WHERE parent_session_id = ? AND slug != ''");
     let slug_rows = sqlx::query(&slug_sql)
         .bind(&parent_id)
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("sibling slugs: {e}")))?;
     let existing_slugs: Vec<String> = slug_rows.iter().map(|r| r.get("slug")).collect();
@@ -563,7 +573,7 @@ async fn continue_from_handler(
         .bind(&slug)
         .bind(&id)
         .bind(&old_session.sandbox_policy)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("create continued session: {e}")))?;
 
@@ -574,7 +584,7 @@ async fn continue_from_handler(
         );
         sqlx::query(&clear_wt_sql)
             .bind(&id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| SchedulerError::Database(format!("clear old worktree: {e}")))?;
     }
@@ -588,7 +598,7 @@ async fn continue_from_handler(
             sqlx::query(&set_sql)
                 .bind(asid)
                 .bind(&new_session_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|e| SchedulerError::Database(format!("transfer agent_session_id: {e}")))?;
 
@@ -599,7 +609,7 @@ async fn continue_from_handler(
             let clear_result = sqlx::query(&clear_sql)
                 .bind(&id)
                 .bind(asid)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|e| {
                     SchedulerError::Database(format!("clear old agent_session_id: {e}"))
@@ -614,15 +624,7 @@ async fn continue_from_handler(
         }
     }
 
-    let prompt_event_sql = pool.prepare_query(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) \
-         VALUES (?, ?, 'message', ?)",
-    );
-    sqlx::query(&prompt_event_sql)
-        .bind(&old_session.execution_id)
-        .bind(&new_session_id)
-        .bind(&prompt_str)
-        .execute(&mut *tx)
+    db::events::insert_in_tx(pool, &mut tx, Some(&new_session_id), "message", &prompt_str)
         .await
         .map_err(|e| SchedulerError::Database(format!("insert prompt event: {e}")))?;
 
@@ -634,7 +636,7 @@ async fn continue_from_handler(
         .bind(&new_session_id)
         .bind(&prompt_str)
         .bind("user")
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("enqueue prompt: {e}")))?;
 
@@ -646,26 +648,24 @@ async fn continue_from_handler(
         );
         let resume_result = sqlx::query(&resume_sql)
             .bind(&parent_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         if resume_result.as_ref().is_ok_and(|r| r.rows_affected() > 0) {
             let resume_event =
                 serde_json::json!({"desired": "run", "desired_by": "system:continue_from_notify"});
             let resume_event_str = serde_json::to_string(&resume_event).unwrap_or_default();
-            let sc_sql = pool.prepare_query(
-                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                 VALUES (?, ?, 'state_change', ?)",
-            );
-            sqlx::query(&sc_sql)
-                .bind(&old_session.execution_id)
-                .bind(&parent_id)
-                .bind(&resume_event_str)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| {
-                    SchedulerError::Database(format!("auto-resume state_change event: {e}"))
-                })?;
+            db::events::insert_in_tx(
+                pool,
+                &mut tx,
+                Some(&parent_id),
+                "state_change",
+                &resume_event_str,
+            )
+            .await
+            .map_err(|e| {
+                SchedulerError::Database(format!("auto-resume state_change event: {e}"))
+            })?;
         }
     }
     sqlx::query(&enqueue_sql)
@@ -673,18 +673,11 @@ async fn continue_from_handler(
         .bind(&parent_id)
         .bind(&notification_str)
         .bind(&source)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("enqueue parent notification: {e}")))?;
 
-    let event_sql = pool.prepare_query(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, 'platform', ?)",
-    );
-    sqlx::query(&event_sql)
-        .bind(&old_session.execution_id)
-        .bind(&parent_id)
-        .bind(&event_str)
-        .execute(&mut *tx)
+    db::events::insert_in_tx(pool, &mut tx, Some(&parent_id), "platform", &event_str)
         .await
         .map_err(|e| SchedulerError::Database(format!("insert platform event: {e}")))?;
 
@@ -756,14 +749,14 @@ struct WorktreeInfoResponse {
     exists: bool,
 }
 
-/// Query parameters for DELETE /api/sessions/{id}/worktree
+/// Query parameters for DELETE /api/v1/sessions/{id}/worktree
 #[derive(Debug, Deserialize)]
 struct DeleteWorktreeQuery {
     dry_run: Option<bool>,
     delete_branch: Option<bool>,
 }
 
-/// Delete a session's worktree (DELETE /api/sessions/{id}/worktree)
+/// Delete a session's worktree (DELETE /api/v1/sessions/{id}/worktree)
 async fn delete_session_worktree(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -926,7 +919,7 @@ async fn delete_session_worktree(
     })))
 }
 
-/// Get worktree info for a session (GET /api/sessions/{id}/worktree)
+/// Get worktree info for a session (GET /api/v1/sessions/{id}/worktree)
 async fn session_worktree_info(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -988,7 +981,7 @@ struct BranchesResponse {
     current_branch: Option<String>,
 }
 
-/// Get local branches in a session's worktree (GET /api/sessions/{id}/worktree/branches)
+/// Get local branches in a session's worktree (GET /api/v1/sessions/{id}/worktree/branches)
 async fn session_branches(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1062,7 +1055,7 @@ async fn session_branches(
     }))
 }
 
-/// Get diff for a session's worktree (GET /api/sessions/{id}/worktree/diff)
+/// Get diff for a session's worktree (GET /api/v1/sessions/{id}/worktree/diff)
 async fn session_diff(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1263,7 +1256,7 @@ async fn session_diff(
                 commits,
                 content_identical: false,
             };
-            return Ok((StatusCode::PAYLOAD_TOO_LARGE, Json(response)).into_response());
+            return Ok((StatusCode::OK, Json(response)).into_response());
         }
         (Some(patch_output), None)
     };
@@ -1388,7 +1381,7 @@ pub struct RecoverSessionResponse {
     pub execution_recovered: bool,
 }
 
-/// Attempt to recover a failed session (POST /api/sessions/{id}/recover)
+/// Attempt to recover a failed session (POST /api/v1/sessions/{id}/recover)
 async fn recover_session_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1472,13 +1465,32 @@ async fn recover_session_handler(
                 "execution became terminal during recovery".to_string(),
             ));
         }
+        let root_sql = pool.prepare_query(
+            "SELECT desired, outcome FROM sessions              WHERE execution_id = ? AND parent_session_id IS NULL",
+        );
+        let root_row = sqlx::query(&root_sql)
+            .bind(&session.execution_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("root recheck: {e}")))?;
+        let root_terminal = root_row.is_some_and(|row| {
+            let desired: String = row.get("desired");
+            let outcome: Option<String> = row.get("outcome");
+            desired == "terminate" || outcome.is_some()
+        });
+        if root_terminal {
+            let _ = tx.rollback().await;
+            return Err(SchedulerError::Conflict(
+                "session state changed concurrently".to_string(),
+            ));
+        }
     }
 
     let agent_sql =
         pool.prepare_query("SELECT enabled FROM agents WHERE id = ? AND deleted_at IS NULL");
     let agent_row = sqlx::query(&agent_sql)
         .bind(&session.agent_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("recheck agent: {e}")))?;
     match agent_row {
@@ -1524,7 +1536,7 @@ async fn recover_session_handler(
     };
     let result = sqlx::query(&sql)
         .bind(&id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("manual recovery failed: {e}")))?;
 
@@ -1544,13 +1556,12 @@ async fn recover_session_handler(
             .bind(&id)
             .bind(payload_str)
             .bind(None::<&str>)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| SchedulerError::Database(format!("enqueue message failed: {e}")))?;
     }
 
-    let execution_recovered = if is_root && (exec.desired == "terminate" || exec.outcome.is_some())
-    {
+    let execution_recovered = if is_root {
         let tx_exec = db::executions::get_in_tx(pool, &mut tx, &session.execution_id)
             .await
             .map_err(|e| SchedulerError::Database(format!("execution recheck: {e}")))?;
@@ -1562,7 +1573,7 @@ async fn recover_session_handler(
             );
             sqlx::query(&exec_sql)
                 .bind(&session.execution_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|e| SchedulerError::Database(format!("execution recovery failed: {e}")))?;
             true
@@ -1575,25 +1586,20 @@ async fn recover_session_handler(
 
     let recovery_event = serde_json::json!({"desired": "run", "recovery": true});
     let recovery_event_str = serde_json::to_string(&recovery_event).unwrap_or_default();
-    let evt_sql = pool.prepare_query(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, 'state_change', ?)",
-    );
-    let _ = sqlx::query(&evt_sql)
-        .bind(&session.execution_id)
-        .bind(&session.id)
-        .bind(&recovery_event_str)
-        .execute(&mut *tx)
-        .await;
+    db::events::insert_in_tx(
+        pool,
+        &mut tx,
+        Some(&session.id),
+        "state_change",
+        &recovery_event_str,
+    )
+    .await
+    .map_err(|e| SchedulerError::Database(format!("persist recovery event: {e}")))?;
 
     if execution_recovered {
-        let exec_evt_sql = pool.prepare_query(
-            "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, NULL, 'state_change', ?)",
-        );
-        let _ = sqlx::query(&exec_evt_sql)
-            .bind(&session.execution_id)
-            .bind(&recovery_event_str)
-            .execute(&mut *tx)
-            .await;
+        db::events::insert_in_tx(pool, &mut tx, None, "state_change", &recovery_event_str)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("persist recovery event: {e}")))?;
     }
 
     tx.commit()
@@ -1625,36 +1631,30 @@ async fn recover_session_handler(
 /// Session routes
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/sessions", get(list_sessions))
-        .route("/api/sessions/{id}", get(get_session))
-        .route("/api/sessions/{id}/events", get(session_events))
+        .route("/sessions", get(list_sessions))
+        .route("/sessions/{id}", get(get_session))
+        .route("/sessions/{id}/events", get(session_events))
         .route(
-            "/api/sessions/{id}/worktree",
+            "/sessions/{id}/worktree",
             get(session_worktree_info).delete(delete_session_worktree),
         )
-        .route("/api/sessions/{id}/worktree/diff", get(session_diff))
+        .route("/sessions/{id}/worktree/diff", get(session_diff))
+        .route("/sessions/{id}/worktree/branches", get(session_branches))
+        .route("/sessions/{id}/message", axum::routing::post(post_message))
         .route(
-            "/api/sessions/{id}/worktree/branches",
-            get(session_branches),
-        )
-        .route(
-            "/api/sessions/{id}/message",
-            axum::routing::post(post_message),
-        )
-        .route(
-            "/api/sessions/{id}/terminate",
+            "/sessions/{id}/terminate",
             axum::routing::post(terminate_session),
         )
         .route(
-            "/api/sessions/{id}/stop",
+            "/sessions/{id}/stop",
             axum::routing::post(stop_turn_handler),
         )
         .route(
-            "/api/sessions/{id}/continue",
+            "/sessions/{id}/continue",
             axum::routing::post(continue_from_handler),
         )
         .route(
-            "/api/sessions/{id}/recover",
+            "/sessions/{id}/recover",
             axum::routing::post(recover_session_handler),
         )
 }

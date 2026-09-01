@@ -269,11 +269,11 @@ async fn delete_mcp_server(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/mcp-servers",
+            "/mcp-servers",
             get(list_mcp_servers).post(create_mcp_server),
         )
         .route(
-            "/api/mcp-servers/{id}",
+            "/mcp-servers/{id}",
             get(get_mcp_server)
                 .patch(update_mcp_server)
                 .delete(delete_mcp_server),

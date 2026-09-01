@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { Event, MessagePayload, MessagePart, SessionIdentity } from '../types';
-  import { isMessagePayload } from '../types';
+  import type { Event, SessionIdentity } from '../types';
   import { api } from '../api';
+  import { buildThread } from '../threadMerge';
   import { sessionEventsQuery } from '../queries/executions';
   import Markdown from './Markdown.svelte';
 
@@ -16,14 +16,6 @@
 
   let { sessionA, sessionB, sessionIdentity, sessionSettled, sseActive, onclose }: Props = $props();
 
-  interface ThreadEntry {
-    eventId: number;
-    senderSessionId: string;
-    senderSlug: string;
-    parts: MessagePart[];
-    time: string;
-  }
-
   const eventsAQuery = sessionEventsQuery(() => sessionA, () => sessionSettled(sessionA), () => sseActive);
   const eventsBQuery = sessionEventsQuery(() => sessionB, () => sessionSettled(sessionB), () => sseActive);
 
@@ -33,67 +25,35 @@
   let slugA = $derived(sessionIdentity.get(sessionA)?.slug ?? sessionA.slice(0, 8));
   let slugB = $derived(sessionIdentity.get(sessionB)?.slug ?? sessionB.slice(0, 8));
 
-  function hasSenderPart(event: Event, senderSessionId: string): boolean {
-    if (event.event_type !== 'message' || !isMessagePayload(event.payload)) return false;
-    return event.payload.parts.some((p: MessagePart) =>
-      'data' in p && typeof p.data === 'object' && p.data !== null &&
-      (p.data as Record<string, unknown>).type === 'sender' &&
-      (p.data as Record<string, unknown>).session_id === senderSessionId
-    );
-  }
+  // Rows the user asked to see whole, keyed by event id.
+  let fullPayloads = $state<Map<string, Event>>(new Map());
+  let loadingFull = $state<Set<string>>(new Set());
 
-  function extractParts(payload: MessagePayload): MessagePart[] {
-    return payload.parts.filter((p: MessagePart) => {
-      if ('data' in p && typeof p.data === 'object' && p.data !== null) {
-        const d = p.data as Record<string, unknown>;
-        if (d.type === 'sender') return false;
-      }
-      return true;
-    });
-  }
-
-  function formatTime(iso: string): string {
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-
-  function buildThread(eventsA: Event[], eventsB: Event[]): ThreadEntry[] {
-    const seen = new Set<number>();
-    const entries: ThreadEntry[] = [];
-
-    for (const ev of eventsA) {
-      if (seen.has(ev.id)) continue;
-      if (hasSenderPart(ev, sessionB)) {
-        seen.add(ev.id);
-        entries.push({
-          eventId: ev.id,
-          senderSessionId: sessionB,
-          senderSlug: slugB,
-          parts: extractParts(ev.payload as MessagePayload),
-          time: formatTime(ev.created_at),
-        });
-      }
+  async function loadFull(executionId: string, eventId: string) {
+    if (loadingFull.has(eventId) || fullPayloads.has(eventId)) return;
+    loadingFull = new Set(loadingFull).add(eventId);
+    try {
+      const full = await api.getExecutionEvent(executionId, eventId);
+      fullPayloads = new Map(fullPayloads).set(eventId, full);
+    } catch {
+      // Leave the affordance in place so the user can retry.
+    } finally {
+      const next = new Set(loadingFull);
+      next.delete(eventId);
+      loadingFull = next;
     }
-
-    for (const ev of eventsB) {
-      if (seen.has(ev.id)) continue;
-      if (hasSenderPart(ev, sessionA)) {
-        seen.add(ev.id);
-        entries.push({
-          eventId: ev.id,
-          senderSessionId: sessionA,
-          senderSlug: slugA,
-          parts: extractParts(ev.payload as MessagePayload),
-          time: formatTime(ev.created_at),
-        });
-      }
-    }
-
-    entries.sort((a, b) => a.eventId - b.eventId);
-    return entries;
   }
 
-  let thread = $derived(buildThread(eventsAQuery.data ?? [], eventsBQuery.data ?? []));
+  /** Serve the full row once it has been fetched. */
+  function resolveEvent(ev: Event): Event {
+    return fullPayloads.get(ev.id) ?? ev;
+  }
+
+  let thread = $derived(buildThread(
+    (eventsAQuery.data ?? []).map(resolveEvent),
+    (eventsBQuery.data ?? []).map(resolveEvent),
+    { sessionA, slugA, sessionB, slugB },
+  ));
 </script>
 
 <div class="thread-view">
@@ -121,17 +81,49 @@
             <span class="entry-time">{entry.time}</span>
           </div>
           <div class="entry-body">
-            {#each entry.parts as part}
+            {#each entry.parts as { part, omitted }}
               {#if 'text' in part && part.text}
                 <Markdown text={part.text} />
               {:else if 'raw' in part && part.mediaType?.startsWith('image/')}
-                <img src="data:{part.mediaType};base64,{part.raw}" alt={part.filename ?? 'Image'} class="thread-image" />
+                {#if part.raw}
+                  <img src="data:{part.mediaType};base64,{part.raw}" alt={part.filename ?? 'Image'} class="thread-image" />
+                {:else if omitted}
+                  <span class="thread-file">[image] {part.filename ?? 'image'} not delivered inline</span>
+                {:else}
+                  <span class="thread-file">[image] {part.filename ?? 'image'} is empty</span>
+                {/if}
               {:else if 'url' in part || ('raw' in part && !part.mediaType?.startsWith('image/'))}
                 <span class="thread-file">[file] {part.filename ?? 'file'}</span>
               {:else if 'data' in part}
                 <span class="thread-file">[data]</span>
               {/if}
             {/each}
+            {#if entry.unsupported}
+              <div class="truncated-notice" data-testid="thread-unsupported">
+                <span class="thread-file">This event uses a newer format.</span>
+                <button
+                  type="button"
+                  class="load-full-btn"
+                  disabled={loadingFull.has(entry.eventId)}
+                  onclick={() => loadFull(entry.executionId, entry.eventId)}
+                >
+                  {loadingFull.has(entry.eventId) ? 'Loading…' : 'Load full content'}
+                </button>
+              </div>
+            {/if}
+            {#if entry.truncated}
+              <div class="truncated-notice">
+                <span class="thread-file">This message was shortened for delivery.</span>
+                <button
+                  type="button"
+                  class="load-full-btn"
+                  disabled={loadingFull.has(entry.eventId)}
+                  onclick={() => loadFull(entry.executionId, entry.eventId)}
+                >
+                  {loadingFull.has(entry.eventId) ? 'Loading…' : 'Load full content'}
+                </button>
+              </div>
+            {/if}
           </div>
         </div>
       {/each}
@@ -274,6 +266,38 @@
     border: 1px solid hsl(var(--border));
     border-radius: var(--radius-sm);
     margin-top: 0.25rem;
+  }
+
+  .truncated-notice {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    padding: 0.375rem 0.5rem;
+    border: 1px dashed hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--muted) / 0.4);
+  }
+
+  .truncated-notice .thread-file {
+    border: none;
+    padding: 0;
+    margin-top: 0;
+  }
+
+  .load-full-btn {
+    font-size: 12px;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    cursor: pointer;
+  }
+
+  .load-full-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   .thread-image {

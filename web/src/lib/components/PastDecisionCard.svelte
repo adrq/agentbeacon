@@ -1,24 +1,62 @@
 <script lang="ts">
-  import type { DecisionBatch } from '../stores/questionState';
+  import type { DecisionBatch, DecisionSummary } from '../stores/questionState';
+  import { fetchDecisionDetail } from '../stores/questionState';
   import { router } from '../router';
   import ElapsedTime from './ElapsedTime.svelte';
 
   interface Props {
-    item: DecisionBatch;
+    item: DecisionSummary;
   }
 
   let { item }: Props = $props();
   let expanded = $state(false);
+  // The decision's kind, timestamp and answer text, fetched on expansion.
+  let detail: DecisionBatch | null = $state(null);
+  let loading = $state(false);
+  let error: string | null = $state(null);
+
+  // A history card can hold a decision whose detail reports pending.
+  const STATUS_ICON = {
+    answered: '\u2713',
+    dismissed: '\u2715',
+    expired: '\u25CB',
+    pending: '\u25CF',
+  };
+  const STATUS_LABEL = {
+    answered: 'Answered',
+    dismissed: 'Dismissed',
+    expired: 'Expired',
+    pending: 'Awaiting an answer',
+  };
+
+  async function loadDetail() {
+    if (detail || loading) return;
+    loading = true;
+    error = null;
+    try {
+      detail = await fetchDecisionDetail(item.eventId);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to load decision';
+    } finally {
+      loading = false;
+    }
+  }
+
+  function toggle() {
+    expanded = !expanded;
+    if (expanded) void loadDetail();
+  }
+
 </script>
 
 <div class="past-card">
-  <button type="button" class="past-header" onclick={() => expanded = !expanded} aria-expanded={expanded}>
-    <span class="past-status-icon" class:answered={item.status === 'answered'} class:dismissed={item.status === 'dismissed' || item.status === 'expired'}>
-      {item.status === 'answered' ? '\u2713' : '\u2715'}
+  <button type="button" class="past-header" onclick={toggle} aria-expanded={expanded}>
+    <span class="past-status-icon {detail?.status ?? 'resolved'}" data-testid="past-status-icon">
+      {detail ? STATUS_ICON[detail.status as keyof typeof STATUS_ICON] ?? '\u2713' : '\u2713'}
     </span>
     <span class="past-title">{item.executionTitle ?? 'Untitled'}</span>
     <span class="past-time">
-      <ElapsedTime startTime={item.answeredAt ?? item.dismissedAt ?? item.createdAt} /> ago
+      <ElapsedTime startTime={item.createdAt} /> ago
     </span>
     <span class="expand-toggle">
       <span class="expand-chevron" class:open={expanded} aria-hidden="true">&#x25B8;</span>
@@ -31,42 +69,54 @@
 
   {#if expanded}
     <div class="past-detail">
-      {#each item.questions as q, i}
-        <div class="past-question-block">
-          {#if item.questions.length > 1}
-            <span class="q-index">Q{i + 1}.</span>
-          {/if}
-          <span class="q-text">{q.questionText}</span>
-        </div>
-        {#if q.options?.length}
-          <div class="past-options">
-            {#each q.options as opt}
-              <div class="past-option">
-                <span class="opt-label">{opt.label}</span>
-                {#if opt.description}
-                  <span class="opt-desc">{opt.description}</span>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {/if}
-      {/each}
-
-      <div class="past-resolution">
-        {#if item.status === 'answered'}
-          {#if item.answer}
-            <span class="resolution-label answered-label">Answer:</span>
-            <span class="resolution-value">{item.answer}</span>
-          {/if}
-          {#if item.truncated}
-            <span class="truncated-note" title="This answer was shortened when migrated to the new decisions format.">answer truncated during migration</span>
-          {/if}
-        {:else if item.status === 'dismissed'}
-          <span class="resolution-label dismissed-label">Dismissed</span>
-        {:else if item.status === 'expired'}
-          <span class="resolution-label dismissed-label">Expired</span>
-        {/if}
+      <div class="past-question-block">
+        <span class="q-text">{item.questionPreview}</span>
       </div>
+      {#if item.questionCount > 1}
+        <div class="past-question-block">
+          <span class="q-index">+{item.questionCount - 1} more</span>
+        </div>
+      {/if}
+
+      {#if loading}
+        <div class="past-resolution" role="status" data-testid="past-detail-loading">Loading&hellip;</div>
+      {:else if error}
+        <div class="card-error" role="alert" data-testid="past-detail-error">{error}</div>
+      {:else if detail}
+        {@const resolvedAt = detail.answeredAt ?? detail.dismissedAt}
+        <div class="past-resolution" data-testid="past-resolution">
+          <span class="resolution-kind {detail.status}">
+            {STATUS_LABEL[detail.status as keyof typeof STATUS_LABEL] ?? detail.status}
+          </span>
+          {#if resolvedAt}
+            <span class="resolution-time"><ElapsedTime startTime={resolvedAt} /> ago</span>
+          {/if}
+        </div>
+        {#if detail.status === 'answered'}
+          {#if detail.answer}
+            <div class="past-answer" data-testid="past-answer">{detail.answer}</div>
+            {#if detail.truncated}
+              <div class="resolution-note">Answer truncated for storage</div>
+            {/if}
+          {:else}
+            <div class="resolution-note">Answered without text</div>
+          {/if}
+        {:else if detail.status === 'expired'}
+          <div class="resolution-note">The execution ended before this was answered</div>
+        {:else if detail.status === 'pending'}
+          <div class="resolution-note" data-testid="past-detail-pending">
+            This decision is open again and is answered from its execution.
+          </div>
+          <button
+            type="button"
+            class="past-goto-live"
+            data-testid="past-goto-live"
+            onclick={() => router.navigate(`/execution/${item.executionId}`)}
+          >
+            Go to the open decision &rarr;
+          </button>
+        {/if}
+      {/if}
     </div>
   {/if}
 </div>
@@ -103,8 +153,10 @@
     flex-shrink: 0;
   }
 
-  .past-status-icon.answered { color: hsl(var(--status-success)); }
-  .past-status-icon.dismissed { color: hsl(var(--muted-foreground)); }
+  .past-status-icon.answered,
+  .past-status-icon.resolved { color: hsl(var(--status-success)); }
+  .past-status-icon.dismissed,
+  .past-status-icon.expired { color: hsl(var(--muted-foreground)); }
 
   .past-title {
     font-size: 0.75rem;
@@ -175,63 +227,64 @@
     font-weight: 400;
   }
 
-  .past-options {
-    display: flex;
-    flex-direction: column;
-    gap: 0.125rem;
-    padding-left: 0.5rem;
-  }
-
-  .past-option {
+  .past-resolution {
     display: flex;
     align-items: baseline;
     gap: 0.375rem;
-    font-size: 13px;
-  }
-
-  .opt-label {
-    font-weight: 500;
-    color: hsl(var(--foreground));
-  }
-
-  .opt-desc {
-    font-size: 11px;
-    font-weight: 500;
+    font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
   }
 
-  .past-resolution {
-    padding-top: 0.25rem;
-    border-top: 1px solid hsl(var(--border) / 0.5);
-  }
-
-  .resolution-label {
-    font-size: 11px;
+  .resolution-kind {
     font-weight: 600;
-    letter-spacing: 0.02em;
   }
 
-  .answered-label {
-    color: hsl(var(--status-success));
+  .resolution-kind.answered { color: hsl(var(--status-success)); }
+
+  .past-goto-live {
+    margin-top: 0.25rem;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    font-size: 0.625rem;
+    color: hsl(var(--primary));
+    cursor: pointer;
   }
 
-  .truncated-note {
-    display: block;
-    margin-top: 0.15rem;
-    font-size: 0.72rem;
-    font-style: italic;
-    color: hsl(var(--muted-foreground));
+  .resolution-time {
+    font-size: 0.625rem;
   }
 
-  .dismissed-label {
-    color: hsl(var(--muted-foreground));
-    font-style: italic;
-  }
-
-  .resolution-value {
+  .past-answer {
     font-size: 13px;
-    font-weight: 500;
+    line-height: 1.4;
     color: hsl(var(--foreground));
-    margin-left: 0.25rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
+
+  .resolution-note {
+    font-size: 0.6875rem;
+    font-style: italic;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .card-error {
+    padding: 0.375rem 0.625rem;
+    border-radius: var(--radius-sm);
+    background: hsl(var(--status-danger) / 0.1);
+    color: hsl(var(--status-danger));
+    font-size: 0.6875rem;
+  }
+
+
+
+
+
+
+
+
+
+
 </style>

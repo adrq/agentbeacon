@@ -256,14 +256,33 @@ async fn delete_project(
 
 // --- Project agent pool sub-resources ---
 
+/// One agent config in a project pool.
+#[derive(Debug, Serialize)]
+pub struct ProjectAgentResponse {
+    pub agent_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub agent_type: String,
+}
+
 async fn list_project_agents(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
-) -> Result<Json<Vec<db::project_agents::AgentPoolEntry>>, SchedulerError> {
+) -> Result<Json<Vec<ProjectAgentResponse>>, SchedulerError> {
     // Verify project exists
     let project = db::projects::resolve(&state.db_pool, &id).await?;
     let entries = db::project_agents::list_by_project(&state.db_pool, &project.id).await?;
-    Ok(Json(entries))
+    Ok(Json(
+        entries
+            .into_iter()
+            .map(|e| ProjectAgentResponse {
+                agent_id: e.agent_id,
+                name: e.name,
+                description: e.description,
+                agent_type: e.agent_type,
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -306,13 +325,32 @@ async fn remove_project_agent(
 
 // --- Project MCP server pool sub-resources ---
 
+/// One MCP server in a project pool.
+#[derive(Debug, Serialize)]
+pub struct ProjectMcpServerResponse {
+    pub mcp_server_id: String,
+    pub name: String,
+    pub transport_type: String,
+    pub config: serde_json::Value,
+}
+
 async fn list_project_mcp_servers(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
-) -> Result<Json<Vec<db::project_mcp_servers::McpServerPoolEntry>>, SchedulerError> {
+) -> Result<Json<Vec<ProjectMcpServerResponse>>, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &id).await?;
     let entries = db::project_mcp_servers::list_by_project(&state.db_pool, &project.id).await?;
-    Ok(Json(entries))
+    Ok(Json(
+        entries
+            .into_iter()
+            .map(|e| ProjectMcpServerResponse {
+                mcp_server_id: e.mcp_server_id,
+                name: e.name,
+                transport_type: e.transport_type,
+                config: e.config,
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -349,27 +387,27 @@ async fn remove_project_mcp_server(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/projects", get(list_projects).post(create_project))
+        .route("/projects", get(list_projects).post(create_project))
         .route(
-            "/api/projects/{id}",
+            "/projects/{id}",
             get(get_project)
                 .patch(update_project)
                 .delete(delete_project),
         )
         .route(
-            "/api/projects/{id}/agents",
+            "/projects/{id}/agents",
             get(list_project_agents).post(add_project_agent),
         )
         .route(
-            "/api/projects/{id}/agents/{agent_id}",
+            "/projects/{id}/agents/{agent_id}",
             axum::routing::delete(remove_project_agent),
         )
         .route(
-            "/api/projects/{id}/mcp-servers",
+            "/projects/{id}/mcp-servers",
             get(list_project_mcp_servers).post(add_project_mcp_server),
         )
         .route(
-            "/api/projects/{id}/mcp-servers/{mcp_server_id}",
+            "/projects/{id}/mcp-servers/{mcp_server_id}",
             axum::routing::delete(remove_project_mcp_server),
         )
 }

@@ -1,68 +1,68 @@
 import type { Event, EscalateData, DataPartPayload } from './types';
 import { isMessagePayload, isEscalateData } from './types';
 import { api } from './api';
+import { isUnsupportedSchema } from './eventSchema';
 
 export interface QuestionState {
   questionText: string;
   context?: string;
-  options?: { label: string; description: string }[];
+  options?: { label: string; description?: string }[];
   answer: string;
 }
 
-export function extractQuestions(events: Event[]): { batchId: string; questions: QuestionState[] } {
-  const escalateEvents: { data: EscalateData; event: Event }[] = [];
+export interface ExtractedQuestions {
+  eventId: string;
+  batchId: string;
+  questions: QuestionState[];
+}
 
+export function extractQuestions(events: Event[]): ExtractedQuestions {
+  const empty: ExtractedQuestions = { eventId: '', batchId: '', questions: [] };
+
+  // The last blocking escalation in the list.
+  let latest: { data: EscalateData; event: Event } | null = null;
   for (const ev of events) {
-    if (isMessagePayload(ev.payload)) {
-      for (const part of ev.payload.parts) {
-        if ('data' in part && isEscalateData(part.data as DataPartPayload) && (part.data as EscalateData).importance === 'blocking') {
-          escalateEvents.push({ data: part.data as EscalateData, event: ev });
-        }
-      }
+    if (isUnsupportedSchema(ev)) continue;
+    if (!isMessagePayload(ev.payload)) continue;
+    for (const part of ev.payload.parts) {
+      if (!('data' in part)) continue;
+      const data = part.data as DataPartPayload;
+      if (!isEscalateData(data)) continue;
+      if ((data as EscalateData).importance !== 'blocking') continue;
+      latest = { data: data as EscalateData, event: ev };
     }
   }
+  if (!latest) return empty;
 
-  if (escalateEvents.length === 0) return { batchId: '', questions: [] };
-
-  // Group by batch_id, take latest batch
-  const batches = new Map<string, typeof escalateEvents>();
-  for (const ae of escalateEvents) {
-    const batch = batches.get(ae.data.batch_id) ?? [];
-    batch.push(ae);
-    batches.set(ae.data.batch_id, batch);
-  }
-
-  let latestBatchId = '';
-  let latestMaxId = -1;
-  for (const [batchId, items] of batches) {
-    const maxId = Math.max(...items.map(i => i.event.id));
-    if (maxId > latestMaxId) {
-      latestMaxId = maxId;
-      latestBatchId = batchId;
+  // Look for a matching answer part after it in the list.
+  let seenEscalation = false;
+  for (const ev of events) {
+    if (ev.id === latest.event.id) {
+      seenEscalation = true;
+      continue;
     }
+    if (!seenEscalation) continue;
+    if (isUnsupportedSchema(ev)) continue;
+    if (!isMessagePayload(ev.payload) || ev.payload.role !== 'ROLE_USER') continue;
+    const answered = ev.payload.parts.some((p) => {
+      if (!('data' in p)) return false;
+      const d = p.data as Record<string, unknown>;
+      if (d?.type !== 'question_answer') return false;
+      const named = d?.escalation_event_id;
+      // Normalize identifier representations before comparison.
+      if (named === undefined || named === null) return false;
+      return String(named) === latest!.event.id;
+    });
+    if (answered) return empty;
   }
-
-  // Check if the latest batch was already answered (human user message after the ask).
-  // Exclude inter-agent messages (distinguished by a sender data part).
-  const hasAnswer = events.some(ev => {
-    if (ev.id <= latestMaxId) return false;
-    if (!isMessagePayload(ev.payload) || ev.payload.role !== 'ROLE_USER') return false;
-    return ev.payload.parts.some(
-      p => 'data' in p && (p.data as Record<string, unknown>)?.type === 'question_answer'
-        && (p.data as Record<string, unknown>)?.batch_id === latestBatchId
-    );
-  });
-  if (hasAnswer) return { batchId: '', questions: [] };
-
-  const batch = batches.get(latestBatchId) ?? [];
-  batch.sort((a, b) => a.data.batch_index - b.data.batch_index);
 
   return {
-    batchId: latestBatchId,
-    questions: batch.map(b => ({
-      questionText: b.data.question,
-      context: b.data.context,
-      options: b.data.options,
+    eventId: latest.event.id,
+    batchId: latest.data.batch_id,
+    questions: (latest.data.questions ?? []).map((q) => ({
+      questionText: q.question,
+      context: q.context,
+      options: q.options,
       answer: '',
     })),
   };
@@ -73,9 +73,13 @@ export function composeAnswer(questions: QuestionState[]): string {
   return questions.map(q => `${q.questionText}: ${q.answer}`).join('\n');
 }
 
-export async function submitAnswer(sessionId: string, answer: string, batchId: string): Promise<void> {
+export async function submitAnswer(
+  sessionId: string,
+  answer: string,
+  escalationEventId: string,
+): Promise<void> {
   await api.postMessage(sessionId, [
     { text: answer },
-    { data: { type: 'question_answer', batch_id: batchId } },
+    { data: { type: 'question_answer', escalation_event_id: escalationEventId } },
   ]);
 }

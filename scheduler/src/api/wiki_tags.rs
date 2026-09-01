@@ -543,10 +543,10 @@ async fn revoke_member(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/wiki/tags", get(list_tags))
-        .route("/api/wiki/tags/{tag_id}/members", post(admit_member))
+        .route("/wiki/tags", get(list_tags))
+        .route("/wiki/tags/{tag_id}/members", post(admit_member))
         .route(
-            "/api/wiki/tags/{tag_id}/members/{project}",
+            "/wiki/tags/{tag_id}/members/{project}",
             axum::routing::patch(set_member_access).delete(revoke_member),
         )
 }

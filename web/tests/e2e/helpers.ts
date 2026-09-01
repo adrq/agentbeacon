@@ -27,9 +27,9 @@ export async function apiDelete(path: string) {
 
 /** Find or create a driver for the given platform, return its id. */
 export async function ensureDriver(platform: string): Promise<string> {
-  const drivers: { id: string; platform: string }[] = await apiGet('/api/drivers');
+  const drivers: { id: string; platform: string }[] = await apiGet('/api/v1/drivers');
   const existing = drivers.find(d => d.platform === platform);
   if (existing) return existing.id;
-  const result = await apiPost('/api/drivers', { name: platform, platform });
+  const result = await apiPost('/api/v1/drivers', { name: platform, platform });
   return result.id;
 }

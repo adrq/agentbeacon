@@ -13,21 +13,22 @@ Send direct messages to coordinate with other agents in your execution.
 You can message any agent whose hierarchical name you know — use Agent Discovery to find them.
 
 ### Send message
-`POST /api/messages`
+`POST /api/v1/messages`
 ```json
 {"to": "HIERARCHICAL_NAME", "parts": [{"text": "message text"}]}
 ```
 
 ### Read received messages
-`GET /api/messages?session_id={session_id}&since_id={last_event_id}`
-Returns messages you've received for the given session. Use `since_id` to poll for new messages.
+`GET /api/v1/messages?session_id={session_id}&since_id={last_event_id}`
+Returns messages you've received for the given session. Use `since_id` to poll for new
+messages; ids are opaque strings, so pass back the `id` you last saw verbatim.
 
 ## Agent Pool
 
 Query the configured agent pool — the agent configs available for delegation in this execution.
 
 ### List agent configs
-`GET /api/executions/{execution_id}/agents`
+`GET /api/v1/executions/{execution_id}/agents`
 Returns agent configs (id, name, description, type) available for delegation.
 
 ## Running Sessions
@@ -35,7 +36,7 @@ Returns agent configs (id, name, description, type) available for delegation.
 Discover the live sessions (running agent instances) in your execution.
 
 ### List sessions in execution
-`GET /api/executions/{execution_id}/sessions`
+`GET /api/v1/executions/{execution_id}/sessions`
 Returns all sessions with hierarchical names, agent types, roles, statuses, and parent relationships.
 
 ## Wiki
@@ -45,7 +46,7 @@ record design decisions, and check what other agents have already discovered.
 Search before duplicating work.
 
 ### Search wiki
-`GET /api/wiki/search?q=search+terms`
+`GET /api/v1/wiki/search?q=search+terms`
 BM25 full-text search over titles and bodies. The only search endpoint, and the one
 to reach for before listing pages. Results are scoped to what you may read: your own
 project plus any page shared into it. Add `project=` (slug or id) to narrow within
@@ -55,7 +56,7 @@ that scope. `limit` defaults to 50 (1..100), `offset` to 0. Results carry `page_
 page itself to learn what you may do with it.
 
 ### Create page
-`PUT /api/projects/{project_id}/wiki/pages/{slug}`
+`PUT /api/v1/projects/{project_id}/wiki/pages/{slug}`
 ```json
 {"title": "Page Title", "body": "Page content", "tags": ["design"]}
 ```
@@ -63,7 +64,7 @@ Creates a page. Fails with 409 `slug_exists` if the slug is taken — use `PATCH
 change an existing page. Only your own project accepts a create.
 
 ### Edit page
-`PATCH /api/projects/{project_id}/wiki/pages/{slug}`
+`PATCH /api/v1/projects/{project_id}/wiki/pages/{slug}`
 ```json
 {"revision_number": 5,
  "edits": [{"old_string": "...", "new_string": "...", "replace_all": false}],
@@ -115,7 +116,7 @@ including anything written while it was private and edited out later.
 ### Reading and editing another project's page
 Pages shared into your project appear in your own listings and searches, each carrying
 its owning project. Reach one at its owner's address:
-`GET /api/projects/{owning_project}/wiki/pages/{slug}`, using the `project_slug` from
+`GET /api/v1/projects/{owning_project}/wiki/pages/{slug}`, using the `project_slug` from
 the listing. Page reads and listings carry an `"access"` field of `read` or `read_write`
 telling you what you may do; search results do not, so fetch the page before writing.
 
@@ -127,31 +128,31 @@ publishing from your own wiki instead. Those return 403 `not_page_owner` or
 page does.
 
 ### Read page
-`GET /api/projects/{project_id}/wiki/pages/{slug}`
+`GET /api/v1/projects/{project_id}/wiki/pages/{slug}`
 Returns page with current `revision_number`.
 
 ### List pages
-`GET /api/projects/{project_id}/wiki/pages`
+`GET /api/v1/projects/{project_id}/wiki/pages`
 Your project's pages plus any shared into it, each with its owning project and your
 `access` to it.
 
 ### Delete page
-`DELETE /api/projects/{project_id}/wiki/pages/{slug}`
+`DELETE /api/v1/projects/{project_id}/wiki/pages/{slug}`
 
 ### Page revisions
-`GET /api/projects/{project_id}/wiki/pages/{slug}/revisions`
+`GET /api/v1/projects/{project_id}/wiki/pages/{slug}/revisions`
 
 ### Get specific revision
-`GET /api/projects/{project_id}/wiki/pages/{slug}/revisions/{rev}`
+`GET /api/v1/projects/{project_id}/wiki/pages/{slug}/revisions/{rev}`
 
 ### Share tag administration
 Operator-level, outside any project namespace, because a share tag spans projects and
 none owns it. These routes refuse a session token with 403 `operator_scope_only`.
 
-`GET /api/wiki/tags` — every tag, with its member projects inline where it has any.
-`POST /api/wiki/tags/{tag_id}/members` — admit a project: `{"project": ..., "access_level": "read"}`.
-`PATCH /api/wiki/tags/{tag_id}/members/{project}` — change a member's access level.
-`DELETE /api/wiki/tags/{tag_id}/members/{project}` — revoke a member.
+`GET /api/v1/wiki/tags` — every tag, with its member projects inline where it has any.
+`POST /api/v1/wiki/tags/{tag_id}/members` — admit a project: `{"project": ..., "access_level": "read"}`.
+`PATCH /api/v1/wiki/tags/{tag_id}/members/{project}` — change a member's access level.
+`DELETE /api/v1/wiki/tags/{tag_id}/members/{project}` — revoke a member.
 
 There is no route that creates a tag: a tag exists once a page carries it, and admitting
 its first member is what makes it a share tag. Admitting a member or widening one to
@@ -161,19 +162,22 @@ the change would expose or grant anything; retry with `"acknowledge_share": true
 ## Executions
 
 ### Get execution status
-`GET /api/executions/{execution_id}`
+`GET /api/v1/executions/{execution_id}`
 
 ### List execution events
-`GET /api/executions/{execution_id}/events`
+`GET /api/v1/executions/{execution_id}/events?before={event_id}&limit={n}`
+Returns `{"items": [...], "next_cursor": "...", "has_more": true}`. Pages are ordered
+oldest-first; pass `next_cursor` back as `before` to read the previous page, or
+`after={event_id}` to read forward from one. Ids and cursors are opaque strings.
 
 ## Sessions
 
 ### Get session
-`GET /api/sessions/{session_id}`
+`GET /api/v1/sessions/{session_id}`
 
 ## Escalation (root lead only)
 
-`POST /api/escalate`
+`POST /api/v1/escalate`
 Authorization: Bearer $AGENTBEACON_SESSION_ID
 
 Request body:
@@ -201,35 +205,35 @@ Request body:
 - `options`: optional, 2-5 items — multiple-choice options with `label` and `description`
 - `importance`: optional — `"blocking"` (default) or `"fyi"`
 
-Response: `{"question_ids": [123], "batch_id": "uuid"}`
+Response: `{"batch_id": "uuid", "event_id": "123"}`
 
 ## Examples
 
 ```bash
 # Discover agent configs available for delegation
-curl $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/agents \
+curl $AGENTBEACON_API_BASE/api/v1/executions/$AGENTBEACON_EXECUTION_ID/agents \
   -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
 
 # Discover running sessions (peer agents)
-curl $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/sessions \
+curl $AGENTBEACON_API_BASE/api/v1/executions/$AGENTBEACON_EXECUTION_ID/sessions \
   -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
 
 # Send a message to another agent
-curl -X POST $AGENTBEACON_API_BASE/api/messages \
+curl -X POST $AGENTBEACON_API_BASE/api/v1/messages \
   -H "Authorization: Bearer $AGENTBEACON_SESSION_ID" \
   -H "Content-Type: application/json" \
   -d '{"to":"swift-falcon/bold-eagle","parts":[{"text":"auth module ready for review"}]}'
 
 # Read a wiki page
-curl $AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/architecture \
+curl $AGENTBEACON_API_BASE/api/v1/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/architecture \
   -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
 
 # Search wiki
-curl "$AGENTBEACON_API_BASE/api/wiki/search?q=auth+design" \
+curl "$AGENTBEACON_API_BASE/api/v1/wiki/search?q=auth+design" \
   -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
 
 # Escalate a question to the user (root lead only)
-curl -X POST $AGENTBEACON_API_BASE/api/escalate \
+curl -X POST $AGENTBEACON_API_BASE/api/v1/escalate \
   -H "Authorization: Bearer $AGENTBEACON_SESSION_ID" \
   -H "Content-Type: application/json" \
   -d '{"questions": [{"question": "JWT or session cookies?", "options": [{"label": "JWT", "description": "Stateless"}, {"label": "Cookies", "description": "Simpler"}]}], "importance": "blocking"}'

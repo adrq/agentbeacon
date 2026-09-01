@@ -193,16 +193,37 @@ async fn get_driver_descriptor(
     Ok(Json(value))
 }
 
+/// One selectable model for a platform.
+#[derive(Debug, Serialize)]
+pub struct ModelSuggestionResponse {
+    pub id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<bool>,
+}
+
 async fn get_driver_models(
     Path(platform): Path<String>,
-) -> Result<Json<Vec<crate::services::model_catalog::ModelSuggestion>>, SchedulerError> {
+) -> Result<Json<Vec<ModelSuggestionResponse>>, SchedulerError> {
     if !VALID_PLATFORMS.contains(&platform.as_str()) {
         return Err(SchedulerError::NotFound(format!(
             "no models for platform: {platform}"
         )));
     }
     let models = crate::services::model_catalog::list_models(&platform).await;
-    Ok(Json(models))
+    Ok(Json(
+        models
+            .into_iter()
+            .map(|m| ModelSuggestionResponse {
+                id: m.id,
+                label: m.label,
+                description: m.description,
+                recommended: m.recommended,
+            })
+            .collect(),
+    ))
 }
 
 async fn delete_driver(
@@ -230,14 +251,11 @@ async fn delete_driver(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/drivers", get(list_drivers).post(create_driver))
+        .route("/drivers", get(list_drivers).post(create_driver))
         .route(
-            "/api/drivers/{id}",
+            "/drivers/{id}",
             get(get_driver).patch(update_driver).delete(delete_driver),
         )
-        .route(
-            "/api/drivers/{platform}/descriptor",
-            get(get_driver_descriptor),
-        )
-        .route("/api/drivers/{platform}/models", get(get_driver_models))
+        .route("/drivers/{platform}/descriptor", get(get_driver_descriptor))
+        .route("/drivers/{platform}/models", get(get_driver_models))
 }

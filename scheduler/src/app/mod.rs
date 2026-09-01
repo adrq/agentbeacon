@@ -165,9 +165,6 @@ impl AppState {
 pub fn create_router(state: AppState, dev_mode: bool, port: u16) -> Router {
     let vite_dev_port = state.vite_dev_port;
 
-    // SSE routes bypass compression (CompressionLayer buffers, breaking streaming)
-    let sse_routes = crate::api::sse::routes();
-
     // Base routes get compression
     let base_router = Router::new().merge(crate::api::routes());
     let compressed = if dev_mode {
@@ -188,10 +185,10 @@ pub fn create_router(state: AppState, dev_mode: bool, port: u16) -> Router {
     }
     .layer(CompressionLayer::new());
 
-    // Merge SSE (uncompressed) + base (compressed), then apply CORS at the outer level
+    // v1 API routes are nested under /api/v1.
     Router::new()
-        .merge(sse_routes)
         .merge(compressed)
+        .nest(crate::api::v1::PREFIX, crate::api::v1::routes())
         .layer(build_cors_layer(dev_mode, port, vite_dev_port))
         .with_state(state)
 }

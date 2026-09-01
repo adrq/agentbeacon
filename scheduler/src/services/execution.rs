@@ -336,7 +336,7 @@ async fn persist_and_enqueue(
         parts.to_vec(),
     ))
     .unwrap();
-    db::events::insert(
+    db::events::insert_locked(
         db_pool,
         execution_id,
         Some(session_id),
@@ -347,7 +347,7 @@ async fn persist_and_enqueue(
 
     // Record execution creation state_change event (normalized format)
     let state_event = json!({"desired": "run"});
-    db::events::insert(
+    db::events::insert_locked(
         db_pool,
         execution_id,
         None,

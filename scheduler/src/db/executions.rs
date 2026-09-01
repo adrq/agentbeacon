@@ -168,17 +168,70 @@ pub async fn count_non_terminal_by_project(
     Ok(row.get::<i64, _>("cnt"))
 }
 
+/// A database transaction scoped to a single execution.
+pub struct ExecutionTx<'a> {
+    tx: sqlx::Transaction<'a, sqlx::Any>,
+    execution_id: String,
+    verified_sessions: std::collections::HashSet<String>,
+}
+
+impl<'a> ExecutionTx<'a> {
+    /// The execution this transaction is scoped to.
+    pub fn execution_id(&self) -> &str {
+        &self.execution_id
+    }
+
+    /// Commit the transaction.
+    pub async fn commit(self) -> Result<(), sqlx::Error> {
+        self.tx.commit().await
+    }
+
+    /// Roll the transaction back.
+    pub async fn rollback(self) -> Result<(), sqlx::Error> {
+        self.tx.rollback().await
+    }
+
+    /// Whether this transaction already checked that `session_id` belongs to
+    /// its execution.
+    pub fn session_verified(&self, session_id: &str) -> bool {
+        self.verified_sessions.contains(session_id)
+    }
+
+    /// Record that `session_id` was checked against this transaction's execution.
+    pub fn mark_session_verified(&mut self, session_id: &str) {
+        self.verified_sessions.insert(session_id.to_string());
+    }
+}
+
+impl<'a> std::ops::Deref for ExecutionTx<'a> {
+    type Target = sqlx::Transaction<'a, sqlx::Any>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tx
+    }
+}
+
+impl std::ops::DerefMut for ExecutionTx<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.tx
+    }
+}
+
 /// Begin a transaction with the execution-level lock held.
 pub async fn begin_execution_tx<'a>(
     pool: &'a DbPool,
     execution_id: &str,
-) -> Result<sqlx::Transaction<'a, sqlx::Any>, SchedulerError> {
+) -> Result<ExecutionTx<'a>, SchedulerError> {
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| SchedulerError::Database(format!("begin execution tx failed: {e}")))?;
     lock_for_update(pool, &mut tx, execution_id).await?;
-    Ok(tx)
+    Ok(ExecutionTx {
+        tx,
+        execution_id: execution_id.to_string(),
+        verified_sessions: std::collections::HashSet::new(),
+    })
 }
 
 /// Acquire execution-level lock inside a transaction.
@@ -230,6 +283,91 @@ pub async fn list_active_ids(pool: &DbPool) -> Result<Vec<String>, SchedulerErro
         .await
         .map_err(|e| SchedulerError::Database(format!("list active execution ids failed: {e}")))?;
     Ok(rows.iter().map(|r| r.get("id")).collect())
+}
+
+/// One active execution's decision-visible state.
+pub struct ActiveExecution {
+    pub id: String,
+    pub outcome: Option<String>,
+    pub desired: String,
+    pub title: Option<String>,
+}
+
+/// One active execution with its platform-lane high-water mark.
+pub struct ActiveExecutionMark {
+    pub id: String,
+    pub outcome: Option<String>,
+    pub desired: String,
+    pub title: Option<String>,
+    pub platform_max: Option<i64>,
+}
+
+/// List the executions that can hold actionable decisions, each with its own
+/// platform-lane high-water mark.
+pub async fn list_active_with_platform_mark(
+    pool: &DbPool,
+) -> Result<Vec<ActiveExecutionMark>, SchedulerError> {
+    let sql = pool.prepare_query(
+        "SELECT e.id, e.outcome, e.desired, e.title,          (SELECT MAX(ev.id) FROM events ev           WHERE ev.execution_id = e.id AND ev.event_type = 'platform') AS platform_max          FROM executions e          WHERE e.outcome IS NULL AND e.desired != 'terminate' ORDER BY e.id ASC",
+    );
+    let rows = sqlx::query(&sql)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list active executions failed: {e}")))?;
+    Ok(rows
+        .iter()
+        .map(|r| ActiveExecutionMark {
+            id: r.get("id"),
+            outcome: r.get("outcome"),
+            desired: r.get("desired"),
+            title: r.get("title"),
+            platform_max: r.try_get("platform_max").unwrap_or(None),
+        })
+        .collect())
+}
+
+/// List the executions that can hold actionable decisions.
+pub async fn list_active(pool: &DbPool) -> Result<Vec<ActiveExecution>, SchedulerError> {
+    let sql = pool.prepare_query(
+        "SELECT id, outcome, desired, title FROM executions \
+         WHERE outcome IS NULL AND desired != 'terminate' ORDER BY id ASC",
+    );
+    let rows = sqlx::query(&sql)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list active executions failed: {e}")))?;
+    Ok(rows
+        .iter()
+        .map(|r| ActiveExecution {
+            id: r.get("id"),
+            outcome: r.get("outcome"),
+            desired: r.get("desired"),
+            title: r.get("title"),
+        })
+        .collect())
+}
+
+/// Titles of the given executions, keyed by id.
+pub async fn titles_for(
+    pool: &DbPool,
+    ids: &[String],
+) -> Result<std::collections::HashMap<String, Option<String>>, SchedulerError> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = pool.prepare_query(&format!(
+        "SELECT id, title FROM executions WHERE id IN ({placeholders})"
+    ));
+    let mut query = sqlx::query(&sql);
+    for id in ids {
+        query = query.bind(id);
+    }
+    let rows = query
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| SchedulerError::Database(format!("list execution titles failed: {e}")))?;
+    Ok(rows.iter().map(|r| (r.get("id"), r.get("title"))).collect())
 }
 
 /// List IDs of the most recent terminal executions.

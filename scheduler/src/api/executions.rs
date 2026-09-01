@@ -8,7 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::api::types::{self, EventResponse, ExecutionResponse, SessionResponse};
+use crate::api::types::{self, ExecutionResponse, SessionResponse};
 use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
@@ -89,7 +89,7 @@ async fn derive_execution_fields_async(
     Ok(ExecutionResponse::derive_from_snapshot(exec, &snapshot))
 }
 
-/// List all executions (GET /api/executions)
+/// List all executions (GET /api/v1/executions)
 async fn list_executions(
     State(state): State<AppState>,
     Query(query): Query<ListExecutionsQuery>,
@@ -113,7 +113,7 @@ async fn list_executions(
     Ok(Json(responses))
 }
 
-/// Get execution by ID with sessions (GET /api/executions/:id)
+/// Get execution by ID with sessions (GET /api/v1/executions/:id)
 async fn get_execution(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -140,7 +140,7 @@ async fn get_execution(
     }))
 }
 
-/// Create a new execution (POST /api/executions)
+/// Create a new execution (POST /api/v1/executions)
 async fn create_execution_handler(
     State(state): State<AppState>,
     Json(req): Json<CreateExecutionRequest>,
@@ -264,56 +264,23 @@ async fn terminate_execution(
             SchedulerError::NotFound(format!("no root session found for execution {id}"))
         })?;
 
-    let already_terminated = match transition::transition(
-        &state.db_pool,
-        &id,
-        &root_session.id,
-        transition::Action::SetDesired(transition::Desired::Terminate, "user".to_string()),
-    )
-    .await
-    {
-        Ok(_) => false,
-        Err(transition::Rejected::Ratchet) => true,
-        Err(e) => {
-            return Err(SchedulerError::Database(format!(
-                "transition failed: {e:?}"
-            )));
-        }
-    };
+    let already_terminated =
+        match transition::terminate_session(&state.db_pool, &id, &root_session.id, "user").await {
+            Ok(()) => false,
+            Err(transition::Rejected::Ratchet) => true,
+            Err(e) => {
+                return Err(SchedulerError::Database(format!(
+                    "transition failed: {e:?}"
+                )));
+            }
+        };
 
     if already_terminated && exec.outcome.is_none() {
-        let mut fix_tx = db::executions::begin_execution_tx(&state.db_pool, &id)
-            .await
-            .map_err(|e| SchedulerError::Database(format!("begin fix tx: {e}")))?;
-        let tx_root = db::sessions::get_in_tx(&state.db_pool, &mut fix_tx, &root_session.id)
-            .await
-            .map_err(|e| SchedulerError::Database(format!("recheck root: {e}")))?;
-        if tx_root.outcome.is_none() || tx_root.desired != "terminate" {
-            let _ = fix_tx.rollback().await;
-        } else {
-            let derived =
-                transition::derive_execution_outcome(&state.db_pool, &mut fix_tx, &id).await?;
-            let fix_sql = state.db_pool.prepare_query(
-                "UPDATE executions SET desired = 'terminate', outcome = ?, \
-                 updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
-                 WHERE id = ? AND outcome IS NULL",
-            );
-            let _ = sqlx::query(&fix_sql)
-                .bind(&derived)
-                .bind(&id)
-                .execute(&mut *fix_tx)
-                .await;
-            reconciler::emit_execution_repair_event(&state.db_pool, &mut fix_tx, &id, &derived)
-                .await;
-            let _ = fix_tx.commit().await;
-            let _ = state
-                .event_broadcast
-                .send(crate::app::EventNotification::persisted(id.clone(), 0));
-        }
+        reconciler::repair_execution_for_terminal_root(&state.db_pool, &root_session.id).await?;
     }
 
     let fresh_root = db::sessions::get_by_id(&state.db_pool, &root_session.id).await?;
-    let _ = reconciler::cascade_children(&state.db_pool, &fresh_root).await;
+    reconciler::cascade_children(&state.db_pool, &fresh_root).await?;
 
     state.task_queue.wake_waiters();
 
@@ -326,15 +293,51 @@ async fn terminate_execution(
     Ok(Json(serde_json::json!({"execution": exec_resp})))
 }
 
-/// Get events for an execution (GET /api/executions/:id/events)
+/// Get a bounded window of events for an execution
+/// (GET /api/v1/executions/{id}/events)
 async fn execution_events(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<EventResponse>>, SchedulerError> {
+    Query(query): Query<types::EventPageQuery>,
+) -> Result<Json<types::PageV1<types::EventV1>>, SchedulerError> {
     db::executions::get_by_id(&state.db_pool, &id).await?;
 
-    let events = db::events::list_by_execution(&state.db_pool, &id).await?;
-    Ok(Json(events.into_iter().map(Into::into).collect()))
+    let (window, limit) = query.resolve()?;
+    let events = match window {
+        types::EventWindow::Before(before) => {
+            db::events::list_by_execution_before(&state.db_pool, &id, before, limit + 1).await?
+        }
+        types::EventWindow::After(after) => {
+            db::events::list_by_execution_after(&state.db_pool, &id, after, limit + 1).await?
+        }
+    };
+    Ok(Json(types::event_page(events, limit, &window)))
+}
+
+/// Get one event with its payload exactly as stored
+/// (GET /api/v1/executions/{execution_id}/events/{event_id})
+async fn execution_event(
+    State(state): State<AppState>,
+    Path((execution_id, event_id)): Path<(String, String)>,
+) -> Result<Json<types::EventV1>, SchedulerError> {
+    let not_found = || {
+        SchedulerError::Problem(Box::new(
+            crate::api::problem::Problem::new(crate::api::problem::ProblemCode::ResourceNotFound)
+                .with_detail("no event has this id under this execution"),
+        ))
+    };
+    db::executions::get_by_id(&state.db_pool, &execution_id)
+        .await
+        .map_err(|e| match e {
+            SchedulerError::NotFound(_) => not_found(),
+            other => other,
+        })?;
+    let event_id: i64 = event_id.parse().map_err(|_| not_found())?;
+    let event = db::events::get_by_id(&state.db_pool, event_id)
+        .await?
+        .filter(|e| e.execution_id == execution_id)
+        .ok_or_else(not_found)?;
+    Ok(Json(types::EventV1::full(event)))
 }
 
 /// Verify optional session auth matches the execution_id in the path.
@@ -361,19 +364,38 @@ async fn verify_execution_scope(
     Ok(())
 }
 
-/// Get agent config pool for an execution (GET /api/executions/:id/agents)
+/// Get agent config pool for an execution (GET /api/v1/executions/:id/agents)
 ///
 /// Returns the configured agent pool (what can be delegated to), not running sessions.
+/// One agent config available to an execution.
+#[derive(Debug, Serialize)]
+pub struct ExecutionAgentResponse {
+    pub agent_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub agent_type: String,
+}
+
 async fn execution_agents_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<Vec<db::execution_agents::ExecutionAgentInfo>>, SchedulerError> {
+) -> Result<Json<Vec<ExecutionAgentResponse>>, SchedulerError> {
     verify_execution_scope(&state, &headers, &id).await?;
     db::executions::get_by_id(&state.db_pool, &id).await?;
     let entries =
         db::execution_agents::list_agent_configs_for_execution(&state.db_pool, &id).await?;
-    Ok(Json(entries))
+    Ok(Json(
+        entries
+            .into_iter()
+            .map(|e| ExecutionAgentResponse {
+                agent_id: e.agent_id,
+                name: e.name,
+                description: e.description,
+                agent_type: e.agent_type,
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,7 +409,7 @@ fn default_true() -> bool {
     true
 }
 
-/// Add agent to execution pool (POST /api/executions/:id/agents).
+/// Add agent to execution pool (POST /api/v1/executions/:id/agents).
 /// No session auth scoping — this is a user-only operation.
 async fn add_to_execution_pool(
     State(state): State<AppState>,
@@ -416,7 +438,7 @@ async fn add_to_execution_pool(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Remove agent from execution pool (DELETE /api/executions/:id/agents/:agent_id).
+/// Remove agent from execution pool (DELETE /api/v1/executions/:id/agents/:agent_id).
 /// No session auth scoping — this is a user-only operation.
 async fn remove_from_execution_pool(
     State(state): State<AppState>,
@@ -469,7 +491,7 @@ fn derive_discovery_status(
     }
 }
 
-/// Get running sessions for an execution (GET /api/executions/:id/sessions)
+/// Get running sessions for an execution (GET /api/v1/executions/:id/sessions)
 async fn execution_sessions_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -527,25 +549,26 @@ async fn execution_sessions_handler(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/executions",
+            "/executions",
             get(list_executions).post(create_execution_handler),
         )
-        .route("/api/executions/{id}", get(get_execution))
+        .route("/executions/{id}", get(get_execution))
         .route(
-            "/api/executions/{id}/terminate",
+            "/executions/{id}/terminate",
             axum::routing::post(terminate_execution),
         )
-        .route("/api/executions/{id}/events", get(execution_events))
+        .route("/executions/{id}/events", get(execution_events))
         .route(
-            "/api/executions/{id}/agents",
+            "/executions/{execution_id}/events/{event_id}",
+            get(execution_event),
+        )
+        .route(
+            "/executions/{id}/agents",
             get(execution_agents_handler).post(add_to_execution_pool),
         )
         .route(
-            "/api/executions/{id}/agents/{agent_id}",
+            "/executions/{id}/agents/{agent_id}",
             axum::routing::delete(remove_from_execution_pool),
         )
-        .route(
-            "/api/executions/{id}/sessions",
-            get(execution_sessions_handler),
-        )
+        .route("/executions/{id}/sessions", get(execution_sessions_handler))
 }

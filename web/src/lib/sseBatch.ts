@@ -2,7 +2,7 @@
 // (cache + scheduler injected) so it runs standalone in fast unit tests.
 
 export interface BatchEvent {
-  id: number;
+  id: string;
   session_id: string | null;
 }
 
@@ -10,9 +10,9 @@ export interface BatchEvent {
 export interface BatchCache<E extends BatchEvent> {
   // Current cached events for a session key, used to seed the per-session id set
   // and to dedupe at flush time.
-  getExisting(sessionKey: string | null): E[] | undefined;
+  getExisting(sessionKey: string): E[] | undefined;
   // Append events not already present under this key, in one write.
-  appendNew(sessionKey: string | null, events: E[]): void;
+  appendNew(sessionKey: string, events: E[]): void;
 }
 
 // Injected so tests drive flush timing deterministically; production wires
@@ -27,8 +27,8 @@ export interface FlushScheduler {
 // Newness is decided synchronously at enqueue so callers can run side effects in
 // delivery order; only the cache write is deferred.
 export class SSEBatcher<E extends BatchEvent> {
-  private readonly seen = new Map<string | null, Set<number>>();
-  private pending = new Map<string | null, E[]>();
+  private readonly seen = new Map<string | null, Set<string>>();
+  private pending = new Map<string, E[]>();
   private pendingCount = 0;
 
   constructor(
@@ -44,11 +44,17 @@ export class SSEBatcher<E extends BatchEvent> {
     const key = event.session_id;
     let ids = this.seen.get(key);
     if (!ids) {
-      ids = new Set((this.cache.getExisting(key) ?? []).map((e) => e.id));
+      ids = new Set(
+        key === null ? [] : (this.cache.getExisting(key) ?? []).map((e) => e.id),
+      );
       this.seen.set(key, ids);
     }
     if (ids.has(event.id)) return false;
     ids.add(event.id);
+
+    // Execution-level rows are classified but never cached: no reader is keyed
+    // on a null session.
+    if (key === null) return true;
 
     let bucket = this.pending.get(key);
     if (!bucket) {
@@ -85,8 +91,7 @@ export class SSEBatcher<E extends BatchEvent> {
   }
 }
 
-// Builds the SSE stream URL for a given cursor. Extracted for unit coverage of
-// the reconnect-from-latest-cursor behavior.
-export function streamUrl(base: string, since: number): string {
-  return since ? `${base}?since=${since}` : base;
+// Builds the SSE stream URL.
+export function streamUrl(base: string): string {
+  return base;
 }

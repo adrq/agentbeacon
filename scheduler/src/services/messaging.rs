@@ -42,7 +42,7 @@ pub struct SenderInfo {
 pub fn clear_stop_intent(_stop_turn_intents: &Arc<RwLock<HashSet<String>>>, _session_id: &str) {}
 
 /// Core message delivery: route through transition function, record event.
-/// Used by POST /api/messages (agent lateral messaging).
+/// Used by POST /api/v1/messages (agent lateral messaging).
 ///
 /// Routes through transition::Action::SendMessage.
 #[allow(clippy::too_many_arguments)]

@@ -1,9 +1,15 @@
 <script lang="ts">
   import { composeAnswer, submitAnswer } from '../questions';
   import type { QuestionState } from '../questions';
+  import { ApiError } from '../api';
   import { router } from '../router';
   import { toasts } from '../stores/toasts';
-  import { markBatchSubmitted, tryClaimSubmit, releaseSubmit, refreshDecisions } from '../stores/questionState';
+  import {
+    markBatchSubmitted,
+    tryClaimSubmit,
+    releaseSubmit,
+    refreshDecisions,
+  } from '../stores/questionState';
   import QuestionCard from './QuestionCard.svelte';
   import ElapsedTime from './ElapsedTime.svelte';
 
@@ -11,16 +17,15 @@
     sessionId: string;
     executionId: string;
     executionTitle: string | null;
-    agentName: string;
     projectName: string | null;
-    batchId: string;
+    eventId: string;
     questions: QuestionState[];
     createdAt: string;
-    onsubmitted?: (sessionId: string, batchId: string) => void;
-    ondismiss?: () => void;
+    onsubmitted?: (sessionId: string, eventId: string) => void;
+    ondismiss?: () => void | Promise<void>;
   }
 
-  let { sessionId, executionId, executionTitle, agentName: agentLabel, projectName, batchId, questions, createdAt, onsubmitted, ondismiss }: Props = $props();
+  let { sessionId, executionId, executionTitle, projectName, eventId, questions, createdAt, onsubmitted, ondismiss }: Props = $props();
 
   let collapsed = $state(false);
   let submitting = $state(false);
@@ -29,10 +34,10 @@
 
   let answers: string[] = $state(questions.map(() => ''));
 
-  let prevBatchId = batchId;
+  let prevEventId = eventId;
   $effect(() => {
-    if (batchId !== prevBatchId || questions.length !== answers.length) {
-      prevBatchId = batchId;
+    if (eventId !== prevEventId || questions.length !== answers.length) {
+      prevEventId = eventId;
       answers = questions.map(() => '');
       allAnswered = false;
     }
@@ -51,21 +56,52 @@
     return questions.map((q, i) => ({ ...q, answer: answers[i] }));
   }
 
+  // True while a dismiss request is open.
+  let dismissing = $state(false);
+  async function handleDismiss() {
+    if (dismissing) return;
+    dismissing = true;
+    try {
+      await ondismiss?.();
+      onsubmitted?.(sessionId, eventId);
+    } finally {
+      dismissing = false;
+    }
+  }
+
   async function handleSubmit() {
     if (!allAnswered || submitting) return;
-    if (!tryClaimSubmit(sessionId, batchId)) return;
+    if (!tryClaimSubmit(sessionId, eventId)) return;
     submitting = true;
     error = null;
+    const submitted = composeAnswer(buildAnswerQuestions());
     try {
-      await submitAnswer(sessionId, composeAnswer(buildAnswerQuestions()), batchId);
-      markBatchSubmitted(sessionId, batchId);
-      releaseSubmit(sessionId, batchId);
+      await submitAnswer(sessionId, submitted, eventId);
+      markBatchSubmitted(sessionId, eventId);
+      releaseSubmit(sessionId, eventId);
       toasts.success('Answer submitted');
       await refreshDecisions();
-      onsubmitted?.(sessionId, batchId);
+      onsubmitted?.(sessionId, eventId);
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to submit';
-      releaseSubmit(sessionId, batchId);
+      releaseSubmit(sessionId, eventId);
+      // Compare the reported resolution against what was submitted.
+      if (e instanceof ApiError && e.code === 'decision.already_resolved') {
+        const resolution = e.problem?.resolution as
+          { kind?: string; answer_text?: string } | undefined;
+        await refreshDecisions();
+        if (resolution?.kind === 'answered' && resolution.answer_text === submitted) {
+          toasts.success('Answer submitted');
+          onsubmitted?.(sessionId, eventId);
+        } else if (resolution?.kind === 'dismissed') {
+          error = 'That decision was dismissed elsewhere';
+        } else {
+          error = resolution?.answer_text
+            ? `Already answered elsewhere: ${resolution.answer_text}`
+            : 'That decision was already resolved elsewhere';
+        }
+      } else {
+        error = e instanceof Error ? e.message : 'Failed to submit';
+      }
     } finally {
       submitting = false;
     }
@@ -103,7 +139,7 @@
 
   {#if !collapsed}
     <div class="card-questions">
-      {#each questions as q, i (batchId + ':' + i)}
+      {#each questions as q, i (eventId + ':' + i)}
         <QuestionCard
           question={q.questionText}
           context={q.context}
@@ -123,7 +159,8 @@
       <button
         type="button"
         class="dismiss-btn"
-        onclick={() => { ondismiss?.(); onsubmitted?.(sessionId, batchId); }}
+        disabled={dismissing || submitting}
+        onclick={handleDismiss}
       >
         Dismiss
       </button>

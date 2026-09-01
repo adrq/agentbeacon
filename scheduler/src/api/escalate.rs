@@ -9,10 +9,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::api::auth::{McpRole, McpSession};
+use crate::api::problem::{Problem, ProblemCode};
 use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
@@ -38,13 +38,14 @@ pub struct EscalateQuestion {
 #[derive(Deserialize, Serialize)]
 pub struct EscalateOption {
     label: String,
-    description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct EscalateResponse {
-    question_ids: Vec<i64>,
     batch_id: String,
+    event_id: String,
 }
 
 async fn escalate(
@@ -53,21 +54,18 @@ async fn escalate(
     body: Result<Json<EscalateRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, SchedulerError> {
     let Json(req) = body.map_err(|e| SchedulerError::ValidationFailed(e.body_text()))?;
-    // Root-lead only
     if auth.role != McpRole::RootLead {
         return Err(SchedulerError::Forbidden(
             "escalate is only available to the root lead agent".to_string(),
         ));
     }
 
-    // Validate questions count: 1-4
     if req.questions.is_empty() || req.questions.len() > 4 {
         return Err(SchedulerError::ValidationFailed(
             "questions must contain 1-4 items".to_string(),
         ));
     }
 
-    // Validate importance
     if req.importance != "blocking" && req.importance != "fyi" {
         return Err(SchedulerError::ValidationFailed(format!(
             "importance must be \"blocking\" or \"fyi\", got \"{}\"",
@@ -75,7 +73,6 @@ async fn escalate(
         )));
     }
 
-    // Validate options per question
     for q in &req.questions {
         if let Some(ref opts) = q.options
             && (opts.len() < 2 || opts.len() > 5)
@@ -87,150 +84,172 @@ async fn escalate(
     }
 
     let batch_id = Uuid::new_v4().to_string();
-    let batch_size = req.questions.len();
-    let mut question_ids = Vec::with_capacity(batch_size);
 
-    for (batch_index, q) in req.questions.iter().enumerate() {
-        let mut data = json!({
-            "type": "escalate",
-            "question": q.question,
-            "importance": req.importance,
+    let questions: Vec<serde_json::Value> = req
+        .questions
+        .iter()
+        .map(|q| {
+            let mut entry = json!({"question": q.question});
+            if let Some(ref ctx) = q.context {
+                entry["context"] = json!(ctx);
+            }
+            if let Some(ref opts) = q.options {
+                entry["options"] = serde_json::to_value(opts).unwrap_or_default();
+            }
+            entry
+        })
+        .collect();
+
+    let event_payload = json!({
+        "role": crate::resolution::ROLE_AGENT,
+        "parts": [{"data": {
+            "type": crate::resolution::ESCALATE_TYPE,
             "batch_id": batch_id,
-            "batch_size": batch_size,
-            "batch_index": batch_index,
-        });
-        if let Some(ref opts) = q.options {
-            data["options"] = serde_json::to_value(opts).unwrap_or_default();
-        }
-        if let Some(ref ctx) = q.context {
-            data["context"] = json!(ctx);
-        }
-        let event_payload = json!({
-            "role": "ROLE_AGENT",
-            "parts": [{"data": data}]
-        });
+            "importance": req.importance,
+            "questions": questions,
+        }}]
+    });
 
-        let event_id = db::events::insert(
-            &state.db_pool,
-            &auth.execution_id,
-            Some(&auth.session_id),
-            "platform",
-            &serde_json::to_string(&event_payload).unwrap(),
-        )
+    let mut tx = db::executions::begin_execution_tx(&state.db_pool, &auth.execution_id).await?;
+    let inserted = match db::events::insert_in_tx(
+        &state.db_pool,
+        &mut tx,
+        Some(&auth.session_id),
+        "platform",
+        &serde_json::to_string(&event_payload).unwrap(),
+    )
+    .await
+    {
+        Ok(inserted) => inserted,
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Err(e);
+        }
+    };
+    tx.commit()
         .await
-        .map_err(|e| SchedulerError::Database(e.to_string()))?;
+        .map_err(|e| SchedulerError::Database(format!("commit escalate tx: {e}")))?;
 
-        let _ = state.event_broadcast.send(EventNotification::persisted(
-            auth.execution_id.clone(),
-            event_id,
-        ));
-
-        question_ids.push(event_id);
-    }
+    let _ = state
+        .event_broadcast
+        .send(EventNotification::persisted(auth.execution_id.clone(), 0));
 
     Ok((
         StatusCode::OK,
         Json(EscalateResponse {
-            question_ids,
             batch_id,
+            event_id: inserted.id.to_string(),
         }),
+    ))
+}
+/// Build the `resolution` extension attached to `decision.already_resolved`.
+pub fn resolution_extension(cand: &crate::resolution::ResolutionCandidate) -> serde_json::Value {
+    let mut ext = json!({
+        "kind": match cand.kind {
+            crate::resolution::ResolutionKind::Answer => "answered",
+            crate::resolution::ResolutionKind::Dismiss => "dismissed",
+        },
+    });
+    if let Some(ref text) = cand.answer_text {
+        ext["answer_text"] = json!(text);
+    }
+    if let Some(ref at) = cand.resolved_at_raw {
+        ext["resolved_at"] = json!(at);
+    }
+    ext
+}
+
+fn already_resolved(cand: &crate::resolution::ResolutionCandidate) -> SchedulerError {
+    SchedulerError::Problem(Box::new(
+        Problem::new(ProblemCode::DecisionAlreadyResolved)
+            .with_detail("this decision was already resolved")
+            .with_extension("resolution", resolution_extension(cand)),
     ))
 }
 
 async fn dismiss(
     headers: HeaderMap,
-    Path(batch_id): Path<String>,
+    Path(event_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    // Reject MCP session auth — dismiss is a user-initiated UI action only
-    if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok())
-        && auth.len() > 7
-        && auth[..7].eq_ignore_ascii_case("bearer ")
-    {
-        let token = &auth[7..];
-        if db::sessions::get_by_id(&state.db_pool, token).await.is_ok() {
-            return Err(SchedulerError::Forbidden(
-                "dismiss is not available via agent session auth".to_string(),
-            ));
-        }
-    }
-
-    // An empty batch_id can never own a batch; reject before the owner lookup (its LIKE
-    // pattern would otherwise match every payload).
-    if batch_id.is_empty() {
-        return Err(SchedulerError::NotFound(format!(
-            "batch {batch_id} does not exist"
+    if crate::api::sessions::is_agent_session_bearer(&headers, &state).await? {
+        return Err(SchedulerError::Problem(Box::new(
+            Problem::new(ProblemCode::AuthForbidden)
+                .with_detail("dismiss is not available via agent session auth"),
         )));
     }
 
-    let owner = db::events::find_batch_owner(&state.db_pool, &batch_id)
-        .await?
-        .ok_or_else(|| SchedulerError::NotFound(format!("batch {batch_id} does not exist")))?;
+    let decision_not_found = || {
+        SchedulerError::Problem(Box::new(
+            Problem::new(ProblemCode::DecisionNotFound).with_detail("no decision has this id"),
+        ))
+    };
 
-    // Open a transaction on the owner execution for the checks and insert below.
-    let mut tx = db::executions::begin_execution_tx(&state.db_pool, &owner.execution_id)
+    let event_id: i64 = event_id.parse().map_err(|_| decision_not_found())?;
+    let escalation = db::events::get_escalation(&state.db_pool, event_id)
+        .await?
+        .ok_or_else(decision_not_found)?;
+
+    let mut tx = db::executions::begin_execution_tx(&state.db_pool, &escalation.execution_id)
         .await
         .map_err(|e| SchedulerError::Database(format!("begin dismiss tx: {e}")))?;
 
-    let tx_exec = db::executions::get_in_tx(&state.db_pool, &mut tx, &owner.execution_id)
-        .await
-        .map_err(|e| SchedulerError::Database(format!("recheck execution: {e}")))?;
-    if tx_exec.outcome.is_some() || tx_exec.desired == "terminate" {
-        let _ = tx.rollback().await;
-        return Ok((
-            StatusCode::OK,
-            Json(json!({"status": "expired", "message": "execution is terminal"})),
-        ));
-    }
-
-    if let Some(resolution) = db::events::find_resolution_for_batch_in_tx(
-        &state.db_pool,
-        &mut tx,
-        &owner.execution_id,
-        &owner.session_id,
-        &batch_id,
-    )
-    .await?
-    {
-        let _ = tx.rollback().await;
-        let status = match resolution.kind {
-            crate::resolution::ResolutionKind::Dismiss => "already_dismissed",
-            crate::resolution::ResolutionKind::Answer => "already_resolved",
-        };
-        return Ok((StatusCode::OK, Json(json!({"status": status}))));
-    }
-
-    let event_payload = json!({
-        "role": "ROLE_USER",
-        "parts": [{"data": {"type": "question_dismiss", "batch_id": batch_id}}]
-    });
-    let event_sql = state.db_pool.prepare_query(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) \
-         VALUES (?, ?, 'platform', ?) RETURNING id",
-    );
-    let event_id: i64 = sqlx::query(&event_sql)
-        .bind(&owner.execution_id)
-        .bind(&owner.session_id)
-        .bind(serde_json::to_string(&event_payload).unwrap())
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| SchedulerError::Database(format!("insert dismiss failed: {e}")))?
-        .try_get("id")
-        .unwrap_or(0);
-
-    tx.commit()
-        .await
-        .map_err(|e| SchedulerError::Database(format!("commit dismiss tx: {e}")))?;
+    let outcome = dismiss_in_tx(&state, &mut tx, &escalation).await;
+    let inserted = match outcome {
+        Ok(inserted) => {
+            tx.commit()
+                .await
+                .map_err(|e| SchedulerError::Database(format!("commit dismiss tx: {e}")))?;
+            inserted
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Err(e);
+        }
+    };
 
     let _ = state.event_broadcast.send(EventNotification::persisted(
-        owner.execution_id.clone(),
-        event_id,
+        escalation.execution_id.clone(),
+        inserted.id,
     ));
     Ok((StatusCode::OK, Json(json!({"status": "dismissed"}))))
 }
 
+async fn dismiss_in_tx(
+    state: &AppState,
+    tx: &mut db::executions::ExecutionTx<'_>,
+    escalation: &db::events::Escalation,
+) -> Result<db::events::InsertedEvent, SchedulerError> {
+    if let Some(cand) =
+        db::events::find_marker_for_escalation_in_tx(&state.db_pool, tx, escalation).await?
+    {
+        return Err(already_resolved(&cand));
+    }
+
+    let tx_exec = db::executions::get_in_tx(&state.db_pool, tx, &escalation.execution_id)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("recheck execution: {e}")))?;
+    if tx_exec.outcome.is_some() || tx_exec.desired == "terminate" {
+        return Err(SchedulerError::Problem(Box::new(
+            Problem::new(ProblemCode::DecisionExpired)
+                .with_detail("the execution this decision belongs to has ended"),
+        )));
+    }
+
+    let event_payload =
+        crate::resolution::dismiss_payload(&escalation.data.batch_id, escalation.id);
+    db::events::insert_in_tx(
+        &state.db_pool,
+        tx,
+        Some(&escalation.session_id),
+        "platform",
+        &serde_json::to_string(&event_payload).unwrap(),
+    )
+    .await
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/escalate", post(escalate))
-        .route("/api/escalate/{batch_id}/dismiss", post(dismiss))
+        .route("/escalate", post(escalate))
+        .route("/escalate/{event_id}/dismiss", post(dismiss))
 }

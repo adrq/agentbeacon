@@ -23,7 +23,11 @@ export type SessionDisplayStatus =
 export type ExecutionStatus = ExecutionDisplayStatus;
 export type SessionStatus = SessionDisplayStatus;
 
-export type EventType = 'message' | 'state_change' | 'platform';
+// Open by contract: the server may serve a kind this client does not know, and
+// an unrecognized kind renders generically. The named members are suggestions.
+export type EventType =
+  | 'message' | 'state_change' | 'platform' | 'escalate'
+  | (string & {});
 export type Theme = 'light' | 'dark';
 export type RouteMode = 'view' | 'new' | 'edit';
 export type NavSection = 'home' | 'executions' | 'projects' | 'agents' | 'wiki' | 'settings';
@@ -82,13 +86,13 @@ export interface Execution {
   completed_at: string | null;
 }
 
-// GET /api/executions/{id} — wrapped execution + sessions
+// GET /api/v1/executions/{id} — wrapped execution + sessions
 export interface ExecutionDetail {
   execution: Execution;
   sessions: SessionSummary[];
 }
 
-// Sessions from execution detail endpoint and GET /api/sessions
+// Sessions from execution detail endpoint and GET /api/v1/sessions
 export interface SessionSummary {
   id: string;
   execution_id: string;
@@ -114,10 +118,10 @@ export interface SessionSummary {
   completed_at: string | null;
 }
 
-// Full session from GET /api/sessions — same shape as SessionSummary
+// Full session from GET /api/v1/sessions — same shape as SessionSummary
 export type Session = SessionSummary;
 
-// GET /api/sessions/{id}/worktree
+// GET /api/v1/sessions/{id}/worktree
 export interface WorktreeInfo {
   path: string;
   branch: string | null;
@@ -125,7 +129,7 @@ export interface WorktreeInfo {
   exists: boolean;
 }
 
-// GET /api/sessions/{id}/worktree/branches
+// GET /api/v1/sessions/{id}/worktree/branches
 export interface BranchInfo {
   name: string;
   is_default: boolean;
@@ -136,7 +140,7 @@ export interface BranchesResponse {
   current_branch: string | null;
 }
 
-// GET /api/sessions/{id}/worktree/diff
+// GET /api/v1/sessions/{id}/worktree/diff
 export interface DiffFileEntry {
   path: string;
   status: string;      // M, A, D
@@ -161,7 +165,7 @@ export interface DiffResponse {
   files: DiffFileEntry[];
   summary: DiffSummary;
   patch?: string;       // omitted when stat=true
-  truncated?: boolean;  // true on 413 responses (patch > 1MB)
+  truncated?: boolean;  // true when patch was withheld for size; the response is still 200
   commits?: DiffCommitEntry[];  // commits between base and HEAD
   content_identical?: boolean;  // true when branch content matches HEAD
 }
@@ -169,15 +173,27 @@ export interface DiffResponse {
 // Platform events use the same shape as message events (role + parts with data payloads)
 export type PlatformPayload = MessagePayload;
 
-// GET /api/sessions/{id}/events
+// GET /api/v1/sessions/{id}/events
 export interface Event {
-  id: number;
+  id: string;
   execution_id: string;
   session_id: string | null;
   event_type: EventType;
   payload: MessagePayload | StateChangePayload | PlatformPayload;
+  truncated?: boolean;
+  byte_size?: number;
+  omitted_paths?: string[];
   msg_seq?: number;
+  // Payload schema version. Absent is version 1.
+  schema_version?: number;
   created_at: string;
+}
+
+// A bounded page of items with an opaque continuation cursor.
+export interface Page<T> {
+  items: T[];
+  next_cursor: string | null;
+  has_more: boolean;
 }
 
 // Ephemeral streaming event (SSE-only, not persisted)
@@ -235,17 +251,19 @@ export type DataPartPayload =
 export interface EscalateData {
   type: 'escalate';
   batch_id: string;
-  batch_size: number;
-  batch_index: number;
+  questions: EscalateQuestion[];
+  importance: 'blocking' | 'fyi';
+}
+
+export interface EscalateQuestion {
   question: string;
   context?: string;
   options?: QuestionOption[];
-  importance: 'blocking' | 'fyi';
 }
 
 export interface QuestionOption {
   label: string;
-  description: string;
+  description?: string;
 }
 
 export interface DelegateData {
@@ -414,7 +432,7 @@ export interface ContinueSessionResponse {
 }
 
 export interface PostMessageResponse {
-  event_id: number;
+  event_id: string;
   session_status: string;
   execution_status: string;
 }
@@ -668,7 +686,7 @@ export interface McpServerPoolEntry {
   config: Record<string, unknown>;
 }
 
-// GET /api/executions/{id}/agents — config pool
+// GET /api/v1/executions/{id}/agents — config pool
 export interface AgentPoolEntry {
   agent_id: string;
   name: string;
@@ -676,7 +694,7 @@ export interface AgentPoolEntry {
   agent_type: string;
 }
 
-// GET /api/executions/{id}/sessions — session discovery
+// GET /api/v1/executions/{id}/sessions — session discovery
 export interface SessionDiscoveryEntry {
   session_id: string;
   hierarchical_name: string;
@@ -694,7 +712,7 @@ export interface SessionIdentity {
   role: string;
 }
 
-// GET/POST /api/config — briefing configuration
+// GET/POST /api/v1/config — briefing configuration
 export interface ConfigEntry {
   name: string;
   value: string;
@@ -729,14 +747,13 @@ export interface ModelSuggestion {
   recommended?: boolean;
 }
 
-// Decision batches from GET /api/decisions
+// Decision batches from GET /api/v1/decisions
 export interface DecisionBatchResponse {
+  event_id: string;
   batch_id: string;
   execution_id: string;
   execution_title: string | null;
   session_id: string;
-  agent_name: string;
-  hierarchical_name: string;
   status: 'pending' | 'answered' | 'dismissed' | 'expired';
   importance: 'blocking' | 'fyi';
   questions: DecisionQuestionResponse[];
@@ -748,9 +765,23 @@ export interface DecisionBatchResponse {
   created_at: string;
 }
 
+// A resolved decision as it appears in history: no per-kind status, no answer text.
+export interface DecisionSummaryResponse {
+  event_id: string;
+  batch_id: string;
+  execution_id: string;
+  execution_title: string | null;
+  session_id: string;
+  status: 'resolved';
+  importance: 'blocking' | 'fyi';
+  question_preview: string;
+  question_count: number;
+  created_at: string;
+}
+
 export interface DecisionQuestionResponse {
   question: string;
   context?: string | null;
   options?: QuestionOption[] | null;
-  batch_index: number;
+  index: number;
 }

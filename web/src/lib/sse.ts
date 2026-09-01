@@ -1,17 +1,38 @@
 import type { Event as BeaconEvent, EphemeralEvent } from './types';
+import type { ProblemDetails } from './api';
 import { streamUrl } from './sseBatch';
+import { isUnsupportedSchema } from './eventSchema';
 
 export interface SSEConnection {
   close: () => void;
   reconnect: () => void;
 }
 
+// Payload of the `position` event.
+export interface StreamPosition {
+  position: string | null;
+  history_before: string | null;
+}
+
 const MAX_CONSECUTIVE_ERRORS = 8;
 const BACKOFF_THRESHOLD = 3;
 const MAX_BACKOFF_MS = 30_000;
 
+/** True for an execution-level terminal state change. */
+function isExecutionTerminal(event: BeaconEvent): boolean {
+  // An unreadable payload is never terminal.
+  if (isUnsupportedSchema(event)) return false;
+  if (event.session_id !== null || event.event_type !== 'state_change') return false;
+  const payload = event.payload as Record<string, unknown>;
+  const outcome = (payload?.outcome ?? payload?.to) as string | undefined;
+  return outcome === 'completed' || outcome === 'failed' || outcome === 'canceled';
+}
+
 /**
  * Connect to the per-execution SSE stream.
+ *
+ * `onPermanentFallback` runs at every point this connection stops for good,
+ * before `onDisconnected`.
  * Gracefully falls back to polling if endpoint returns 404.
  * After BACKOFF_THRESHOLD consecutive errors, uses exponential backoff for reconnection.
  * After MAX_CONSECUTIVE_ERRORS, closes permanently and calls onDisconnected.
@@ -24,28 +45,30 @@ export function connectExecutionSSE(
   onConnected?: () => void,
   onDisconnected?: () => void,
   onReconnecting?: () => void,
-  lastEventId?: number,
+  onPosition?: (position: StreamPosition) => void,
+  onProtocolError?: (problem: ProblemDetails) => void,
+  onPermanentFallback?: () => void,
 ): SSEConnection {
   let consecutiveErrors = 0;
   let closed = false;
+  // Set when this connection must not be reopened.
+  let fatal = false;
   let connected = false;
   let disconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let backoffTimer: ReturnType<typeof setTimeout> | undefined;
   let inBackoff = false;
   let source: EventSource | null = null;
-  // Highest persisted event id seen on this stream. Manual/backoff reconnects
-  // resume from here so they don't replay from the original REST cursor.
-  let maxSeenEventId = lastEventId ?? 0;
 
-  const base = `/api/executions/${encodeURIComponent(executionId)}/events/stream`;
+  const base = `/api/v1/executions/${encodeURIComponent(executionId)}/events/stream`;
 
   function createSource() {
     if (closed) return;
     inBackoff = false;
-    const url = streamUrl(base, maxSeenEventId);
+    const url = streamUrl(base);
     source = new EventSource(url);
 
     source.onopen = () => {
+      if (fatal) return;
       connected = true;
       consecutiveErrors = 0;
       clearTimeout(disconnectTimer);
@@ -57,14 +80,41 @@ export function connectExecutionSSE(
       consecutiveErrors = 0;
       try {
         const event: BeaconEvent = JSON.parse(msg.data);
-        if (typeof event.id === 'number' && event.id > maxSeenEventId) {
-          maxSeenEventId = event.id;
-        }
         onEvent(event);
+        if (isExecutionTerminal(event)) {
+          closed = true;
+          connected = false;
+          clearTimeout(disconnectTimer);
+          source?.close();
+          source = null;
+          onDisconnected?.();
+        }
       } catch {
         // Malformed JSON — skip
       }
     };
+
+    source.addEventListener('position', ((msg: MessageEvent) => {
+      consecutiveErrors = 0;
+      try {
+        onPosition?.(JSON.parse(msg.data) as StreamPosition);
+      } catch { /* skip */ }
+    }) as EventListener);
+
+    source.addEventListener('protocol_error', ((msg: MessageEvent) => {
+      try {
+        onProtocolError?.(JSON.parse(msg.data) as ProblemDetails);
+      } catch { /* skip */ }
+      // Close and report disconnected, which starts the polling fallback.
+      fatal = true;
+      closed = true;
+      connected = false;
+      clearTimeout(disconnectTimer);
+      source?.close();
+      source = null;
+      onPermanentFallback?.();
+      onDisconnected?.();
+    }) as EventListener);
 
     // Listen for named "ephemeral" SSE events (streaming text deltas)
     source.addEventListener('ephemeral', ((msg: MessageEvent) => {
@@ -84,6 +134,7 @@ export function connectExecutionSSE(
         source.close();
         clearTimeout(disconnectTimer);
         console.warn('[SSE] Connection closed by server (non-200 or endpoint missing), falling back to polling');
+        onPermanentFallback?.();
         onDisconnected?.();
         return;
       }
@@ -105,6 +156,7 @@ export function connectExecutionSSE(
         source = null;
         clearTimeout(disconnectTimer);
         console.warn('[SSE] Too many consecutive errors, falling back to polling permanently');
+        onPermanentFallback?.();
         onDisconnected?.();
       } else if (consecutiveErrors >= BACKOFF_THRESHOLD) {
         // Manual backoff: close current source and reconnect after delay
@@ -150,6 +202,7 @@ export function connectExecutionSSE(
     },
     reconnect() {
       closed = false;
+      fatal = false;
       connected = false;
       inBackoff = false;
       consecutiveErrors = 0;

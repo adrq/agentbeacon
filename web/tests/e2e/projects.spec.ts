@@ -9,14 +9,14 @@ const createdTempDirs: string[] = [];
 
 async function cleanupTestProjects() {
   for (const id of createdProjectIds) {
-    try { await apiDelete(`/api/projects/${id}`); } catch { /* best effort */ }
+    try { await apiDelete(`/api/v1/projects/${id}`); } catch { /* best effort */ }
   }
   createdProjectIds.length = 0;
 
-  const projects: { id: string; name: string }[] = await apiGet('/api/projects');
+  const projects: { id: string; name: string }[] = await apiGet('/api/v1/projects');
   for (const p of projects) {
     if (TEST_PROJECT_NAMES.includes(p.name)) {
-      try { await apiDelete(`/api/projects/${p.id}`); } catch { /* best effort */ }
+      try { await apiDelete(`/api/v1/projects/${p.id}`); } catch { /* best effort */ }
     }
   }
 
@@ -54,7 +54,7 @@ test('register a project via UI', async ({ page }) => {
 });
 
 test('navigate to project detail via sidebar', async ({ page }) => {
-  const project = await apiPost('/api/projects', { name: 'Detail Test', path: '/tmp' });
+  const project = await apiPost('/api/v1/projects', { name: 'Detail Test', path: '/tmp' });
   createdProjectIds.push(project.id);
 
   await page.goto('/#/projects');
@@ -66,7 +66,7 @@ test('navigate to project detail via sidebar', async ({ page }) => {
 });
 
 test('edit project', async ({ page }) => {
-  const project = await apiPost('/api/projects', { name: 'Edit Me', path: '/tmp' });
+  const project = await apiPost('/api/v1/projects', { name: 'Edit Me', path: '/tmp' });
   createdProjectIds.push(project.id);
 
   await page.goto(`/#/projects/${project.id}`);
@@ -85,7 +85,7 @@ test('edit project', async ({ page }) => {
 });
 
 test('delete project', async ({ page }) => {
-  const project = await apiPost('/api/projects', { name: 'Delete Me', path: '/tmp' });
+  const project = await apiPost('/api/v1/projects', { name: 'Delete Me', path: '/tmp' });
   createdProjectIds.push(project.id);
 
   await page.goto(`/#/projects/${project.id}`);

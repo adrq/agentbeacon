@@ -1,6 +1,93 @@
-import { createQuery, createMutation, useQueryClient } from '@tanstack/svelte-query';
-import type { CreateExecutionResponse, ExecutionDetail } from '../types';
+import { createQuery, createMutation, useQueryClient, type QueryClient } from '@tanstack/svelte-query';
+import type { CreateExecutionResponse, ExecutionDetail, Event } from '../types';
 import { api } from '../api';
+import { releaseCount, unionWithKnown } from '../liveEvents';
+
+// Matches the server's advertised events.max_page.
+const HISTORY_PAGE_LIMIT = 500;
+
+/** Page backwards from `before` and return the window oldest-first. */
+export async function fetchSessionHistory(
+  sessionId: string,
+  opts?: { before?: string; signal?: AbortSignal; stopAt?: Set<string> },
+): Promise<Event[]> {
+  let before = opts?.before;
+  const pages: Event[][] = [];
+  // Walks every page down to has_more=false or a stopAt hit.
+  for (;;) {
+    const page = await api.getSessionEvents(sessionId, {
+      before,
+      limit: HISTORY_PAGE_LIMIT,
+      signal: opts?.signal,
+    });
+    pages.unshift(page.items);
+    if (!page.has_more || !page.next_cursor) break;
+    if (opts?.stopAt?.size && page.items.some(e => opts.stopAt!.has(e.id))) break;
+    before = page.next_cursor;
+  }
+  return pages.flat();
+}
+
+/** Page backwards from `before` and return the window oldest-first. */
+export async function fetchExecutionHistory(
+  executionId: string,
+  opts?: { before?: string; stopAt?: Set<string> },
+): Promise<Event[]> {
+  let before = opts?.before;
+  const pages: Event[][] = [];
+  // Walks every page down to has_more=false or a stopAt hit.
+  for (;;) {
+    const page = await api.getExecutionEvents(executionId, {
+      before,
+      limit: HISTORY_PAGE_LIMIT,
+    });
+    pages.unshift(page.items);
+    if (!page.has_more || !page.next_cursor) break;
+    if (opts?.stopAt?.size && page.items.some(e => opts.stopAt!.has(e.id))) break;
+    before = page.next_cursor;
+  }
+  return pages.flat();
+}
+
+/**
+ * Refetch a session's history from `historyBefore` down to what is already
+ * cached, and store the union keyed by id.
+ *
+ * Used on connect and on reconnect. The cached entries the refetch did not
+ * cover keep their position ahead of it. A null `historyBefore` pages from the
+ * newest end.
+ */
+export async function spliceSessionHistory(
+  queryClient: QueryClient,
+  sessionId: string,
+  historyBefore: string | null,
+): Promise<void> {
+  const key = ['session-events', sessionId];
+  const cachedIds = new Set(
+    (queryClient.getQueryData<Event[]>(key) ?? []).map(e => e.id),
+  );
+
+  const window = await fetchSessionHistory(sessionId, {
+    before: historyBefore ?? undefined,
+    stopAt: cachedIds,
+  });
+
+  // Splice the window in at its first cached member; everything else keeps its
+  // cached position. Ids are compared for equality only.
+  const windowIds = new Set(window.map(e => e.id));
+  queryClient.setQueryData<Event[]>(key, current => {
+    const cached = current ?? [];
+    const anchor = cached.findIndex(e => windowIds.has(e.id));
+    const outside = (events: Event[]) => events.filter(e => !windowIds.has(e.id));
+    // No shared row: the window goes first.
+    if (anchor === -1) return [...window, ...outside(cached)];
+    return [
+      ...outside(cached.slice(0, anchor)),
+      ...window,
+      ...outside(cached.slice(anchor)),
+    ];
+  });
+}
 
 export function executionsQuery(projectId?: () => string | null | undefined) {
   return createQuery(() => ({
@@ -24,10 +111,14 @@ export function executionDetailQuery(id: () => string | null) {
     refetchInterval: (query) => {
       const data = query.state.data as ExecutionDetail | undefined;
       if (!data) return 10_000;
-      // Keep polling until tree is fully settled (all sessions have outcome)
-      const allSettled = data.execution.outcome != null
-        && data.sessions.every(s => s.outcome != null);
-      if (allSettled) return false;
+      // A session is released when its outcome is set and no worker or command
+      // remains. Polling continues until every session is released, which is
+      // later than the outcomes appearing.
+      const allReleased = data.execution.outcome != null
+        && data.sessions.every(
+          s => s.outcome != null && s.worker_id == null && s.command_type == null,
+        );
+      if (allReleased) return false;
       return 10_000;
     },
   }));
@@ -38,9 +129,26 @@ export function sessionEventsQuery(
   isTerminal?: () => boolean,
   sseActive?: () => boolean,
 ) {
+  const queryClient = useQueryClient();
   return createQuery(() => ({
     queryKey: ['session-events', sessionId()],
-    queryFn: ({ signal }) => api.getSessionEvents(sessionId()!, signal),
+    // The installed window unions the fetch with what is already known.
+    queryFn: async ({ signal }) => {
+      const id = sessionId()!;
+      // Re-reads while new arrivals overflowed the hold. Each extra cycle needs
+      // another 500 arrivals inside one read.
+      let releases = releaseCount(id);
+      let fetched = await fetchSessionHistory(id, { signal });
+      while (releaseCount(id) !== releases) {
+        releases = releaseCount(id);
+        fetched = await fetchSessionHistory(id, { signal });
+      }
+      return unionWithKnown(
+        fetched,
+        queryClient.getQueryData<Event[]>(['session-events', id]),
+        id,
+      );
+    },
     enabled: !!sessionId(),
     // Settled sessions are immutable: never refetch on remount. Live sessions
     // rely on SSE + the poll below, so a longer staleTime only suppresses
@@ -62,7 +170,7 @@ export function sessionEventsQuery(
 export function executionEventsQuery(executionId: () => string | null | undefined) {
   return createQuery(() => ({
     queryKey: ['execution-events', executionId()],
-    queryFn: () => api.getExecutionEvents(executionId()!),
+    queryFn: () => fetchExecutionHistory(executionId()!),
     enabled: !!executionId(),
     refetchInterval: 3000,
   }));

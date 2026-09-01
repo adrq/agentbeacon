@@ -23,12 +23,12 @@ pub enum BriefingRole {
 // When true, DB and project-level overrides can replace these defaults.
 
 const DEFAULT_DELEGATION: &str = "Use the AgentBeacon `delegate` MCP tool to assign work to child agents.\n\
-Discover available agent configs via `GET $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/agents` before delegating.\n\
+Discover available agent configs via `GET $AGENTBEACON_API_BASE/api/v1/executions/$AGENTBEACON_EXECUTION_ID/agents` before delegating.\n\
 An **agent** is a configured specialist type (e.g., `backend-dev`). A **session** is a running instance — delegating to the same agent twice creates two independent sessions.\n\
 \n\
 **Sessions are long-lived.** After a child completes a task, do NOT release it by default. The child retains its full context (codebase understanding, conversation history, mental model). Re-use it for follow-up work.\n\
 \n\
-**Follow-up work uses messaging, not delegate.** To give more work to an existing child, send a message via `POST /api/messages` (see Messaging section). This automatically wakes the child if it ended its turn. Calling `delegate` again creates a *new*, independent session — only do this when you intentionally want a fresh worker with no prior context.\n\
+**Follow-up work uses messaging, not delegate.** To give more work to an existing child, send a message via `POST /api/v1/messages` (see Messaging section). This automatically wakes the child if it ended its turn. Calling `delegate` again creates a *new*, independent session — only do this when you intentionally want a fresh worker with no prior context.\n\
 \n\
 **Release is explicit termination.** Use `release` only when you have a clear reason:\n\
 - The work stream is fully complete with no foreseeable follow-ups\n\
@@ -37,7 +37,7 @@ An **agent** is a configured specialist type (e.g., `backend-dev`). A **session*
 - The execution is wrapping up and you are cleaning house";
 
 const DEFAULT_ESCALATE: &str = "**Always use this API to surface questions, decisions, and updates to the user.** Ending your turn with a question in your output does not notify the user — they would have to manually find your idle session. The escalate API triggers a notification.\n\n\
-`POST $AGENTBEACON_API_BASE/api/escalate`\n\
+`POST $AGENTBEACON_API_BASE/api/v1/escalate`\n\
 ```json\n\
 {\"questions\": [{\"question\": \"Your question here\", \"options\": [{\"label\": \"A\", \"description\": \"...\"}]}], \"importance\": \"blocking\"}\n\
 ```\n\
@@ -65,41 +65,41 @@ You can message any non-terminal session. Stopped, idle, and running children al
 **Escalate decisions, do not decide alone.** When you encounter decisions outside your delegated scope — product direction, architectural choices, ambiguous requirements — do not just proceed. Ending your turn with a question in your output does not notify anyone. Message your parent, who has broader context and can escalate further.";
 
 const DEFAULT_MESSAGING: &str = "Send a message:\n\
-  curl -X POST \"$AGENTBEACON_API_BASE/api/messages\" \\\n\
+  curl -X POST \"$AGENTBEACON_API_BASE/api/v1/messages\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
     -d \"{\\\"to\\\": \\\"<hierarchical-name>\\\", \\\"parts\\\": [{\\\"text\\\": \\\"your message\\\"}]}\"\n\
 \n\
 Read your messages:\n\
-  curl \"$AGENTBEACON_API_BASE/api/messages?session_id=$AGENTBEACON_SESSION_ID\"\n\
+  curl \"$AGENTBEACON_API_BASE/api/v1/messages?session_id=$AGENTBEACON_SESSION_ID\"\n\
 \n\
 Read messages since a known event ID:\n\
-  curl \"$AGENTBEACON_API_BASE/api/messages?session_id=$AGENTBEACON_SESSION_ID&since_id=<id>\"\n\
+  curl \"$AGENTBEACON_API_BASE/api/v1/messages?session_id=$AGENTBEACON_SESSION_ID&since_id=<id>\"\n\
 \n\
 Discover sessions in your execution:\n\
-  curl \"$AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/sessions\" \\\n\
+  curl \"$AGENTBEACON_API_BASE/api/v1/executions/$AGENTBEACON_EXECUTION_ID/sessions\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
 \n\
 Search the wiki (prefer this over listing pages):\n\
-  curl \"$AGENTBEACON_API_BASE/api/wiki/search?q=<terms>\" \\\n\
+  curl \"$AGENTBEACON_API_BASE/api/v1/wiki/search?q=<terms>\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
 - Results may include pages owned by other projects; each carries its owning project. \
 Fetch a page to see your access level.\n\
 \n\
 Read a wiki page:\n\
-  curl \"$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
+  curl \"$AGENTBEACON_API_BASE/api/v1/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
 - For a page owned by another project, replace $AGENTBEACON_PROJECT_ID with that project's slug \
 (shown in search results). You may edit it if your access level says read_write.\n\
 \n\
 Create a wiki page:\n\
-  curl -X PUT \"$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
+  curl -X PUT \"$AGENTBEACON_API_BASE/api/v1/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
     -d \"{\\\"title\\\": \\\"Page Title\\\", \\\"body\\\": \\\"Content here\\\"}\"\n\
 \n\
 Edit a wiki page (targeted find/replace -- the only way to update an existing page):\n\
-  curl -X PATCH \"$AGENTBEACON_API_BASE/api/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
+  curl -X PATCH \"$AGENTBEACON_API_BASE/api/v1/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
     -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
     -d \"{\\\"edits\\\": [{\\\"old_string\\\": \\\"find me\\\", \\\"new_string\\\": \\\"replace me\\\"}], \\\"revision_number\\\": 5}\"\n\
@@ -118,7 +118,7 @@ const DEFAULT_REST_API: &str = "Environment variables for API access:\n\
 - `$AGENTBEACON_EXECUTION_ID` — current execution\n\
 - `$AGENTBEACON_PROJECT_ID` — current project (if set)\n\
 `GET $AGENTBEACON_API_BASE/api/docs` for the full API reference.\n\
-Discover running sessions via `GET $AGENTBEACON_API_BASE/api/executions/$AGENTBEACON_EXECUTION_ID/sessions`.\n\
+Discover running sessions via `GET $AGENTBEACON_API_BASE/api/v1/executions/$AGENTBEACON_EXECUTION_ID/sessions`.\n\
 Write scripts to interact with the API (e.g. discover agents, filter results, send messages in a loop) \
 rather than making one curl call at a time — process data in code, not in your context window.";
 

@@ -1397,7 +1397,7 @@ def create_execution_via_api(
     parts: list = None,
     sandbox_policy: dict = None,
 ) -> tuple:
-    """POST /api/executions, return (execution_id, session_id).
+    """POST /api/v1/executions, return (execution_id, session_id).
 
     Args:
         scheduler_url: Base URL of the scheduler
@@ -1441,7 +1441,7 @@ def create_execution_via_api(
     if sandbox_policy is not None:
         payload["sandbox_policy"] = sandbox_policy
 
-    resp = httpx.post(f"{scheduler_url}/api/executions", json=payload, timeout=5)
+    resp = httpx.post(f"{scheduler_url}/api/v1/executions", json=payload, timeout=5)
     assert resp.status_code == 201, (
         f"create execution failed: {resp.status_code} {resp.text}"
     )
@@ -1619,7 +1619,7 @@ def seed_project(
 
 
 def create_project_via_api(scheduler_url: str, name: str, path: str = None) -> dict:
-    """POST /api/projects, return response data.
+    """POST /api/v1/projects, return response data.
 
     Args:
         scheduler_url: Base URL of the scheduler
@@ -1633,7 +1633,7 @@ def create_project_via_api(scheduler_url: str, name: str, path: str = None) -> d
         path = tempfile.gettempdir()
 
     resp = httpx.post(
-        f"{scheduler_url}/api/projects",
+        f"{scheduler_url}/api/v1/projects",
         json={"name": name, "path": path},
         timeout=5,
     )
@@ -1645,7 +1645,7 @@ def create_project_via_api(scheduler_url: str, name: str, path: str = None) -> d
 
 def ensure_driver_via_api(scheduler_url: str, platform: str = "acp") -> str:
     """Find a driver for the given platform, return driver_id. Raises if not found."""
-    resp = httpx.get(f"{scheduler_url}/api/drivers", timeout=5)
+    resp = httpx.get(f"{scheduler_url}/api/v1/drivers", timeout=5)
     assert resp.status_code == 200
     for driver in resp.json():
         if driver["platform"] == platform:
@@ -1664,7 +1664,7 @@ def create_agent_via_api(
     config: dict = None,
     description: str = None,
 ) -> dict:
-    """POST /api/agents, return response data.
+    """POST /api/v1/agents, return response data.
 
     Args:
         scheduler_url: Base URL of the scheduler
@@ -1687,7 +1687,7 @@ def create_agent_via_api(
         payload["description"] = description
 
     resp = httpx.post(
-        f"{scheduler_url}/api/agents",
+        f"{scheduler_url}/api/v1/agents",
         json=payload,
         timeout=5,
     )
@@ -1757,7 +1757,7 @@ def assert_event_exists(
 
 
 def stop_session(url: str, session_id: str) -> httpx.Response:
-    """POST /api/sessions/{id}/stop — request session stop.
+    """POST /api/v1/sessions/{id}/stop — request session stop.
 
     Args:
         url: Base scheduler URL
@@ -1766,11 +1766,11 @@ def stop_session(url: str, session_id: str) -> httpx.Response:
     Returns:
         httpx.Response: Raw HTTP response
     """
-    return httpx.post(f"{url}/api/sessions/{session_id}/stop", timeout=5)
+    return httpx.post(f"{url}/api/v1/sessions/{session_id}/stop", timeout=5)
 
 
 def post_user_message(url: str, session_id: str, text: str) -> httpx.Response:
-    """POST /api/sessions/{id}/message with a text payload.
+    """POST /api/v1/sessions/{id}/message with a text payload.
 
     Args:
         url: Base scheduler URL
@@ -1781,7 +1781,7 @@ def post_user_message(url: str, session_id: str, text: str) -> httpx.Response:
         httpx.Response: Raw HTTP response
     """
     return httpx.post(
-        f"{url}/api/sessions/{session_id}/message",
+        f"{url}/api/v1/sessions/{session_id}/message",
         json={"parts": [{"text": text}]},
         timeout=5,
     )

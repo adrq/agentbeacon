@@ -1,6 +1,8 @@
 use serde::Serialize;
 use serde_json::json;
 
+use crate::api::problem::{Problem, ProblemCode};
+use crate::api::versions::{EVENT_PAYLOAD_BUDGET_BYTES, EVENTS_DEFAULT_PAGE, EVENTS_MAX_PAGE};
 use crate::db;
 use crate::error::SchedulerError;
 
@@ -319,47 +321,408 @@ impl From<db::sessions::Session> for SessionResponse {
     }
 }
 
+/// A page of items with an opaque continuation cursor.
+#[derive(Debug, Serialize)]
+pub struct PageV1<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
 /// Shared event response shape.
 #[derive(Debug, Serialize)]
-pub struct EventResponse {
-    pub id: i64,
+pub struct EventV1 {
+    pub id: String,
     pub execution_id: String,
     pub session_id: Option<String>,
     pub event_type: String,
     pub payload: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omitted_paths: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub msg_seq: Option<i64>,
     pub created_at: String,
 }
 
-impl From<db::events::Event> for EventResponse {
-    fn from(e: db::events::Event) -> Self {
-        let payload_value = serde_json::from_str(&e.payload).unwrap_or(json!(e.payload));
+/// The `event_type` an escalation is served under.
+fn surfaced_event_type(stored: String, payload: &serde_json::Value) -> String {
+    if stored != "platform" {
+        return stored;
+    }
+    let data_type = payload
+        .get("parts")
+        .and_then(|p| p.get(0))
+        .and_then(|p| p.get("data"))
+        .and_then(|d| d.get("type"))
+        .and_then(|t| t.as_str());
+    if data_type == Some(crate::resolution::ESCALATE_TYPE) {
+        crate::resolution::ESCALATE_TYPE.to_string()
+    } else {
+        stored
+    }
+}
 
-        let event_type = if e.event_type == "platform" {
-            let data_type = payload_value
-                .get("parts")
-                .and_then(|p| p.get(0))
-                .and_then(|p| p.get("data"))
-                .and_then(|d| d.get("type"))
-                .and_then(|t| t.as_str());
-            if data_type == Some("escalate") {
-                "escalate".to_string()
-            } else {
-                e.event_type
-            }
-        } else {
-            e.event_type
-        };
-
+impl EventV1 {
+    /// Build a record whose payload is served exactly as stored.
+    pub fn full(e: db::events::Event) -> Self {
+        let payload = serde_json::from_str(&e.payload).unwrap_or(json!(e.payload));
+        let event_type = surfaced_event_type(e.event_type, &payload);
         Self {
-            id: e.id,
+            id: e.id.to_string(),
             execution_id: e.execution_id,
             session_id: e.session_id,
             event_type,
-            payload: payload_value,
+            payload,
+            truncated: None,
+            byte_size: None,
+            omitted_paths: None,
             msg_seq: e.msg_seq,
             created_at: e.created_at.to_rfc3339(),
         }
+    }
+}
+
+impl From<db::events::Event> for EventV1 {
+    fn from(e: db::events::Event) -> Self {
+        let stored_len = e.payload.len();
+        let mut record = Self::full(e);
+        if stored_len <= EVENT_PAYLOAD_BUDGET_BYTES {
+            return record;
+        }
+        let outcome = payload_budget::apply(record.payload);
+        record.payload = outcome.payload;
+        if outcome.changed || outcome.final_size > EVENT_PAYLOAD_BUDGET_BYTES {
+            record.truncated = Some(true);
+            record.byte_size = Some(stored_len as u64);
+        }
+        if !outcome.omitted_paths.is_empty() {
+            record.omitted_paths = Some(outcome.omitted_paths);
+        }
+        record
+    }
+}
+
+/// Serving-time shortening of oversized event payloads.
+///
+/// Structure, keys, array membership and every non-string value are preserved;
+/// only string values are shortened, and base64 attachment leaves are emptied
+/// rather than cut.
+pub mod payload_budget {
+    use serde_json::Value;
+
+    use crate::api::versions::{EVENT_PAYLOAD_BUDGET_BYTES, EVENT_STRING_LEAF_MAX_BYTES};
+
+    /// Bound on ceiling recomputations.
+    const MAX_PASSES: usize = 32;
+
+    /// Leaves this size or smaller are never shortened.
+    const LEAF_PROTECTION_FLOOR_BYTES: usize = 256;
+
+    /// The result of shortening one payload.
+    pub struct Outcome {
+        pub payload: Value,
+        pub omitted_paths: Vec<String>,
+        /// True when the served payload differs from the stored one.
+        pub changed: bool,
+        /// Serialized size of the served payload.
+        pub final_size: usize,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Seg {
+        Key(String),
+        Index(usize),
+    }
+
+    fn format_path(path: &[Seg]) -> String {
+        let mut out = String::new();
+        for seg in path {
+            match seg {
+                Seg::Key(k) => {
+                    if !out.is_empty() {
+                        out.push('.');
+                    }
+                    out.push_str(k);
+                }
+                Seg::Index(i) => out.push_str(&format!("[{i}]")),
+            }
+        }
+        out
+    }
+
+    /// True for the attachment paths whose values are base64 and must never be cut.
+    fn is_attachment(path: &[Seg]) -> bool {
+        match path {
+            [Seg::Key(parts), Seg::Index(_), Seg::Key(raw)] if parts == "parts" && raw == "raw" => {
+                true
+            }
+            [
+                Seg::Key(content),
+                Seg::Index(_),
+                Seg::Key(source),
+                Seg::Key(data),
+            ] if content == "content" && source == "source" && data == "data" => true,
+            _ => false,
+        }
+    }
+
+    fn collect(value: &Value, path: &mut Vec<Seg>, out: &mut Vec<(Vec<Seg>, usize)>) {
+        match value {
+            Value::String(s) => out.push((path.clone(), s.len())),
+            Value::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    path.push(Seg::Index(i));
+                    collect(item, path, out);
+                    path.pop();
+                }
+            }
+            Value::Object(map) => {
+                for (key, item) in map {
+                    path.push(Seg::Key(key.clone()));
+                    collect(item, path, out);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn at_mut<'a>(value: &'a mut Value, path: &[Seg]) -> Option<&'a mut Value> {
+        let mut cursor = value;
+        for seg in path {
+            cursor = match seg {
+                Seg::Key(k) => cursor.as_object_mut()?.get_mut(k)?,
+                Seg::Index(i) => cursor.as_array_mut()?.get_mut(*i)?,
+            };
+        }
+        Some(cursor)
+    }
+
+    /// The largest per-leaf ceiling whose retained total stays within `allowed`.
+    fn shared_ceiling(lengths: &[(Vec<Seg>, usize)], allowed: usize) -> usize {
+        let mut sorted: Vec<usize> = lengths.iter().map(|(_, len)| *len).collect();
+        sorted.sort_unstable();
+        let mut below = 0usize;
+        for (index, len) in sorted.iter().enumerate() {
+            let remaining = sorted.len() - index;
+            let Some(headroom) = allowed.checked_sub(below) else {
+                return 0;
+            };
+            let ceiling = headroom / remaining;
+            if ceiling <= *len {
+                return ceiling;
+            }
+            below += len;
+        }
+        sorted.last().copied().unwrap_or(0)
+    }
+
+    /// The longest prefix of `s` not exceeding `target` bytes that ends on a
+    /// character boundary.
+    fn cut(s: &str, target: usize) -> &str {
+        if s.len() <= target {
+            return s;
+        }
+        let mut end = target;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+
+    /// Shorten `payload` toward the serving budget.
+    pub fn apply(payload: Value) -> Outcome {
+        let original = payload.clone();
+        let mut payload = payload;
+        let mut omitted_paths = Vec::new();
+
+        let mut leaves = Vec::new();
+        collect(&payload, &mut Vec::new(), &mut leaves);
+
+        for (path, len) in &leaves {
+            if *len > 0
+                && is_attachment(path)
+                && let Some(slot) = at_mut(&mut payload, path)
+            {
+                *slot = Value::String(String::new());
+                omitted_paths.push(format_path(path));
+            }
+        }
+
+        let mut lengths: Vec<(Vec<Seg>, usize)> = leaves
+            .into_iter()
+            .filter(|(path, len)| !is_attachment(path) && *len > LEAF_PROTECTION_FLOOR_BYTES)
+            .collect();
+
+        for (path, len) in lengths.iter_mut() {
+            if *len > EVENT_STRING_LEAF_MAX_BYTES
+                && let Some(slot) = at_mut(&mut payload, path)
+                && let Some(text) = slot.as_str()
+            {
+                let shortened = cut(text, EVENT_STRING_LEAF_MAX_BYTES).to_string();
+                *len = shortened.len();
+                *slot = Value::String(shortened);
+            }
+        }
+
+        let mut within_budget = false;
+        for _ in 0..MAX_PASSES {
+            let size = serde_json::to_string(&payload)
+                .map(|s| s.len())
+                .unwrap_or(0);
+            if size <= EVENT_PAYLOAD_BUDGET_BYTES {
+                within_budget = true;
+                break;
+            }
+            let retained: usize = lengths.iter().map(|(_, len)| *len).sum();
+            if retained == 0 {
+                break;
+            }
+            let overflow = size - EVENT_PAYLOAD_BUDGET_BYTES;
+            let allowed = retained.saturating_sub(overflow);
+            let ceiling = shared_ceiling(&lengths, allowed);
+
+            let mut shortened_any = false;
+            for (path, len) in lengths.iter_mut() {
+                if *len <= ceiling {
+                    continue;
+                }
+                let Some(slot) = at_mut(&mut payload, path) else {
+                    *len = 0;
+                    continue;
+                };
+                let Some(text) = slot.as_str() else {
+                    *len = 0;
+                    continue;
+                };
+                let shortened = cut(text, ceiling).to_string();
+                shortened_any |= shortened.len() < *len;
+                *len = shortened.len();
+                *slot = Value::String(shortened);
+            }
+            if !shortened_any {
+                for (path, len) in lengths.iter_mut() {
+                    if *len == 0 {
+                        continue;
+                    }
+                    if let Some(slot) = at_mut(&mut payload, path) {
+                        *slot = Value::String(String::new());
+                    }
+                    *len = 0;
+                }
+            }
+        }
+
+        if !within_budget {
+            let final_size = serde_json::to_string(&original)
+                .map(|s| s.len())
+                .unwrap_or(0);
+            return Outcome {
+                payload: original,
+                omitted_paths: Vec::new(),
+                changed: false,
+                final_size,
+            };
+        }
+
+        let final_size = serde_json::to_string(&payload)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        let changed = payload != original;
+        Outcome {
+            payload,
+            omitted_paths,
+            changed,
+            final_size,
+        }
+    }
+}
+
+/// Query parameters shared by the bounded event reads.
+#[derive(Debug, serde::Deserialize)]
+pub struct EventPageQuery {
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub limit: Option<i64>,
+}
+
+/// The window one bounded event read selects.
+pub enum EventWindow {
+    Before(Option<i64>),
+    After(i64),
+}
+
+impl EventPageQuery {
+    /// Resolve the requested window and page size, or the problem that rejects them.
+    pub fn resolve(&self) -> Result<(EventWindow, i64), SchedulerError> {
+        let invalid = |detail: &str| {
+            SchedulerError::Problem(Box::new(
+                Problem::new(ProblemCode::RequestInvalid).with_detail(detail.to_string()),
+            ))
+        };
+        if self.before.is_some() && self.after.is_some() {
+            return Err(invalid("before and after cannot be combined"));
+        }
+        let parse = |value: &str| {
+            value
+                .parse::<i64>()
+                .ok()
+                .filter(|v| *v > 0)
+                .ok_or_else(|| invalid("cursor is not a valid event id"))
+        };
+        let window = match (&self.before, &self.after) {
+            (Some(before), _) => EventWindow::Before(Some(parse(before)?)),
+            (_, Some(after)) => EventWindow::After(parse(after)?),
+            _ => EventWindow::Before(None),
+        };
+        let limit = match self.limit {
+            None => EVENTS_DEFAULT_PAGE,
+            Some(n) if (1..=EVENTS_MAX_PAGE).contains(&n) => n,
+            Some(_) => {
+                return Err(invalid(
+                    "limit must be between 1 and the advertised maximum",
+                ));
+            }
+        };
+        Ok((window, limit))
+    }
+}
+
+/// Wrap a scanned window of events in the page envelope.
+///
+/// The scan is ascending by id and must have been taken with `limit + 1` rows.
+pub fn event_page(
+    scan: db::events::EventScan,
+    limit: i64,
+    window: &EventWindow,
+) -> PageV1<EventV1> {
+    let db::events::EventScan { events, ids } = scan;
+    let has_more = ids.len() as i64 > limit;
+
+    let (probe, next_cursor) = if has_more {
+        match window {
+            EventWindow::Before(_) => (ids.first().copied(), ids.get(1).copied()),
+            EventWindow::After(_) => (
+                ids.last().copied(),
+                ids.get(ids.len().saturating_sub(2)).copied(),
+            ),
+        }
+    } else {
+        (None, None)
+    };
+
+    let items: Vec<EventV1> = events
+        .into_iter()
+        .filter(|e| Some(e.id) != probe)
+        .map(EventV1::from)
+        .collect();
+    PageV1 {
+        items,
+        next_cursor: next_cursor.map(|id| id.to_string()),
+        has_more,
     }
 }

@@ -23,6 +23,7 @@ pub const MARKER_SERIALIZED_CAP_BYTES: usize = 96 * 1024;
 
 const RESERVED_EVENT_ID: i64 = i64::MAX;
 const RESERVED_TIMESTAMP: &str = "9999-12-31T23:59:59Z";
+const RESERVED_BATCH_ID: &str = "00000000-0000-0000-0000-000000000000";
 
 /// True when `s` is a resolved_at the read path can parse AND is exactly the reserved width.
 pub fn resolved_at_is_representable(s: &str) -> bool {
@@ -49,6 +50,8 @@ pub enum ResolutionKind {
 pub struct ResolutionCandidate {
     pub kind: ResolutionKind,
     pub batch_id: String,
+    /// The escalation event this marker resolves, when the marker names one.
+    pub escalation_event_id: Option<i64>,
     pub order_key: OrderKey,
     /// Answer text, or `None` when the marker omits it (API returns `answer: null`).
     pub answer_text: Option<String>,
@@ -80,15 +83,15 @@ pub struct AnswerSource {
 pub enum AnswerValidation {
     /// Not an answer request — no `question_answer` part present.
     NotAnAnswer,
-    /// A single valid `question_answer` part for this batch.
+    /// A single valid `question_answer` part naming an escalation event.
     Valid {
-        batch_id: String,
+        escalation_event_id: i64,
         answer_text: Option<String>,
     },
     /// More than one `question_answer` part.
     MultipleParts,
-    /// A `question_answer` part with an absent or non-string `batch_id`.
-    MissingBatchId,
+    /// A `question_answer` part with an absent or unusable `escalation_event_id`.
+    MissingEscalationEventId,
     /// A `question_answer` request that also carries a `sender` part.
     SenderPresent,
     /// A `question_answer` request whose parts violate the object-shape domain.
@@ -145,6 +148,14 @@ pub fn embedded_resolved_event_id(data: &Value) -> Option<i64> {
     }
 }
 
+/// The escalation event id a marker names: a positive JSON integer within i64 range.
+pub fn escalation_event_id(data: &Value) -> Option<i64> {
+    match data.get("escalation_event_id") {
+        Some(Value::Number(n)) => n.as_i64().filter(|v| *v > 0),
+        _ => None,
+    }
+}
+
 /// Answer text extraction under the single empty/absent rule.
 pub fn answer_text_from_parts(parts: &[Value]) -> Option<String> {
     parts
@@ -192,6 +203,49 @@ pub fn escalate_parts(payload: &str) -> Vec<EscalatePart> {
     out
 }
 
+/// The contents of a single-event escalation batch.
+#[derive(Clone, Debug)]
+pub struct EscalationData {
+    pub batch_id: String,
+    pub importance: String,
+    pub questions: Vec<Value>,
+}
+
+/// Read the escalation batch carried by a platform event payload.
+///
+/// Returns `None` when the payload is not an escalation written by this contract.
+pub fn escalation_data(payload: &str) -> Option<EscalationData> {
+    let (role, parts) = parse_role_and_parts(payload)?;
+    if role.as_deref() != Some(ROLE_AGENT) {
+        return None;
+    }
+    for part in &parts {
+        let data = part_data(part)?;
+        if data.get("type").and_then(|t| t.as_str()) != Some(ESCALATE_TYPE) {
+            continue;
+        }
+        let batch_id = data.get("batch_id").and_then(|b| b.as_str())?;
+        let questions = data
+            .get("questions")
+            .and_then(|q| q.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if questions.is_empty() {
+            return None;
+        }
+        return Some(EscalationData {
+            batch_id: batch_id.to_string(),
+            importance: data
+                .get("importance")
+                .and_then(|i| i.as_str())
+                .unwrap_or("blocking")
+                .to_string(),
+            questions,
+        });
+    }
+    None
+}
+
 /// Resolution candidates (answers/dismissals) emitted by a platform event's parts.
 pub fn resolution_candidates(parts: &[Value], own_event_id: i64) -> Vec<ResolutionCandidate> {
     if answer_part_count(parts) > 1 {
@@ -213,6 +267,7 @@ pub fn resolution_candidates(parts: &[Value], own_event_id: i64) -> Vec<Resoluti
                 out.push(ResolutionCandidate {
                     kind: ResolutionKind::Answer,
                     batch_id: batch_id.to_string(),
+                    escalation_event_id: escalation_event_id(data),
                     order_key: OrderKey {
                         primary_id,
                         own_event_id,
@@ -238,6 +293,7 @@ pub fn resolution_candidates(parts: &[Value], own_event_id: i64) -> Vec<Resoluti
                 out.push(ResolutionCandidate {
                     kind: ResolutionKind::Dismiss,
                     batch_id: batch_id.to_string(),
+                    escalation_event_id: escalation_event_id(data),
                     order_key: OrderKey {
                         primary_id: own_event_id,
                         own_event_id,
@@ -320,25 +376,25 @@ pub fn validate_live_answer(parts: &[Value]) -> AnswerValidation {
     if !parts_domain_valid(parts) {
         return AnswerValidation::MalformedParts;
     }
-    let batch_id = parts.iter().find_map(|p| {
+    let escalation_event_id = parts.iter().find_map(|p| {
         let data = part_data(p)?;
         if data.get("type").and_then(|t| t.as_str()) == Some(ANSWER_TYPE) {
-            data.get("batch_id")
+            data.get("escalation_event_id")
                 .and_then(|b| b.as_str())
-                .filter(|s| !s.is_empty())
-                .map(String::from)
+                .and_then(|s| s.parse::<i64>().ok())
+                .filter(|v| *v > 0)
         } else {
             None
         }
     });
-    let Some(batch_id) = batch_id else {
-        return AnswerValidation::MissingBatchId;
+    let Some(escalation_event_id) = escalation_event_id else {
+        return AnswerValidation::MissingEscalationEventId;
     };
     if has_sender_part(parts) {
         return AnswerValidation::SenderPresent;
     }
     AnswerValidation::Valid {
-        batch_id,
+        escalation_event_id,
         answer_text: answer_text_from_parts(parts),
     }
 }
@@ -365,6 +421,7 @@ pub fn like_pattern_for_batch_id(batch_id: &str) -> String {
 /// Build the marker `data` object.
 pub fn marker_data(
     batch_id: &str,
+    escalation_event_id: Option<i64>,
     resolved_event_id: i64,
     resolved_at: &str,
     answer_text: Option<&str>,
@@ -376,6 +433,9 @@ pub fn marker_data(
         "resolved_event_id": resolved_event_id,
         "resolved_at": resolved_at,
     });
+    if let Some(id) = escalation_event_id {
+        data["escalation_event_id"] = json!(id);
+    }
     if let Some(text) = answer_text {
         data["answer_text"] = json!(text);
     }
@@ -388,6 +448,7 @@ pub fn marker_data(
 /// Build the full marker event payload (a single data part, no role, no text part).
 pub fn marker_payload(
     batch_id: &str,
+    escalation_event_id: Option<i64>,
     resolved_event_id: i64,
     resolved_at: &str,
     answer_text: Option<&str>,
@@ -395,8 +456,27 @@ pub fn marker_payload(
 ) -> Value {
     json!({
         "parts": [
-            {"data": marker_data(batch_id, resolved_event_id, resolved_at, answer_text, truncated)}
+            {"data": marker_data(
+                batch_id,
+                escalation_event_id,
+                resolved_event_id,
+                resolved_at,
+                answer_text,
+                truncated,
+            )}
         ]
+    })
+}
+
+/// Build the dismissal marker event payload.
+pub fn dismiss_payload(batch_id: &str, escalation_event_id: i64) -> Value {
+    json!({
+        "role": ROLE_USER,
+        "parts": [{"data": {
+            "type": DISMISS_TYPE,
+            "batch_id": batch_id,
+            "escalation_event_id": escalation_event_id,
+        }}]
     })
 }
 
@@ -429,6 +509,7 @@ fn i64_digits(n: i64) -> usize {
 /// Serialized byte length of a marker.
 pub fn serialized_marker_bytes(
     batch_id: &str,
+    escalation_event_id: Option<i64>,
     resolved_event_id: i64,
     resolved_at: &str,
     answer_text: Option<&str>,
@@ -437,8 +518,12 @@ pub fn serialized_marker_bytes(
     const BASE: usize = 99;
     const ANSWER_FIELD: usize = 17;
     const TRUNCATED_FIELD: usize = 17;
+    const ESCALATION_FIELD: usize = 23;
     let mut n =
         BASE + escaped_len(batch_id) + i64_digits(resolved_event_id) + escaped_len(resolved_at);
+    if let Some(id) = escalation_event_id {
+        n += ESCALATION_FIELD + i64_digits(id);
+    }
     if let Some(a) = answer_text {
         n += ANSWER_FIELD + escaped_len(a);
     }
@@ -449,9 +534,10 @@ pub fn serialized_marker_bytes(
 }
 
 /// Conservative reserved-envelope serialized size for the live path.
-pub fn reserved_envelope_bytes(batch_id: &str, answer_text: Option<&str>) -> usize {
+pub fn reserved_envelope_bytes(answer_text: Option<&str>) -> usize {
     serialized_marker_bytes(
-        batch_id,
+        RESERVED_BATCH_ID,
+        Some(RESERVED_EVENT_ID),
         RESERVED_EVENT_ID,
         RESERVED_TIMESTAMP,
         answer_text,
@@ -460,8 +546,8 @@ pub fn reserved_envelope_bytes(batch_id: &str, answer_text: Option<&str>) -> usi
 }
 
 /// Whether the reserved-envelope estimate exceeds the serialized cap (live 400 gate).
-pub fn reserved_envelope_exceeds_cap(batch_id: &str, answer_text: Option<&str>) -> bool {
-    reserved_envelope_bytes(batch_id, answer_text) > MARKER_SERIALIZED_CAP_BYTES
+pub fn reserved_envelope_exceeds_cap(answer_text: Option<&str>) -> bool {
+    reserved_envelope_bytes(answer_text) > MARKER_SERIALIZED_CAP_BYTES
 }
 
 /// Whether a marker's envelope alone exceeds the cap with empty, non-truncated answer text.
@@ -470,7 +556,7 @@ pub fn envelope_only_exceeds_cap(
     resolved_event_id: i64,
     resolved_at: &str,
 ) -> bool {
-    serialized_marker_bytes(batch_id, resolved_event_id, resolved_at, None, false)
+    serialized_marker_bytes(batch_id, None, resolved_event_id, resolved_at, None, false)
         > MARKER_SERIALIZED_CAP_BYTES
 }
 
@@ -486,6 +572,7 @@ pub fn source_yields_no_marker(
     let normalized = answer_text.filter(|s| !s.is_empty());
     if serialized_marker_bytes(
         batch_id,
+        None,
         source_event_id,
         RESERVED_TIMESTAMP,
         normalized,
@@ -494,13 +581,20 @@ pub fn source_yields_no_marker(
     {
         return false;
     }
-    serialized_marker_bytes(batch_id, source_event_id, RESERVED_TIMESTAMP, None, true)
-        > MARKER_SERIALIZED_CAP_BYTES
+    serialized_marker_bytes(
+        batch_id,
+        None,
+        source_event_id,
+        RESERVED_TIMESTAMP,
+        None,
+        true,
+    ) > MARKER_SERIALIZED_CAP_BYTES
 }
 
 /// Fit answer text into the serialized budget for a backfilled marker.
 pub fn fit_answer_text(
     batch_id: &str,
+    escalation_event_id: Option<i64>,
     resolved_event_id: i64,
     resolved_at: &str,
     answer_text: &str,
@@ -510,13 +604,26 @@ pub fn fit_answer_text(
     } else {
         Some(answer_text)
     };
-    if serialized_marker_bytes(batch_id, resolved_event_id, resolved_at, normalized, false)
-        <= MARKER_SERIALIZED_CAP_BYTES
+    if serialized_marker_bytes(
+        batch_id,
+        escalation_event_id,
+        resolved_event_id,
+        resolved_at,
+        normalized,
+        false,
+    ) <= MARKER_SERIALIZED_CAP_BYTES
     {
         return (normalized.map(String::from), false);
     }
 
-    let fixed = serialized_marker_bytes(batch_id, resolved_event_id, resolved_at, Some(""), true);
+    let fixed = serialized_marker_bytes(
+        batch_id,
+        escalation_event_id,
+        resolved_event_id,
+        resolved_at,
+        Some(""),
+        true,
+    );
     let budget = MARKER_SERIALIZED_CAP_BYTES as i64 - fixed as i64;
     let mut acc: i64 = 0;
     let mut cut = 0usize;

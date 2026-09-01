@@ -418,11 +418,12 @@ pub async fn run_backfill_0024(
                 continue;
             };
             let (text, truncated) = match answer {
-                Some(t) => resolution::fit_answer_text(batch, *source_id, created_at, t),
+                Some(t) => resolution::fit_answer_text(batch, None, *source_id, created_at, t),
                 None => (None, false),
             };
             let marker = resolution::marker_payload(
                 batch,
+                None,
                 *source_id,
                 created_at,
                 text.as_deref(),

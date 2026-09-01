@@ -6,6 +6,7 @@
   import { formatTokens } from '../format';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
+  import { isUnsupportedSchema } from '../eventSchema';
   import Markdown from './Markdown.svelte';
   import ToolGroup from './renderers/ToolGroup.svelte';
   import ToolStream from './renderers/ToolStream.svelte';
@@ -339,8 +340,10 @@
     | { type: 'fyi'; text: string; details?: string; time: string; key: string }
     | { type: 'child_response'; agentLabel: string; childSessionId: string | null; text: string; time: string; key: string }
     | { type: 'todo_write'; todos: TodoItem[]; time: string; key: string }
-    | { type: 'user_image'; mimeType: string; bytes: string; name?: string; time: string; key: string }
-    | { type: 'lateral_image'; senderName: string; senderSessionId: string | null; mimeType: string; bytes: string; name?: string; time: string; key: string }
+    | { type: 'user_image'; mimeType: string; bytes: string; omitted: boolean; name?: string; time: string; key: string }
+    | { type: 'truncated'; executionId: string; eventId: string; byteSize?: number; time: string; key: string }
+    | { type: 'unknown_kind'; eventType: string; executionId: string; eventId: string; reason: 'kind' | 'schema'; time: string; key: string }
+    | { type: 'lateral_image'; senderName: string; senderSessionId: string | null; mimeType: string; bytes: string; omitted: boolean; name?: string; time: string; key: string }
     | { type: 'compaction'; time: string; key: string }
     | { type: 'model_fallback'; originalModel: string; fallbackModel: string; category?: string; content?: string; time: string; key: string }
     | { type: 'model_no_fallback'; originalModel: string; category?: string; time: string; key: string };
@@ -362,6 +365,33 @@
     return parts.some(
       p => (p?.data as Record<string, unknown> | undefined)?.type === 'question_answer'
     );
+  }
+
+  // Kinds with a dedicated renderer; anything else is displayed generically.
+  const KNOWN_EVENT_TYPES = new Set(['message', 'state_change', 'platform', 'escalate']);
+
+  // Rows the user asked to see whole, keyed by event id.
+  let fullPayloads = $state<Map<string, Event>>(new Map());
+  let loadingFull = $state<Set<string>>(new Set());
+
+  async function loadFull(executionId: string, eventId: string) {
+    if (loadingFull.has(eventId) || fullPayloads.has(eventId)) return;
+    loadingFull = new Set(loadingFull).add(eventId);
+    try {
+      const full = await api.getExecutionEvent(executionId, eventId);
+      fullPayloads = new Map(fullPayloads).set(eventId, full);
+    } catch {
+      // Leave the affordance in place so the user can retry.
+    } finally {
+      const next = new Set(loadingFull);
+      next.delete(eventId);
+      loadingFull = next;
+    }
+  }
+
+  /** Serve the full row once it has been fetched. */
+  function resolveEvent(ev: Event): Event {
+    return fullPayloads.get(ev.id) ?? ev;
   }
 
   function parseEntries(evs: Event[]): ChatEntry[] {
@@ -396,8 +426,48 @@
     for (const ev of evs) {
       const time = formatTime(ev.created_at);
 
+      // A payload this client cannot parse is rendered generically, before
+      // anything reads inside it.
+      if (isUnsupportedSchema(ev)) {
+        entries.push({
+          type: 'unknown_kind',
+          eventType: ev.event_type,
+          executionId: ev.execution_id,
+          eventId: ev.id,
+          reason: 'schema',
+          time,
+          key: `${ev.id}-schema-${seq++}`,
+        });
+        continue;
+      }
+
       // Hide internal question-answer platform records from the chat.
       if (isResolutionMarkerEvent(ev)) continue;
+
+      // Shortened payloads still render; the button fetches the whole row.
+      if (ev.truncated) {
+        entries.push({
+          type: 'truncated',
+          executionId: ev.execution_id,
+          eventId: ev.id,
+          byteSize: ev.byte_size,
+          time,
+          key: `${ev.id}-truncated-${seq++}`,
+        });
+      }
+
+      if (!KNOWN_EVENT_TYPES.has(ev.event_type)) {
+        entries.push({
+          type: 'unknown_kind',
+          eventType: ev.event_type,
+          executionId: ev.execution_id,
+          eventId: ev.id,
+          reason: 'kind',
+          time,
+          key: `${ev.id}-unknown-${seq++}`,
+        });
+        continue;
+      }
 
       // Platform events with structured parts (turn_complete, delegate, etc.)
       if (ev.event_type === 'platform' && ev.payload && 'parts' in ev.payload && !('role' in ev.payload)) {
@@ -496,7 +566,7 @@
           ? ((senderPart as { data: Record<string, unknown> }).data.session_id as string) || null
           : null;
 
-        for (const part of msg.parts) {
+        for (const [partIndex, part] of msg.parts.entries()) {
           if ('data' in part) {
             const d = part.data as Record<string, unknown>;
 
@@ -548,13 +618,14 @@
             // Platform events: route to existing renderers
             if (isEscalateData(d as unknown as import('../types').DataPartPayload)) {
               const ask = d as unknown as import('../types').EscalateData;
-              if (ask.batch_index > 0) continue;
+              const asked = ask.questions ?? [];
+              const first = asked[0]?.question ?? '';
               if (ask.importance === 'fyi') {
-                entries.push({ type: 'fyi', text: ask.question, time, key: `${ev.id}-${seq++}` });
+                entries.push({ type: 'fyi', text: first, time, key: `${ev.id}-${seq++}` });
               } else {
-                const text = ask.batch_size > 1
-                  ? `${ask.question}\n(+ ${ask.batch_size - 1} more question${ask.batch_size > 2 ? 's' : ''})`
-                  : ask.question;
+                const text = asked.length > 1
+                  ? `${first}\n(+ ${asked.length - 1} more question${asked.length > 2 ? 's' : ''})`
+                  : first;
                 entries.push({ type: 'tool', icon: '\u26A0', text, time, key: `${ev.id}-${seq++}` });
               }
               continue;
@@ -701,10 +772,14 @@
             const raw = 'raw' in part ? (part as { raw: string }).raw : undefined;
             const mimeType = part.mediaType;
             const name = part.filename;
-            if (raw && mimeType?.startsWith('image/') && senderName) {
-              entries.push({ type: 'lateral_image', senderName, senderSessionId, mimeType, bytes: raw, name, time, key: `${ev.id}-${seq++}` });
-            } else if (msg.role === 'ROLE_USER' && raw && mimeType?.startsWith('image/')) {
-              entries.push({ type: 'user_image', mimeType, bytes: raw, name, time, key: `${ev.id}-${seq++}` });
+            // The server names the parts it emptied; an empty value it did not
+            // name was empty as stored.
+            const omitted = ev.omitted_paths?.includes(`parts[${partIndex}].raw`) ?? false;
+            // An empty `raw` is still an image part: it renders a placeholder.
+            if (raw !== undefined && mimeType?.startsWith('image/') && senderName) {
+              entries.push({ type: 'lateral_image', senderName, senderSessionId, mimeType, bytes: raw, omitted, name, time, key: `${ev.id}-${seq++}` });
+            } else if (msg.role === 'ROLE_USER' && raw !== undefined && mimeType?.startsWith('image/')) {
+              entries.push({ type: 'user_image', mimeType, bytes: raw, omitted, name, time, key: `${ev.id}-${seq++}` });
             } else {
               entries.push({ type: 'tool', icon: '\u25A1', text: `[file] ${name ?? 'file'}`, time, key: `${ev.id}-${seq++}` });
             }
@@ -855,7 +930,7 @@
 
 
   // Stage 1: Only re-parses when events array changes (not on ephemeral text)
-  let baseEntries = $derived(groupToolStreams(parseEntries(events)));
+  let baseEntries = $derived(groupToolStreams(parseEntries(events.map(resolveEvent))));
 
   // Stage 2: Cheap derived that appends ephemeral entries to baseEntries
   let parsed = $derived.by(() => {
@@ -951,7 +1026,7 @@
         {#if entry.type === 'agent'}
           {@const identity = entry.agentSessionId ? sessionIdentity?.get(entry.agentSessionId) : undefined}
           <div class="chat-row agent-row">
-            <div class="agent-prose">
+            <div class="agent-prose" data-provisional={entry.key === 'ephemeral-stream' ? 'true' : undefined}>
               <div class="agent-prose-header">
                 <span class="agent-header-slug">{identity?.slug ?? entry.agentLabel}</span>
                 {#if identity?.agentName}
@@ -969,10 +1044,50 @@
               <div class="bubble-time">{entry.time}</div>
             </div>
           </div>
+        {:else if entry.type === 'truncated'}
+          <div class="chat-row">
+            <div class="truncated-notice">
+              <span class="truncated-text">
+                This message was shortened for delivery{entry.byteSize ? ` (${Math.round(entry.byteSize / 1024)} KB stored)` : ''}.
+              </span>
+              <button
+                type="button"
+                class="load-full-btn"
+                disabled={loadingFull.has(entry.eventId)}
+                onclick={() => loadFull(entry.executionId, entry.eventId)}
+              >
+                {loadingFull.has(entry.eventId) ? 'Loading…' : 'Load full content'}
+              </button>
+            </div>
+          </div>
+        {:else if entry.type === 'unknown_kind'}
+          <div class="chat-row">
+            <div class="truncated-notice">
+              <span class="truncated-text">
+                {entry.reason === 'schema'
+                  ? `Unsupported event format (${entry.eventType})`
+                  : `Unsupported event (${entry.eventType})`}
+              </span>
+              <button
+                type="button"
+                class="load-full-btn"
+                disabled={loadingFull.has(entry.eventId)}
+                onclick={() => loadFull(entry.executionId, entry.eventId)}
+              >
+                {loadingFull.has(entry.eventId) ? 'Loading…' : 'Load full content'}
+              </button>
+            </div>
+          </div>
         {:else if entry.type === 'user_image'}
           <div class="chat-row user-row">
             <div class="bubble user-bubble user-image-bubble">
-              <img src="data:{entry.mimeType};base64,{entry.bytes}" alt={entry.name ?? 'Attached image'} class="user-image" />
+              {#if entry.bytes}
+                <img src="data:{entry.mimeType};base64,{entry.bytes}" alt={entry.name ?? 'Attached image'} class="user-image" />
+              {:else if entry.omitted}
+                <span class="truncated-text">{entry.name ?? 'Attachment'} not delivered inline</span>
+              {:else}
+                <span class="truncated-text">{entry.name ?? 'Attachment'} is empty</span>
+              {/if}
               <div class="bubble-time">{entry.time}</div>
             </div>
           </div>
@@ -1012,7 +1127,13 @@
                 <CopyButton text={entry.senderName} label="Copy path" />
               </div>
               <div class="lateral-body">
-                <img src="data:{entry.mimeType};base64,{entry.bytes}" alt={entry.name ?? 'Attached image'} class="user-image" />
+                {#if entry.bytes}
+                  <img src="data:{entry.mimeType};base64,{entry.bytes}" alt={entry.name ?? 'Attached image'} class="user-image" />
+                {:else if entry.omitted}
+                  <span class="truncated-text">{entry.name ?? 'Attachment'} not delivered inline</span>
+                {:else}
+                  <span class="truncated-text">{entry.name ?? 'Attachment'} is empty</span>
+                {/if}
               </div>
               <div class="lateral-footer">
                 <span class="lateral-time">{entry.time}</span>
@@ -1290,6 +1411,36 @@
 </div>
 
 <style>
+  .truncated-notice {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem;
+    border: 1px dashed hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--muted) / 0.4);
+  }
+
+  .truncated-text {
+    font-size: 12px;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .load-full-btn {
+    font-size: 12px;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    cursor: pointer;
+  }
+
+  .load-full-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
   .event-filter-pills {
     display: flex;
     gap: 2px;

@@ -6,20 +6,71 @@ import type {
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
   PatchWikiPageRequest, WikiSearchResult, WikiAccess, ShareTag, ShareTagMember,
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
-  DecisionBatchResponse,
+  DecisionBatchResponse, DecisionSummaryResponse, Page,
 } from './types';
 
+/** Either a fresh pending snapshot or the server's word that nothing changed. */
+export type PendingDecisionsResult =
+  | { notModified: true }
+  | { notModified: false; etag: string | null; body: { decisions: DecisionBatchResponse[] } };
+
+function eventPageQuery(opts?: { before?: string; after?: string; limit?: number }): string {
+  const search = new URLSearchParams();
+  if (opts?.before) search.set('before', opts.before);
+  if (opts?.after) search.set('after', opts.after);
+  if (opts?.limit !== undefined) search.set('limit', String(opts.limit));
+  const qs = search.toString();
+  return qs ? `?${qs}` : '';
+}
+
+export interface ProblemDetails {
+  title: string;
+  status: number;
+  code: string;
+  detail?: string;
+  [key: string]: unknown;
+}
+
 export class ApiError extends Error {
-  constructor(public status: number, public body: string) {
-    super(`API ${status}: ${body}`);
+  /** Machine-readable code when the server returned application/problem+json. */
+  public code?: string;
+  /** The parsed problem body, when there was one. */
+  public problem?: ProblemDetails;
+
+  constructor(public status: number, public body: string, problem?: ProblemDetails) {
+    super(`API ${status}: ${problem?.code ?? body}`);
     this.name = 'ApiError';
+    this.problem = problem;
+    this.code = problem?.code;
   }
 }
 
-export class AgentBeaconAPI {
+/** Build an ApiError, parsing a problem body when there is one. */
+async function toApiError(response: Response): Promise<ApiError> {
+  const text = await response.text().catch(() => '');
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/problem+json')) {
+    try {
+      const problem = JSON.parse(text) as ProblemDetails;
+      if (problem && typeof problem.code === 'string') {
+        return new ApiError(response.status, text, problem);
+      }
+    } catch {
+      // fall through to the opaque form
+    }
+  }
+  return new ApiError(response.status, text || response.statusText);
+}
+
+export /** Encode one opaque id for use as a single path segment. */
+function pathSegment(value: string | number): string {
+  return encodeURIComponent(String(value));
+}
+
+class AgentBeaconAPI {
   private baseURL: string;
 
-  constructor(baseURL: string = '/api') {
+  constructor(baseURL: string = '/api/v1') {
     this.baseURL = baseURL;
   }
 
@@ -32,8 +83,7 @@ export class AgentBeaconAPI {
     });
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new ApiError(response.status, text || response.statusText);
+      throw await toApiError(response);
     }
 
     const contentType = response.headers.get('content-type');
@@ -52,8 +102,7 @@ export class AgentBeaconAPI {
     });
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new ApiError(response.status, text || response.statusText);
+      throw await toApiError(response);
     }
   }
 
@@ -63,7 +112,7 @@ export class AgentBeaconAPI {
   }
 
   async getProject(id: string): Promise<Project> {
-    return this.fetchJSON<Project>(`/projects/${id}`);
+    return this.fetchJSON<Project>(`/projects/${pathSegment(id)}`);
   }
 
   async createProject(req: {
@@ -83,14 +132,14 @@ export class AgentBeaconAPI {
     slug?: string;
     settings?: Record<string, unknown>;
   }): Promise<Project> {
-    return this.fetchJSON(`/projects/${id}`, {
+    return this.fetchJSON(`/projects/${pathSegment(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(req),
     });
   }
 
   async deleteProject(id: string): Promise<void> {
-    return this.fetchNoContent(`/projects/${id}`, { method: 'DELETE' });
+    return this.fetchNoContent(`/projects/${pathSegment(id)}`, { method: 'DELETE' });
   }
 
   // Drivers
@@ -113,22 +162,22 @@ export class AgentBeaconAPI {
     name?: string;
     config?: Record<string, unknown>;
   }): Promise<Driver> {
-    return this.fetchJSON(`/drivers/${id}`, {
+    return this.fetchJSON(`/drivers/${pathSegment(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(req),
     });
   }
 
   async deleteDriver(id: string): Promise<void> {
-    return this.fetchNoContent(`/drivers/${id}`, { method: 'DELETE' });
+    return this.fetchNoContent(`/drivers/${pathSegment(id)}`, { method: 'DELETE' });
   }
 
   async getDriverDescriptor(platform: string): Promise<DriverDescriptor> {
-    return this.fetchJSON<DriverDescriptor>(`/drivers/${platform}/descriptor`);
+    return this.fetchJSON<DriverDescriptor>(`/drivers/${pathSegment(platform)}/descriptor`);
   }
 
   async getDriverModels(platform: string): Promise<ModelSuggestion[]> {
-    return this.fetchJSON<ModelSuggestion[]>(`/drivers/${platform}/models`);
+    return this.fetchJSON<ModelSuggestion[]>(`/drivers/${pathSegment(platform)}/models`);
   }
 
   // Agents
@@ -137,7 +186,7 @@ export class AgentBeaconAPI {
   }
 
   async getAgent(id: string): Promise<Agent> {
-    return this.fetchJSON<Agent>(`/agents/${id}`);
+    return this.fetchJSON<Agent>(`/agents/${pathSegment(id)}`);
   }
 
   async createAgent(req: {
@@ -160,50 +209,50 @@ export class AgentBeaconAPI {
     enabled?: boolean;
     system_prompt?: string | null;
   }): Promise<Agent> {
-    return this.fetchJSON(`/agents/${id}`, {
+    return this.fetchJSON(`/agents/${pathSegment(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(req),
     });
   }
 
   async deleteAgent(id: string): Promise<void> {
-    return this.fetchNoContent(`/agents/${id}`, { method: 'DELETE' });
+    return this.fetchNoContent(`/agents/${pathSegment(id)}`, { method: 'DELETE' });
   }
 
   async getExecutionAgents(executionId: string): Promise<AgentPoolEntry[]> {
-    return this.fetchJSON<AgentPoolEntry[]>(`/executions/${executionId}/agents`);
+    return this.fetchJSON<AgentPoolEntry[]>(`/executions/${pathSegment(executionId)}/agents`);
   }
 
   async addExecutionAgent(executionId: string, req: { agent_id: string; add_to_project?: boolean }): Promise<void> {
-    return this.fetchNoContent(`/executions/${executionId}/agents`, {
+    return this.fetchNoContent(`/executions/${pathSegment(executionId)}/agents`, {
       method: 'POST',
       body: JSON.stringify(req),
     });
   }
 
   async removeExecutionAgent(executionId: string, agentId: string): Promise<void> {
-    return this.fetchNoContent(`/executions/${executionId}/agents/${agentId}`, {
+    return this.fetchNoContent(`/executions/${pathSegment(executionId)}/agents/${pathSegment(agentId)}`, {
       method: 'DELETE',
     });
   }
 
   async getExecutionSessions(executionId: string): Promise<SessionDiscoveryEntry[]> {
-    return this.fetchJSON<SessionDiscoveryEntry[]>(`/executions/${executionId}/sessions`);
+    return this.fetchJSON<SessionDiscoveryEntry[]>(`/executions/${pathSegment(executionId)}/sessions`);
   }
 
   async getProjectAgents(projectId: string): Promise<AgentPoolEntry[]> {
-    return this.fetchJSON<AgentPoolEntry[]>(`/projects/${projectId}/agents`);
+    return this.fetchJSON<AgentPoolEntry[]>(`/projects/${pathSegment(projectId)}/agents`);
   }
 
   async addProjectAgent(projectId: string, agentId: string): Promise<void> {
-    return this.fetchNoContent(`/projects/${projectId}/agents`, {
+    return this.fetchNoContent(`/projects/${pathSegment(projectId)}/agents`, {
       method: 'POST',
       body: JSON.stringify({ agent_id: agentId }),
     });
   }
 
   async removeProjectAgent(projectId: string, agentId: string): Promise<void> {
-    return this.fetchNoContent(`/projects/${projectId}/agents/${agentId}`, {
+    return this.fetchNoContent(`/projects/${pathSegment(projectId)}/agents/${pathSegment(agentId)}`, {
       method: 'DELETE',
     });
   }
@@ -225,7 +274,7 @@ export class AgentBeaconAPI {
   }
 
   async getMcpServer(id: string): Promise<McpServer> {
-    return this.fetchJSON<McpServer>(`/mcp-servers/${id}`);
+    return this.fetchJSON<McpServer>(`/mcp-servers/${pathSegment(id)}`);
   }
 
   async updateMcpServer(id: string, req: {
@@ -233,30 +282,30 @@ export class AgentBeaconAPI {
     transport_type?: string;
     config?: Record<string, unknown>;
   }): Promise<McpServer> {
-    return this.fetchJSON(`/mcp-servers/${id}`, {
+    return this.fetchJSON(`/mcp-servers/${pathSegment(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(req),
     });
   }
 
   async deleteMcpServer(id: string): Promise<void> {
-    return this.fetchNoContent(`/mcp-servers/${id}`, { method: 'DELETE' });
+    return this.fetchNoContent(`/mcp-servers/${pathSegment(id)}`, { method: 'DELETE' });
   }
 
   // Project MCP Servers
   async getProjectMcpServers(projectId: string): Promise<McpServerPoolEntry[]> {
-    return this.fetchJSON<McpServerPoolEntry[]>(`/projects/${projectId}/mcp-servers`);
+    return this.fetchJSON<McpServerPoolEntry[]>(`/projects/${pathSegment(projectId)}/mcp-servers`);
   }
 
   async addProjectMcpServer(projectId: string, mcpServerId: string): Promise<void> {
-    return this.fetchNoContent(`/projects/${projectId}/mcp-servers`, {
+    return this.fetchNoContent(`/projects/${pathSegment(projectId)}/mcp-servers`, {
       method: 'POST',
       body: JSON.stringify({ mcp_server_id: mcpServerId }),
     });
   }
 
   async removeProjectMcpServer(projectId: string, mcpServerId: string): Promise<void> {
-    return this.fetchNoContent(`/projects/${projectId}/mcp-servers/${mcpServerId}`, {
+    return this.fetchNoContent(`/projects/${pathSegment(projectId)}/mcp-servers/${pathSegment(mcpServerId)}`, {
       method: 'DELETE',
     });
   }
@@ -285,7 +334,7 @@ export class AgentBeaconAPI {
   }
 
   async getExecution(id: string): Promise<ExecutionDetail> {
-    return this.fetchJSON<ExecutionDetail>(`/executions/${id}`);
+    return this.fetchJSON<ExecutionDetail>(`/executions/${pathSegment(id)}`);
   }
 
   async createExecution(req: {
@@ -308,11 +357,22 @@ export class AgentBeaconAPI {
   }
 
   async terminateExecution(id: string): Promise<{ execution: Execution }> {
-    return this.fetchJSON(`/executions/${id}/terminate`, { method: 'POST' });
+    return this.fetchJSON(`/executions/${pathSegment(id)}/terminate`, { method: 'POST' });
   }
 
-  async getExecutionEvents(id: string): Promise<Event[]> {
-    return this.fetchJSON<Event[]>(`/executions/${id}/events`);
+  async getExecutionEvents(
+    id: string,
+    opts?: { before?: string; after?: string; limit?: number }
+  ): Promise<Page<Event>> {
+    return this.fetchJSON<Page<Event>>(
+      `/executions/${pathSegment(id)}/events${eventPageQuery(opts)}`,
+    );
+  }
+
+  async getExecutionEvent(executionId: string, eventId: string): Promise<Event> {
+    return this.fetchJSON<Event>(
+      `/executions/${pathSegment(executionId)}/events/${pathSegment(eventId)}`,
+    );
   }
 
   // Sessions
@@ -323,38 +383,44 @@ export class AgentBeaconAPI {
     return this.fetchJSON<Session[]>(`/sessions${qs ? `?${qs}` : ''}`);
   }
 
-  async getSessionEvents(sessionId: string, signal?: AbortSignal): Promise<Event[]> {
-    return this.fetchJSON<Event[]>(`/sessions/${sessionId}/events`, { signal });
+  async getSessionEvents(
+    sessionId: string,
+    opts?: { before?: string; after?: string; limit?: number; signal?: AbortSignal }
+  ): Promise<Page<Event>> {
+    return this.fetchJSON<Page<Event>>(
+      `/sessions/${pathSegment(sessionId)}/events${eventPageQuery(opts)}`,
+      { signal: opts?.signal }
+    );
   }
 
   async terminateSession(sessionId: string): Promise<{ terminated: boolean }> {
-    return this.fetchJSON(`/sessions/${sessionId}/terminate`, { method: 'POST' });
+    return this.fetchJSON(`/sessions/${pathSegment(sessionId)}/terminate`, { method: 'POST' });
   }
 
   async stopSession(sessionId: string): Promise<{ stopped: boolean; tasks_flushed: number }> {
-    return this.fetchJSON(`/sessions/${sessionId}/stop`, { method: 'POST' });
+    return this.fetchJSON(`/sessions/${pathSegment(sessionId)}/stop`, { method: 'POST' });
   }
 
   async continueSession(sessionId: string, parts: import('./types').MessagePart[]): Promise<import('./types').ContinueSessionResponse> {
-    return this.fetchJSON(`/sessions/${sessionId}/continue`, {
+    return this.fetchJSON(`/sessions/${pathSegment(sessionId)}/continue`, {
       method: 'POST',
       body: JSON.stringify({ parts }),
     });
   }
 
   async recoverSession(sessionId: string, message?: string): Promise<{ session: Session; execution_recovered: boolean }> {
-    return this.fetchJSON(`/sessions/${sessionId}/recover`, {
+    return this.fetchJSON(`/sessions/${pathSegment(sessionId)}/recover`, {
       method: 'POST',
       body: JSON.stringify({ message: message ?? undefined }),
     });
   }
 
   async getSessionWorktree(sessionId: string): Promise<WorktreeInfo> {
-    return this.fetchJSON<WorktreeInfo>(`/sessions/${sessionId}/worktree`);
+    return this.fetchJSON<WorktreeInfo>(`/sessions/${pathSegment(sessionId)}/worktree`);
   }
 
   async getSessionBranches(sessionId: string): Promise<BranchesResponse> {
-    return this.fetchJSON<BranchesResponse>(`/sessions/${sessionId}/worktree/branches`);
+    return this.fetchJSON<BranchesResponse>(`/sessions/${pathSegment(sessionId)}/worktree/branches`);
   }
 
   async deleteSessionWorktree(sessionId: string, opts?: { dryRun?: boolean; deleteBranch?: boolean }): Promise<Record<string, unknown>> {
@@ -362,59 +428,47 @@ export class AgentBeaconAPI {
     if (opts?.dryRun) search.set('dry_run', 'true');
     if (opts?.deleteBranch) search.set('delete_branch', 'true');
     const qs = search.toString();
-    return this.fetchJSON(`/sessions/${sessionId}/worktree${qs ? `?${qs}` : ''}`, { method: 'DELETE' });
+    return this.fetchJSON(`/sessions/${pathSegment(sessionId)}/worktree${qs ? `?${qs}` : ''}`, { method: 'DELETE' });
   }
 
-  // Session diffs — custom fetch to handle 413 (truncated) as valid data
   async getSessionDiff(sessionId: string, opts?: { base?: string; stat?: boolean }): Promise<DiffResponse> {
     const search = new URLSearchParams();
     if (opts?.base) search.set('base', opts.base);
     if (opts?.stat) search.set('stat', 'true');
     const qs = search.toString();
-    const url = `${this.baseURL}/sessions/${sessionId}/worktree/diff${qs ? `?${qs}` : ''}`;
-    const response = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
-    if (response.status === 413) {
-      return response.json();
-    }
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new ApiError(response.status, text || response.statusText);
-    }
-    return response.json();
+    return this.fetchJSON<DiffResponse>(
+      `/sessions/${pathSegment(sessionId)}/worktree/diff${qs ? `?${qs}` : ''}`
+    );
   }
 
   async postMessage(
     sessionId: string,
     parts: import('./types').MessagePart[]
   ): Promise<PostMessageResponse> {
-    return this.fetchJSON(`/sessions/${sessionId}/message`, {
+    return this.fetchJSON(`/sessions/${pathSegment(sessionId)}/message`, {
       method: 'POST',
       body: JSON.stringify({ parts }),
     });
   }
 
-  async checkReady(): Promise<{ status: string }> {
-    return this.fetchJSON('/ready');
-  }
-
   // Wiki
   async listWikiPages(projectId: string): Promise<WikiPageListItem[]> {
-    return this.fetchJSON<WikiPageListItem[]>(`/projects/${projectId}/wiki/pages`);
+    return this.fetchJSON<WikiPageListItem[]>(`/projects/${pathSegment(projectId)}/wiki/pages`);
   }
 
   async getWikiPage(projectId: string, slug: string): Promise<WikiPage> {
-    return this.fetchJSON<WikiPage>(`/projects/${projectId}/wiki/pages/${slug}`);
+    return this.fetchJSON<WikiPage>(`/projects/${pathSegment(projectId)}/wiki/pages/${pathSegment(slug)}`);
   }
 
   async putWikiPage(projectId: string, slug: string, req: PutWikiPageRequest): Promise<WikiPage> {
-    return this.fetchJSON<WikiPage>(`/projects/${projectId}/wiki/pages/${slug}`, {
+    return this.fetchJSON<WikiPage>(`/projects/${pathSegment(projectId)}/wiki/pages/${pathSegment(slug)}`, {
       method: 'PUT',
       body: JSON.stringify(req),
     });
   }
 
   async patchWikiPage(projectId: string, slug: string, req: PatchWikiPageRequest): Promise<WikiPage> {
-    return this.fetchJSON<WikiPage>(`/projects/${projectId}/wiki/pages/${slug}`, {
+    return this.fetchJSON<WikiPage>(`/projects/${pathSegment(projectId)}/wiki/pages/${pathSegment(slug)}`, {
       method: 'PATCH',
       body: JSON.stringify(req),
     });
@@ -442,7 +496,7 @@ export class AgentBeaconAPI {
     access_level: WikiAccess;
     acknowledge_share?: boolean;
   }): Promise<ShareTagMember & { id: string; tag_id: string; created_at: string }> {
-    return this.fetchJSON(`/wiki/tags/${tagId}/members`, {
+    return this.fetchJSON(`/wiki/tags/${pathSegment(tagId)}/members`, {
       method: 'POST',
       body: JSON.stringify(req),
     });
@@ -452,34 +506,34 @@ export class AgentBeaconAPI {
     access_level: WikiAccess;
     acknowledge_share?: boolean;
   }): Promise<ShareTagMember & { id: string; tag_id: string; created_at: string }> {
-    return this.fetchJSON(`/wiki/tags/${tagId}/members/${project}`, {
+    return this.fetchJSON(`/wiki/tags/${pathSegment(tagId)}/members/${pathSegment(project)}`, {
       method: 'PATCH',
       body: JSON.stringify(req),
     });
   }
 
   async removeShareTagMember(tagId: string, project: string): Promise<void> {
-    return this.fetchNoContent(`/wiki/tags/${tagId}/members/${project}`, {
+    return this.fetchNoContent(`/wiki/tags/${pathSegment(tagId)}/members/${pathSegment(project)}`, {
       method: 'DELETE',
     });
   }
 
   async deleteWikiPage(projectId: string, slug: string): Promise<void> {
-    return this.fetchNoContent(`/projects/${projectId}/wiki/pages/${slug}`, {
+    return this.fetchNoContent(`/projects/${pathSegment(projectId)}/wiki/pages/${pathSegment(slug)}`, {
       method: 'DELETE',
     });
   }
 
   async listWikiRevisions(projectId: string, slug: string): Promise<WikiRevisionListItem[]> {
-    return this.fetchJSON<WikiRevisionListItem[]>(`/projects/${projectId}/wiki/pages/${slug}/revisions`);
+    return this.fetchJSON<WikiRevisionListItem[]>(`/projects/${pathSegment(projectId)}/wiki/pages/${pathSegment(slug)}/revisions`);
   }
 
   async getWikiRevision(projectId: string, slug: string, rev: number): Promise<WikiRevision> {
-    return this.fetchJSON<WikiRevision>(`/projects/${projectId}/wiki/pages/${slug}/revisions/${rev}`);
+    return this.fetchJSON<WikiRevision>(`/projects/${pathSegment(projectId)}/wiki/pages/${pathSegment(slug)}/revisions/${pathSegment(rev)}`);
   }
 
   async listWikiTags(projectId: string): Promise<WikiTag[]> {
-    return this.fetchJSON<WikiTag[]>(`/projects/${projectId}/wiki/tags`);
+    return this.fetchJSON<WikiTag[]>(`/projects/${pathSegment(projectId)}/wiki/tags`);
   }
 
   async createWikiSubscription(projectId: string, req: {
@@ -487,7 +541,7 @@ export class AgentBeaconAPI {
     page_slug?: string;
     tag_name?: string;
   }): Promise<WikiSubscription> {
-    return this.fetchJSON<WikiSubscription>(`/projects/${projectId}/wiki/subscriptions`, {
+    return this.fetchJSON<WikiSubscription>(`/projects/${pathSegment(projectId)}/wiki/subscriptions`, {
       method: 'POST',
       body: JSON.stringify(req),
     });
@@ -495,12 +549,12 @@ export class AgentBeaconAPI {
 
   async listWikiSubscriptions(projectId: string, subscriber: string): Promise<WikiSubscription[]> {
     return this.fetchJSON<WikiSubscription[]>(
-      `/projects/${projectId}/wiki/subscriptions?subscriber=${encodeURIComponent(subscriber)}`
+      `/projects/${pathSegment(projectId)}/wiki/subscriptions?subscriber=${pathSegment(subscriber)}`
     );
   }
 
   async deleteWikiSubscription(projectId: string, subId: string): Promise<void> {
-    return this.fetchNoContent(`/projects/${projectId}/wiki/subscriptions/${subId}`, {
+    return this.fetchNoContent(`/projects/${pathSegment(projectId)}/wiki/subscriptions/${pathSegment(subId)}`, {
       method: 'DELETE',
     });
   }
@@ -515,29 +569,59 @@ export class AgentBeaconAPI {
     if (params?.execution_id) search.set('execution_id', params.execution_id);
     if (params?.limit) search.set('limit', String(params.limit));
     const qs = search.toString();
-    return this.fetchJSON<WikiChange[]>(`/projects/${projectId}/wiki/changes${qs ? `?${qs}` : ''}`);
+    return this.fetchJSON<WikiChange[]>(`/projects/${pathSegment(projectId)}/wiki/changes${qs ? `?${qs}` : ''}`);
   }
 
   async exportWiki(projectId: string): Promise<WikiPageExport[]> {
-    return this.fetchJSON<WikiPageExport[]>(`/projects/${projectId}/wiki/export`);
+    return this.fetchJSON<WikiPageExport[]>(`/projects/${pathSegment(projectId)}/wiki/export`);
   }
 
   // Decisions
-  async getDecisions(params?: {
-    execution_id?: string;
-    status?: string;
-    include_terminal?: boolean;
-  }): Promise<{ decisions: DecisionBatchResponse[] }> {
+
+  /**
+   * Pending decisions. Sends `If-None-Match` when given an ETag and reports a
+   * 304 as `notModified` instead of throwing.
+   */
+  async getDecisionsPending(
+    params?: { execution_id?: string; etag?: string | null }
+  ): Promise<PendingDecisionsResult> {
     const search = new URLSearchParams();
     if (params?.execution_id) search.set('execution_id', params.execution_id);
-    if (params?.status) search.set('status', params.status);
-    if (params?.include_terminal !== undefined) search.set('include_terminal', String(params.include_terminal));
     const qs = search.toString();
-    return this.fetchJSON(`/decisions${qs ? `?${qs}` : ''}`);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (params?.etag) headers['If-None-Match'] = params.etag;
+    const response = await fetch(`${this.baseURL}/decisions${qs ? `?${qs}` : ''}`, { headers });
+    if (response.status === 304) {
+      return { notModified: true };
+    }
+    if (!response.ok) {
+      throw await toApiError(response);
+    }
+    return {
+      notModified: false,
+      etag: response.headers.get('etag'),
+      body: await response.json(),
+    };
   }
 
-  async dismissBatch(batchId: string): Promise<{ status: string }> {
-    return this.fetchJSON(`/escalate/${batchId}/dismiss`, { method: 'POST' });
+  async getDecisionsResolved(
+    params?: { before?: string; limit?: number }
+  ): Promise<Page<DecisionSummaryResponse>> {
+    const search = new URLSearchParams();
+    search.set('state', 'resolved');
+    if (params?.before) search.set('before', params.before);
+    if (params?.limit !== undefined) search.set('limit', String(params.limit));
+    return this.fetchJSON(`/decisions?${search.toString()}`);
+  }
+
+  async getDecision(eventId: string): Promise<DecisionBatchResponse> {
+    return this.fetchJSON(`/decisions/${pathSegment(eventId)}`);
+  }
+
+  async dismissDecision(eventId: string): Promise<{ status: string }> {
+    return this.fetchJSON(`/escalate/${pathSegment(eventId)}/dismiss`, {
+      method: 'POST',
+    });
   }
 }
 

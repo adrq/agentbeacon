@@ -2,7 +2,6 @@ use std::sync::LazyLock;
 
 use jsonschema::Validator;
 use serde_json::{Value as JsonValue, json};
-use sqlx::Row;
 
 use uuid::Uuid;
 
@@ -325,9 +324,6 @@ async fn handle_delegate(
         JsonRpcError::internal_error(&format!("serialize task_payload failed: {e}"))
     })?;
 
-    let insert_event_sql = state.db_pool.prepare_query(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, ?, ?) RETURNING id",
-    );
     let insert_task_sql = state.db_pool.prepare_query(
         "INSERT INTO task_queue (execution_id, session_id, task_payload) VALUES (?, ?, ?)",
     );
@@ -376,33 +372,33 @@ async fn handle_delegate(
         }));
     }
 
-    let event_id: i64 = sqlx::query(&insert_event_sql)
-        .bind(&auth.execution_id)
-        .bind(Some(&auth.session_id))
-        .bind("platform")
-        .bind(&delegate_event_str)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&format!("insert delegate event failed: {e}")))?
-        .try_get("id")
-        .map_err(|e| JsonRpcError::internal_error(&format!("get event id failed: {e}")))?;
+    let event_id: i64 = db::events::insert_in_tx(
+        &state.db_pool,
+        &mut tx,
+        Some(&auth.session_id),
+        "platform",
+        &delegate_event_str,
+    )
+    .await
+    .map_err(|e| JsonRpcError::internal_error(&format!("insert delegate event failed: {e}")))?
+    .id;
 
-    let prompt_event_id: i64 = sqlx::query(&insert_event_sql)
-        .bind(&auth.execution_id)
-        .bind(Some(&*child_session_id))
-        .bind("message")
-        .bind(&child_prompt_str)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| JsonRpcError::internal_error(&format!("insert child prompt failed: {e}")))?
-        .try_get("id")
-        .map_err(|e| JsonRpcError::internal_error(&format!("get prompt id failed: {e}")))?;
+    let prompt_event_id: i64 = db::events::insert_in_tx(
+        &state.db_pool,
+        &mut tx,
+        Some(&child_session_id),
+        "message",
+        &child_prompt_str,
+    )
+    .await
+    .map_err(|e| JsonRpcError::internal_error(&format!("insert child prompt failed: {e}")))?
+    .id;
 
     sqlx::query(&insert_task_sql)
         .bind(&auth.execution_id)
         .bind(&*child_session_id)
         .bind(&task_payload_json)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| JsonRpcError::internal_error(&format!("insert task_queue failed: {e}")))?;
 
@@ -535,7 +531,7 @@ fn delegate_schema() -> JsonValue {
     json!({
         "name": "delegate",
         "title": "Delegate",
-        "description": "Create a new child session and assign it a task. Returns immediately with a session_id. Each call creates an independent session — to send follow-up work to an existing child, use POST /api/messages instead.",
+        "description": "Create a new child session and assign it a task. Returns immediately with a session_id. Each call creates an independent session — to send follow-up work to an existing child, use POST /api/v1/messages instead.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -32,7 +32,7 @@ impl From<db::Config> for ConfigResponse {
     }
 }
 
-/// Get all configuration entries (GET /api/config)
+/// Get all configuration entries (GET /api/v1/config)
 async fn get_config(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ConfigResponse>>, SchedulerError> {
@@ -41,7 +41,7 @@ async fn get_config(
     Ok(Json(responses))
 }
 
-/// Update configuration entry (POST /api/config)
+/// Update configuration entry (POST /api/v1/config)
 async fn update_config(
     State(state): State<AppState>,
     Json(payload): Json<UpdateConfigRequest>,
@@ -69,5 +69,5 @@ async fn update_config(
 
 /// Configuration routes
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/config", get(get_config).post(update_config))
+    Router::new().route("/config", get(get_config).post(update_config))
 }

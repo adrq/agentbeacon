@@ -95,15 +95,15 @@ const DECISIONS = {
 
 async function mockApi(page: Page) {
   // List GET only — the trailing `*` matches optional query params but not the
-  // `/api/executions/{id}` detail path (a `*` does not cross `/`).
-  await page.route('**/api/executions*', route => {
+  // `/api/v1/executions/{id}` detail path (a `*` does not cross `/`).
+  await page.route('**/api/v1/executions*', route => {
     if (route.request().method() === 'GET') {
       route.fulfill({ contentType: 'application/json', body: JSON.stringify(EXECUTIONS) });
     } else {
       route.continue();
     }
   });
-  await page.route('**/api/decisions*', route => {
+  await page.route('**/api/v1/decisions*', route => {
     if (route.request().method() === 'GET') {
       route.fulfill({ contentType: 'application/json', body: JSON.stringify(DECISIONS) });
     } else {
@@ -113,8 +113,8 @@ async function mockApi(page: Page) {
 }
 
 test.afterEach(async ({ page }) => {
-  await page.unroute('**/api/executions*');
-  await page.unroute('**/api/decisions*');
+  await page.unroute('**/api/v1/executions*');
+  await page.unroute('**/api/v1/decisions*');
 });
 
 test('sidebar sorts pending-question above working above idle above terminal', async ({ page }) => {
@@ -152,7 +152,7 @@ test('recently active execution stays above an idle one with a newer updated_at'
   // `updated_at` order: the untouched pair never changes status, so it must fall
   // back to `updated_at`. If observation stamped executions on first sight they
   // would all tie and the sort would silently degrade to this array order.
-  await page.route('**/api/executions*', route => {
+  await page.route('**/api/v1/executions*', route => {
     if (route.request().method() !== 'GET') {
       route.continue();
       return;
@@ -181,7 +181,7 @@ test('recently active execution stays above an idle one with a newer updated_at'
       ]),
     });
   });
-  await page.route('**/api/decisions*', route => {
+  await page.route('**/api/v1/decisions*', route => {
     if (route.request().method() === 'GET') {
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({ decisions: [] }) });
     } else {
@@ -224,7 +224,7 @@ test('concurrently working executions order by when they started working', async
   // The execution that starts working later is listed first in the payload and
   // carries the older `updated_at`, so neither payload order nor `updated_at`
   // can produce the expected order by accident.
-  await page.route('**/api/executions*', route => {
+  await page.route('**/api/v1/executions*', route => {
     if (route.request().method() !== 'GET') {
       route.continue();
       return;
@@ -247,7 +247,7 @@ test('concurrently working executions order by when they started working', async
       ]),
     });
   });
-  await page.route('**/api/decisions*', route => {
+  await page.route('**/api/v1/decisions*', route => {
     if (route.request().method() === 'GET') {
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({ decisions: [] }) });
     } else {

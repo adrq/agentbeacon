@@ -15,9 +15,7 @@ pub struct CrashMeta {
 /// A resolution marker to persist alongside an answer message.
 #[derive(Debug, Clone)]
 pub struct ResolutionMarker {
-    pub batch_id: String,
-    pub owner_execution_id: String,
-    pub owner_session_id: String,
+    pub escalation: db::events::Escalation,
     pub answer_text: Option<String>,
 }
 
@@ -52,7 +50,6 @@ pub enum Action {
     /// Worker reports executor state change.
     SetExecutorState(ExState, String, Option<CrashMeta>),
     /// Permanently fail an unrecoverable session.
-    TerminateFailed(String),
     /// Scheduler detects a session crash.
     DetectCrash,
     /// Retry a crashed session.
@@ -101,8 +98,12 @@ pub enum Rejected {
     WriteBarrier,
     /// Entity not found.
     NotFound,
-    /// The batch was already resolved by a committed answer or dismiss.
-    AlreadyResolved,
+    /// The decision was already resolved by a committed answer or dismiss.
+    AlreadyResolved(Box<crate::resolution::ResolutionCandidate>),
+    /// An answer arrived for a decision whose execution has ended.
+    DecisionExpired,
+    /// A message arrived for an execution that has ended.
+    ExecutionTerminated,
     /// Invalid transition (with reason).
     InvalidTransition(String),
 }
@@ -113,7 +114,9 @@ impl std::fmt::Display for Rejected {
             Self::Ratchet => write!(f, "already terminated"),
             Self::WriteBarrier => write!(f, "session or execution is terminal"),
             Self::NotFound => write!(f, "not found"),
-            Self::AlreadyResolved => write!(f, "batch is already resolved"),
+            Self::AlreadyResolved(_) => write!(f, "decision is already resolved"),
+            Self::DecisionExpired => write!(f, "decision expired"),
+            Self::ExecutionTerminated => write!(f, "execution terminated"),
             Self::InvalidTransition(reason) => write!(f, "invalid transition: {reason}"),
         }
     }
@@ -192,7 +195,7 @@ pub async fn derive_execution_outcome(
             .fetch_one(&mut **tx)
             .await
             .map(|r| r.get::<i64, _>("cnt"))
-            .unwrap_or(0);
+            .map_err(|e| SchedulerError::Database(format!("count pending turns: {e}")))?;
         let active = s.executor_state == "running" || pending > 0 || s.command_token.is_some();
         if active {
             return Ok("canceled".to_string());
@@ -206,7 +209,7 @@ pub async fn derive_execution_outcome(
                 .fetch_one(&mut **tx)
                 .await
                 .map(|r| r.get::<i64, _>("cnt"))
-                .unwrap_or(0);
+                .map_err(|e| SchedulerError::Database(format!("count pending turns: {e}")))?;
             let quiescent = (s.executor_state == "idle"
                 || (s.executor_state == "unassigned"
                     && s.agent_session_id.is_none()
@@ -225,11 +228,12 @@ pub async fn derive_execution_outcome(
         if s.outcome.as_deref() == Some("failed")
             && !s.parent_notified
             && let Some(ref parent_id) = s.parent_session_id
-            && let Ok(row) = sqlx::query(&parent_outcome_sql)
+        {
+            let row = sqlx::query(&parent_outcome_sql)
                 .bind(parent_id)
                 .fetch_one(&mut **tx)
                 .await
-        {
+                .map_err(|e| SchedulerError::Database(format!("read parent outcome: {e}")))?;
             let parent_outcome: Option<String> = row.get("outcome");
             if parent_outcome.is_none() {
                 return Ok("canceled".to_string());
@@ -238,6 +242,43 @@ pub async fn derive_execution_outcome(
     }
 
     Ok("completed".to_string())
+}
+
+/// Terminate a session.
+pub async fn terminate_session(
+    pool: &DbPool,
+    execution_id: &str,
+    session_id: &str,
+    desired_by: &str,
+) -> Result<(), Rejected> {
+    let session = lookup(pool, execution_id, session_id).await?;
+    set_desired(pool, &session, Desired::Terminate, desired_by).await
+}
+
+/// Terminate a session with outcome=failed.
+pub async fn terminate_session_failed(
+    pool: &DbPool,
+    execution_id: &str,
+    session_id: &str,
+    desired_by: &str,
+    require_crashed: bool,
+) -> Result<(), Rejected> {
+    let session = lookup(pool, execution_id, session_id).await?;
+    terminate_failed(pool, &session, desired_by, require_crashed).await
+}
+
+async fn lookup(
+    pool: &DbPool,
+    execution_id: &str,
+    session_id: &str,
+) -> Result<db::sessions::Session, Rejected> {
+    let session = db::sessions::get_by_id(pool, session_id)
+        .await
+        .map_err(|_| Rejected::NotFound)?;
+    if session.execution_id != execution_id {
+        return Err(Rejected::NotFound);
+    }
+    Ok(session)
 }
 
 /// Apply an action to a session.
@@ -277,10 +318,6 @@ pub async fn transition(
             set_executor_state(pool, &session, state, worker_id, crash_meta.as_ref()).await?;
             Ok(None)
         }
-        Action::TerminateFailed(desired_by) => {
-            terminate_failed(pool, &session, &desired_by).await?;
-            Ok(None)
-        }
         Action::DetectCrash => {
             detect_crash(pool, &session).await?;
             Ok(None)
@@ -293,6 +330,7 @@ pub async fn transition(
 }
 
 /// SetDesired — change the desired state of a session.
+///
 async fn set_desired(
     pool: &DbPool,
     session: &db::sessions::Session,
@@ -350,10 +388,10 @@ async fn set_desired(
                 pool.prepare_query("SELECT COUNT(*) as cnt FROM task_queue WHERE session_id = ?");
             let pending: i64 = sqlx::query(&pending_sql)
                 .bind(&session.id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await
                 .map(|r| r.get::<i64, _>("cnt"))
-                .unwrap_or(0);
+                .map_err(|_| Rejected::InvalidTransition("count pending turns failed".into()))?;
             let outcome = if is_quiescent(&tx_session, pending) {
                 "completed"
             } else {
@@ -382,7 +420,7 @@ async fn set_desired(
                 .bind(outcome)
                 .bind(desired_by)
                 .bind(&session.id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|_| Rejected::InvalidTransition("set terminate failed".into()))?;
 
@@ -397,48 +435,15 @@ async fn set_desired(
                 "desired_by": desired_by,
             });
             let session_event_str = serde_json::to_string(&session_event).unwrap_or_default();
-            let event_sql = pool.prepare_query(
-                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                 VALUES (?, ?, 'state_change', ?) RETURNING id",
-            );
-            let _ = sqlx::query(&event_sql)
-                .bind(&session.execution_id)
-                .bind(&session.id)
-                .bind(&session_event_str)
-                .execute(&mut *tx)
-                .await;
-
-            if let Some(exec_outcome) = &exec_outcome {
-                let exec_sql = pool.prepare_query(
-                    "UPDATE executions SET desired = 'terminate', outcome = ?, \
-                     updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
-                     WHERE id = ? AND outcome IS NULL",
-                );
-                let exec_result = sqlx::query(&exec_sql)
-                    .bind(exec_outcome)
-                    .bind(&session.execution_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|_| Rejected::InvalidTransition("update execution failed".into()))?;
-
-                if exec_result.rows_affected() > 0 {
-                    let exec_event = serde_json::json!({
-                        "desired": "terminate",
-                        "outcome": exec_outcome,
-                    });
-                    let exec_event_str = serde_json::to_string(&exec_event).unwrap_or_default();
-                    let exec_event_sql = pool.prepare_query(
-                        "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                         VALUES (?, ?, 'state_change', ?) RETURNING id",
-                    );
-                    let _ = sqlx::query(&exec_event_sql)
-                        .bind(&session.execution_id)
-                        .bind(None::<&str>)
-                        .bind(&exec_event_str)
-                        .execute(&mut *tx)
-                        .await;
-                }
-            }
+            db::events::insert_in_tx(
+                pool,
+                &mut tx,
+                Some(&session.id),
+                "state_change",
+                &session_event_str,
+            )
+            .await
+            .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
 
             if let Some((ref parent, ref parent_id)) = parent_for_notify {
                 write_parent_notification_in_tx(
@@ -452,9 +457,19 @@ async fn set_desired(
                 .await?;
             }
 
+            if let Some(ref exec_outcome) = exec_outcome {
+                write_execution_terminal_in_tx(pool, &mut tx, &session.execution_id, exec_outcome)
+                    .await
+                    .map_err(|e| {
+                        Rejected::InvalidTransition(format!("write execution terminal: {e}"))
+                    })?;
+            }
+
             tx.commit()
                 .await
                 .map_err(|_| Rejected::InvalidTransition("commit transaction failed".into()))?;
+
+            return Ok(());
         }
         Desired::Stop => {
             let mut tx = db::executions::begin_execution_tx(pool, &session.execution_id)
@@ -481,7 +496,7 @@ async fn set_desired(
             let result = sqlx::query(&set_sql)
                 .bind(desired_by)
                 .bind(&session.id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|_| Rejected::InvalidTransition("set stop failed".into()))?;
 
@@ -493,22 +508,15 @@ async fn set_desired(
             let drain_sql = pool.prepare_query("DELETE FROM task_queue WHERE session_id = ?");
             sqlx::query(&drain_sql)
                 .bind(&session.id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|_| Rejected::InvalidTransition("drain queue failed".into()))?;
 
             let stop_event = serde_json::json!({"desired": "stop", "desired_by": desired_by});
             let event_str = serde_json::to_string(&stop_event).unwrap_or_default();
-            let event_sql = pool.prepare_query(
-                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                 VALUES (?, ?, 'state_change', ?)",
-            );
-            let _ = sqlx::query(&event_sql)
-                .bind(&session.execution_id)
-                .bind(&session.id)
-                .bind(&event_str)
-                .execute(&mut *tx)
-                .await;
+            db::events::insert_in_tx(pool, &mut tx, Some(&session.id), "state_change", &event_str)
+                .await
+                .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
 
             if let Some((ref parent, ref parent_id)) = parent_for_notify {
                 write_parent_notification_in_tx(
@@ -539,7 +547,7 @@ async fn set_desired(
             let result = sqlx::query(&sql)
                 .bind(desired_by)
                 .bind(&session.id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|_| Rejected::InvalidTransition("set run failed".into()))?;
 
@@ -557,10 +565,81 @@ async fn set_desired(
     Ok(())
 }
 
+/// Write an execution's terminal row and the state_change announcing it.
+pub async fn write_execution_terminal_in_tx(
+    pool: &DbPool,
+    tx: &mut db::executions::ExecutionTx<'_>,
+    execution_id: &str,
+    outcome: &str,
+) -> Result<bool, SchedulerError> {
+    let sql = pool.prepare_query(
+        "UPDATE executions SET desired = 'terminate', outcome = ?, \
+         updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
+         WHERE id = ? AND outcome IS NULL",
+    );
+    let wrote = sqlx::query(&sql)
+        .bind(outcome)
+        .bind(execution_id)
+        .execute(&mut ***tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("write execution terminal failed: {e}")))?
+        .rows_affected()
+        > 0;
+    if wrote {
+        let payload = serde_json::json!({ "desired": "terminate", "outcome": outcome });
+        db::events::insert_in_tx(
+            pool,
+            tx,
+            None,
+            "state_change",
+            &serde_json::to_string(&payload).unwrap_or_default(),
+        )
+        .await?;
+    }
+    Ok(wrote)
+}
+
+/// Write an execution's terminal row in its own transaction.
+pub async fn write_execution_terminal(
+    pool: &DbPool,
+    execution_id: &str,
+    outcome: &str,
+) -> Result<bool, SchedulerError> {
+    let mut tx = db::executions::begin_execution_tx(pool, execution_id).await?;
+    let written = async {
+        let root_sql = pool.prepare_query(
+            "SELECT outcome FROM sessions WHERE execution_id = ? AND parent_session_id IS NULL",
+        );
+        let root_outcome: Option<Option<String>> = sqlx::query(&root_sql)
+            .bind(execution_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| SchedulerError::Database(format!("read root for terminal write: {e}")))?
+            .map(|row| row.get("outcome"));
+        if !matches!(root_outcome, Some(Some(_))) {
+            return Ok(false);
+        }
+        write_execution_terminal_in_tx(pool, &mut tx, execution_id, outcome).await
+    }
+    .await;
+    match written {
+        Ok(wrote) => {
+            tx.commit()
+                .await
+                .map_err(|e| SchedulerError::Database(format!("commit execution terminal: {e}")))?;
+            Ok(wrote)
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
+}
+
 /// Write parent notification atomically inside an existing transaction.
 async fn write_parent_notification_in_tx(
     pool: &db::DbPool,
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut db::executions::ExecutionTx<'_>,
     session: &db::sessions::Session,
     _parent: &db::sessions::Session,
     parent_id: &str,
@@ -588,7 +667,7 @@ async fn write_parent_notification_in_tx(
         );
         let resume_result = sqlx::query(&resume_sql)
             .bind(parent_id)
-            .execute(&mut **tx)
+            .execute(&mut ***tx)
             .await
             .map_err(|e| Rejected::InvalidTransition(format!("auto-resume parent failed: {e}")))?;
 
@@ -596,19 +675,17 @@ async fn write_parent_notification_in_tx(
             let resume_event =
                 serde_json::json!({"desired": "run", "desired_by": "system:child_action_notify"});
             let resume_event_str = serde_json::to_string(&resume_event).unwrap_or_default();
-            let sc_sql = pool.prepare_query(
-                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                 VALUES (?, ?, 'state_change', ?)",
-            );
-            sqlx::query(&sc_sql)
-                .bind(&session.execution_id)
-                .bind(parent_id)
-                .bind(&resume_event_str)
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| {
-                    Rejected::InvalidTransition(format!("auto-resume state_change event: {e}"))
-                })?;
+            db::events::insert_in_tx(
+                pool,
+                &mut *tx,
+                Some(parent_id),
+                "state_change",
+                &resume_event_str,
+            )
+            .await
+            .map_err(|e| {
+                Rejected::InvalidTransition(format!("auto-resume state_change event: {e}"))
+            })?;
         }
     }
 
@@ -639,7 +716,7 @@ async fn write_parent_notification_in_tx(
         .bind(parent_id)
         .bind(&payload_str)
         .bind(&source)
-        .execute(&mut **tx)
+        .execute(&mut ***tx)
         .await
         .map_err(|e| Rejected::InvalidTransition(format!("enqueue parent notification: {e}")))?;
 
@@ -648,14 +725,7 @@ async fn write_parent_notification_in_tx(
         "child_session_id": &session.id,
     });
     let event_str = serde_json::to_string(&event_payload).unwrap_or_default();
-    let event_sql = pool.prepare_query(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) VALUES (?, ?, 'platform', ?)",
-    );
-    sqlx::query(&event_sql)
-        .bind(&session.execution_id)
-        .bind(parent_id)
-        .bind(&event_str)
-        .execute(&mut **tx)
+    db::events::insert_in_tx(pool, tx, Some(parent_id), "platform", &event_str)
         .await
         .map_err(|e| Rejected::InvalidTransition(format!("parent platform event: {e}")))?;
 
@@ -675,16 +745,9 @@ async fn send_message(
         emit_message_delivered,
     } = args;
 
-    if session.desired == "terminate" || session.outcome.is_some() {
-        return Err(Rejected::WriteBarrier);
-    }
-
-    let execution = db::executions::get_by_id(pool, &session.execution_id)
+    db::executions::get_by_id(pool, &session.execution_id)
         .await
         .map_err(|_| Rejected::NotFound)?;
-    if execution.desired == "terminate" || execution.outcome.is_some() {
-        return Err(Rejected::WriteBarrier);
-    }
 
     let payload_json = serde_json::to_string(&payload)
         .map_err(|_| Rejected::InvalidTransition("serialize payload failed".into()))?;
@@ -696,33 +759,39 @@ async fn send_message(
     let tx_session = db::sessions::get_in_tx(pool, &mut tx, &session.id)
         .await
         .map_err(|_| Rejected::NotFound)?;
-    if tx_session.desired == "terminate" || tx_session.outcome.is_some() {
-        let _ = tx.rollback().await;
-        return Err(Rejected::WriteBarrier);
-    }
-
     let tx_execution = db::executions::get_in_tx(pool, &mut tx, &session.execution_id)
         .await
         .map_err(|_| Rejected::NotFound)?;
-    if tx_execution.desired == "terminate" || tx_execution.outcome.is_some() {
-        let _ = tx.rollback().await;
-        return Err(Rejected::WriteBarrier);
-    }
 
     if let Some(marker) = &resolution {
-        let existing = db::events::find_resolution_for_batch_in_tx(
-            pool,
-            &mut tx,
-            &marker.owner_execution_id,
-            &marker.owner_session_id,
-            &marker.batch_id,
-        )
-        .await
-        .map_err(|_| Rejected::InvalidTransition("resolution recheck failed".into()))?;
-        if existing.is_some() {
+        if marker.escalation.execution_id != tx.execution_id() {
             let _ = tx.rollback().await;
-            return Err(Rejected::AlreadyResolved);
+            return Err(Rejected::InvalidTransition(
+                "resolution marker names a different execution".into(),
+            ));
         }
+        let existing =
+            db::events::find_marker_for_escalation_in_tx(pool, &mut tx, &marker.escalation)
+                .await
+                .map_err(|_| Rejected::InvalidTransition("resolution recheck failed".into()))?;
+        if let Some(existing) = existing {
+            let _ = tx.rollback().await;
+            return Err(Rejected::AlreadyResolved(Box::new(existing)));
+        }
+    }
+
+    if tx_execution.desired == "terminate" || tx_execution.outcome.is_some() {
+        let _ = tx.rollback().await;
+        return Err(if resolution.is_some() {
+            Rejected::DecisionExpired
+        } else {
+            Rejected::ExecutionTerminated
+        });
+    }
+
+    if tx_session.desired == "terminate" || tx_session.outcome.is_some() {
+        let _ = tx.rollback().await;
+        return Err(Rejected::WriteBarrier);
     }
 
     if tx_session.desired == "stop" {
@@ -733,7 +802,7 @@ async fn send_message(
         );
         sqlx::query(&sql)
             .bind(&session.id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| Rejected::InvalidTransition("auto-resume failed".into()))?;
     }
@@ -746,7 +815,7 @@ async fn send_message(
         .bind(&session.id)
         .bind(&payload_json)
         .bind(None::<&str>)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| Rejected::InvalidTransition("enqueue message failed".into()))?;
 
@@ -757,19 +826,16 @@ async fn send_message(
     } else {
         payload_json.clone()
     };
-    let created_fmt = pool.format_timestamp(db::TimestampColumn::CreatedAt);
-    let event_sql = pool.prepare_query(&format!(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) \
-         VALUES (?, ?, 'message', ?) RETURNING id, {created_fmt} AS created_at"
-    ));
-    let message_row = sqlx::query(&event_sql)
-        .bind(&session.execution_id)
-        .bind(&session.id)
-        .bind(&event_payload_str)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| Rejected::InvalidTransition("insert message event failed".into()))?;
-    let event_id: i64 = message_row.try_get("id").unwrap_or(0);
+    let message_row = db::events::insert_in_tx(
+        pool,
+        &mut tx,
+        Some(&session.id),
+        "message",
+        &event_payload_str,
+    )
+    .await
+    .map_err(|_| Rejected::InvalidTransition("insert message event failed".into()))?;
+    let event_id = message_row.id;
 
     if let Some(marker) = &resolution {
         if event_id <= 0 {
@@ -780,9 +846,10 @@ async fn send_message(
                  0). Repair the events id sequence (e.g. reset events_id_seq) and retry"
             )));
         }
-        let resolved_at: String = message_row.try_get("created_at").unwrap_or_default();
+        let resolved_at = message_row.created_at.clone();
         let marker_payload = crate::resolution::marker_payload(
-            &marker.batch_id,
+            &marker.escalation.data.batch_id,
+            Some(marker.escalation.id),
             event_id,
             &resolved_at,
             marker.answer_text.as_deref(),
@@ -790,32 +857,22 @@ async fn send_message(
         );
         let marker_str = serde_json::to_string(&marker_payload)
             .map_err(|_| Rejected::InvalidTransition("serialize marker failed".into()))?;
-        let marker_sql = pool.prepare_query(
-            "INSERT INTO events (execution_id, session_id, event_type, payload) \
-             VALUES (?, ?, 'platform', ?)",
-        );
-        sqlx::query(&marker_sql)
-            .bind(&marker.owner_execution_id)
-            .bind(&marker.owner_session_id)
-            .bind(&marker_str)
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| Rejected::InvalidTransition("insert marker failed".into()))?;
+        db::events::insert_in_tx(
+            pool,
+            &mut tx,
+            Some(&marker.escalation.session_id),
+            "platform",
+            &marker_str,
+        )
+        .await
+        .map_err(|_| Rejected::InvalidTransition("insert marker failed".into()))?;
         test_failpoint("marker_insert")?;
     }
 
     if emit_message_delivered {
         let delivered = serde_json::json!({"type": "message_delivered"});
         let delivered_str = serde_json::to_string(&delivered).unwrap_or_default();
-        let delivered_sql = pool.prepare_query(
-            "INSERT INTO events (execution_id, session_id, event_type, payload) \
-             VALUES (?, ?, 'platform', ?)",
-        );
-        sqlx::query(&delivered_sql)
-            .bind(&session.execution_id)
-            .bind(&session.id)
-            .bind(&delivered_str)
-            .execute(&mut *tx)
+        db::events::insert_in_tx(pool, &mut tx, Some(&session.id), "platform", &delivered_str)
             .await
             .map_err(|_| Rejected::InvalidTransition("insert message_delivered failed".into()))?;
         test_failpoint("message_delivered_insert")?;
@@ -855,8 +912,31 @@ async fn set_executor_state(
         .await
         .map_err(|_| Rejected::InvalidTransition("begin executor state tx failed".into()))?;
 
+    let current = match db::sessions::get_in_tx(pool, &mut tx, &session.id).await {
+        Ok(current) => current,
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return Err(Rejected::NotFound);
+        }
+    };
+
     match state {
         ExState::Crashed => {
+            if current.command_has_payload {
+                let event = serde_json::json!({
+                    "message": "Agent recovered from a crash. A message may have been lost."
+                });
+                let payload_str = serde_json::to_string(&event).unwrap_or_default();
+                db::events::insert_in_tx(
+                    pool,
+                    &mut tx,
+                    Some(&session.id),
+                    "platform",
+                    &payload_str,
+                )
+                .await
+                .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
+            }
             let sql = pool.prepare_query(
                 "UPDATE sessions SET executor_state = 'crashed', \
                  command_token = NULL, command_type = NULL, command_at = NULL, \
@@ -868,30 +948,14 @@ async fn set_executor_state(
             let result = sqlx::query(&sql)
                 .bind(&session.id)
                 .bind(worker_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|_| Rejected::InvalidTransition("set crashed failed".into()))?;
             if result.rows_affected() == 0 {
                 let _ = tx.rollback().await;
                 return Err(Rejected::WriteBarrier);
             }
-            if session.command_has_payload {
-                let event = serde_json::json!({
-                    "message": "Agent recovered from a crash. A message may have been lost."
-                });
-                let payload_str = serde_json::to_string(&event).unwrap_or_default();
-                let evt_sql = pool.prepare_query(
-                    "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                     VALUES (?, ?, 'platform', ?)",
-                );
-                let _ = sqlx::query(&evt_sql)
-                    .bind(&session.execution_id)
-                    .bind(&session.id)
-                    .bind(&payload_str)
-                    .execute(&mut *tx)
-                    .await;
-            }
-            if session.executor_state != "crashed" {
+            if current.executor_state != "crashed" {
                 let mut event_data = serde_json::json!({"executor_state": "crashed"});
                 if let Some(meta) = crash_meta {
                     if let Some(ref err) = meta.error {
@@ -904,20 +968,19 @@ async fn set_executor_state(
                         event_data["stderr"] = serde_json::json!(stderr);
                     }
                 }
-                let sc_sql = pool.prepare_query(
-                    "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                     VALUES (?, ?, 'state_change', ?)",
-                );
-                let _ = sqlx::query(&sc_sql)
-                    .bind(&session.execution_id)
-                    .bind(&session.id)
-                    .bind(serde_json::to_string(&event_data).unwrap_or_default())
-                    .execute(&mut *tx)
-                    .await;
+                db::events::insert_in_tx(
+                    pool,
+                    &mut tx,
+                    Some(&session.id),
+                    "state_change",
+                    &serde_json::to_string(&event_data).unwrap_or_default(),
+                )
+                .await
+                .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
             }
         }
         ExState::Idle => {
-            let sql = if session.recovery_attempts > 0 {
+            let sql = if current.recovery_attempts > 0 {
                 pool.prepare_query(
                     "UPDATE sessions SET executor_state = 'idle', \
                      recovery_attempts = 0, updated_at = CURRENT_TIMESTAMP \
@@ -935,25 +998,24 @@ async fn set_executor_state(
             let result = sqlx::query(&sql)
                 .bind(&session.id)
                 .bind(worker_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|_| Rejected::InvalidTransition("set idle failed".into()))?;
             if result.rows_affected() == 0 {
                 let _ = tx.rollback().await;
                 return Err(Rejected::WriteBarrier);
             }
-            if session.executor_state != "idle" {
+            if current.executor_state != "idle" {
                 let idle_event = serde_json::json!({"executor_state": "idle"});
-                let sc_sql = pool.prepare_query(
-                    "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                     VALUES (?, ?, 'state_change', ?)",
-                );
-                let _ = sqlx::query(&sc_sql)
-                    .bind(&session.execution_id)
-                    .bind(&session.id)
-                    .bind(serde_json::to_string(&idle_event).unwrap_or_default())
-                    .execute(&mut *tx)
-                    .await;
+                db::events::insert_in_tx(
+                    pool,
+                    &mut tx,
+                    Some(&session.id),
+                    "state_change",
+                    &serde_json::to_string(&idle_event).unwrap_or_default(),
+                )
+                .await
+                .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
             }
         }
         ExState::Running => {
@@ -965,25 +1027,24 @@ async fn set_executor_state(
             let result = sqlx::query(&sql)
                 .bind(&session.id)
                 .bind(worker_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|_| Rejected::InvalidTransition("set running failed".into()))?;
             if result.rows_affected() == 0 {
                 let _ = tx.rollback().await;
                 return Err(Rejected::WriteBarrier);
             }
-            if session.executor_state != "running" {
+            if current.executor_state != "running" {
                 let running_event = serde_json::json!({"executor_state": "running"});
-                let sc_sql = pool.prepare_query(
-                    "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                     VALUES (?, ?, 'state_change', ?)",
-                );
-                let _ = sqlx::query(&sc_sql)
-                    .bind(&session.execution_id)
-                    .bind(&session.id)
-                    .bind(serde_json::to_string(&running_event).unwrap_or_default())
-                    .execute(&mut *tx)
-                    .await;
+                db::events::insert_in_tx(
+                    pool,
+                    &mut tx,
+                    Some(&session.id),
+                    "state_change",
+                    &serde_json::to_string(&running_event).unwrap_or_default(),
+                )
+                .await
+                .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
             }
         }
         _ => {
@@ -996,7 +1057,7 @@ async fn set_executor_state(
                 .bind(state_str)
                 .bind(&session.id)
                 .bind(worker_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .map_err(|_| Rejected::InvalidTransition(format!("set {state_str} failed")))?;
             if result.rows_affected() == 0 {
@@ -1013,11 +1074,12 @@ async fn set_executor_state(
     Ok(())
 }
 
-/// TerminateFailed — atomically set desired=terminate + outcome=failed.
+/// Terminate a session as failed.
 async fn terminate_failed(
     pool: &DbPool,
     session: &db::sessions::Session,
     desired_by: &str,
+    require_crashed: bool,
 ) -> Result<(), Rejected> {
     if session.desired == "terminate" {
         return Err(Rejected::Ratchet);
@@ -1037,12 +1099,15 @@ async fn terminate_failed(
         "UPDATE sessions SET desired = 'terminate', outcome = 'failed', \
          desired_by = ?, desired_at = CURRENT_TIMESTAMP, \
          updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
-         WHERE id = ? AND desired != 'terminate'",
+         WHERE id = ? AND desired != 'terminate' \
+         AND (? = FALSE OR (desired = 'run' AND executor_state = 'crashed' \
+                            AND outcome IS NULL))",
     );
     let result = sqlx::query(&sql)
         .bind(desired_by)
         .bind(&session.id)
-        .execute(&mut *tx)
+        .bind(require_crashed)
+        .execute(&mut **tx)
         .await
         .map_err(|_| Rejected::InvalidTransition("terminate failed failed".into()))?;
 
@@ -1057,47 +1122,20 @@ async fn terminate_failed(
         "desired_by": desired_by,
     });
     let session_event_str = serde_json::to_string(&session_event).unwrap_or_default();
-    let event_sql = pool.prepare_query(
-        "INSERT INTO events (execution_id, session_id, event_type, payload) \
-         VALUES (?, ?, 'state_change', ?) RETURNING id",
-    );
-    let _ = sqlx::query(&event_sql)
-        .bind(&session.execution_id)
-        .bind(&session.id)
-        .bind(&session_event_str)
-        .execute(&mut *tx)
-        .await;
+    db::events::insert_in_tx(
+        pool,
+        &mut tx,
+        Some(&session.id),
+        "state_change",
+        &session_event_str,
+    )
+    .await
+    .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
 
-    if let Some(exec_outcome) = &exec_outcome {
-        let exec_sql = pool.prepare_query(
-            "UPDATE executions SET desired = 'terminate', outcome = ?, \
-             updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
-             WHERE id = ? AND outcome IS NULL",
-        );
-        let exec_result = sqlx::query(&exec_sql)
-            .bind(exec_outcome)
-            .bind(&session.execution_id)
-            .execute(&mut *tx)
+    if let Some(ref exec_outcome) = exec_outcome {
+        write_execution_terminal_in_tx(pool, &mut tx, &session.execution_id, exec_outcome)
             .await
-            .map_err(|_| Rejected::InvalidTransition("update execution failed".into()))?;
-
-        if exec_result.rows_affected() > 0 {
-            let exec_event = serde_json::json!({
-                "desired": "terminate",
-                "outcome": exec_outcome,
-            });
-            let exec_event_str = serde_json::to_string(&exec_event).unwrap_or_default();
-            let exec_event_sql = pool.prepare_query(
-                "INSERT INTO events (execution_id, session_id, event_type, payload) \
-                 VALUES (?, ?, 'state_change', ?) RETURNING id",
-            );
-            let _ = sqlx::query(&exec_event_sql)
-                .bind(&session.execution_id)
-                .bind(None::<&str>)
-                .bind(&exec_event_str)
-                .execute(&mut *tx)
-                .await;
-        }
+            .map_err(|e| Rejected::InvalidTransition(format!("write execution terminal: {e}")))?;
     }
 
     tx.commit()
@@ -1107,12 +1145,19 @@ async fn terminate_failed(
     Ok(())
 }
 
-/// DetectCrash — scheduler detects crash (supervisor/heartbeat/command timeout).
-/// Sets executor_state=crashed, clears worker_id and command fields.
+/// Mark a session crashed after the scheduler detects it.
 async fn detect_crash(pool: &DbPool, session: &db::sessions::Session) -> Result<(), Rejected> {
     let mut tx = db::executions::begin_execution_tx(pool, &session.execution_id)
         .await
         .map_err(|_| Rejected::InvalidTransition("begin detect_crash tx failed".into()))?;
+
+    let prior_state = match db::sessions::get_in_tx(pool, &mut tx, &session.id).await {
+        Ok(current) => current.executor_state,
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return Err(Rejected::NotFound);
+        }
+    };
 
     let sql = pool.prepare_query(
         "UPDATE sessions SET executor_state = 'crashed', worker_id = NULL, \
@@ -1123,7 +1168,7 @@ async fn detect_crash(pool: &DbPool, session: &db::sessions::Session) -> Result<
     );
     let result = sqlx::query(&sql)
         .bind(&session.id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| Rejected::InvalidTransition("detect crash failed".into()))?;
 
@@ -1132,18 +1177,17 @@ async fn detect_crash(pool: &DbPool, session: &db::sessions::Session) -> Result<
         return Err(Rejected::WriteBarrier);
     }
 
-    if session.executor_state != "crashed" {
+    if prior_state != "crashed" {
         let event_data = serde_json::json!({"executor_state": "crashed"});
-        let sc_sql = pool.prepare_query(
-            "INSERT INTO events (execution_id, session_id, event_type, payload) \
-             VALUES (?, ?, 'state_change', ?)",
-        );
-        let _ = sqlx::query(&sc_sql)
-            .bind(&session.execution_id)
-            .bind(&session.id)
-            .bind(serde_json::to_string(&event_data).unwrap_or_default())
-            .execute(&mut *tx)
-            .await;
+        db::events::insert_in_tx(
+            pool,
+            &mut tx,
+            Some(&session.id),
+            "state_change",
+            &serde_json::to_string(&event_data).unwrap_or_default(),
+        )
+        .await
+        .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
     }
 
     tx.commit()
@@ -1163,11 +1207,12 @@ async fn retry_recovery(pool: &DbPool, session: &db::sessions::Session) -> Resul
         "UPDATE sessions SET executor_state = 'unassigned', \
          recovery_attempts = recovery_attempts + 1, \
          updated_at = CURRENT_TIMESTAMP \
-         WHERE id = ? AND executor_state = 'crashed' AND outcome IS NULL",
+         WHERE id = ? AND executor_state = 'crashed' AND outcome IS NULL \
+         AND desired = 'run'",
     );
     let result = sqlx::query(&sql)
         .bind(&session.id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| Rejected::InvalidTransition("retry recovery failed".into()))?;
 
@@ -1176,21 +1221,42 @@ async fn retry_recovery(pool: &DbPool, session: &db::sessions::Session) -> Resul
         return Err(Rejected::WriteBarrier);
     }
 
-    if session.agent_session_id.is_some() {
+    let updated = match db::sessions::get_in_tx(pool, &mut tx, &session.id).await {
+        Ok(updated) => updated,
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return Err(Rejected::NotFound);
+        }
+    };
+
+    if updated.agent_session_id.is_some() {
         let event = serde_json::json!({
             "message": "Agent recovered from a crash; work in progress may have been lost."
         });
-        let evt_sql = pool.prepare_query(
-            "INSERT INTO events (execution_id, session_id, event_type, payload) \
-             VALUES (?, ?, 'platform', ?)",
-        );
-        let _ = sqlx::query(&evt_sql)
-            .bind(&session.execution_id)
-            .bind(&session.id)
-            .bind(serde_json::to_string(&event).unwrap_or_default())
-            .execute(&mut *tx)
-            .await;
+        db::events::insert_in_tx(
+            pool,
+            &mut tx,
+            Some(&session.id),
+            "platform",
+            &serde_json::to_string(&event).unwrap_or_default(),
+        )
+        .await
+        .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
     }
+
+    let recovery_event = serde_json::json!({
+        "executor_state": "unassigned",
+        "recovery_attempt": updated.recovery_attempts,
+    });
+    db::events::insert_in_tx(
+        pool,
+        &mut tx,
+        Some(&session.id),
+        "state_change",
+        &serde_json::to_string(&recovery_event).unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| Rejected::InvalidTransition(format!("persist event failed: {e}")))?;
 
     tx.commit()
         .await

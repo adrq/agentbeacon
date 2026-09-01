@@ -1,4 +1,4 @@
-"""Contract tests for GET /api/agents endpoint."""
+"""Contract tests for GET /api/v1/agents endpoint."""
 
 import httpx
 import pytest
@@ -12,7 +12,7 @@ from tests.testhelpers import (
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_list_agents_empty_returns_empty_list(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        resp = httpx.get(f"{ctx['url']}/api/agents", timeout=5)
+        resp = httpx.get(f"{ctx['url']}/api/v1/agents", timeout=5)
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -22,7 +22,7 @@ def test_list_agents_returns_seeded_agents(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
 
-        resp = httpx.get(f"{ctx['url']}/api/agents", timeout=5)
+        resp = httpx.get(f"{ctx['url']}/api/v1/agents", timeout=5)
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
@@ -35,7 +35,7 @@ def test_list_agents_response_shape(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         seed_test_agent(ctx["db_url"], name="test-agent")
 
-        resp = httpx.get(f"{ctx['url']}/api/agents", timeout=5)
+        resp = httpx.get(f"{ctx['url']}/api/v1/agents", timeout=5)
         agent = resp.json()[0]
 
         expected_fields = {
@@ -60,7 +60,7 @@ def test_list_agents_multiple_sorted_by_name(test_database):
         seed_test_agent(ctx["db_url"], name="zulu")
         seed_test_agent(ctx["db_url"], name="alpha")
 
-        resp = httpx.get(f"{ctx['url']}/api/agents", timeout=5)
+        resp = httpx.get(f"{ctx['url']}/api/v1/agents", timeout=5)
         data = resp.json()
         assert len(data) == 2
         assert data[0]["name"] == "alpha"
@@ -73,7 +73,7 @@ def test_list_agents_includes_disabled(test_database):
         seed_test_agent(ctx["db_url"], name="active-agent", enabled=True)
         seed_test_agent(ctx["db_url"], name="disabled-agent", enabled=False)
 
-        resp = httpx.get(f"{ctx['url']}/api/agents", timeout=5)
+        resp = httpx.get(f"{ctx['url']}/api/v1/agents", timeout=5)
         data = resp.json()
         assert len(data) == 2
 
@@ -86,7 +86,7 @@ def test_list_agents_timestamps_are_rfc3339(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         seed_test_agent(ctx["db_url"], name="test-agent")
 
-        resp = httpx.get(f"{ctx['url']}/api/agents", timeout=5)
+        resp = httpx.get(f"{ctx['url']}/api/v1/agents", timeout=5)
         agent = resp.json()[0]
 
         assert "T" in agent["created_at"]

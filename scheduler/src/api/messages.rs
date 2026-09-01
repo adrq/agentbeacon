@@ -22,12 +22,12 @@ struct SendMessageRequest {
 #[derive(Deserialize)]
 struct ListMessagesQuery {
     session_id: String,
-    since_id: Option<i64>,
+    since_id: Option<String>,
 }
 
 #[derive(Serialize)]
 struct MessageResponse {
-    id: i64,
+    id: String,
     sender: Option<SenderResponse>,
     body: String,
     parts: Vec<serde_json::Value>,
@@ -40,7 +40,7 @@ struct SenderResponse {
     session_id: String,
 }
 
-/// POST /api/messages — agent sends message to another agent
+/// POST /api/v1/messages — agent sends message to another agent
 ///
 /// Auth: Bearer session_id (McpSession extractor)
 /// Body: { "to": "hierarchical/agent/name", "parts": [{"text": "..."}] }
@@ -49,7 +49,6 @@ async fn send_message(
     State(state): State<AppState>,
     Json(req): Json<SendMessageRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    // Stopped sessions cannot send messages.
     if auth.desired != "run" {
         return Err(SchedulerError::Conflict(
             "sender session is stopped or terminated — cannot send messages".to_string(),
@@ -94,23 +93,31 @@ async fn send_message(
     Ok((
         StatusCode::OK,
         Json(json!({
-            "event_id": result.event_id,
+            "event_id": result.event_id.to_string(),
             "recipient_session_id": recipient.id,
             "session_status": result.session_status,
         })),
     ))
 }
 
-/// GET /api/messages?session_id={id}&since_id={event_id} — message history
+/// GET /api/v1/messages?session_id={id}&since_id={event_id} — message history
 async fn list_messages(
     State(state): State<AppState>,
     Query(query): Query<ListMessagesQuery>,
 ) -> Result<Json<Vec<MessageResponse>>, SchedulerError> {
     db::sessions::get_by_id(&state.db_pool, &query.session_id).await?;
 
+    let since_id = match query.since_id.as_deref() {
+        None => None,
+        Some(raw) => Some(raw.parse::<i64>().map_err(|_| {
+            SchedulerError::Problem(Box::new(
+                crate::api::problem::Problem::new(crate::api::problem::ProblemCode::RequestInvalid)
+                    .with_detail("since_id is not a valid event id"),
+            ))
+        })?),
+    };
     let events =
-        db::events::list_messages_by_session(&state.db_pool, &query.session_id, query.since_id)
-            .await?;
+        db::events::list_messages_by_session(&state.db_pool, &query.session_id, since_id).await?;
 
     let messages: Vec<MessageResponse> = events
         .into_iter()
@@ -120,7 +127,7 @@ async fn list_messages(
             let body = extract_text_from_parts(&payload);
             let parts = extract_content_parts(&payload);
             MessageResponse {
-                id: e.id,
+                id: e.id.to_string(),
                 sender,
                 body,
                 parts,
@@ -162,7 +169,6 @@ fn extract_content_parts(payload: &serde_json::Value) -> Vec<serde_json::Value> 
             parts
                 .iter()
                 .filter(|p| {
-                    // Only strip the specific sender metadata part we inject
                     let is_sender_data = p
                         .get("data")
                         .and_then(|d| d.get("type"))
@@ -193,7 +199,7 @@ fn extract_text_from_parts(payload: &serde_json::Value) -> String {
 
 pub fn routes() -> Router<AppState> {
     Router::new().route(
-        "/api/messages",
+        "/messages",
         axum::routing::post(send_message).get(list_messages),
     )
 }

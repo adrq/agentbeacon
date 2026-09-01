@@ -1352,32 +1352,32 @@ fn parse_bounded(raw: Option<&str>, default: i64, accept: impl Fn(i64) -> bool) 
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/wiki/search", get(search_wiki))
-        .route("/api/projects/{project_id}/wiki/pages", get(list_pages))
+        .route("/wiki/search", get(search_wiki))
+        .route("/projects/{project_id}/wiki/pages", get(list_pages))
         .route(
-            "/api/projects/{project_id}/wiki/pages/{slug}",
+            "/projects/{project_id}/wiki/pages/{slug}",
             get(get_page)
                 .put(put_page)
                 .patch(patch_page)
                 .delete(delete_page),
         )
         .route(
-            "/api/projects/{project_id}/wiki/pages/{slug}/revisions",
+            "/projects/{project_id}/wiki/pages/{slug}/revisions",
             get(list_revisions),
         )
         .route(
-            "/api/projects/{project_id}/wiki/pages/{slug}/revisions/{rev}",
+            "/projects/{project_id}/wiki/pages/{slug}/revisions/{rev}",
             get(get_revision),
         )
-        .route("/api/projects/{project_id}/wiki/tags", get(list_tags))
+        .route("/projects/{project_id}/wiki/tags", get(list_tags))
         .route(
-            "/api/projects/{project_id}/wiki/subscriptions",
+            "/projects/{project_id}/wiki/subscriptions",
             get(list_subscriptions).post(create_subscription),
         )
         .route(
-            "/api/projects/{project_id}/wiki/subscriptions/{sub_id}",
+            "/projects/{project_id}/wiki/subscriptions/{sub_id}",
             delete(delete_subscription),
         )
-        .route("/api/projects/{project_id}/wiki/changes", get(list_changes))
-        .route("/api/projects/{project_id}/wiki/export", get(export_pages))
+        .route("/projects/{project_id}/wiki/changes", get(list_changes))
+        .route("/projects/{project_id}/wiki/export", get(export_pages))
 }

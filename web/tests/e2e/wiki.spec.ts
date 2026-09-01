@@ -34,13 +34,13 @@ async function createTestProject(name: string): Promise<Project> {
   const dir = `/tmp/e2e-wiki-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   fs.mkdirSync(dir, { recursive: true });
   createdTempDirs.push(dir);
-  const project = await apiPost('/api/projects', { name, path: dir });
+  const project = await apiPost('/api/v1/projects', { name, path: dir });
   createdProjectIds.push(project.id);
   return project;
 }
 
 async function createTestPage(projectId: string, slug: string, title: string, body: string): Promise<WikiPage> {
-  return apiPut(`/api/projects/${projectId}/wiki/pages/${slug}`, {
+  return apiPut(`/api/v1/projects/${projectId}/wiki/pages/${slug}`, {
     title,
     body,
     summary: 'test setup',
@@ -66,12 +66,12 @@ async function selectProject(page: Page, projectId: string) {
 async function cleanupTestData() {
   for (const id of createdProjectIds) {
     try {
-      const pages: { slug: string }[] = await apiGet(`/api/projects/${id}/wiki/pages`);
+      const pages: { slug: string }[] = await apiGet(`/api/v1/projects/${id}/wiki/pages`);
       for (const p of pages) {
-        try { await apiDelete(`/api/projects/${id}/wiki/pages/${p.slug}`); } catch { /* best effort */ }
+        try { await apiDelete(`/api/v1/projects/${id}/wiki/pages/${p.slug}`); } catch { /* best effort */ }
       }
     } catch { /* best effort */ }
-    try { await apiDelete(`/api/projects/${id}`); } catch { /* best effort */ }
+    try { await apiDelete(`/api/v1/projects/${id}`); } catch { /* best effort */ }
   }
   createdProjectIds.length = 0;
   for (const dir of createdTempDirs) {
@@ -223,12 +223,12 @@ test('wiki history shows revisions', async ({ page }) => {
   await createTestPage(project.id, 'history-page', 'History Page', '# Version 1');
   // PUT is create-only; updates go through PATCH, and a whole-body replacement
   // is one edit naming the current body.
-  await apiPatch(`/api/projects/${project.id}/wiki/pages/history-page`, {
+  await apiPatch(`/api/v1/projects/${project.id}/wiki/pages/history-page`, {
     revision_number: 1,
     edits: [{ old_string: '# Version 1', new_string: '# Version 2' }],
     summary: 'Second revision',
   });
-  await apiPatch(`/api/projects/${project.id}/wiki/pages/history-page`, {
+  await apiPatch(`/api/v1/projects/${project.id}/wiki/pages/history-page`, {
     revision_number: 2,
     edits: [{ old_string: '# Version 2', new_string: '# Version 3' }],
     summary: 'Third revision',
@@ -407,16 +407,16 @@ interface WikiTag { tag_id: string; tag: string }
 
 /**
  * Bring a tag into existence by tagging a page — there is no tag-creation route
- * — then resolve its id from `GET /api/wiki/tags`, which lists every tag.
+ * — then resolve its id from `GET /api/v1/wiki/tags`, which lists every tag.
  */
 async function seedTag(tagName: string): Promise<string> {
   const nursery = await createTestProject(`Tag Seed ${tagName}`);
-  await apiPut(`/api/projects/${nursery.id}/wiki/pages/seed-${tagName}`, {
+  await apiPut(`/api/v1/projects/${nursery.id}/wiki/pages/seed-${tagName}`, {
     title: `Seed ${tagName}`,
     body: 'tag seed page, deliberately unshared',
     tags: [tagName],
   });
-  const tags: WikiTag[] = await apiGet('/api/wiki/tags');
+  const tags: WikiTag[] = await apiGet('/api/v1/wiki/tags');
   const found = tags.find(t => t.tag === tagName);
   if (!found) throw new Error(`tag ${tagName} not found after seeding`);
   return found.tag_id;
@@ -428,7 +428,7 @@ async function createSharedProjectPair(tagName: string) {
   const member = await createTestProject(`Share Member ${Date.now()}`);
   const tagId = await seedTag(tagName);
   for (const [project, access_level] of [[owner.id, 'read_write'], [member.id, 'read']]) {
-    await apiPost(`/api/wiki/tags/${tagId}/members`, {
+    await apiPost(`/api/v1/wiki/tags/${tagId}/members`, {
       project,
       access_level,
       acknowledge_share: true,
@@ -440,7 +440,7 @@ async function createSharedProjectPair(tagName: string) {
 }
 
 async function createSharedPage(projectId: string, slug: string, title: string, body: string, tag: string) {
-  return apiPut(`/api/projects/${projectId}/wiki/pages/${slug}`, {
+  return apiPut(`/api/v1/projects/${projectId}/wiki/pages/${slug}`, {
     title,
     body,
     tags: [tag],

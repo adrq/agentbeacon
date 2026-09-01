@@ -388,7 +388,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
                                     let event_payload = serde_json::json!({
                                         "message": "Agent recovered from a crash. A message may have been lost."
                                     });
-                                    let _ = crate::db::events::insert(
+                                    let _ = crate::db::events::insert_locked(
                                         &reconciler_pool,
                                         &session.execution_id,
                                         Some(&session.id),

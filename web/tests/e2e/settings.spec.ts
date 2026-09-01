@@ -58,11 +58,11 @@ test('MCP servers section renders in Integrations', async ({ page }) => {
 });
 
 test('agent system_prompt field in form', async ({ page }) => {
-  const agents: { id: string; name: string }[] = await apiGet('/api/agents');
+  const agents: { id: string; name: string }[] = await apiGet('/api/v1/agents');
   let agent = agents.find(a => a.name === 'Personality Test Agent');
   if (!agent) {
     const driverId = await ensureDriver('acp');
-    agent = await apiPost('/api/agents', {
+    agent = await apiPost('/api/v1/agents', {
       name: 'Personality Test Agent',
       driver_id: driverId,
       description: 'Agent for testing system_prompt form field',

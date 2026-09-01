@@ -208,12 +208,23 @@ pub async fn has_task_for_session(pool: &DbPool, session_id: &str) -> Result<boo
     Ok(row.is_some())
 }
 
+/// Delete all queued tasks for a session inside a held transaction. Returns the
+/// number of rows deleted.
+pub async fn delete_by_session_in_tx(
+    pool: &DbPool,
+    tx: &mut crate::db::executions::ExecutionTx<'_>,
+    session_id: &str,
+) -> Result<i64, SchedulerError> {
+    let query = pool.prepare_query("DELETE FROM task_queue WHERE session_id = ?");
+    let result = sqlx::query(&query)
+        .bind(session_id)
+        .execute(&mut ***tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("delete_by_session failed: {e}")))?;
+    Ok(result.rows_affected() as i64)
+}
+
 /// Delete all queued tasks for a specific session. Returns the number of rows deleted.
-///
-/// Note: `pool.prepare_query()` handles the `?` → `$1` parameter translation for Postgres.
-/// This is consistent with other single-parameter queries in this file (e.g., `has_task_for_session`).
-/// For multi-parameter queries, some functions in this file use explicit `pool.is_postgres()`
-/// branches instead (e.g., `pop`, `pop_by_session`) — see those for the alternative pattern.
 pub async fn delete_by_session(pool: &DbPool, session_id: &str) -> Result<i64, SchedulerError> {
     let query = pool.prepare_query("DELETE FROM task_queue WHERE session_id = ?");
     let result = sqlx::query(&query)

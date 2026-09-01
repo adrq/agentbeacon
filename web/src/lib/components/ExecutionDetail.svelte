@@ -4,12 +4,14 @@
   import { isMessagePayload, isCompactionData } from '../types';
   import { normalizeDataPart } from '../normalize';
   import { api } from '../api';
-  import { executionDetailQuery, sessionEventsQuery, terminateExecutionMutation, executionAgentsQuery, recoverSessionMutation, executionSessionsQuery, buildSessionIdentityMap } from '../queries/executions';
+  import { executionDetailQuery, sessionEventsQuery, terminateExecutionMutation, executionAgentsQuery, recoverSessionMutation, executionSessionsQuery, buildSessionIdentityMap, fetchSessionHistory, spliceSessionHistory } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { connectExecutionSSE, type SSEConnection } from '../sse';
   import { SSEBatcher } from '../sseBatch';
-  import { untrack } from 'svelte';
+  import { isUnsupportedSchema } from '../eventSchema';
+  import { clearHeldLiveEvents, holdLiveEvents } from '../liveEvents';
+  import { onDestroy, untrack } from 'svelte';
   import StatusBadge from './StatusBadge.svelte';
   import QuestionBanner from './QuestionBanner.svelte';
   import EventsTimeline from './EventsTimeline.svelte';
@@ -91,7 +93,7 @@
   });
 
   // Debounced query invalidation — collapses rapid SSE state_change events
-  // (e.g. backfill on page load) into a single batch of invalidations.
+  // (e.g. a burst on page load) into a single batch of invalidations.
   let invalidateTimer: ReturnType<typeof setTimeout> | null = null;
   function debouncedInvalidate(execId: string) {
     if (invalidateTimer) clearTimeout(invalidateTimer);
@@ -106,23 +108,40 @@
 
   // SSE connection state (declared before $effect.pre that references them)
   let sseActive = $state(false);
+  // True once this connection's history repair has landed. Polling stops only
+  // while it is true.
+  let spliceSettled = $state(false);
+  let spliceRetry: ReturnType<typeof setTimeout> | null = null;
+  // The current repair generation, one per position event.
+  let spliceGeneration = 0;
+
+  // Starts a repair generation: cancels any pending retry, closes the gate.
+  function startRepairGeneration(): number {
+    if (spliceRetry) { clearTimeout(spliceRetry); spliceRetry = null; }
+    spliceSettled = false;
+    return ++spliceGeneration;
+  }
   let sseReconnecting = $state(false);
   let sseConnection = $state<SSEConnection | null>(null);
 
-  // Records the execution whose active-session history has loaded into cache,
-  // so SSE connects with a correct cursor instead of replaying from zero. Set
-  // once per execution (on the current session's successful load) and reset on
-  // execution change, so a stale prior query observer cannot re-arm it during
-  // the switch. Declared here — before the $effect.pre reset block that assigns
-  // it.
+  // The execution whose active-session history is cached. Set once per
+  // execution, on the current session's successful load, and cleared on
+  // execution change. Declared before the $effect.pre block that resets it.
   let initialLoadedExecId = $state<string | null>(null);
 
-  // Tracks event ids whose usage/compaction side effects have been applied.
-  // De-dupes between the SSE callback (live events) and the polling fallback
-  // $effect. Needed because SSE reconnect backfills already-polled events,
-  // and naive re-processing would double-count compactions (non-idempotent).
-  // Cleared on execution change (same lifetime as usageBySession).
-  const processedUsageEventIds = new Set<number>();
+  // Sessions whose final history read has succeeded.
+  // Declared here — before the reset block that clears them.
+  let finalHistoryRead = $state(new Set<string>());
+  // Bumped when a failed final read is due for another attempt.
+  let finalReadRetry = $state(0);
+  const finalReadInFlight = new Set<string>();
+
+  // Event ids whose usage state has been applied. Ensures once-per-event.
+  // Cleared on execution change.
+  const processedUsageEventIds = new Set<string>();
+
+  // Clear live-event holds on view destruction.
+  onDestroy(clearHeldLiveEvents);
 
   // Reset state when execution changes
   let prevExecId = '';
@@ -141,10 +160,14 @@
       if (hashView) viewMode = hashView;
       lastPersistedSeq.clear();
       persistedTextLen.clear();
+      // Clear live-event holds on execution change.
+      clearHeldLiveEvents();
       ephemeralBuffers = new Map();
       ephemeralThinkingBuffers = new Map();
       settledThinkingDurations = new Map();
       initialLoadedExecId = null;
+      finalHistoryRead = new Set();
+      finalReadInFlight.clear();
       sseReconnecting = false;
       sseConnection = null;
     }
@@ -247,12 +270,10 @@
     };
   }
 
-  // Apply usage/compaction side effects for one event. Used by both the SSE
-  // callback and the polling-fallback $effect so the context indicator works
-  // in SSE-only, polling-only, and mixed-delivery scenarios. The processed-id
-  // set de-dupes: compaction increment is non-idempotent, and SSE reconnect
-  // backfills already-polled events.
+  // Apply usage state for one event; the processed-id set ensures
+  // once-per-event.
   function applyUsageFromEvent(event: BeaconEvent) {
+    if (isUnsupportedSchema(event)) return;
     if (event.event_type !== 'message' || !event.session_id) return;
     if (processedUsageEventIds.has(event.id)) return;
     processedUsageEventIds.add(event.id);
@@ -314,6 +335,55 @@
     };
   }
 
+  // Clears buffered ephemeral state, then refetches history from
+  // `historyBefore` for every session with a cached history here. Returns
+  // whether every one landed.
+  async function resplice(historyBefore: string | null): Promise<boolean> {
+    clearEphemeralState();
+    const ids = new Set<string>();
+    if (activeSessionId) ids.add(activeSessionId);
+    for (const session of detail?.sessions ?? []) {
+      if (queryClient.getQueryData(['session-events', session.id])) ids.add(session.id);
+    }
+    const results = await Promise.all(
+      [...ids].map(id =>
+        spliceSessionHistory(queryClient, id, historyBefore).then(
+          () => true,
+          () => false,
+        ),
+      ),
+    );
+    return results.every(Boolean);
+  }
+
+  // Repairs history for one seam, with bounded retries.
+  const SPLICE_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
+  async function repairHistory(historyBefore: string | null, generation: number, attempt = 0) {
+    const settled = await resplice(historyBefore);
+    // A superseded generation settles nothing and schedules nothing.
+    if (generation !== spliceGeneration) return;
+    if (settled) {
+      spliceSettled = true;
+      return;
+    }
+    const delay = SPLICE_RETRY_DELAYS_MS[Math.min(attempt, SPLICE_RETRY_DELAYS_MS.length - 1)];
+    spliceRetry = setTimeout(() => {
+      if (generation !== spliceGeneration) return;
+      void repairHistory(historyBefore, generation, attempt + 1);
+    }, delay);
+  }
+
+  // Set while no stream is connected, cleared by the next position event.
+  let ephemeralsGated = $state(false);
+
+  function clearEphemeralState() {
+    ephemeralBuffers = new Map();
+    ephemeralThinkingBuffers = new Map();
+    settledThinkingDurations = new Map();
+    lastPersistedSeq.clear();
+    persistedTextLen.clear();
+  }
+
   // SSE connection lifecycle — stay live until tree is fully settled
   $effect(() => {
     const execId = executionId;
@@ -324,24 +394,21 @@
       return;
     }
 
-    // Snapshot the max event ID from the active session's REST cache.
-    // Use untrack to avoid reactive dep on cache data (changes on every SSE event).
-    const maxEventId = untrack(() => {
-      const cached = queryClient.getQueryData<BeaconEvent[]>(['session-events', activeSessionId]);
-      if (cached?.length) return cached[cached.length - 1].id;
-      return 0;
-    });
-
     // Connection-local batcher: buffers cache writes and flushes them in one
     // write per session. Created inside the effect so it cannot outlive the
     // connection across execution switches.
     const scheduler = createFlushScheduler();
     const batcher = new SSEBatcher<BeaconEvent>(
       {
-        getExisting: (key) => queryClient.getQueryData<BeaconEvent[]>(['session-events', key]),
-        appendNew: (key, evs) => {
+        getExisting: (key: string) => queryClient.getQueryData<BeaconEvent[]>(['session-events', key]),
+        appendNew: (key: string, evs) => {
+          // Append only to a history that exists; otherwise hold the rows.
+          if (!queryClient.getQueryData(['session-events', key])) {
+            holdLiveEvents(key, evs);
+            return;
+          }
           queryClient.setQueryData(['session-events', key], (old: BeaconEvent[] | undefined) => {
-            if (!old) return evs;
+            if (!old) return old;
             const ids = new Set(old.map(e => e.id));
             const add = evs.filter(e => !ids.has(e.id));
             return add.length ? [...old, ...add] : old;
@@ -354,18 +421,22 @@
     const conn = connectExecutionSSE(
       execId,
       (event: BeaconEvent) => {
-        // Usage accumulation carries its own per-event dedupe set, so it must
-        // run for both fresh and replayed events — an SSE reconnect backfills
-        // events already delivered via polling.
+        // Runs on every delivery; it de-dupes per event itself.
         applyUsageFromEvent(event);
 
-        // Newness is decided synchronously here so the side effects below run
-        // in delivery order; only the cache write is batched. Replays (backoff
-        // or manual reconnect) can redeliver already-processed events, and the
-        // side effects below must run only on first delivery or they
-        // double-count.
+        // Enqueue newly observed events; side effects run on first delivery only.
         const isNewEvent = batcher.enqueue(event);
         if (!isNewEvent) return;
+
+        // Judged from the envelope alone, so an unreadable payload still drives
+        // the refresh that settles the stream.
+        if (event.event_type === 'state_change' && event.session_id === null) {
+          debouncedInvalidate(execId);
+        }
+
+        // The row still reaches the cache and renders generically, but nothing
+        // below reads inside a payload this client cannot parse.
+        if (isUnsupportedSchema(event)) return;
 
         if (event.event_type === 'message' && event.session_id) {
           lastPersistedSeq.set(event.session_id, Math.max(
@@ -377,7 +448,12 @@
             ?.filter((p: Record<string, unknown>) => 'text' in p)
             .map((p: Record<string, unknown>) => (p.text as string) ?? '')
             .join('') ?? '';
-          if (persistedText) {
+          if (event.truncated) {
+            // Text length cannot be compared when the text was shortened.
+            ephemeralBuffers.delete(event.session_id);
+            persistedTextLen.delete(event.session_id);
+            ephemeralBuffers = new Map(ephemeralBuffers);
+          } else if (persistedText) {
             const buf = ephemeralBuffers.get(event.session_id);
             // Only accumulate and compare when the persisted event is for
             // the message currently being streamed. Late arrivals from
@@ -476,6 +552,9 @@
         }
       },
       (eph: EphemeralEvent) => {
+        // Deltas are lossy by contract: none before the repair lands, none
+        // after the stream ends.
+        if (!spliceSettled || ephemeralsGated) return;
         const persisted = lastPersistedSeq.get(eph.session_id) ?? 0;
         if (eph.msg_seq <= persisted) return;
 
@@ -542,7 +621,18 @@
         batcher.flush();
         sseReconnecting = true;
       },
-      maxEventId || undefined,
+      (position) => {
+        ephemeralsGated = false;
+        void repairHistory(position.history_before, startRepairGeneration());
+      },
+      (problem) => {
+        console.warn('[SSE] protocol error', problem.code);
+      },
+      () => {
+        // No stream is left to clear this state, so it goes now.
+        ephemeralsGated = true;
+        clearEphemeralState();
+      },
     );
     sseConnection = conn;
 
@@ -550,6 +640,7 @@
       conn.close();
       batcher.dispose();
       sseActive = false;
+      startRepairGeneration();
       sseReconnecting = false;
       sseConnection = null;
       if (invalidateTimer) { clearTimeout(invalidateTimer); invalidateTimer = null; }
@@ -594,14 +685,56 @@
 
   let viewedSessionSettled = $derived.by(() => {
     const s = detail?.sessions.find(s => s.id === activeSessionId);
-    return s ? (s.outcome != null) : false;
+    return s ? (s.outcome != null && finalHistoryRead.has(s.id)) : false;
   });
   const eventsQuery = sessionEventsQuery(
     () => activeSessionId,
     () => viewedSessionSettled,
-    () => sseActive,
+    () => sseActive && spliceSettled,
   );
   let events = $derived(eventsQuery.data ?? []);
+
+  // A session is released when its outcome is set and no worker or command
+  // remains.
+  const FINAL_READ_RETRY_MS = 3000;
+  const sessionReleased = (s: {
+    outcome: string | null;
+    worker_id: string | null;
+    command_type: string | null;
+  }) => s.outcome != null && s.worker_id == null && s.command_type == null;
+
+  // Every mark comes from a read started after the session was seen released.
+  $effect(() => {
+    finalReadRetry;
+    const viewed = activeSessionId;
+    const execId = executionId;
+    for (const s of detail?.sessions ?? []) {
+      if (!sessionReleased(s)) continue;
+      const id = s.id;
+      if (finalHistoryRead.has(id) || finalReadInFlight.has(id)) continue;
+      // A history never fetched here is read when the session is opened.
+      if (id !== viewed && !queryClient.getQueryState<Event[]>(['session-events', id])) continue;
+
+      finalReadInFlight.add(id);
+      void queryClient
+        .refetchQueries(
+          { queryKey: ['session-events', id], exact: true },
+          { throwOnError: true },
+        )
+        .then(() => {
+          finalReadInFlight.delete(id);
+          if (executionId !== execId) return;
+          finalHistoryRead = new Set(finalHistoryRead).add(id);
+        })
+        .catch(() => {
+          setTimeout(() => {
+            finalReadInFlight.delete(id);
+            finalReadRetry += 1;
+          }, FINAL_READ_RETRY_MS);
+        });
+    }
+  });
+
 
   // Events-panel loading placeholder (Log + Chat). Shown only on the first open
   // of a session this visit (no cached events) with a large history, where the
@@ -656,7 +789,7 @@
   // context indicator works even when SSE is unavailable (permanent
   // fallback after MAX_CONSECUTIVE_ERRORS, terminal executions where SSE
   // never attaches, or mid-lifecycle executions where polling delivers
-  // events before the SSE backfill races in). The per-event dedupe set
+  // events before the stream attaches). The per-event dedupe set
   // guarantees each event contributes exactly once regardless of path.
   // Wait for execution + pool data to resolve so agent-type lookup doesn't
   // fall back to claude_sdk for Codex sessions, permanently mis-normalizing
@@ -680,7 +813,9 @@
 
   // Per-session settled check for the thread view's two history queries.
   function sessionSettled(id: string): boolean {
-    return detail?.sessions.find(s => s.id === id)?.outcome != null;
+    return (
+      detail?.sessions.find(s => s.id === id)?.outcome != null && finalHistoryRead.has(id)
+    );
   }
 
   // Terminate execution (covers both cancel and complete)
@@ -720,10 +855,14 @@
     const rootSession = detail.sessions.find(s => !s.parent_session_id);
     if (rootSession) {
       try {
-        const sessionEvents = await api.getSessionEvents(rootSession.id);
-        const firstMsg = sessionEvents.find(e =>
+        const history = await fetchSessionHistory(rootSession.id);
+        let firstMsg = history.find(e =>
           e.event_type === 'message' && isMessagePayload(e.payload) && e.payload.role === 'ROLE_USER'
         );
+        // Fetch the whole row before copying its text.
+        if (firstMsg?.truncated) {
+          firstMsg = await api.getExecutionEvent(firstMsg.execution_id, firstMsg.id);
+        }
         if (firstMsg && isMessagePayload(firstMsg.payload)) {
           const textParts = firstMsg.payload.parts
             ?.filter((p: import('../types').MessagePart) => 'text' in p)
@@ -875,7 +1014,7 @@
           sessionB={threadTarget.sessionB}
           {sessionIdentity}
           {sessionSettled}
-          {sseActive}
+          sseActive={sseActive && spliceSettled}
           onclose={() => { threadTarget = null; }}
         />
       {:else if viewMode === 'diff'}

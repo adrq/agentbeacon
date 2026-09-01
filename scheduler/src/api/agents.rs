@@ -263,9 +263,9 @@ async fn delete_agent(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/agents", get(list_agents).post(create_agent))
+        .route("/agents", get(list_agents).post(create_agent))
         .route(
-            "/api/agents/{id}",
+            "/agents/{id}",
             get(get_agent).patch(update_agent).delete(delete_agent),
         )
 }

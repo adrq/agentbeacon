@@ -44,16 +44,16 @@ test('create MCP server via JSON textarea', async ({ page }) => {
   await expect(serverCard.locator('.mcp-type-badge')).toHaveText('stdio');
 
   // Cleanup: delete the server
-  const servers: { id: string; name: string }[] = await apiGet('/api/mcp-servers');
+  const servers: { id: string; name: string }[] = await apiGet('/api/v1/mcp-servers');
   const testServer = servers.find(s => s.name === 'test-playwright');
   if (testServer) {
-    await apiDelete(`/api/mcp-servers/${testServer.id}`);
+    await apiDelete(`/api/v1/mcp-servers/${testServer.id}`);
   }
 });
 
 test('edit existing MCP server with pre-populated JSON', async ({ page }) => {
   // Create a server via API first
-  const createResponse = await apiPost('/api/mcp-servers', {
+  const createResponse = await apiPost('/api/v1/mcp-servers', {
     name: 'edit-test-server',
     transport_type: 'stdio',
     config: {
@@ -108,7 +108,7 @@ test('edit existing MCP server with pre-populated JSON', async ({ page }) => {
     await expect(updatedCard.locator('.mcp-summary')).toContainText('node server.js');
   } finally {
     // Cleanup: delete the server
-    await apiDelete(`/api/mcp-servers/${serverId}`);
+    await apiDelete(`/api/v1/mcp-servers/${serverId}`);
   }
 });
 
