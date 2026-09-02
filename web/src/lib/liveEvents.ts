@@ -35,24 +35,3 @@ export function clearHeldLiveEvents(): void {
   held.clear();
   arrivals.clear();
 }
-
-/**
- * Merge a fetched window with what is already known.
- *
- * `fetched` keeps its server order. Held live events and cached entries the
- * fetch did not cover follow it, deduped by id.
- */
-export function unionWithKnown(
-  fetched: Event[],
-  cached: Event[] | undefined,
-  sessionId: string,
-): Event[] {
-  const trailing: Event[] = [];
-  const seen = new Set(fetched.map(e => e.id));
-  for (const event of [...(cached ?? []), ...heldLiveEvents(sessionId)]) {
-    if (seen.has(event.id)) continue;
-    seen.add(event.id);
-    trailing.push(event);
-  }
-  return trailing.length ? [...fetched, ...trailing] : fetched;
-}

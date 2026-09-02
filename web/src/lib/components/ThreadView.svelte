@@ -2,7 +2,7 @@
   import type { Event, SessionIdentity } from '../types';
   import { api } from '../api';
   import { buildThread } from '../threadMerge';
-  import { sessionEventsQuery } from '../queries/executions';
+  import { sessionEventsFullQuery } from '../queries/executions';
   import Markdown from './Markdown.svelte';
 
   interface Props {
@@ -16,8 +16,9 @@
 
   let { sessionA, sessionB, sessionIdentity, sessionSettled, sseActive, onclose }: Props = $props();
 
-  const eventsAQuery = sessionEventsQuery(() => sessionA, () => sessionSettled(sessionA), () => sseActive);
-  const eventsBQuery = sessionEventsQuery(() => sessionB, () => sessionSettled(sessionB), () => sseActive);
+  // Whole history, on its own key.
+  const eventsAQuery = sessionEventsFullQuery(() => sessionA, () => sessionSettled(sessionA), () => sseActive);
+  const eventsBQuery = sessionEventsFullQuery(() => sessionB, () => sessionSettled(sessionB), () => sseActive);
 
   let loading = $derived(eventsAQuery.isLoading || eventsBQuery.isLoading);
   let error = $derived(eventsAQuery.error?.message ?? eventsBQuery.error?.message ?? null);

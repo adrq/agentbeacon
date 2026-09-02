@@ -1,16 +1,19 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
-  import type { Agent, AgentType, Event as BeaconEvent, EphemeralEvent, MessagePayload } from '../types';
+  import type { Agent, AgentType, Event as BeaconEvent, EphemeralEvent, MessagePayload, UsageState } from '../types';
   import { isMessagePayload, isCompactionData } from '../types';
   import { normalizeDataPart } from '../normalize';
   import { api } from '../api';
-  import { executionDetailQuery, sessionEventsQuery, terminateExecutionMutation, executionAgentsQuery, recoverSessionMutation, executionSessionsQuery, buildSessionIdentityMap, fetchSessionHistory, spliceSessionHistory } from '../queries/executions';
+  import { executionDetailQuery, sessionEventsQuery, terminateExecutionMutation, executionAgentsQuery, recoverSessionMutation, executionSessionsQuery, buildSessionIdentityMap, fetchSessionHistory, spliceSessionHistory, spliceSessionFullHistory } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { connectExecutionSSE, type SSEConnection } from '../sse';
   import { SSEBatcher } from '../sseBatch';
   import { isUnsupportedSchema } from '../eventSchema';
   import { clearHeldLiveEvents, holdLiveEvents } from '../liveEvents';
+  import { readAfterRelease } from '../settlementRead';
+  import { discardSharedRead, newSeamEpoch } from '../historyReads';
+  import { deferTail, holdTail, releaseAllTails, releaseTail, tailHeld } from '../tailHold';
   import { onDestroy, untrack } from 'svelte';
   import StatusBadge from './StatusBadge.svelte';
   import QuestionBanner from './QuestionBanner.svelte';
@@ -115,10 +118,12 @@
   // The current repair generation, one per position event.
   let spliceGeneration = 0;
 
-  // Starts a repair generation: cancels any pending retry, closes the gate.
+  // Starts a repair generation: cancels any pending retry, closes the gate,
+  // and begins a new seam.
   function startRepairGeneration(): number {
     if (spliceRetry) { clearTimeout(spliceRetry); spliceRetry = null; }
     spliceSettled = false;
+    newSeamEpoch();
     return ++spliceGeneration;
   }
   let sseReconnecting = $state(false);
@@ -136,12 +141,24 @@
   let finalReadRetry = $state(0);
   const finalReadInFlight = new Set<string>();
 
-  // Event ids whose usage state has been applied. Ensures once-per-event.
-  // Cleared on execution change.
-  const processedUsageEventIds = new Set<string>();
+  // Event ids whose usage state has been applied, per session. Cleared on
+  // execution change, and per session when that session's history is dropped.
+  const processedUsageEventIds = new Map<string, Set<string>>();
 
   // Clear live-event holds on view destruction.
   onDestroy(clearHeldLiveEvents);
+  onDestroy(releaseAllTails);
+
+  // Drops a session's usage figures and processed ids when its history goes.
+  const stopWatchingRemovals = queryClient.getQueryCache().subscribe(event => {
+    if (event.type !== 'removed') return;
+    const [name, id] = event.query.queryKey as [string, string];
+    if (name !== 'session-events' || typeof id !== 'string') return;
+    processedUsageEventIds.delete(id);
+    const next = new Map($usageBySession);
+    if (next.delete(id)) usageBySession.set(next);
+  });
+  onDestroy(stopWatchingRemovals);
 
   // Reset state when execution changes
   let prevExecId = '';
@@ -162,6 +179,7 @@
       persistedTextLen.clear();
       // Clear live-event holds on execution change.
       clearHeldLiveEvents();
+      releaseAllTails();
       ephemeralBuffers = new Map();
       ephemeralThinkingBuffers = new Map();
       settledThinkingDurations = new Map();
@@ -262,23 +280,35 @@
     return (globalAgent?.agent_type as AgentType) ?? 'claude_sdk';
   }
 
-  // Helper: get or lazily create a usage entry for a session
-  function getOrCreateUsage(sessionId: string) {
-    return $usageBySession.get(sessionId) ?? {
+  function emptyUsage(): UsageState {
+    return {
       usedTokens: 0, inputTokens: 0, outputTokens: 0, contextWindow: 0,
       compactions: 0, available: false, supportsContextPercentage: false,
     };
   }
 
-  // Apply usage state for one event; the processed-id set ensures
-  // once-per-event.
-  function applyUsageFromEvent(event: BeaconEvent) {
-    if (isUnsupportedSchema(event)) return;
-    if (event.event_type !== 'message' || !event.session_id) return;
-    if (processedUsageEventIds.has(event.id)) return;
-    processedUsageEventIds.add(event.id);
+  /**
+   * Accumulate usage state for one event into a working map. Does not touch
+   * the store: callers replay events into a local copy and publish once via
+   * publishUsage, so intermediate per-event values never hit the store.
+   * Returns whether the event wrote anything into the working map.
+   *
+   * Token and context figures are re-derived by replaying the window in event
+   * order. Compaction counts are per-event, guarded by the processed-id set.
+   */
+  function accumulateUsageFromEvent(next: Map<string, UsageState>, event: BeaconEvent): boolean {
+    if (isUnsupportedSchema(event)) return false;
+    if (event.event_type !== 'message' || !event.session_id) return false;
+    let seen = processedUsageEventIds.get(event.session_id);
+    if (!seen) {
+      seen = new Set<string>();
+      processedUsageEventIds.set(event.session_id, seen);
+    }
+    const counted = seen.has(event.id);
+    seen.add(event.id);
     const at = agentTypeForSession(event.session_id);
     const payload = event.payload as MessagePayload;
+    let touched = false;
     for (const part of payload.parts ?? []) {
       if (!('data' in part)) continue;
       const d = (part as { data: unknown }).data;
@@ -287,8 +317,7 @@
       if (!dataObj.type && !dataObj.tokenUsage && !dataObj.method) continue;
       const norm = normalizeDataPart(at, dataObj as Record<string, unknown>);
       if (norm.normalized === 'usage') {
-        const current = getOrCreateUsage(event.session_id);
-        const next = new Map($usageBySession);
+        const current = next.get(event.session_id) ?? emptyUsage();
         next.set(event.session_id, {
           ...current,
           // Use || not ?? — Claude's usage_snapshot sends input_tokens: 0 meaning
@@ -298,17 +327,54 @@
           outputTokens: norm.outputTokens || current.outputTokens,
           contextWindow: norm.modelContextWindow ?? current.contextWindow,
         });
-        usageBySession.set(next);
+        touched = true;
       } else if (isCompactionData(dataObj as { type: string; [key: string]: unknown })) {
-        const current = getOrCreateUsage(event.session_id);
-        const next = new Map($usageBySession);
+        if (counted) continue;
+        const current = next.get(event.session_id) ?? emptyUsage();
         next.set(event.session_id, {
           ...current,
           compactions: current.compactions + 1,
         });
-        usageBySession.set(next);
+        touched = true;
       }
     }
+    return touched;
+  }
+
+  function usageEntriesEqual(a: UsageState, b: UsageState): boolean {
+    return a.usedTokens === b.usedTokens
+      && a.inputTokens === b.inputTokens
+      && a.outputTokens === b.outputTokens
+      && a.contextWindow === b.contextWindow
+      && a.compactions === b.compactions
+      && a.available === b.available
+      && a.supportsContextPercentage === b.supportsContextPercentage;
+  }
+
+  // Publish a replayed usage map only when it differs from the store. The
+  // replaying $effect reads the store, so a value-identical write with a
+  // fresh Map identity re-triggers it and loops until Svelte's update-depth
+  // guard aborts the reactive flush (without running effect cleanups).
+  function publishUsage(next: Map<string, UsageState>) {
+    const current = $usageBySession;
+    if (next.size === current.size) {
+      let equal = true;
+      for (const [id, entry] of next) {
+        const existing = current.get(id);
+        if (!existing || !usageEntriesEqual(existing, entry)) { equal = false; break; }
+      }
+      if (equal) return;
+    }
+    usageBySession.set(next);
+  }
+
+  // Single-event entry point for the SSE delivery path. Screens out
+  // non-message deliveries before paying for the map copy, and skips the
+  // publish diff when the event contributed nothing.
+  function applyUsageFromEvent(event: BeaconEvent) {
+    if (event.event_type !== 'message' || !event.session_id) return;
+    const next = new Map($usageBySession);
+    if (accumulateUsageFromEvent(next, event)) publishUsage(next);
   }
 
   // Mark the execution's initial history as loaded (see initialLoadedExecId).
@@ -317,6 +383,43 @@
       initialLoadedExecId = executionId;
     }
   });
+
+  // Writes live rows to whichever of a session's caches exist, holding them
+  // when neither does or one is still being built.
+  function appendLiveRows(key: string, evs: BeaconEvent[]) {
+    const append = (queryKey: unknown[]) => {
+      queryClient.setQueryData(queryKey, (old: BeaconEvent[] | undefined) => {
+        if (!old) return old;
+        const ids = new Set(old.map(e => e.id));
+        const add = evs.filter(e => !ids.has(e.id));
+        return add.length ? [...old, ...add] : old;
+      });
+    };
+    const windowKey = ['session-events', key];
+    const fullKey = ['session-events-full', key];
+    const hasWindow = !!queryClient.getQueryData(windowKey);
+    const hasFull = !!queryClient.getQueryData(fullKey);
+    const building = (queryKey: unknown[]) =>
+      !!queryClient.getQueryState(queryKey) && queryClient.getQueryData(queryKey) === undefined;
+    if ((!hasWindow && !hasFull) || building(windowKey) || building(fullKey)) {
+      holdLiveEvents(key, evs);
+    }
+    if (hasWindow) append(windowKey);
+    if (hasFull) append(fullKey);
+  }
+
+  // Bumped on every release, for work a hold skipped.
+  let tailReleases = $state(0);
+
+  // Holds and releases writes to the end of one session's history.
+  function setTailFence(id: string, held: boolean) {
+    if (held) {
+      holdTail(id);
+      return;
+    }
+    releaseTail(id);
+    tailReleases += 1;
+  }
 
   // rAF-batched flush with a latency watchdog so background tabs (throttled
   // rAF) and sparse delivery still flush promptly.
@@ -338,28 +441,43 @@
   // Clears buffered ephemeral state, then refetches history from
   // `historyBefore` for every session with a cached history here. Returns
   // whether every one landed.
-  async function resplice(historyBefore: string | null): Promise<boolean> {
+  async function resplice(historyBefore: string | null, generation: number): Promise<boolean> {
     clearEphemeralState();
     const ids = new Set<string>();
     if (activeSessionId) ids.add(activeSessionId);
     for (const session of detail?.sessions ?? []) {
       if (queryClient.getQueryData(['session-events', session.id])) ids.add(session.id);
     }
-    const results = await Promise.all(
-      [...ids].map(id =>
-        spliceSessionHistory(queryClient, id, historyBefore).then(
+    // Whole-history caches are repaired here too, including ones being built.
+    const fullIds = new Set<string>();
+    for (const session of detail?.sessions ?? []) {
+      if (queryClient.getQueryState(['session-events-full', session.id])) fullIds.add(session.id);
+    }
+    const results = await Promise.all([
+      ...[...ids].map(id =>
+        spliceSessionHistory(queryClient, id, historyBefore, {
+          isCurrent: () => generation === spliceGeneration,
+        }).then(
           () => true,
           () => false,
         ),
       ),
-    );
+      ...[...fullIds].map(id =>
+        spliceSessionFullHistory(queryClient, id, historyBefore, {
+          isCurrent: () => generation === spliceGeneration,
+        }).then(
+          () => true,
+          () => false,
+        ),
+      ),
+    ]);
     return results.every(Boolean);
   }
 
   // Repairs history for one seam, with bounded retries.
   const SPLICE_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
   async function repairHistory(historyBefore: string | null, generation: number, attempt = 0) {
-    const settled = await resplice(historyBefore);
+    const settled = await resplice(historyBefore, generation);
     // A superseded generation settles nothing and schedules nothing.
     if (generation !== spliceGeneration) return;
     if (settled) {
@@ -402,17 +520,11 @@
       {
         getExisting: (key: string) => queryClient.getQueryData<BeaconEvent[]>(['session-events', key]),
         appendNew: (key: string, evs) => {
-          // Append only to a history that exists; otherwise hold the rows.
-          if (!queryClient.getQueryData(['session-events', key])) {
-            holdLiveEvents(key, evs);
+          if (tailHeld(key)) {
+            deferTail(key, () => appendLiveRows(key, evs));
             return;
           }
-          queryClient.setQueryData(['session-events', key], (old: BeaconEvent[] | undefined) => {
-            if (!old) return old;
-            const ids = new Set(old.map(e => e.id));
-            const add = evs.filter(e => !ids.has(e.id));
-            return add.length ? [...old, ...add] : old;
-          });
+          appendLiveRows(key, evs);
         },
       },
       scheduler,
@@ -706,24 +818,43 @@
   // Every mark comes from a read started after the session was seen released.
   $effect(() => {
     finalReadRetry;
+    // A thread opened after release creates a history that nothing has proved
+    // yet, so this runs again when one appears.
+    threadTarget;
     const viewed = activeSessionId;
     const execId = executionId;
     for (const s of detail?.sessions ?? []) {
       if (!sessionReleased(s)) continue;
       const id = s.id;
       if (finalHistoryRead.has(id) || finalReadInFlight.has(id)) continue;
+      // Either cache may hold this session.
+      const keys = [['session-events', id], ['session-events-full', id]]
+        .filter(key => queryClient.getQueryState<Event[]>(key));
       // A history never fetched here is read when the session is opened.
-      if (id !== viewed && !queryClient.getQueryState<Event[]>(['session-events', id])) continue;
+      if (id !== viewed && keys.length === 0) continue;
 
       finalReadInFlight.add(id);
-      void queryClient
-        .refetchQueries(
-          { queryKey: ['session-events', id], exact: true },
-          { throwOnError: true },
-        )
-        .then(() => {
+      // Forgotten so this read is not answered by one begun earlier.
+      discardSharedRead(id);
+      void Promise.all(
+        (keys.length ? keys : [['session-events', id]]).map(key =>
+          readAfterRelease(queryClient, key),
+        ),
+      )
+        .then(proofs => {
+          if (executionId !== execId) {
+            finalReadInFlight.delete(id);
+            return;
+          }
+          // Not marked unless every key reported a read.
+          if (!proofs.every(Boolean)) {
+            setTimeout(() => {
+              finalReadInFlight.delete(id);
+              finalReadRetry += 1;
+            }, FINAL_READ_RETRY_MS);
+            return;
+          }
           finalReadInFlight.delete(id);
-          if (executionId !== execId) return;
           finalHistoryRead = new Set(finalHistoryRead).add(id);
         })
         .catch(() => {
@@ -796,15 +927,26 @@
   // the initial event batch.
   $effect(() => {
     if (detailQuery.isLoading || poolQuery.isLoading) return;
+    // Re-runs on release.
+    tailReleases;
+    // Skipped while the session is held; the release brings this round again.
+    if (activeSessionId && tailHeld(activeSessionId)) return;
+    // Replayed in event order on every pass, into a working copy; a single
+    // publish at the end keeps intermediate per-event values (token counts
+    // are not monotonic across a window) out of the store.
+    const next = new Map($usageBySession);
+    let touched = false;
     for (const event of events) {
-      applyUsageFromEvent(event);
+      if (accumulateUsageFromEvent(next, event)) touched = true;
     }
+    if (touched) publishUsage(next);
   });
 
-  // Usage/compaction extraction from REST-loaded events lives in
-  // applyUsageFromEvent, which is called from both the SSE callback and the
-  // polling fallback $effect (above). The per-event dedupe set guarantees
-  // each event contributes exactly once regardless of delivery path.
+  // Usage/compaction extraction lives in accumulateUsageFromEvent, reached
+  // from the SSE callback (via applyUsageFromEvent) and the polling fallback
+  // $effect (above). The per-event dedupe set guarantees each compaction
+  // contributes exactly once regardless of delivery path; usage figures are
+  // replayed and converge to the same values on every pass.
 
   function agentName(agentId: string): string {
     const agent = agents.find(a => a.id === agentId);
@@ -1023,9 +1165,9 @@
         <div class="events-panel">
           {#if showEventsPanelView}
             {#if viewMode === 'log'}
-              <EventsTimeline {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} onready={onPanelReady} />
+              <EventsTimeline {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} onready={onPanelReady} onprepending={setTailFence} />
             {:else}
-              <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} {viewedSessionSettled} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} onready={onPanelReady} />
+              <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} {viewedSessionSettled} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} onready={onPanelReady} onprepending={setTailFence} />
             {/if}
           {/if}
           {#if panelPhase !== 'live'}

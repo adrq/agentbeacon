@@ -360,15 +360,6 @@ class AgentBeaconAPI {
     return this.fetchJSON(`/executions/${pathSegment(id)}/terminate`, { method: 'POST' });
   }
 
-  async getExecutionEvents(
-    id: string,
-    opts?: { before?: string; after?: string; limit?: number }
-  ): Promise<Page<Event>> {
-    return this.fetchJSON<Page<Event>>(
-      `/executions/${pathSegment(id)}/events${eventPageQuery(opts)}`,
-    );
-  }
-
   async getExecutionEvent(executionId: string, eventId: string): Promise<Event> {
     return this.fetchJSON<Event>(
       `/executions/${pathSegment(executionId)}/events/${pathSegment(eventId)}`,

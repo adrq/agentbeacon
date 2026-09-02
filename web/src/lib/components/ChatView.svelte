@@ -17,6 +17,12 @@
   import TodoPanel from './TodoPanel.svelte';
   import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
+  import { tick } from 'svelte';
+  import { useQueryClient } from '@tanstack/svelte-query';
+  import { fetchOlderPage } from '../queries/executions';
+  import { windowBounds, windowVersion } from '../historyWindow';
+  import { topSentinel } from '../utils/topSentinel';
+  import { createRunToken } from '../utils/runToken';
 
   interface Props {
     events: Event[];
@@ -37,13 +43,15 @@
     viewedSessionSettled?: boolean;
     onfilterchange?: (filter: EventFilter) => void;
     onthreadopen?: (sessionA: string, sessionB: string) => void;
+    /** Reports whether the list is holding its head, for the session named. */
+    onprepending?: (sessionId: string, held: boolean) => void;
     // Fired once after the first render frame has committed and the initial
     // scroll is applied, so a parent placeholder can be dropped without a blank
     // frame or scroll jump.
     onready?: () => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', viewedSessionSettled = false, onfilterchange, onthreadopen, onready }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', viewedSessionSettled = false, onfilterchange, onthreadopen, onready, onprepending }: Props = $props();
 
   let readySignaled = false;
   function signalReady() {
@@ -51,6 +59,74 @@
   }
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let virtualizer: VirtualizerHandle | undefined = $state(undefined);
+
+  const queryClient = useQueryClient();
+  // Content above the virtualizer: its height is the virtualizer's start offset.
+  let topEl: HTMLDivElement | undefined = $state(undefined);
+  let topMargin = $state(0);
+  // Set while an older page is being put in front.
+  let prepending = $state(false);
+
+  let hasOlder = $derived.by(() => {
+    $windowVersion;
+    return sessionId ? windowBounds(sessionId).hasMore : false;
+  });
+
+  $effect(() => {
+    const el = topEl;
+    if (!el) { topMargin = 0; return; }
+    const measure = () => { topMargin = el.offsetHeight; };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+
+  // Identifies the read that owns `prepending`.
+  // Longest the head is held when no frame arrives.
+  const PREPEND_FRAME_MS = 250;
+  const prependRun = createRunToken();
+
+  // The session this hold was taken for.
+  let heldFor: string | null = $state(null);
+  $effect(() => {
+    const id = heldFor;
+    if (!id) return;
+    onprepending?.(id, true);
+    return () => onprepending?.(id, false);
+  });
+
+  async function loadOlder(signal: AbortSignal) {
+    const id = sessionId;
+    if (!id) return;
+    const mine = prependRun.begin();
+    // Releases any hold still standing; this run takes its own at the write.
+    prepending = false;
+    heldFor = null;
+    try {
+      // Set at the write, not for the wait before it.
+      await fetchOlderPage(queryClient, id, {
+        signal,
+        onPrepend: () => {
+          if (!prependRun.owns(mine)) return;
+          prepending = true;
+          heldFor = id;
+        },
+      });
+      // Held until the frame that mounts the prepended rows commits, or until
+      // the wait times out.
+      await tick();
+      await new Promise(resolve => {
+        const timer = setTimeout(() => { cancelAnimationFrame(frame); resolve(null); }, PREPEND_FRAME_MS);
+        const frame = requestAnimationFrame(() => { clearTimeout(timer); resolve(null); });
+      });
+    } finally {
+      if (prependRun.owns(mine)) {
+        prepending = false;
+        heldFor = null;
+      }
+    }
+  }
   let shouldAutoScroll = $state(true);
   let prevScrollSessionId: string | null = null;
   let messageText = $state('');
@@ -818,7 +894,8 @@
     // and let groupToolStreams sweep them into a misleading trailing stream).
     // Splice ascending by recorded index; each prior insertion shifts the rest
     // by one, tracked via offset.
-    if (viewedSessionSettled && pendingResults.size > 0) {
+    // Not until the history has been read to the beginning.
+    if (viewedSessionSettled && !hasOlder && pendingResults.size > 0) {
       const orphans = [...pendingResults.values()].sort((a, b) => a.index - b.index);
       let offset = 0;
       for (const pending of orphans) {
@@ -1012,6 +1089,22 @@
   {/each}
 </div>
 <div class="chat-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll} tabindex="-1">
+  <div class="chat-top" bind:this={topEl}>
+    <!-- Mounted only once the scroll container it is observed within exists. -->
+    {#if scrollContainer && sessionId && hasOlder}
+      <div
+        class="chat-top-sentinel"
+        use:topSentinel={{
+          identity: `${sessionId}-${eventFilter}`,
+          root: () => scrollContainer,
+          enabled: () => !!sessionId && hasOlder,
+          onReach: loadOlder,
+        }}
+      ></div>
+    {:else if sessionId && !hasOlder}
+      <div class="chat-begin">Beginning of session</div>
+    {/if}
+  </div>
   {#if filteredParsed.length === 0}
     <div class="chat-empty">{parsed.length === 0 ? 'No messages yet' : 'No matching events'}</div>
   {:else}
@@ -1020,6 +1113,8 @@
       data={filteredParsed}
       getKey={(entry) => entry.key}
       scrollRef={scrollContainer}
+      startMargin={topMargin}
+      shift={prepending}
       bind:this={virtualizer}
     >
       {#snippet children(entry, _index)}
@@ -1475,6 +1570,17 @@
     min-height: 0;
     position: relative;
     overflow: hidden;
+  }
+
+  .chat-top-sentinel {
+    height: 1px;
+  }
+
+  .chat-begin {
+    padding: 0.5rem 0;
+    text-align: center;
+    font-size: 0.7rem;
+    color: hsl(var(--muted-foreground));
   }
 
   .chat-scroll {

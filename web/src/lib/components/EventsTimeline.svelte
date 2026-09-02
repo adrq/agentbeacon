@@ -4,6 +4,12 @@
   import { normalizeDataPart } from '../normalize';
   import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
+  import { tick } from 'svelte';
+  import { useQueryClient } from '@tanstack/svelte-query';
+  import { fetchOlderPage } from '../queries/executions';
+  import { windowBounds, windowVersion } from '../historyWindow';
+  import { topSentinel } from '../utils/topSentinel';
+  import { createRunToken } from '../utils/runToken';
   import { api } from '../api';
   import { isUnsupportedSchema } from '../eventSchema';
 
@@ -15,13 +21,15 @@
     agentPool?: AgentPoolEntry[];
     eventFilter?: EventFilter;
     onfilterchange?: (filter: EventFilter) => void;
+    /** Reports whether the list is holding its head, for the session named. */
+    onprepending?: (sessionId: string, held: boolean) => void;
     // Fired once after the first render frame has committed and the initial
     // scroll is applied, so a parent placeholder can be dropped without a blank
     // frame or scroll jump.
     onready?: () => void;
   }
 
-  let { events, agents = [], sessions = [], sessionId = null, agentPool, eventFilter = 'all', onfilterchange, onready }: Props = $props();
+  let { events, agents = [], sessions = [], sessionId = null, agentPool, eventFilter = 'all', onfilterchange, onready, onprepending }: Props = $props();
 
   let readySignaled = false;
   function signalReady() {
@@ -62,6 +70,74 @@
   }
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let virtualizer: VirtualizerHandle | undefined = $state(undefined);
+
+  const queryClient = useQueryClient();
+  // Content above the virtualizer: its height is the virtualizer's start offset.
+  let topEl: HTMLDivElement | undefined = $state(undefined);
+  let topMargin = $state(0);
+  // Set while an older page is being put in front.
+  let prepending = $state(false);
+
+  let hasOlder = $derived.by(() => {
+    $windowVersion;
+    return sessionId ? windowBounds(sessionId).hasMore : false;
+  });
+
+  $effect(() => {
+    const el = topEl;
+    if (!el) { topMargin = 0; return; }
+    const measure = () => { topMargin = el.offsetHeight; };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+
+  // Identifies the read that owns `prepending`.
+  // Longest the head is held when no frame arrives.
+  const PREPEND_FRAME_MS = 250;
+  const prependRun = createRunToken();
+
+  // The session this hold was taken for.
+  let heldFor: string | null = $state(null);
+  $effect(() => {
+    const id = heldFor;
+    if (!id) return;
+    onprepending?.(id, true);
+    return () => onprepending?.(id, false);
+  });
+
+  async function loadOlder(signal: AbortSignal) {
+    const id = sessionId;
+    if (!id) return;
+    const mine = prependRun.begin();
+    // Releases any hold still standing; this run takes its own at the write.
+    prepending = false;
+    heldFor = null;
+    try {
+      // Set at the write, not for the wait before it.
+      await fetchOlderPage(queryClient, id, {
+        signal,
+        onPrepend: () => {
+          if (!prependRun.owns(mine)) return;
+          prepending = true;
+          heldFor = id;
+        },
+      });
+      // Held until the frame that mounts the prepended rows commits, or until
+      // the wait times out.
+      await tick();
+      await new Promise(resolve => {
+        const timer = setTimeout(() => { cancelAnimationFrame(frame); resolve(null); }, PREPEND_FRAME_MS);
+        const frame = requestAnimationFrame(() => { clearTimeout(timer); resolve(null); });
+      });
+    } finally {
+      if (prependRun.owns(mine)) {
+        prepending = false;
+        heldFor = null;
+      }
+    }
+  }
   let shouldAutoScroll = $state(true);
   let prevScrollSessionId: string | null = null;
 
@@ -351,6 +427,8 @@
               break;
             case 'tool_result':
               if (norm.toolCallId && seenToolCalls.has(norm.toolCallId) && !norm.isError) break;
+              // Not an orphan until the history has been read to the beginning.
+              if (norm.toolCallId && !seenToolCalls.has(norm.toolCallId) && hasOlder) break;
               entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: `Result (${norm.toolCallId})`, entryType: 'tool_group' });
               break;
             case 'thinking':
@@ -485,7 +563,24 @@
       >{pill.label}</button>
     {/each}
   </div>
-  <div class="timeline-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll}>
+  <!-- Focusable so a keyboard reader can page it, as the chat list is. -->
+  <div class="timeline-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll} tabindex="-1">
+    <div class="timeline-top" bind:this={topEl}>
+      <!-- Mounted only once the scroll container it is observed within exists. -->
+      {#if scrollContainer && sessionId && hasOlder}
+        <div
+          class="timeline-top-sentinel"
+          use:topSentinel={{
+            identity: `${sessionId}-${eventFilter}`,
+            root: () => scrollContainer,
+            enabled: () => !!sessionId && hasOlder,
+            onReach: loadOlder,
+          }}
+        ></div>
+      {:else if sessionId && !hasOlder}
+        <div class="timeline-begin">Beginning of session</div>
+      {/if}
+    </div>
     {#if filteredParsed.length === 0}
       <div class="timeline-empty">{parsed.length === 0 ? 'No events yet' : 'No matching events'}</div>
     {:else}
@@ -494,6 +589,8 @@
           data={filteredParsed}
           getKey={(ev) => ev.key}
           scrollRef={scrollContainer}
+          startMargin={topMargin}
+          shift={prepending}
           bind:this={virtualizer}
         >
           {#snippet children(ev, _index)}
@@ -569,6 +666,17 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+  }
+
+  .timeline-top-sentinel {
+    height: 1px;
+  }
+
+  .timeline-begin {
+    padding: 0.375rem 0;
+    text-align: center;
+    font-size: 0.7rem;
+    color: hsl(var(--muted-foreground));
   }
 
   .timeline-scroll {

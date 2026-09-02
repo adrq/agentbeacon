@@ -1,93 +1,56 @@
 import { createQuery, createMutation, useQueryClient, type QueryClient } from '@tanstack/svelte-query';
-import type { CreateExecutionResponse, ExecutionDetail, Event } from '../types';
+import type { CreateExecutionResponse, ExecutionDetail, Event, Page } from '../types';
 import { api } from '../api';
-import { releaseCount, unionWithKnown } from '../liveEvents';
+import { heldLiveEvents, releaseCount } from '../liveEvents';
+import { deferTail, tailHeld } from '../tailHold';
+import { appendHeld, generation, mergeAnchored, windowKey } from '../historyWindow';
+import {
+  HISTORY_PAGE_LIMIT,
+  WINDOW_PAGE_LIMIT,
+  cachedIds,
+  commitNewestWindow,
+  fetchNewestWindow,
+  fetchOlderPage,
+  fetchSessionHistory,
+  spliceSessionFullHistory,
+  spliceSessionHistory,
+} from '../historyReads';
 
-// Matches the server's advertised events.max_page.
-const HISTORY_PAGE_LIMIT = 500;
-
-/** Page backwards from `before` and return the window oldest-first. */
-export async function fetchSessionHistory(
-  sessionId: string,
-  opts?: { before?: string; signal?: AbortSignal; stopAt?: Set<string> },
-): Promise<Event[]> {
-  let before = opts?.before;
-  const pages: Event[][] = [];
-  // Walks every page down to has_more=false or a stopAt hit.
-  for (;;) {
-    const page = await api.getSessionEvents(sessionId, {
-      before,
-      limit: HISTORY_PAGE_LIMIT,
-      signal: opts?.signal,
-    });
-    pages.unshift(page.items);
-    if (!page.has_more || !page.next_cursor) break;
-    if (opts?.stopAt?.size && page.items.some(e => opts.stopAt!.has(e.id))) break;
-    before = page.next_cursor;
-  }
-  return pages.flat();
-}
-
-/** Page backwards from `before` and return the window oldest-first. */
-export async function fetchExecutionHistory(
-  executionId: string,
-  opts?: { before?: string; stopAt?: Set<string> },
-): Promise<Event[]> {
-  let before = opts?.before;
-  const pages: Event[][] = [];
-  // Walks every page down to has_more=false or a stopAt hit.
-  for (;;) {
-    const page = await api.getExecutionEvents(executionId, {
-      before,
-      limit: HISTORY_PAGE_LIMIT,
-    });
-    pages.unshift(page.items);
-    if (!page.has_more || !page.next_cursor) break;
-    if (opts?.stopAt?.size && page.items.some(e => opts.stopAt!.has(e.id))) break;
-    before = page.next_cursor;
-  }
-  return pages.flat();
-}
+export {
+  WINDOW_PAGE_LIMIT,
+  fetchNewestWindow,
+  fetchOlderPage,
+  fetchSessionHistory,
+  spliceSessionFullHistory,
+  spliceSessionHistory,
+};
 
 /**
- * Refetch a session's history from `historyBefore` down to what is already
- * cached, and store the union keyed by id.
+ * Merge a stored read against the cache at the moment it is stored.
  *
- * Used on connect and on reconnect. The cached entries the refetch did not
- * cover keep their position ahead of it. A null `historyBefore` pages from the
- * newest end.
+ * While `sessionId`'s list is holding its head, the cache keeps what it has and
+ * the merge is queued for the release instead.
  */
-export async function spliceSessionHistory(
+function reconcileHistory(
   queryClient: QueryClient,
-  sessionId: string,
-  historyBefore: string | null,
-): Promise<void> {
-  const key = ['session-events', sessionId];
-  const cachedIds = new Set(
-    (queryClient.getQueryData<Event[]>(key) ?? []).map(e => e.id),
-  );
-
-  const window = await fetchSessionHistory(sessionId, {
-    before: historyBefore ?? undefined,
-    stopAt: cachedIds,
-  });
-
-  // Splice the window in at its first cached member; everything else keeps its
-  // cached position. Ids are compared for equality only.
-  const windowIds = new Set(window.map(e => e.id));
-  queryClient.setQueryData<Event[]>(key, current => {
-    const cached = current ?? [];
-    const anchor = cached.findIndex(e => windowIds.has(e.id));
-    const outside = (events: Event[]) => events.filter(e => !windowIds.has(e.id));
-    // No shared row: the window goes first.
-    if (anchor === -1) return [...window, ...outside(cached)];
-    return [
-      ...outside(cached.slice(0, anchor)),
-      ...window,
-      ...outside(cached.slice(anchor)),
-    ];
-  });
+  key: readonly unknown[],
+  sessionId: string | null | undefined,
+  oldData: unknown,
+  newData: unknown,
+): unknown {
+  const cached = oldData as Event[] | undefined;
+  if (sessionId && cached && tailHeld(sessionId)) {
+    const rows = newData as Event[];
+    deferTail(sessionId, () => {
+      // A removed entry is not written back.
+      if (!queryClient.getQueryState(key)) return;
+      queryClient.setQueryData<Event[]>(key, current => mergeAnchored(current, rows));
+    });
+    return cached;
+  }
+  return mergeAnchored(cached, newData as Event[]);
 }
+
 
 export function executionsQuery(projectId?: () => string | null | undefined) {
   return createQuery(() => ({
@@ -106,7 +69,7 @@ export function executionsQuery(projectId?: () => string | null | undefined) {
 export function executionDetailQuery(id: () => string | null) {
   return createQuery(() => ({
     queryKey: ['execution', id()],
-    queryFn: () => api.getExecution(id()!),
+    queryFn: ({ queryKey }) => api.getExecution(queryKey[1] as string),
     enabled: !!id(),
     refetchInterval: (query) => {
       const data = query.state.data as ExecutionDetail | undefined;
@@ -130,24 +93,64 @@ export function sessionEventsQuery(
   sseActive?: () => boolean,
 ) {
   const queryClient = useQueryClient();
-  return createQuery(() => ({
-    queryKey: ['session-events', sessionId()],
-    // The installed window unions the fetch with what is already known.
-    queryFn: async ({ signal }) => {
-      const id = sessionId()!;
-      // Re-reads while new arrivals overflowed the hold. Each extra cycle needs
-      // another 500 arrivals inside one read.
+  return createQuery(() => {
+  // Read once per options instance, not at commit time.
+  const id = sessionId();
+  return ({
+    queryKey: ['session-events', id],
+    // Reads back to the first row the cache already covers, then merges there.
+    // The id comes from the key being read, not the current selection.
+    queryFn: async ({ signal, queryKey }) => {
+      const id = queryKey[1] as string;
+      const key = ['session-events', id];
+      // Re-reads while new arrivals overflowed the hold; the cached ids are
+      // re-read each cycle. With nothing cached, one page; otherwise newest
+      // pages until one overlaps the cache.
+      // A cold read returns its page so the edge can be recorded from the one
+      // that is kept; re-reads discard the pages they replace.
+      const captured = generation(windowKey(id));
+      // Held rows to treat as accounted for if none is visible in the read.
+      const heldBefore = new Set(heldLiveEvents(id).map(e => e.id));
+      const read = async (): Promise<{ rows: Event[]; page: Page<Event> | null }> => {
+        if (queryClient.getQueryData<Event[]>(key)?.length) {
+          return {
+            rows: await fetchSessionHistory(id, {
+              signal,
+              stopAt: cachedIds(queryClient, key),
+              limit: WINDOW_PAGE_LIMIT,
+            }),
+            page: null,
+          };
+        }
+        const page = await fetchNewestWindow(id, { signal });
+        return { rows: page.items, page };
+      };
+
       let releases = releaseCount(id);
-      let fetched = await fetchSessionHistory(id, { signal });
+      let fetched = await read();
       while (releaseCount(id) !== releases) {
         releases = releaseCount(id);
-        fetched = await fetchSessionHistory(id, { signal });
+        fetched = await read();
       }
-      return unionWithKnown(
-        fetched,
-        queryClient.getQueryData<Event[]>(['session-events', id]),
-        id,
-      );
+      // A cold read decides it is cold before it starts. If rows landed while it
+      // was out, its page may not join them — nothing shared means nothing to
+      // merge at, and the two would be concatenated in whichever order they
+      // finished. Walk to an overlap instead.
+      if (fetched.page && queryClient.getQueryData<Event[]>(key)?.length) {
+        fetched = {
+          rows: await fetchSessionHistory(id, {
+            signal,
+            stopAt: cachedIds(queryClient, key),
+            limit: WINDOW_PAGE_LIMIT,
+          }),
+          page: null,
+        };
+      }
+      if (fetched.page) commitNewestWindow(id, fetched.page, { signal, captured });
+      return appendHeld(fetched.rows, id, {
+        incorporated: cachedIds(queryClient, key),
+        heldBefore,
+      });
     },
     enabled: !!sessionId(),
     // Settled sessions are immutable: never refetch on remount. Live sessions
@@ -157,23 +160,58 @@ export function sessionEventsQuery(
     // Release large parsed histories sooner than the 5-min default to bound
     // retained peak memory.
     gcTime: 120_000,
-    // Skip deep structural comparison of freshly-parsed large histories.
-    structuralSharing: false,
+    // Merges against the cache as it stands when the read is stored. Replaces
+    // the default deep comparison; rows are compared by id only.
+    structuralSharing: (o: unknown, n: unknown) =>
+      reconcileHistory(queryClient, ['session-events', id], id, o, n),
     refetchInterval: () => {
       if (isTerminal?.()) return false;
       if (sseActive?.()) return false;
       return 3000;
     },
-  }));
+  });
+  });
 }
 
-export function executionEventsQuery(executionId: () => string | null | undefined) {
-  return createQuery(() => ({
-    queryKey: ['execution-events', executionId()],
-    queryFn: () => fetchExecutionHistory(executionId()!),
-    enabled: !!executionId(),
-    refetchInterval: 3000,
-  }));
+/** A session's whole history, on its own key. */
+export function sessionEventsFullQuery(
+  sessionId: () => string | null | undefined,
+  isTerminal?: () => boolean,
+  sseActive?: () => boolean,
+) {
+  const queryClient = useQueryClient();
+  return createQuery(() => {
+  const id = sessionId();
+  return ({
+    queryKey: ['session-events-full', id],
+    queryFn: async ({ signal, queryKey }) => {
+      const id = queryKey[1] as string;
+      const key = ['session-events-full', id];
+      // Held rows to treat as accounted for if none is visible in the read.
+      const heldBefore = new Set(heldLiveEvents(id).map(e => e.id));
+      let releases = releaseCount(id);
+      let fetched = await fetchSessionHistory(id, { signal, stopAt: cachedIds(queryClient, key) });
+      while (releaseCount(id) !== releases) {
+        releases = releaseCount(id);
+        fetched = await fetchSessionHistory(id, { signal, stopAt: cachedIds(queryClient, key) });
+      }
+      return appendHeld(fetched, id, {
+        incorporated: cachedIds(queryClient, key),
+        heldBefore,
+      });
+    },
+    enabled: !!sessionId(),
+    staleTime: () => (isTerminal?.() ? Infinity : 30_000),
+    gcTime: 120_000,
+    structuralSharing: (o: unknown, n: unknown) =>
+      reconcileHistory(queryClient, ['session-events-full', id], id, o, n),
+    refetchInterval: () => {
+      if (isTerminal?.()) return false;
+      if (sseActive?.()) return false;
+      return 3000;
+    },
+  });
+  });
 }
 
 export function sessionBranchesQuery(
@@ -182,7 +220,7 @@ export function sessionBranchesQuery(
 ) {
   return createQuery(() => ({
     queryKey: ['session-branches', sessionId()],
-    queryFn: () => api.getSessionBranches(sessionId()!),
+    queryFn: ({ queryKey }) => api.getSessionBranches(queryKey[1] as string),
     enabled: !!sessionId(),
     staleTime: 30_000,
     refetchInterval: () => {
@@ -203,7 +241,7 @@ export function sessionDiffQuery(
 ) {
   return createQuery(() => ({
     queryKey: ['session-diff', sessionId(), base?.()],
-    queryFn: () => api.getSessionDiff(sessionId()!, { base: base?.() }),
+    queryFn: ({ queryKey }) => api.getSessionDiff(queryKey[1] as string, { base: queryKey[2] as string | undefined }),
     enabled: !!sessionId(),
     staleTime: 5_000,
     refetchInterval: () => {
@@ -233,7 +271,7 @@ export function inputCapableSessionsQuery() {
 export function executionAgentsQuery(executionId: () => string | null) {
   return createQuery(() => ({
     queryKey: ['execution-agents', executionId()],
-    queryFn: () => api.getExecutionAgents(executionId()!),
+    queryFn: ({ queryKey }) => api.getExecutionAgents(queryKey[1] as string),
     enabled: !!executionId(),
   }));
 }
@@ -287,7 +325,7 @@ export function recoverSessionMutation() {
 export function executionSessionsQuery(executionId: () => string | null) {
   return createQuery(() => ({
     queryKey: ['execution-sessions', executionId()],
-    queryFn: () => api.getExecutionSessions(executionId()!),
+    queryFn: ({ queryKey }) => api.getExecutionSessions(queryKey[1] as string),
     enabled: !!executionId(),
     staleTime: 5_000,
     refetchInterval: 10_000,
