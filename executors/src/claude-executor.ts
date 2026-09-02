@@ -52,6 +52,7 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "TaskGet",
   "SendMessage", // Inter-agent messaging
   "SendMessageTool", // Alternate name for SendMessage (block both defensively)
+  "ReadNotifications", // Inbound notification queue
   "Workflow", // Multi-step workflow orchestration
   "CronCreate", // Scheduled task creation
   "CronDelete", // Scheduled task deletion
@@ -61,6 +62,7 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "REPL", // Interactive REPL sessions
   "RemoteTrigger", // External webhook/trigger invocation
   "PushNotification", // Push notification dispatch
+  "ProposeGoal", // Session goal-setting handled externally
   "EnterPlanMode", // We manage planning externally
   "ExitPlanMode", // We manage planning externally
   "EnterWorktree", // We manage worktrees externally

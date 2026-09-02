@@ -23,7 +23,7 @@ Uses your installed [Claude Code](https://docs.anthropic.com/en/docs/claude-code
 }
 ```
 
-Models available: `opus`, `sonnet`, `haiku` (short aliases), or full model IDs like `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+Models available: `opus`, `sonnet`, `haiku` (short aliases), or full model IDs like `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5-1`, `claude-haiku-4-5`.
 
 ## copilot_sdk
 
