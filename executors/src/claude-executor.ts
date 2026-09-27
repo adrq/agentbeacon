@@ -52,6 +52,7 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "TaskGet",
   "SendMessage", // Inter-agent messaging
   "SendMessageTool", // Alternate name for SendMessage (block both defensively)
+  "ListAgents", // Enumerates unrelated local Claude sessions as message targets
   "ReadNotifications", // Inbound notification queue
   "Workflow", // Multi-step workflow orchestration
   "CronCreate", // Scheduled task creation
@@ -71,6 +72,7 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "Artifact", // Publishes content to claude.ai
   "SendFeedback", // Sends feedback to Anthropic
   "ClaudeDesign", // Design/canvas feature
+  "DesignSync", // Design synchronization
   "Projects", // claude.ai Projects integration
   "ProposeSkills", // Proposes skills
   "ShowOnboardingRolePicker", // User-interaction UI
@@ -414,6 +416,9 @@ async function main(): Promise<void> {
             settings: {
               autoMemoryEnabled: false,
               autoDreamEnabled: false,
+              // Prevent implicit inheritance of the host user's claude.ai connectors.
+              // Explicitly configured MCP servers remain available.
+              disableClaudeAiConnectors: true,
               disableArtifact: true,
               feedbackDrafts: "off",
               workflowKeywordTriggerEnabled: false,
