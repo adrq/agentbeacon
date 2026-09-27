@@ -28,7 +28,10 @@
   let typeBreakdown = $derived.by(() => {
     const counts = new Map<string, number>();
     for (const g of groups) {
-      const name = (g.call.title || 'Tool').match(/^\w+/)?.[0] ?? 'Tool';
+      // Keyed off the name directly. The old `/^\w+/` regex ran against the
+      // title, which for Codex was the raw command — `/bin/bash -lc …` fails to
+      // match at all, so every Codex stream summarised as "N Tool".
+      const name = g.call.name || 'Tool';
       counts.set(name, (counts.get(name) ?? 0) + 1);
     }
     return [...counts.entries()]
@@ -87,12 +90,19 @@
       aria-expanded={isDetailOpen}
     >
       <span class="ts-status-indicator" class:ts-success={statusLabel(g) === 'completed'} class:ts-error={statusLabel(g) === 'failed'} class:ts-running={statusLabel(g) === 'running'}>{statusIndicator(g)}</span>
-      <span class="ts-log-title">{g.call.title || 'Tool'}</span>
-      <span class="ts-log-status">{statusLabel(g)}</span>
+      <span class="ts-log-title">{g.call.name || 'Tool'}</span>
+      {#if g.call.subject}
+        <span class="ts-log-subject">{g.call.subject}</span>
+      {/if}
+      <!-- Completion is carried by the glyph; only the exceptional states get a label. -->
+      {#if statusLabel(g) !== 'completed'}
+        <span class="ts-log-status">{statusLabel(g)}</span>
+      {/if}
     </button>
     {#if isDetailOpen}
       <div class="ts-line-detail">
-        <ToolGroup call={g.call} result={g.result} />
+        <!-- The stream draws its own row above; ToolGroup renders body only. -->
+        <ToolGroup call={g.call} result={g.result} showRow={false} />
       </div>
     {/if}
   </div>
@@ -229,8 +239,15 @@
   }
 
   .ts-log-title {
-    flex: 1;
+    flex-shrink: 0;
     font-weight: 500;
+  }
+
+  .ts-log-subject {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    color: hsl(var(--muted-foreground));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -239,7 +256,7 @@
   .ts-log-status {
     flex-shrink: 0;
     font-size: 0.625rem;
-    font-weight: 600;
+    font-weight: 500;
     padding: 0.0625rem 0.3125rem;
     border-radius: var(--radius-sm);
     background: hsl(var(--muted) / 0.5);
@@ -250,16 +267,6 @@
 
   .ts-line-detail {
     padding: 0.25rem 0.5rem 0.375rem;
-  }
-
-  .ts-line-detail :global(.tool-group),
-  .ts-line-detail :global(.tool-group-completed),
-  .ts-line-detail :global(.tool-group-error),
-  .ts-line-detail :global(.tool-group-running) {
-    border: none;
-    background: transparent;
-    padding: 0;
-    max-width: 100%;
   }
 
   .ts-earlier-badge {

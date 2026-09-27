@@ -1,8 +1,8 @@
 <script lang="ts">
   import { AlertDialog } from 'bits-ui';
   import type { Agent, AgentType, Event as BeaconEvent, EphemeralEvent, MessagePayload, UsageState } from '../types';
-  import { isMessagePayload, isCompactionData } from '../types';
-  import { normalizeDataPart } from '../normalize';
+  import { isMessagePayload } from '../types';
+  import { normalizeDataPart, type NormalizedToolCall } from '../normalize';
   import { api } from '../api';
   import { executionDetailQuery, sessionEventsQuery, terminateExecutionMutation, executionAgentsQuery, recoverSessionMutation, executionSessionsQuery, buildSessionIdentityMap, fetchSessionHistory, spliceSessionHistory, spliceSessionFullHistory } from '../queries/executions';
   import { agentsQuery } from '../queries/agents';
@@ -56,6 +56,12 @@
   // Ephemeral streaming state (not in TanStack cache — transient)
   let ephemeralBuffers = $state<Map<string, { text: string; lastSeq: number }>>(new Map());
   let ephemeralThinkingBuffers = $state<Map<string, { text: string; lastSeq: number; startedAt: string }>>(new Map());
+  // In-flight tool calls, from `item/started`. Codex only: it is the sole executor
+  // whose start signal is ephemeral, so without this a Codex tool call is invisible
+  // until it completes. Keyed session -> toolCallId; the persisted `item/completed`
+  // clears the entry. Lost on disconnect like every other ephemeral, which is why
+  // ChatView also shows a durable session-status indicator.
+  let ephemeralToolCalls = $state<Map<string, Map<string, { call: NormalizedToolCall; startedAt: number }>>>(new Map());
   let settledThinkingDurations = $state<Map<string, { durationMs: number; startedAt: string }>>(new Map());
   let lastPersistedSeq = new Map<string, number>();
   // Running total of persisted text length per session, used to decide when
@@ -182,6 +188,7 @@
       releaseAllTails();
       ephemeralBuffers = new Map();
       ephemeralThinkingBuffers = new Map();
+      ephemeralToolCalls = new Map();
       settledThinkingDurations = new Map();
       initialLoadedExecId = null;
       finalHistoryRead = new Set();
@@ -328,7 +335,7 @@
           contextWindow: norm.modelContextWindow ?? current.contextWindow,
         });
         touched = true;
-      } else if (isCompactionData(dataObj as { type: string; [key: string]: unknown })) {
+      } else if (norm.normalized === 'compaction') {
         if (counted) continue;
         const current = next.get(event.session_id) ?? emptyUsage();
         next.set(event.session_id, {
@@ -497,6 +504,7 @@
   function clearEphemeralState() {
     ephemeralBuffers = new Map();
     ephemeralThinkingBuffers = new Map();
+    ephemeralToolCalls = new Map();
     settledThinkingDurations = new Map();
     lastPersistedSeq.clear();
     persistedTextLen.clear();
@@ -622,6 +630,15 @@
             if (!dataObj.type && !dataObj.tokenUsage && !dataObj.method) continue;
 
             const norm = normalizeDataPart(at, dataObj as Record<string, unknown>);
+            // The persisted completion supersedes the in-flight row.
+            if (norm.normalized === 'tool_call' && norm.toolCallId) {
+              const bySession = ephemeralToolCalls.get(event.session_id);
+              if (bySession?.has(norm.toolCallId)) {
+                const next = new Map(bySession);
+                next.delete(norm.toolCallId);
+                ephemeralToolCalls = new Map(ephemeralToolCalls).set(event.session_id, next);
+              }
+            }
             if (norm.normalized === 'text') {
               // Persisted Codex agentMessage → settle the ephemeral text buffer
               const buf = ephemeralBuffers.get(event.session_id);
@@ -658,6 +675,13 @@
                 ephemeralThinkingBuffers.delete(event.session_id);
                 ephemeralThinkingBuffers = new Map(ephemeralThinkingBuffers);
               }
+              // Nothing can still be running once the session has stopped, so
+              // drop started-but-never-completed rows rather than spinning forever.
+              if (ephemeralToolCalls.has(event.session_id)) {
+                const next = new Map(ephemeralToolCalls);
+                next.delete(event.session_id);
+                ephemeralToolCalls = next;
+              }
               lastPersistedSeq.set(event.session_id, Number.MAX_SAFE_INTEGER);
             }
           }
@@ -683,6 +707,27 @@
             });
             ephemeralBuffers = new Map(ephemeralBuffers);
           }
+        }
+
+        // `item/started` is the only signal that a Codex tool call has begun;
+        // it is never persisted, so without this the call is invisible until it
+        // completes. The same item id arrives later on `item/completed`, which
+        // clears the entry — see the settle pass over persisted events.
+        for (const part of eph.payload.parts ?? []) {
+          if (!('data' in part)) continue;
+          const d = (part as { data: unknown }).data;
+          if (typeof d !== 'object' || d === null) continue;
+          const raw = d as Record<string, unknown>;
+          if (raw.method !== 'item/started') continue;
+          const norm = normalizeDataPart(agentTypeForSession(eph.session_id), raw);
+          if (norm.normalized !== 'tool_call' || !norm.toolCallId) continue;
+          const startedAtMs = (raw.params as Record<string, unknown> | undefined)?.startedAtMs;
+          const bySession = new Map(ephemeralToolCalls.get(eph.session_id) ?? []);
+          bySession.set(norm.toolCallId, {
+            call: norm,
+            startedAt: typeof startedAtMs === 'number' ? startedAtMs : Date.now(),
+          });
+          ephemeralToolCalls = new Map(ephemeralToolCalls).set(eph.session_id, bySession);
         }
 
         const thinkingTexts = eph.payload.parts
@@ -1167,7 +1212,7 @@
             {#if viewMode === 'log'}
               <EventsTimeline {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} onready={onPanelReady} onprepending={setTailFence} />
             {:else}
-              <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} {viewedSessionSettled} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} onready={onPanelReady} onprepending={setTailFence} />
+              <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} ephemeralToolCalls={ephemeralToolCalls.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} {viewedSessionSettled} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} onready={onPanelReady} onprepending={setTailFence} />
             {/if}
           {/if}
           {#if panelPhase !== 'live'}

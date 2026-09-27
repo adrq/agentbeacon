@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Event, Agent, AgentPoolEntry, SessionSummary, AgentType } from '../types';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData, isModelRefusalFallbackData, isModelRefusalNoFallbackData, refusalModelName, refusalDisplayText } from '../types';
-  import { normalizeDataPart } from '../normalize';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isModelRefusalFallbackData, isModelRefusalNoFallbackData, refusalModelName, refusalDisplayText } from '../types';
+  import { normalizeDataPart, type NormalizedToolCall } from '../normalize';
   import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import { tick } from 'svelte';
@@ -205,6 +205,13 @@
     return text.length > max ? text.slice(0, max) + '\u2026' : text;
   }
 
+  /** One-line label for a tool call in the compact timeline. */
+  function toolLabel(call: NormalizedToolCall): string {
+    const name = call.name || 'Unknown tool';
+    const prefix = call.server ? `${call.server} ${name}` : name;
+    return call.subject ? truncate(`${prefix} ${call.subject}`, 120) : prefix;
+  }
+
   interface ParsedEvent {
     key: string;
     time: string;
@@ -368,17 +375,6 @@
             continue;
           }
 
-          if (isCompactionData(d as unknown as import('../types').DataPartPayload)) {
-            entries.push({
-              key, time,
-              icon: '\u21BB',  // ↻
-              iconClass: 'state-change',
-              text: 'Context compacted',
-              entryType: 'state',
-            });
-            continue;
-          }
-
           if (isModelRefusalFallbackData(d as unknown as import('../types').DataPartPayload)) {
             const mf = d as unknown as import('../types').ModelFallbackData;
             const from = refusalModelName(mf.original_model);
@@ -416,14 +412,14 @@
             case 'tool_call':
               if (norm.toolCallId) seenToolCalls.add(norm.toolCallId);
               // TodoWrite → compact "Tasks (N items)" entry
-              if (norm.title === 'TodoWrite' && norm.input && typeof norm.input === 'object') {
+              if (norm.name === 'TodoWrite' && norm.input && typeof norm.input === 'object') {
                 const input = norm.input as { todos?: unknown[] };
                 if (Array.isArray(input.todos)) {
                   entries.push({ key, time, icon: '\u2630', iconClass: 'agent', text: `Tasks (${input.todos.length} items)`, entryType: 'todo_write' });
                   break;
                 }
               }
-              entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: norm.title || 'Unknown tool', entryType: 'tool_group' });
+              entries.push({ key, time, icon: '\u2699', iconClass: 'agent', text: toolLabel(norm), entryType: 'tool_group' });
               break;
             case 'tool_result':
               if (norm.toolCallId && seenToolCalls.has(norm.toolCallId) && !norm.isError) break;
@@ -442,6 +438,9 @@
               break;
             case 'fyi':
               entries.push({ key, time, icon: '\u2139', iconClass: 'fyi', text: truncate(norm.title, 160), entryType: 'fyi' });
+              break;
+            case 'compaction':
+              entries.push({ key, time, icon: '\u21BB', iconClass: 'state-change', text: 'Context compacted', entryType: 'state' });
               break;
             case 'debug': {
               const method = (norm.raw.method as string | undefined) ?? (norm.raw.type as string | undefined) ?? norm.reason;

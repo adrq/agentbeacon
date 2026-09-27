@@ -2,7 +2,8 @@
   import type { Event, Agent, AgentPoolEntry, SessionSummary, AgentType, TodoItem, UsageState, SessionIdentity } from '../types';
   import AgentPill from './AgentPill.svelte';
   import CopyButton from './CopyButton.svelte';
-  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isCompactionData, isModelRefusalFallbackData, isModelRefusalNoFallbackData, refusalModelName, refusalDisplayText } from '../types';
+  import ElapsedTime from './ElapsedTime.svelte';
+  import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isModelRefusalFallbackData, isModelRefusalNoFallbackData, refusalModelName, refusalDisplayText } from '../types';
   import { formatTokens } from '../format';
   import { normalizeDataPart, type NormalizedToolCall, type NormalizedToolResult, type NormalizedThinking } from '../normalize';
   import { api } from '../api';
@@ -17,12 +18,13 @@
   import TodoPanel from './TodoPanel.svelte';
   import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { useQueryClient } from '@tanstack/svelte-query';
   import { fetchOlderPage } from '../queries/executions';
   import { windowBounds, windowVersion } from '../historyWindow';
   import { topSentinel } from '../utils/topSentinel';
   import { createRunToken } from '../utils/runToken';
+  import { loadDraft, saveDraft, clearDraft, gcDrafts } from '../drafts';
 
   interface Props {
     events: Event[];
@@ -31,6 +33,8 @@
     sessionId: string | null;
     ephemeralText?: string;
     ephemeralThinking?: { text: string; startedAt: string } | null;
+    /** In-flight tool calls for the viewed session, keyed by tool call id. */
+    ephemeralToolCalls?: Map<string, { call: NormalizedToolCall; startedAt: number }> | null;
     settledThinkingDuration?: { durationMs: number; startedAt: string } | null;
     usageBySession?: Map<string, UsageState>;
     sessionIdentity?: Map<string, SessionIdentity>;
@@ -51,7 +55,7 @@
     onready?: () => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', viewedSessionSettled = false, onfilterchange, onthreadopen, onready, onprepending }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, ephemeralToolCalls = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', viewedSessionSettled = false, onfilterchange, onthreadopen, onready, onprepending }: Props = $props();
 
   let readySignaled = false;
   function signalReady() {
@@ -201,24 +205,53 @@
 
   async function handleSend() {
     if (!sessionId || !canSend) return;
+    // Captured: `sessionId` is a prop, so it reads fresh after every await. The
+    // user can switch sessions while the send is in flight, and clearing based
+    // on the *current* session would wipe the composer and stored draft of a
+    // session whose message was never sent.
+    const sentFrom = sessionId;
+    // Snapshot what is being sent. Returning to this session and typing again
+    // while the request is in flight must not lose the new text: identity of
+    // the session is not enough, the composer must still hold what we sent.
+    const sentText = messageText;
+    const sentAttachments = attachments;
     sending = true;
     sendError = null;
     try {
       const parts: import('../types').MessagePart[] = [];
-      const text = messageText.trim();
+      const text = sentText.trim();
       if (text) {
         parts.push({ text });
       }
-      for (const att of attachments) {
+      for (const att of sentAttachments) {
         const bytes = await fileToBase64(att.file);
         parts.push({ raw: bytes, mediaType: att.file.type, filename: att.file.name });
       }
-      await api.postMessage(sessionId, parts);
-      messageText = '';
-      for (const a of attachments) URL.revokeObjectURL(a.preview);
-      attachments = [];
+      await api.postMessage(sentFrom, parts);
+
+      // Only now that the server has it. Clearing before the first await left
+      // the message in memory alone during attachment encoding, so losing the
+      // page there lost it outright — the exact failure this feature exists to
+      // prevent. Guarded on equality so newer text typed during the send is
+      // never deleted; the cost is that an older version the debounce had not
+      // caught up on can survive.
+      if (loadDraft(sentFrom) === sentText) clearDraft(sentFrom);
+
+      // Text belongs to a session, so only clear it if that session is still
+      // on screen AND still holds what we sent.
+      if (sessionId === sentFrom && messageText === sentText) {
+        messageText = '';
+      }
+
+      // Attachments are component state, not per-session: leaving them behind
+      // would carry an already-sent file into whatever session is now open and
+      // let it be sent a second time. Remove exactly the ones that went.
+      for (const a of sentAttachments) URL.revokeObjectURL(a.preview);
+      attachments = attachments.filter(a => !sentAttachments.includes(a));
     } catch (e) {
       sendError = e instanceof Error ? e.message : 'Failed to send';
+      // Nothing to restore: the draft was never cleared, and the composer still
+      // holds the text for retry.
     } finally {
       sending = false;
     }
@@ -311,6 +344,78 @@
   $effect(() => {
     messageText; // track dependency
     autoResize();
+  });
+
+  // --- Composer draft persistence -----------------------------------------
+  // iOS Safari reloads the page when it reclaims the content process, which
+  // used to discard an in-progress message. Drafts are keyed per session so
+  // switching sessions does not carry text across.
+
+  /** The session `messageText` currently belongs to; guards cross-session writes. */
+  let draftSessionId: string | null = null;
+
+  const DRAFT_DEBOUNCE_MS = 400;
+
+  // Persistence is deliberately unconditional. Suppressing writes while a send
+  // was in flight kept an in-flight message out of storage, but it also meant
+  // the text existed only in memory until the server acknowledged it — losing
+  // the page during attachment encoding lost the message. Durability wins; the
+  // cost is that a mid-send remount can restore a message that was already
+  // submitted.
+  function flushDraft() {
+    if (!draftSessionId || draftSessionId !== sessionId) return;
+    saveDraft(draftSessionId, messageText);
+  }
+
+  // Restore on session change. The outgoing draft is flushed first, because the
+  // debounced save below may still be pending when the session switches.
+  $effect(() => {
+    const id = sessionId;
+    if (id === draftSessionId) return;
+    const outgoing = draftSessionId;
+    if (outgoing) {
+      saveDraft(outgoing, untrack(() => messageText));
+    }
+    draftSessionId = id;
+    messageText = id ? loadDraft(id) : '';
+    // Attachments are not persisted per session, so unlike text they cannot be
+    // restored — and leaving them in place would carry a file staged for one
+    // session into another and let it be sent there.
+    untrack(() => {
+      for (const a of attachments) URL.revokeObjectURL(a.preview);
+    });
+    attachments = [];
+  });
+
+  // Debounced save. Keystrokes are frequent and localStorage writes are
+  // synchronous, so coalesce them rather than writing on every input.
+  $effect(() => {
+    const text = messageText;
+    const id = sessionId;
+    if (!id || id !== draftSessionId) return;
+    const timerId = setTimeout(() => saveDraft(id, text), DRAFT_DEBOUNCE_MS);
+    return () => clearTimeout(timerId);
+  });
+
+  // The debounce can lose the final keystrokes, which is exactly the case this
+  // fixes. pagehide is the last event iOS Safari reliably delivers before the
+  // page is torn down; visibilitychange covers backgrounding the tab.
+  $effect(() => {
+    gcDrafts();
+    function onHide() {
+      if (document.visibilityState === 'hidden') flushDraft();
+    }
+    window.addEventListener('pagehide', flushDraft);
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      window.removeEventListener('pagehide', flushDraft);
+      document.removeEventListener('visibilitychange', onHide);
+      // Unmount is a third way to lose the pending debounce: switching to the
+      // Log or Diff tab destroys this component, and the save effect's cleanup
+      // only cancels its timer. This effect reads nothing reactive, so its
+      // cleanup runs on unmount and nowhere else.
+      flushDraft();
+    };
   });
 
   // Reset auto-scroll and focus when switching sessions.
@@ -655,16 +760,6 @@
             // Skip usage metadata — don't render in chat
             if (norm.normalized === 'usage') continue;
 
-            // Compaction divider
-            if (isCompactionData(d as unknown as import('../types').DataPartPayload)) {
-              entries.push({
-                type: 'compaction' as const,
-                key: `${ev.id}-compact-${seq++}`,
-                time,
-              });
-              continue;
-            }
-
             // Model refusal-fallback banner
             if (isModelRefusalFallbackData(d as unknown as import('../types').DataPartPayload)) {
               const mf = d as unknown as import('../types').ModelFallbackData;
@@ -726,7 +821,7 @@
             switch (norm.normalized) {
               case 'tool_call': {
                 // TodoWrite → emit as todo_write entry (not generic tool_group)
-                if (norm.title === 'TodoWrite' && norm.input && typeof norm.input === 'object') {
+                if (norm.name === 'TodoWrite' && norm.input && typeof norm.input === 'object') {
                   const input = norm.input as { todos?: unknown[] };
                   if (Array.isArray(input.todos)) {
                     const todos: TodoItem[] = input.todos.filter((t: any) => t != null && typeof t === 'object').map((t: any) => ({
@@ -751,10 +846,14 @@
                     // tool_call_update — patch-merge, preserve existing values for absent fields
                     existing.call = {
                       ...existing.call,
-                      ...(norm.title ? { title: norm.title } : {}),
+                      ...(norm.name ? { name: norm.name } : {}),
+                      ...(norm.server ? { server: norm.server } : {}),
+                      ...(norm.subject ? { subject: norm.subject } : {}),
                       ...(norm.content ? { content: norm.content } : {}),
                       ...(norm.input !== undefined ? { input: norm.input } : {}),
                       ...(norm.kind ? { kind: norm.kind } : {}),
+                      ...(norm.output !== undefined ? { output: norm.output } : {}),
+                      ...(norm.exitCode !== undefined ? { exitCode: norm.exitCode } : {}),
                       status: norm.status ?? existing.call.status,
                     };
                     // Attach a result that arrived before this update; no new entry.
@@ -790,7 +889,7 @@
                 // No tool_use_id — ungroupable; keep the existing orphan path so
                 // multiple id-less results never collide under an empty key.
                 const group: ToolGroupEntry = {
-                  call: { normalized: 'tool_call', toolCallId: '', title: norm.isError ? 'Error' : 'Result' },
+                  call: { normalized: 'tool_call', toolCallId: '', name: norm.isError ? 'Error' : 'Result', subject: '' },
                   result: norm,
                   time,
                 };
@@ -828,6 +927,9 @@
                 break;
               case 'debug':
                 entries.push({ type: 'debug_event', data: norm.raw, reason: norm.reason, time, key: `${ev.id}-${seq++}` });
+                break;
+              case 'compaction':
+                entries.push({ type: 'compaction' as const, key: `${ev.id}-compact-${seq++}`, time });
                 break;
               case 'unknown': {
                 const rawType = norm.raw.type as string | undefined;
@@ -900,7 +1002,7 @@
       let offset = 0;
       for (const pending of orphans) {
         const group: ToolGroupEntry = {
-          call: { normalized: 'tool_call', toolCallId: pending.result.toolCallId, title: pending.result.isError ? 'Error' : 'Result' },
+          call: { normalized: 'tool_call', toolCallId: pending.result.toolCallId, name: pending.result.isError ? 'Error' : 'Result', subject: '' },
           result: pending.result,
           time: pending.time,
         };
@@ -918,26 +1020,6 @@
     if (entry.type !== 'state') return false;
     const text = (entry as { text?: string }).text ?? '';
     return text.includes('executor: running') || text.includes('executor: idle');
-  }
-
-  /** Flush accumulated tool_group indices as a stream (3+) or individual entries. */
-  function flushToolRun(entries: ChatEntry[], runIndices: number[], result: ChatEntry[]) {
-    if (runIndices.length >= 3) {
-      const groups: ToolGroupEntry[] = runIndices.map(
-        idx => (entries[idx] as { type: 'tool_group'; group: ToolGroupEntry; key: string }).group
-      );
-      const hasPending = groups.some(g =>
-        g.call.status !== 'completed' && g.call.status !== 'failed' && g.result == null
-      );
-      result.push({
-        type: 'tool_stream',
-        groups,
-        live: false,
-        key: `stream-${(entries[runIndices[0]] as { key: string }).key}`,
-      });
-    } else {
-      for (const idx of runIndices) result.push(entries[idx]);
-    }
   }
 
   function groupToolStreams(entries: ChatEntry[]): ChatEntry[] {
@@ -995,6 +1077,9 @@
 
   let sessionIsActive = $derived(viewedSession?.status === 'working');
 
+  /** Timestamp of the newest persisted event, for the durable working indicator. */
+  let lastEventAt = $derived(events.length > 0 ? events[events.length - 1].created_at : null);
+
   // Capture the time once when ephemeral streaming starts (avoids recomputing on every tick)
   let ephemeralStartTime = $state('');
   $effect.pre(() => {
@@ -1014,6 +1099,26 @@
     // Shallow copy: entries array is copied, but entry objects are shared.
     // Never mutate entry objects directly — use spread operator to create new objects.
     const entries = baseEntries.slice();
+
+    // In-flight tool calls, oldest first. A persisted entry for the same id wins:
+    // the completion has landed and this row is stale by a frame or two.
+    if (ephemeralToolCalls?.size) {
+      const persistedIds = new Set<string>();
+      for (const e of baseEntries) {
+        if (e.type === 'tool_group') persistedIds.add(e.group.call.toolCallId);
+        else if (e.type === 'tool_stream') for (const g of e.groups) persistedIds.add(g.call.toolCallId);
+      }
+      const live = [...ephemeralToolCalls.entries()]
+        .filter(([id]) => !persistedIds.has(id))
+        .sort((a, b) => a[1].startedAt - b[1].startedAt);
+      for (const [id, { call, startedAt }] of live) {
+        entries.push({
+          type: 'tool_group',
+          group: { call, time: formatTime(new Date(startedAt).toISOString()) },
+          key: `ephemeral-tool-${id}`,
+        });
+      }
+    }
 
     // Ephemeral thinking: show as streaming thinking entry
     if (ephemeralThinking?.text) {
@@ -1074,6 +1179,12 @@
   let filteredParsed = $derived(
     parsed.filter(entry => matchesFilter(entry.type, eventFilter))
   );
+
+  /** True when the entry after `index` is also a tool row, so this one closes up. */
+  function nextIsToolRow(index: number): boolean {
+    const next = filteredParsed[index + 1];
+    return next?.type === 'tool_group' || next?.type === 'tool_stream';
+  }
 </script>
 
 <div class="chat-container">
@@ -1117,7 +1228,7 @@
       shift={prepending}
       bind:this={virtualizer}
     >
-      {#snippet children(entry, _index)}
+      {#snippet children(entry, index)}
         {#if entry.type === 'agent'}
           {@const identity = entry.agentSessionId ? sessionIdentity?.get(entry.agentSessionId) : undefined}
           <div class="chat-row agent-row">
@@ -1261,11 +1372,11 @@
             <span class="state-text">{entry.text}</span>
           </div>
         {:else if entry.type === 'tool_group'}
-          <div class="chat-row tool-row">
+          <div class="chat-row tool-row" class:tool-row-tight={nextIsToolRow(index)}>
             <ToolGroup call={entry.group.call} result={entry.group.result} />
           </div>
         {:else if entry.type === 'tool_stream'}
-          <div class="chat-row tool-row">
+          <div class="chat-row tool-row" class:tool-row-tight={nextIsToolRow(index)}>
             <ToolStream groups={entry.groups} live={entry.live} />
           </div>
         {:else if entry.type === 'todo_write' && entry.todos.length > 0}
@@ -1334,6 +1445,18 @@
       {/snippet}
     </Virtualizer>
     {/key}
+  {/if}
+  <!-- Durable working indicator. Driven by persisted session status and the last
+       persisted event, so unlike the in-flight rows above it survives a reconnect.
+       Without it, losing the ephemeral rows would read as "the call finished". -->
+  {#if sessionIsActive && lastEventAt}
+    <div class="chat-working">
+      <span class="chat-working-dot"></span>
+      <span>Working</span>
+      <span class="chat-working-elapsed">
+        last activity <ElapsedTime startTime={lastEventAt} /> ago
+      </span>
+    </div>
   {/if}
 </div>
 
@@ -1599,6 +1722,40 @@
     outline-offset: -2px;
   }
 
+  /* Durable counterpart to the in-flight tool rows: says the session is still
+     working even after a reconnect has discarded the ephemeral rows. */
+  .chat-working {
+    display: flex;
+    align-items: baseline;
+    gap: 0.375rem;
+    padding: 0.25rem 0.375rem 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .chat-working-dot {
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: 50%;
+    background: hsl(var(--status-working));
+    align-self: center;
+    animation: chat-working-pulse 1.6s ease-out infinite;
+  }
+
+  @keyframes chat-working-pulse {
+    0% { box-shadow: 0 0 0 0 hsl(var(--status-working) / 0.55); }
+    70% { box-shadow: 0 0 0 4px hsl(var(--status-working) / 0); }
+    100% { box-shadow: 0 0 0 0 hsl(var(--status-working) / 0); }
+  }
+
+  .chat-working-elapsed {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.8;
+  }
+
   .chat-empty {
     font-size: 0.8125rem;
     color: hsl(var(--muted-foreground));
@@ -1614,6 +1771,14 @@
   .chat-row {
     display: flex;
     padding-bottom: 0.5rem;
+  }
+
+  /* A run of tool calls is one activity, not a series of separate utterances,
+     so consecutive calls close up into a block. Applied only when the NEXT entry
+     is also a tool row — padding-bottom creates the gap after a row, so tightening
+     it unconditionally would pull the last call of a run into the prose below it. */
+  .chat-row.tool-row-tight {
+    padding-bottom: 0.125rem;
   }
 
   .agent-row {

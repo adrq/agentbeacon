@@ -53,7 +53,7 @@ repos:
         entry: npm
         language: system
         args: [run, --prefix, web, check]
-        files: ^web/(src/.*\.(svelte|ts|js|css)|package\.json|tsconfig\..*|svelte\.config\.js|vite\.config\.ts)
+        files: ^web/(src/.*\.(svelte|ts|js|css)|tests/.*\.ts|package\.json|tsconfig\..*|svelte\.config\.js|vite\.config\.ts)
         pass_filenames: false
         stages: [pre-commit]
       - id: executors-check

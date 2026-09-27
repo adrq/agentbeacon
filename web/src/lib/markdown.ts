@@ -1,9 +1,9 @@
-import { unified } from 'unified';
+import { unified, type PluggableList } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkRehype from 'remark-rehype';
 import rehypeShiki from '@shikijs/rehype';
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import rehypeSanitize, { defaultSchema, type Options as SanitizeSchema } from 'rehype-sanitize';
 import rehypeStringify from 'rehype-stringify';
 
 type HastNode = { type: string; tagName?: string; value?: string; properties?: Record<string, unknown>; children?: HastNode[] };
@@ -12,13 +12,23 @@ type HastNode = { type: string; tagName?: string; value?: string; properties?: R
 // Safe because remarkRehype does NOT pass through raw HTML (no allowDangerousHtml),
 // so only shiki-generated nodes produce style attributes.
 // dataMermaid: marker attribute for mermaid blocks, converted to class="mermaid" post-sanitize.
-const sanitizeSchema = {
+//
+// The code[className] tuple restates the default schema's `['className', /^language-./]`
+// rather than appending a second className entry: hast-util-sanitize resolves an
+// attribute against the FIRST matching definition, so a duplicate tuple would be dead.
+//
+// math-inline/math-display are belt-and-braces, not load-bearing. remark-math emits
+// `class="language-math math-display"`, and `language-math` already matches the
+// /^language-./ above, which rehype-katex accepts on its own — mutation-tested, so
+// don't reintroduce this as a hazard from reading the code. What IS load-bearing is
+// that rehypeKatex runs AFTER rehypeSanitize; reversing that order breaks all math.
+const sanitizeSchema: SanitizeSchema = {
   ...defaultSchema,
   attributes: {
     ...defaultSchema.attributes,
     span: [...(defaultSchema.attributes?.span || []), 'style'],
     pre: [...(defaultSchema.attributes?.pre || []), 'style', 'dataMermaid'],
-    code: [...(defaultSchema.attributes?.code || []), 'style'],
+    code: [['className', /^language-./, 'math-inline', 'math-display'], 'style'],
   },
 };
 
@@ -79,56 +89,80 @@ function rehypeRestoreClasses() {
   };
 }
 
-let processorPromise: ReturnType<typeof createProcessor> | null = null;
-let streamingProcessorPromise: ReturnType<typeof createStreamingProcessor> | null = null;
+// Cheap pre-check on the raw source: does this text plausibly contain TeX-style
+// (`\[`, `\(`) or display-dollar math? Very few messages do, and the
+// math extension drags in ~280KB of katex, so the math plugins load lazily and only
+// for texts that match. False positives (e.g. `\[` inside a fenced block) are harmless:
+// they just build the heavier processor, they don't change the output.
+const MATH_HINT = /\\[[(]|\$\$/;
 
-async function createProcessor() {
-  return unified()
-    .use(remarkParse)
-    .use(remarkGfm)
-    .use(remarkRehype)
-    .use(rehypeMermaidPre)
-    .use(rehypeShiki, {
-      themes: { light: 'github-light', dark: 'github-dark' },
-      defaultColor: false,
-      langs: ['js', 'ts', 'python', 'bash', 'json', 'rust', 'yaml', 'xml', 'css', 'sql', 'go', 'toml', 'markdown'],
-    })
-    .use(rehypeSanitize, sanitizeSchema)
-    .use(rehypeRestoreClasses)
-    .use(rehypeStringify);
+async function loadMathPlugins(): Promise<{ remark: PluggableList; rehype: PluggableList }> {
+  // KaTeX's stylesheet is required for correct layout with the default htmlAndMathml
+  // output; importing it here keeps it out of the main chunk alongside the JS.
+  const [remarkMath, rehypeKatex] = await Promise.all([
+    import('remark-math-extended'),
+    import('rehype-katex'),
+    import('katex/dist/katex.min.css'),
+  ]);
+  return {
+    // Single-dollar text math stays off: `$state`, `$AGENTBEACON_API_BASE` and `$1.2M`
+    // are common here, and dollar-delimited math is not something these
+    // models actually emit.
+    remark: [[remarkMath.default, { singleDollarTextMath: false }]],
+    rehype: [rehypeKatex.default],
+  };
 }
 
-async function createStreamingProcessor() {
-  return unified()
-    .use(remarkParse)
-    .use(remarkGfm)
-    .use(remarkRehype)
-    .use(rehypeMermaidPre)
-    .use(rehypeSanitize, sanitizeSchema)
-    .use(rehypeRestoreClasses)
-    .use(rehypeStringify);
+// shiki: syntax-highlight code blocks (skipped while streaming — too slow per token).
+// math: parse TeX delimiters and expand them with katex.
+type ProcessorVariant = { shiki: boolean; math: boolean };
+
+async function createProcessor({ shiki, math }: ProcessorVariant) {
+  const mathPlugins = math ? await loadMathPlugins() : { remark: [], rehype: [] };
+  const shikiPlugins: PluggableList = shiki
+    ? [
+        [
+          rehypeShiki,
+          {
+            themes: { light: 'github-light', dark: 'github-dark' },
+            defaultColor: false,
+            langs: ['js', 'ts', 'python', 'bash', 'json', 'rust', 'yaml', 'xml', 'css', 'sql', 'go', 'toml', 'markdown'],
+          },
+        ],
+      ]
+    : [];
+
+  return (
+    unified()
+      .use(remarkParse)
+      .use(mathPlugins.remark)
+      .use(remarkGfm)
+      .use(remarkRehype)
+      .use(rehypeMermaidPre)
+      .use(shikiPlugins)
+      .use(rehypeSanitize, sanitizeSchema)
+      // After sanitize, per the rehype-katex README: katex reads only the text content
+      // of already-sanitized nodes, so its MathML/HTML output needs no schema allowance.
+      .use(mathPlugins.rehype)
+      .use(rehypeRestoreClasses)
+      .use(rehypeStringify)
+  );
 }
 
-function getProcessor() {
-  if (!processorPromise) {
-    processorPromise = createProcessor().catch((err) => {
-      console.error('Shiki processor initialization failed:', err);
-      processorPromise = null;
+const processorPromises = new Map<string, ReturnType<typeof createProcessor>>();
+
+function getProcessor(variant: ProcessorVariant) {
+  const key = `${variant.shiki ? 'shiki' : 'plain'}:${variant.math ? 'math' : 'nomath'}`;
+  let promise = processorPromises.get(key);
+  if (!promise) {
+    promise = createProcessor(variant).catch((err) => {
+      console.error(`Markdown processor (${key}) initialization failed:`, err);
+      processorPromises.delete(key);
       throw err;
     });
+    processorPromises.set(key, promise);
   }
-  return processorPromise;
-}
-
-function getStreamingProcessor() {
-  if (!streamingProcessorPromise) {
-    streamingProcessorPromise = createStreamingProcessor().catch((err) => {
-      console.error('Streaming processor initialization failed:', err);
-      streamingProcessorPromise = null;
-      throw err;
-    });
-  }
-  return streamingProcessorPromise;
+  return promise;
 }
 
 // Cache rendered HTML to avoid re-running the unified pipeline for the same text.
@@ -143,7 +177,7 @@ export async function renderMarkdown(text: string, skipCache = false, streaming 
     if (cached !== undefined) return cached;
   }
 
-  const processor = streaming ? await getStreamingProcessor() : await getProcessor();
+  const processor = await getProcessor({ shiki: !streaming, math: MATH_HINT.test(text) });
   const result = String(await processor.process(text));
 
   if (!skipCache && !streaming) {
