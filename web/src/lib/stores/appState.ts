@@ -44,6 +44,8 @@ export const selectedAgentId = writable<string | null>(null);
 export const selectedFilterProjectId = writable<string | null>(null);
 export const routeMode = writable<RouteMode>('view');
 export const executionPrefill = writable<ExecutionPrefill | null>(null);
+// Execution whose agent-pool dialog is open; set from the sidebar tree or the detail header.
+export const agentPoolDialogExecutionId = writable<string | null>(null);
 export const agentFormPrefill = writable<{ driverId?: string } | null>(null);
 
 function createPersistedBoolStore(key: string, defaultValue: boolean) {

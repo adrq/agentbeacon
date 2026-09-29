@@ -1,5 +1,5 @@
 import { createQuery, createMutation, useQueryClient, type QueryClient } from '@tanstack/svelte-query';
-import type { CreateExecutionResponse, ExecutionDetail, Event, Page } from '../types';
+import type { AgentPoolEntry, CreateExecutionResponse, ExecutionDetail, Event, Page } from '../types';
 import { api } from '../api';
 import { heldLiveEvents, releaseCount } from '../liveEvents';
 import { deferTail, tailHeld } from '../tailHold';
@@ -273,6 +273,40 @@ export function executionAgentsQuery(executionId: () => string | null) {
     queryKey: ['execution-agents', executionId()],
     queryFn: ({ queryKey }) => api.getExecutionAgents(queryKey[1] as string),
     enabled: !!executionId(),
+  }));
+}
+
+export function addExecutionAgentMutation() {
+  const queryClient = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (args: { executionId: string; agentId: string; addToProject: boolean; projectId: string | null }) =>
+      api.addExecutionAgent(args.executionId, { agent_id: args.agentId, add_to_project: args.addToProject }),
+    // Returned so mutateAsync resolves only after the pool has refetched.
+    onSettled: (_data, _err, variables) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['execution-agents', variables.executionId] }),
+      variables.addToProject && variables.projectId
+        ? queryClient.invalidateQueries({ queryKey: ['project-agents', variables.projectId] })
+        : undefined,
+    ]),
+  }));
+}
+
+export function removeExecutionAgentMutation() {
+  const queryClient = useQueryClient();
+  return createMutation(() => ({
+    mutationFn: (args: { executionId: string; agentId: string }) =>
+      api.removeExecutionAgent(args.executionId, args.agentId),
+    // Drop the row immediately so a failed follow-up refetch cannot leave a
+    // stale member that invites a repeat DELETE.
+    onSuccess: (_data, variables) => {
+      queryClient.setQueryData<AgentPoolEntry[]>(['execution-agents', variables.executionId],
+        old => old?.filter(a => a.agent_id !== variables.agentId));
+    },
+    // Returned so the row stays pending until the refetch settles. A failed
+    // refetch resolves (invalidateQueries does not throw), so it never turns
+    // a successful removal into a reported failure.
+    onSettled: (_data, _err, variables) =>
+      queryClient.invalidateQueries({ queryKey: ['execution-agents', variables.executionId] }),
   }));
 }
 

@@ -113,6 +113,12 @@ fn claude_models() -> Vec<ModelSuggestion> {
             recommended: None,
         },
         ModelSuggestion {
+            id: "claude-sonnet-5-5".to_string(),
+            label: "Claude Sonnet 5.5".to_string(),
+            description: None,
+            recommended: None,
+        },
+        ModelSuggestion {
             id: "claude-sonnet-5".to_string(),
             label: "Claude Sonnet 5".to_string(),
             description: None,

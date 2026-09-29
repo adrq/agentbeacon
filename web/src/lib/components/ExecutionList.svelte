@@ -93,7 +93,8 @@
 
   let selectedSessions = $derived(selectedDetailQuery.data?.sessions ?? []);
   let selectedAgents = $derived(agentsQ.data ?? []);
-  let selectedPoolAgents = $derived(selectedPoolQuery.data ?? []);
+  // Left undefined while loading or after a failed load so the tree can show the count as unknown.
+  let selectedPoolAgents = $derived(selectedPoolQuery.data);
   let selectedIsTerminal = $derived(
     selectedDetailQuery.data?.execution.outcome != null
   );

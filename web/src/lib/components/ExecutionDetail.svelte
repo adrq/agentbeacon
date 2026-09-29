@@ -23,11 +23,12 @@
   import DiffPanel from './DiffPanel.svelte';
   import ExecutionOrgChart from './ExecutionOrgChart.svelte';
   import SidebarSessionTree from './SidebarSessionTree.svelte';
+  import ExecutionAgentsDialog from './ExecutionAgentsDialog.svelte';
   import { executionsWithQuestions } from '../stores/questionState';
   import Button from './ui/button.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
   import { router } from '../router';
-  import { executionPrefill, selectedSessionId, usageBySession } from '../stores/appState';
+  import { executionPrefill, selectedSessionId, usageBySession, agentPoolDialogExecutionId } from '../stores/appState';
   import type { EventFilter } from '../eventFilterGroups';
 
   interface Props {
@@ -179,6 +180,7 @@
       threadTarget = null;
       overflowMenuOpen = false;
       showDetailsOverlay = false;
+      agentPoolDialogExecutionId.set(null);
       const hashView = getHashViewParam();
       if (hashView) viewMode = hashView;
       lastPersistedSeq.clear();
@@ -1019,6 +1021,28 @@
     }
   }
 
+  // Selected session's agent and its saved (not necessarily running) settings.
+  let activeSession = $derived(detail?.sessions.find(s => s.id === activeSessionId) ?? null);
+  let activeIdentity = $derived(activeSession ? sessionIdentity.get(activeSession.id) ?? null : null);
+  let activeAgent = $derived(activeSession ? agents.find(a => a.id === activeSession!.agent_id) ?? null : null);
+
+  function configString(config: Record<string, unknown>, keys: string[]): string | null {
+    for (const key of keys) {
+      const v = config[key];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    }
+    return null;
+  }
+
+  let savedModel = $derived(activeAgent ? configString(activeAgent.config ?? {}, ['model']) ?? 'Default model' : null);
+  let savedEffort = $derived(activeAgent
+    ? `${configString(activeAgent.config ?? {}, ['effort', 'model_reasoning_effort', 'reasoning_effort']) ?? 'Default'} effort`
+    : null);
+  let summaryAgentName = $derived(activeIdentity?.agentName ?? activeAgent?.name ?? null);
+  let settingsTitle = $derived(activeAgent
+    ? `Saved agent settings (the running session may differ): ${summaryAgentName}, ${savedModel}, ${savedEffort}`
+    : '');
+
   // Recover execution (targets root lead session)
   let recoverError: string | null = $state(null);
 
@@ -1081,6 +1105,9 @@
   <div class="detail-view scroll-thin">
     <div class="detail-header">
       <h2 class="detail-title">{displayTitle}</h2>
+      {#if activeAgent}
+        <span class="header-settings" title={settingsTitle} aria-label={settingsTitle}>{summaryAgentName} · {savedModel} · {savedEffort}</span>
+      {/if}
       <StatusBadge status={detail.execution.status} hasQuestions={$executionsWithQuestions.has(detail.execution.id)} />
       {#if isTerminable}
         <Button variant={isCompletionEligible ? 'outline' : 'destructive'} size="sm" disabled={terminateMut.isPending} onclick={() => { terminateError = null; showTerminateDialog = true; }}>
@@ -1088,6 +1115,9 @@
         </Button>
       {/if}
       <span class="desktop-only-actions">
+        <Button variant="ghost" size="sm" class="agents-action" aria-label={poolQuery.data ? `Manage execution agents (${poolQuery.data.length})` : 'Manage execution agents'} onclick={() => agentPoolDialogExecutionId.set(executionId)}>
+          {poolQuery.data ? `Agents · ${poolQuery.data.length}` : 'Agents'}
+        </Button>
         {#if isRecoverable}
           <Button variant="secondary" size="sm" disabled={recoverMut.isPending} onclick={handleRecover}>
             {recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}
@@ -1109,11 +1139,18 @@
           </Button>
         {/if}
       </span>
-      {#if isMobile}
-        <div class="overflow-menu-wrapper">
+      <div class="overflow-menu-wrapper">
           <button class="overflow-menu-btn" aria-label="More actions" onclick={(e) => { e.stopPropagation(); overflowMenuOpen = !overflowMenuOpen; }}>⋯</button>
           {#if overflowMenuOpen}
             <div class="overflow-menu">
+              {#if activeAgent}
+                <div class="overflow-summary" title={settingsTitle} aria-label={settingsTitle}>
+                  <span class="overflow-summary-agent">{summaryAgentName}</span>
+                  <span class="overflow-summary-meta">{savedModel} · {savedEffort}</span>
+                </div>
+                <div class="overflow-sep" role="separator"></div>
+              {/if}
+              <button class="overflow-item" onclick={() => { overflowMenuOpen = false; agentPoolDialogExecutionId.set(executionId); }}>{poolQuery.data ? `Agents · ${poolQuery.data.length}` : 'Agents'}</button>
               {#if isRecoverable}
                 <button class="overflow-item" disabled={recoverMut.isPending} onclick={() => { overflowMenuOpen = false; handleRecover(); }}>{recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}</button>
               {/if}
@@ -1126,11 +1163,12 @@
               {#if detail.execution.project_id}
                 <button class="overflow-item" onclick={() => { overflowMenuOpen = false; openSearchTab(detail!.execution.project_id!); router.navigate('#/wiki'); }}>Wiki</button>
               {/if}
-              <button class="overflow-item" onclick={() => { overflowMenuOpen = false; showDetailsOverlay = true; }}>Execution Details</button>
+              {#if isMobile}
+                <button class="overflow-item" onclick={() => { overflowMenuOpen = false; showDetailsOverlay = true; }}>Execution Details</button>
+              {/if}
             </div>
           {/if}
         </div>
-      {/if}
     </div>
     {#if recoverError}
       <div class="action-error">{recoverError}</div>
@@ -1252,6 +1290,12 @@
     </div>
   {/if}
 
+  <ExecutionAgentsDialog
+    {executionId}
+    projectId={detail.execution.project_id}
+    bind:open={() => $agentPoolDialogExecutionId === executionId, (v) => agentPoolDialogExecutionId.set(v ? executionId : null)}
+  />
+
   <AlertDialog.Root bind:open={showTerminateDialog}>
     <AlertDialog.Portal>
       <AlertDialog.Overlay class="modal-overlay" />
@@ -1278,6 +1322,7 @@
 
 <style>
   .detail-view {
+    container: detail-view / inline-size;
     flex: 1;
     min-height: 0;
     min-width: 0;
@@ -1479,6 +1524,30 @@
     color: hsl(var(--status-danger));
   }
 
+  .header-settings {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+  }
+
+  /* Constrained desktop widths: move the settings summary and actions into
+     the overflow menu instead of wrapping the header. */
+  @container detail-view (max-width: 720px) {
+    .header-settings,
+    .desktop-only-actions {
+      display: none;
+    }
+    .overflow-menu-wrapper {
+      display: block;
+    }
+  }
+
   .action-error {
     padding: 0.25rem 1rem;
     font-size: 0.8125rem;
@@ -1533,6 +1602,36 @@
     display: flex;
     flex-direction: column;
     gap: 0.0625rem;
+  }
+
+  .overflow-summary {
+    display: flex;
+    flex-direction: column;
+    padding: 0.375rem 0.625rem;
+    max-width: 16rem;
+    min-width: 0;
+  }
+
+  .overflow-summary-agent {
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: hsl(var(--foreground));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .overflow-summary-meta {
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+    overflow-wrap: anywhere;
+  }
+
+  .overflow-sep {
+    height: 1px;
+    margin: 0.125rem 0;
+    background: hsl(var(--border));
   }
 
   .overflow-item {
@@ -1628,7 +1727,8 @@
     .events-header {
       padding: 0.25rem 1rem;
     }
-    .desktop-only-actions {
+    .desktop-only-actions,
+    .header-settings {
       display: none;
     }
     .overflow-menu-wrapper {

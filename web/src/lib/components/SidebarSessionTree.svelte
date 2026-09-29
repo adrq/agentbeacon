@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { SessionSummary, Agent, UsageState, WorktreeInfo, SessionIdentity } from '../types';
   import { buildTree, partitionChildren, terminalSummaryText, containsSession, type TreeNode } from '../utils/treeLayout';
-  import AgentPill from './AgentPill.svelte';
   import { formatTokens } from '../format';
   import { sessionStatusLabel } from '../sessionStatus';
   import { api } from '../api';
   import { toasts } from '../stores/toasts';
   import CopyButton from './CopyButton.svelte';
+  import { agentPoolDialogExecutionId } from '../stores/appState';
 
   interface Props {
     sessions: SessionSummary[];
@@ -24,16 +24,6 @@
 
   let { sessions, agents, selectedSessionId = null, isTerminal = false, usageBySession, poolAgents, maxDepth, maxWidth, sessionIdentity, onselectsession, onstatuschange }: Props = $props();
 
-  async function handleTerminate(e: Event, sessionId: string) {
-    e.stopPropagation();
-    try {
-      await api.terminateSession(sessionId);
-      onstatuschange?.();
-    } catch (err) {
-      toasts.error(`Failed to terminate session: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    }
-  }
-
   async function handleRecover(e: Event, sessionId: string) {
     e.stopPropagation();
     try {
@@ -48,6 +38,12 @@
   function agentName(agentId: string): string {
     const agent = agents.find(a => a.id === agentId);
     return agent?.name ?? agentId.slice(0, 8);
+  }
+
+  // Short label for the fixed-width status slot; the full label goes in the title.
+  function compactStatusLabel(status: string, desiredBy: string | null | undefined): string {
+    if (status === 'stopped' && desiredBy === 'system:restart') return 'paused';
+    return status;
   }
 
   function statusIcon(status: string): string {
@@ -145,6 +141,8 @@
     ? `${formatTokens(usage.usedTokens)} / ${formatTokens(usage.contextWindow)} (${usagePct}%)`
     : usage && !usage.available ? 'Context tracking unavailable' : ''}
   {@const identity = sessionIdentity?.get(s.id)}
+  {@const fullStatus = sessionStatusLabel(s.status, s.desired_by)}
+  {@const ringColor = usageLevel === 'danger' ? 'var(--status-danger)' : usageLevel === 'warning' ? 'var(--status-attention)' : 'var(--status-success)'}
 
   <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
   <div
@@ -167,34 +165,39 @@
     {/if}
     <span class="node-icon">{statusIcon(s.status)}</span>
     <span class="node-label">
-      <span class="node-slug">{identity?.slug ?? agentName(s.agent_id)}</span>
+      <span class="node-slug" title={identity?.hierarchicalName ?? undefined}>{identity?.slug ?? agentName(s.agent_id)}</span>
       {#if identity?.agentName}
-        <AgentPill name={identity.agentName} />
+        <span class="node-agent" title="Agent: {identity.agentName}{identity.role ? ` (${identity.role})` : ''}">{identity.agentName}</span>
       {/if}
     </span>
-    <span class="node-status">{sessionStatusLabel(s.status, s.desired_by, s.status)}</span>
+    <span class="node-status" title={fullStatus}>{compactStatusLabel(s.status, s.desired_by)}</span>
     {#if usagePct !== null}
       <span
-        class="context-bar"
+        class="context-ring"
         role="meter"
         aria-label="Context: {usagePct}%"
         aria-valuenow={usagePct}
         aria-valuemin={0}
         aria-valuemax={100}
       >
-        <span class="context-fill {usageLevel}" style="width: {usagePct}%"></span>
+        <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+          <circle class="ring-track" cx="7" cy="7" r="6" />
+          <circle
+            class="ring-arc"
+            cx="7" cy="7" r="6"
+            pathLength="100"
+            stroke="hsl({ringColor})"
+            stroke-dasharray="{usagePct} 100"
+            transform="rotate(-90 7 7)"
+          />
+        </svg>
       </span>
     {:else if usage && !usage.available}
-      <span class="context-bar unavailable"><span class="context-dash">&mdash;</span></span>
+      <span class="context-ring unavailable"><span class="context-dash">&mdash;</span></span>
     {:else}
-      <span class="context-bar placeholder" aria-hidden="true"></span>
+      <span class="context-ring placeholder" aria-hidden="true"></span>
     {/if}
     <span class="action-zone">
-      {#if s.outcome == null}
-        <button class="action-btn cancel-btn" title="Terminate session" onclick={(e) => handleTerminate(e, s.id)}>
-          &#x2717;
-        </button>
-      {/if}
       {#if s.outcome === 'failed' && s.agent_session_id}
         <button class="action-btn recover-btn" title="Attempt recovery" onclick={(e) => handleRecover(e, s.id)}>
           &#x21BB;
@@ -247,11 +250,15 @@
       <CopyButton text={worktreePath} label="Copy working directory path" />
     </div>
   {/if}
-  {#if (poolAgents ?? []).length > 0}
-    <div class="pool-pills">
-      {#each poolAgents ?? [] as entry (entry.agent_id)}
-        <span class="pool-pill">{entry.name}</span>
-      {/each}
+  {#if leadSession}
+    <!-- poolAgents is undefined while the pool is loading or unavailable -->
+    <div class="pool-row">
+      <button
+        class="pool-action"
+        aria-label={poolAgents ? `Manage execution agents (${poolAgents.length})` : 'Manage execution agents'}
+        title={poolAgents ? poolAgents.map(a => a.name).join(', ') || 'No agents' : undefined}
+        onclick={() => agentPoolDialogExecutionId.set(leadSession!.execution_id)}
+      >{poolAgents ? `Agents · ${poolAgents.length}` : 'Agents'}</button>
     </div>
   {/if}
   <div class="tree-nodes">
@@ -324,21 +331,28 @@
     font-weight: 500;
   }
 
-  .pool-pills {
+  .pool-row {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem;
-    padding: 0.1875rem 0.75rem;
+    padding: 0.125rem 0.75rem;
   }
 
-  .pool-pill {
-    display: inline-block;
+  .pool-action {
     padding: 0.0625rem 0.3125rem;
+    border: 1px solid hsl(var(--border));
     border-radius: var(--radius-sm);
-    background: hsl(var(--primary) / 0.1);
-    color: hsl(var(--primary));
+    background: transparent;
+    color: hsl(var(--muted-foreground));
     font-size: 0.625rem;
     font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+  }
+
+  .pool-action:hover,
+  .pool-action:focus-visible {
+    background: hsl(var(--muted) / 0.5);
+    color: hsl(var(--foreground));
   }
 
   .tree-nodes {
@@ -435,44 +449,63 @@
     font-weight: 500;
   }
 
+  /* The slug keeps its natural width (normal slugs are at most 11 chars);
+     the agent name absorbs almost all shrinkage before the slug truncates. */
   .node-slug {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 2rem;
   }
 
-  .node-status {
+  .node-agent {
+    flex: 0 1000 auto;
+    min-width: 0;
+    max-width: 7rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 0.625rem;
     color: hsl(var(--muted-foreground));
-    flex-shrink: 0;
   }
 
-  .context-bar {
+  .node-status {
+    width: 3.75rem;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+    font-size: 0.625rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .context-ring {
     display: inline-flex;
     align-items: center;
-    width: 2rem;
-    height: 0.3125rem;
-    background: hsl(var(--muted) / 0.4);
-    border-radius: 2px;
-    overflow: hidden;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
     flex-shrink: 0;
   }
 
-  .context-fill {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.3s ease;
+  .context-ring svg {
+    display: block;
   }
 
-  .context-fill.ok { background: hsl(var(--status-success)); }
-  .context-fill.warning { background: hsl(var(--status-attention)); }
-  .context-fill.danger { background: hsl(var(--status-danger)); }
+  .ring-track,
+  .ring-arc {
+    fill: none;
+    stroke-width: 2;
+  }
 
-  .context-bar.unavailable {
-    background: transparent;
-    justify-content: center;
+  .ring-track {
+    stroke: hsl(var(--muted));
+  }
+
+  .ring-arc {
+    transition: stroke-dasharray 0.3s ease;
   }
 
   .context-dash {
@@ -480,16 +513,15 @@
     font-size: 0.5rem;
   }
 
-  .context-bar.placeholder {
+  .context-ring.placeholder {
     visibility: hidden;
   }
 
   .action-zone {
     display: flex;
     align-items: center;
-    gap: 0.125rem;
     flex-shrink: 0;
-    width: 2.25rem;
+    width: 1rem;
     justify-content: flex-end;
   }
 
@@ -510,13 +542,15 @@
     transition: opacity 0.1s, color 0.1s, background 0.1s;
   }
 
-  .sidebar-node:hover .action-zone .action-btn {
+  .sidebar-node:hover .action-zone .action-btn,
+  .action-btn:focus-visible {
     opacity: 1;
   }
 
-  .cancel-btn:hover {
-    color: hsl(var(--status-danger));
-    background: hsl(var(--status-danger) / 0.1);
+  @media (hover: none) {
+    .action-btn {
+      opacity: 1;
+    }
   }
 
   .recover-btn:hover {
