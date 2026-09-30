@@ -9,6 +9,7 @@ resolver = "2"
 [workspace.package]
 version = "0.16.0"
 edition = "2024"
+license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 # Shared across 2+ crates — single source of truth for versions.

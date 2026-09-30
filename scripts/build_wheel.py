@@ -122,15 +122,15 @@ def wheel_filename(name: str, version: str, tags: list[str]) -> str:
 
 
 def generate_metadata(name: str, version: str) -> str:
-    """PEP 566 METADATA content."""
+    """Core metadata 2.4 METADATA content (PEP 639 license fields)."""
     return (
-        f"Metadata-Version: 2.1\n"
+        f"Metadata-Version: 2.4\n"
         f"Name: {name}\n"
         f"Version: {version}\n"
         f"Summary: Multi-agent orchestrator for AI coding tools\n"
-        f"License: Apache-2.0\n"
+        f"License-Expression: AGPL-3.0-or-later\n"
+        f"License-File: LICENSE\n"
         f"Requires-Python: >=3.10\n"
-        f"Classifier: License :: OSI Approved :: Apache Software License\n"
         f"Classifier: Operating System :: POSIX :: Linux\n"
         f"Project-URL: Homepage, https://github.com/adrq/agentbeacon\n"
         f"Project-URL: Repository, https://github.com/adrq/agentbeacon\n"
@@ -241,17 +241,15 @@ def build_wheel(
             zf.write_file(arcname, file_data, executable=True)
             records.append(record_entry(arcname, file_data))
 
-        # 3. LICENSE + NOTICE -> dist-info/licenses/
-        # Both required: Apache 2.0 mandates NOTICE distribution.
-        license_dir = cargo_toml.parent
-        for license_file in ("LICENSE", "NOTICE"):
-            src = license_dir / license_file
-            if not src.is_file():
-                raise FileNotFoundError(f"Required license file not found: {src}")
-            arcname = f"{dist_info}/licenses/{license_file}"
-            file_data = src.read_bytes()
-            zf.write_file(arcname, file_data)
-            records.append(record_entry(arcname, file_data))
+        # 3. LICENSE -> dist-info/licenses/
+        # Path must match the License-File entry in METADATA (relative to licenses/).
+        src = cargo_toml.parent / "LICENSE"
+        if not src.is_file():
+            raise FileNotFoundError(f"Required license file not found: {src}")
+        arcname = f"{dist_info}/licenses/LICENSE"
+        file_data = src.read_bytes()
+        zf.write_file(arcname, file_data)
+        records.append(record_entry(arcname, file_data))
 
         # 4. METADATA
         metadata_content = generate_metadata(PACKAGE_NAME, version).encode()

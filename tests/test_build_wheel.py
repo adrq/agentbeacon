@@ -120,11 +120,18 @@ def test_wheel_filename_format():
 
 def test_generate_metadata_fields():
     meta = generate_metadata("agentbeacon", "0.1.0")
-    assert "Metadata-Version: 2.1" in meta
-    assert "Name: agentbeacon" in meta
-    assert "Version: 0.1.0" in meta
-    assert "Requires-Python: >=3.10" in meta
-    assert "License: Apache-2.0" in meta
+    lines = meta.splitlines()
+    assert lines[0] == "Metadata-Version: 2.4"
+    assert "Name: agentbeacon" in lines
+    assert "Version: 0.1.0" in lines
+    assert "Requires-Python: >=3.10" in lines
+    assert "License-Expression: AGPL-3.0-or-later" in lines
+    assert [line for line in lines if line.startswith("License-File:")] == [
+        "License-File: LICENSE"
+    ]
+    # PEP 639 deprecates License: and license classifiers alongside License-Expression.
+    assert [line for line in lines if line.startswith("License:")] == []
+    assert [line for line in lines if line.startswith("Classifier: License ::")] == []
 
 
 # ---------------------------------------------------------------------------
@@ -210,9 +217,8 @@ def test_wheel_reproducible(tmp_path):
     cargo = tmp_path / "Cargo.toml"
     cargo.write_text('[workspace.package]\nversion = "1.0.0"\n')
 
-    # License files required by build_wheel.
-    (tmp_path / "LICENSE").write_text("Apache License 2.0")
-    (tmp_path / "NOTICE").write_text("Test notice")
+    # LICENSE required by build_wheel.
+    (tmp_path / "LICENSE").write_text("stub LICENSE")
 
     out1 = tmp_path / "dist1"
     out2 = tmp_path / "dist2"

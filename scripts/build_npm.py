@@ -43,7 +43,7 @@ WRAPPER_JS_FILES = [
     "lib/resolve.js",
 ]
 
-LICENSE_FILES = ["LICENSE", "NOTICE"]
+LICENSE_FILES = ["LICENSE"]
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ def generate_platform_package_json(target: str, version: str) -> str:
         "name": name,
         "version": version,
         "description": f"AgentBeacon platform binaries for {info['os']} {info['cpu']}",
-        "license": "Apache-2.0",
+        "license": "AGPL-3.0-or-later",
         "repository": {
             "type": "git",
             "url": "https://github.com/adrq/agentbeacon",
@@ -117,7 +117,6 @@ def generate_platform_package_json(target: str, version: str) -> str:
         "files": [
             "bin/",
             "LICENSE",
-            "NOTICE",
         ],
     }
     return json.dumps(data, indent=2) + "\n"
@@ -134,7 +133,7 @@ def generate_wrapper_package_json(version: str) -> str:
         "name": PACKAGE_NAME,
         "version": version,
         "description": "Multi-agent orchestrator for AI coding tools",
-        "license": "Apache-2.0",
+        "license": "AGPL-3.0-or-later",
         "repository": {
             "type": "git",
             "url": "https://github.com/adrq/agentbeacon",
@@ -147,7 +146,6 @@ def generate_wrapper_package_json(version: str) -> str:
             "bin/",
             "lib/",
             "LICENSE",
-            "NOTICE",
         ],
         "publishConfig": {"access": "public"},
         "optionalDependencies": optional_deps,

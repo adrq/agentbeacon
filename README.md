@@ -10,7 +10,7 @@
   <a href="#how-it-works">How It Works</a> &middot;
   <a href="#why-it-works-this-way">Why It Works</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
-  <a href="LICENSE">Apache 2.0</a>
+  <a href="LICENSE">AGPL-3.0-or-later</a>
 </p>
 
 
@@ -124,6 +124,26 @@ Requires Rust toolchain and Node.js 20+.
 
 **Early release.** Core coordination loop works end-to-end: create executions, delegate to multi-agent teams, answer structured questions, review results with full decision and code change logs.
 
+### API v1
+
+The REST and SSE API now lives under `/api/v1`. **The unversioned product paths
+are gone** — this release does not serve `/api/executions`, `/api/sessions`,
+`/api/messages`, `/api/escalate`, `/api/decisions`, `/api/wiki/*` or
+`/api/projects/*`. Update any script or integration to the `/api/v1` prefix.
+
+Unchanged and still unversioned: `/api/health`, `/api/ready`, `/api/docs`,
+`/rpc`, `/.well-known/agent-card.json` and `/mcp`. New: `GET /api/versions`,
+which reports the point versions and operational limits a client should read
+instead of hardcoding. See `docs/api-versioning.md` and `docs/api-problems.md`.
+
+Two upgrade notes:
+
+- **Resolve pending decisions before upgrading.** Decisions asked before this
+  release do not appear in the v1 decisions feed; they remain in the event log.
+- **If you set `briefing.use_db_overrides` to `true`**, your stored briefing
+  sections still contain unversioned URLs. Update them; the default is `false`
+  and unmodified installs need no action.
+
 ## Contributing
 
 Contributions welcome. See `AGENTS.md` for development setup and coding conventions.
@@ -135,4 +155,6 @@ make pre-commit    # Run pre-commit hooks
 
 ## License
 
-[Apache 2.0](LICENSE)
+Copyright 2025-2026 Adrian Quiroga
+
+[GNU AGPLv3 or later](LICENSE)

@@ -93,10 +93,10 @@ def test_platform_package_json_fields():
     )
     assert pkg_json["name"] == "@agentbeacon/cli-linux-x64"
     assert pkg_json["version"] == "1.2.3"
-    assert pkg_json["license"] == "Apache-2.0"
+    assert pkg_json["license"] == "AGPL-3.0-or-later"
     assert pkg_json["preferUnplugged"] is True
     assert pkg_json["publishConfig"] == {"access": "public"}
-    assert pkg_json["files"] == ["bin/", "LICENSE", "NOTICE"]
+    assert pkg_json["files"] == ["bin/", "LICENSE"]
 
 
 def test_platform_package_json_os_cpu_are_arrays():
@@ -118,8 +118,8 @@ def test_wrapper_package_json_fields():
     pkg_json = json.loads(generate_wrapper_package_json("0.1.0"))
     assert pkg_json["name"] == "agentbeacon"
     assert pkg_json["version"] == "0.1.0"
-    assert pkg_json["license"] == "Apache-2.0"
-    assert pkg_json["files"] == ["bin/", "lib/", "LICENSE", "NOTICE"]
+    assert pkg_json["license"] == "AGPL-3.0-or-later"
+    assert pkg_json["files"] == ["bin/", "lib/", "LICENSE"]
     assert pkg_json["publishConfig"] == {"access": "public"}
     assert "optionalDependencies" in pkg_json
 
@@ -162,7 +162,7 @@ def _make_stub_binaries(binary_dir: Path) -> None:
 
 
 def _make_stub_license(license_dir: Path) -> None:
-    """Create stub LICENSE and NOTICE files."""
+    """Create stub license files."""
     for fname in LICENSE_FILES:
         (license_dir / fname).write_text(f"stub {fname}")
 
@@ -190,7 +190,11 @@ def test_build_platform_package_structure(tmp_path):
     assert (pkg_dir / "bin" / "agentbeacon").is_file()
     assert (pkg_dir / "bin" / "agentbeacon-worker").is_file()
     assert (pkg_dir / "LICENSE").is_file()
-    assert (pkg_dir / "NOTICE").is_file()
+    assert sorted(p.name for p in pkg_dir.iterdir()) == [
+        "LICENSE",
+        "bin",
+        "package.json",
+    ]
 
 
 def test_build_platform_package_binary_executable(tmp_path):
@@ -257,7 +261,12 @@ def test_build_wrapper_package_structure(tmp_path):
     assert (pkg_dir / "bin" / "worker.js").is_file()
     assert (pkg_dir / "lib" / "resolve.js").is_file()
     assert (pkg_dir / "LICENSE").is_file()
-    assert (pkg_dir / "NOTICE").is_file()
+    assert sorted(p.name for p in pkg_dir.iterdir()) == [
+        "LICENSE",
+        "bin",
+        "lib",
+        "package.json",
+    ]
 
 
 def test_build_wrapper_package_missing_source_raises(tmp_path):

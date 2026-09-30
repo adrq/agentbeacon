@@ -3,6 +3,7 @@ name = "agentbeacon"
 version = "0.16.0"
 description = "Multi-agent orchestrator for AI coding tools"
 requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
 
 [dependency-groups]
 dev = [

@@ -129,8 +129,22 @@ def test_wheel_contains_expected_files(built_wheel):
     assert f"agentbeacon-{VERSION}.dist-info/METADATA" in names
     assert f"agentbeacon-{VERSION}.dist-info/WHEEL" in names
     assert f"agentbeacon-{VERSION}.dist-info/RECORD" in names
-    assert f"agentbeacon-{VERSION}.dist-info/licenses/LICENSE" in names
-    assert f"agentbeacon-{VERSION}.dist-info/licenses/NOTICE" in names
+    license_entries = sorted(
+        n for n in names if n.startswith(f"agentbeacon-{VERSION}.dist-info/licenses/")
+    )
+    assert license_entries == [f"agentbeacon-{VERSION}.dist-info/licenses/LICENSE"]
+
+
+@skip_no_host_musl
+def test_wheel_metadata_license_fields(built_wheel):
+    with zipfile.ZipFile(built_wheel) as zf:
+        meta = zf.read(f"agentbeacon-{VERSION}.dist-info/METADATA").decode()
+        license_data = zf.read(f"agentbeacon-{VERSION}.dist-info/licenses/LICENSE")
+    lines = meta.splitlines()
+    assert lines[0] == "Metadata-Version: 2.4"
+    assert "License-Expression: AGPL-3.0-or-later" in lines
+    assert "License-File: LICENSE" in lines
+    assert license_data == (CARGO_TOML.parent / "LICENSE").read_bytes()
 
 
 @skip_no_host_musl

@@ -2,6 +2,7 @@
 name = "worker"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "agentbeacon-worker"
