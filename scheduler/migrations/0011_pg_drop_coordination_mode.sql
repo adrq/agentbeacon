@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Drop coordination_mode column — MCP-poll integration model removed per D18.
 ALTER TABLE sessions DROP COLUMN coordination_mode;
 

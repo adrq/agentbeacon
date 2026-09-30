@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Embedded JSON Schemas for validation
 // All schemas are embedded at compile time to eliminate runtime file dependencies
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Common utilities for test process and file cleanup.
 
 These helpers centralize robust termination of subprocesses and cleanup of

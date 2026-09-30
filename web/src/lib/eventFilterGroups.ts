@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 export type EventFilter = 'all' | 'messages' | 'tools' | 'errors' | 'status' | 'debug';
 
 export const EVENT_FILTER_GROUPS: Record<Exclude<EventFilter, 'all' | 'debug'>, Set<string>> = {

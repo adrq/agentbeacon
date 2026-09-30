@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- 0025: Share tag membership and project slugs.
 -- ADD COLUMN + CREATE INDEX only: no table rebuild on this table.
 -- projects.slug is filled by the startup backfill, which only touches NULLs.

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 [project]
 name = "agentbeacon"
 version = "0.16.0"

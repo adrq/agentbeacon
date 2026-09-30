@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Support python -m agentbeacon by exec'ing the binary."""
 
 import os

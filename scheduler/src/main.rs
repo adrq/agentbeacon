@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 #[cfg(target_env = "musl")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;

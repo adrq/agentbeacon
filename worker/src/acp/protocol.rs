@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! ACP protocol JSON-RPC types for worker ↔ agent communication.
 
 use serde::{Deserialize, Serialize};

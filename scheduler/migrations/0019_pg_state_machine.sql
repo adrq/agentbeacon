@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 ALTER TABLE sessions ADD COLUMN desired TEXT NOT NULL DEFAULT 'run';
 ALTER TABLE sessions ADD COLUMN executor_state TEXT NOT NULL DEFAULT 'unassigned';
 ALTER TABLE sessions ADD COLUMN outcome TEXT;

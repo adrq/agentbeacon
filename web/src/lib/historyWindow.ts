@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Merging a read of history into a cached one, and the paging bounds a
 // session's cached window currently carries.
 import { writable, type Readable } from 'svelte/store';

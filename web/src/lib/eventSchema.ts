@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Payload schema support, shared by the renderers.
 
 /** Payload schema versions this client understands. */

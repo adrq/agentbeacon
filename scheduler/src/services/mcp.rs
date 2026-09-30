@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use crate::db::project_mcp_servers::McpServerPoolEntry;
 use serde_json::Value as JsonValue;
 

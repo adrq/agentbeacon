@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // JSON Lines protocol types between Rust worker and Node.js executor wrappers.
 
 // --- A2A-compatible Part type ---

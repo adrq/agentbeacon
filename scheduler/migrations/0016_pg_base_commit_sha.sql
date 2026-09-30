@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Migration 0016: Add base_commit_sha to sessions (PostgreSQL)
 
 ALTER TABLE sessions ADD COLUMN base_commit_sha TEXT;

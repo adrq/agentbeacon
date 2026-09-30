@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { test, expect, type Page } from '@playwright/test';
 
 // Verifies sidebar execution ordering (ExecutionList.svelte): executions

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Tests validating Tier 1 build prerequisites.
 
 Run with: uv run pytest tests/integration/test_build_prerequisites.py -v

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Real SDK smoke tests — validates end-to-end execution with live APIs.
 
 Disabled by default (requires API keys + costs money).

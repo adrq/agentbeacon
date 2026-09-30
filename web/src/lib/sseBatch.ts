@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Batches SSE cache writes and classifies event newness. Kept dependency-free
 // (cache + scheduler injected) so it runs standalone in fast unit tests.
 

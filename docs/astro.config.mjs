@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 const base = process.env.DOCS_BASE ?? '/docs/';

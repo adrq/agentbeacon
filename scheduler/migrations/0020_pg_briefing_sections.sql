@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- 0020: Seed new briefing sections (coordination, messaging, recovery) and slim rest_api.
 -- Uses standard single-quote strings (no dollar-quoting) so sqlx::Any can parse them.
 

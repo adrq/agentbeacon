@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// A2A v1.0 task state enum values (wire format).

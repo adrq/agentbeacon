@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Test that agent card returns correct URL for different ports.
 
 This test validates that the scheduler's agent card endpoint returns

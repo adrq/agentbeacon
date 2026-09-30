@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 <script lang="ts">
   import type { Event, Agent, AgentPoolEntry, SessionSummary, AgentType } from '../types';
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isModelRefusalFallbackData, isModelRefusalNoFallbackData, refusalModelName, refusalDisplayText } from '../types';

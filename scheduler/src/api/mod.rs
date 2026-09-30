@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use axum::{Router, routing::any};
 
 use crate::api::problem::{Problem, ProblemCode};

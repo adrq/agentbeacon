@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Events index changes.
 
 CREATE INDEX IF NOT EXISTS idx_events_execution_id_id ON events(execution_id, id);

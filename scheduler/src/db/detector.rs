@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Post-cutover orphan-source detector: an admin CLI audit that reports any answer source
 //! lacking a matching marker under its batch owner.
 

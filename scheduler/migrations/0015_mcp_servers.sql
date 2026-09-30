@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Migration 0015: MCP server configuration
 -- Adds mcp_servers table and project_mcp_servers junction table.
 

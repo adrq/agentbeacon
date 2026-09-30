@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Unified SDK executor adapter — spawns a Node.js wrapper that drives either
 //! the Claude Agent SDK or GitHub Copilot SDK, communicating over stdin/stdout
 //! JSON Lines.

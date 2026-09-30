@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Migration 0002 (PostgreSQL): Rename workspaces to projects, add new columns
 --
 -- PostgreSQL supports ALTER TABLE ... RENAME COLUMN directly, so we don't need

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Unit tests for scripts/build_npm.py -- all pure functions."""
 
 from __future__ import annotations

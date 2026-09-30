@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Stdin/stdout helpers for JSON Lines protocol communication.
 
 import * as readline from "node:readline";

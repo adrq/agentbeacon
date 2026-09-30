@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga */
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
 @import 'diff2html/bundles/css/diff2html.min.css';
 
 /* Override diff2html's own CSS custom properties so any selector we don't

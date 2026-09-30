@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 <script lang="ts">
   import { selectedFilterProjectId, selectedExecutionId, selectedSessionId, usageBySession, executionActivity, observeExecutionStatuses } from '../stores/appState';
   import { executionsQuery, executionDetailQuery, executionAgentsQuery, executionSessionsQuery, buildSessionIdentityMap } from '../queries/executions';

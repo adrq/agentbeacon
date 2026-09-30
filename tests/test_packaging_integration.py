@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Integration tests for wheel generation and installation.
 
 Requires musl binaries for the host architecture to be built.

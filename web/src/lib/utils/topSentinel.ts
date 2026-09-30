@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Svelte action: runs a callback when a reader reaches the top of a list.
 
 export interface TopSentinelOptions {

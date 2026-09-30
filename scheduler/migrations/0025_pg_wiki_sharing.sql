@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- 0025: Share tag membership and project slugs (PostgreSQL).
 
 CREATE TABLE wiki_tag_members (

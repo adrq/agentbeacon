@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 <script lang="ts">
   import type { ExecutionStatus, SessionStatus } from '../types';
 

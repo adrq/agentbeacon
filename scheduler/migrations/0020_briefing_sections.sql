@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- 0020: Seed new briefing sections (coordination, messaging, recovery) and slim rest_api.
 -- Note: avoid '' (escaped quotes) and ; inside SQL string literals — the migration runner
 -- splits on ; and the sqlparser tokenizer corrupts escaped quotes during type replacement.

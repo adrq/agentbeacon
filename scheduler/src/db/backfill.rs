@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Migration 0024 backfill: synthesizes a resolution marker for every eligible historical
 //! answer source. Runs as a code-step inside the 0024 migration transaction.
 

@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Migration 0005: Data model split (Drivers / Agents / Sessions)
 -- Introduces drivers table, adds driver_id FK to agents, creates execution_agents junction.
 

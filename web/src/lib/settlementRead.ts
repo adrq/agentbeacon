@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Re-reading a cached query after the session it belongs to is released.
 import type { QueryClient } from '@tanstack/svelte-query';
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import type { Event as BeaconEvent, EphemeralEvent } from './types';
 import type { ProblemDetails } from './api';
 import { streamUrl } from './sseBatch';

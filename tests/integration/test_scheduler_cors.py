@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """CORS security integration tests for scheduler.
 
 Validates that the scheduler enforces restricted CORS policies to prevent

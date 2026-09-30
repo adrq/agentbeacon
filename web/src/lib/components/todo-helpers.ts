@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import type { TodoItem } from '../types';
 
 /** Status → icon character mapping used by both inline and pinned renderers. */

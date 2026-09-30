@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- 0022: Add sandbox_policy column to executions and sessions.
 -- SQLite: recreate tables to enforce NOT NULL.
 

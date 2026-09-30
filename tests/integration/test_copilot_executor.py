@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Integration tests for the Copilot executor adapter.
 
 These tests use real Copilot/GitHub auth and cost real money.

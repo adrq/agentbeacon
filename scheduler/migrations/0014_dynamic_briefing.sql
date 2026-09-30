@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Migration 0014: Dynamic agent briefing
 -- Adds system_prompt column to agents, drops default_agent_id from projects,
 -- creates project_agents junction table, seeds briefing config.

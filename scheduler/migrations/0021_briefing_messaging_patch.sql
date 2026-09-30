@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- 0021: Add PATCH (edit) example to briefing.messaging.
 
 INSERT INTO config (name, value, created_at, updated_at) VALUES

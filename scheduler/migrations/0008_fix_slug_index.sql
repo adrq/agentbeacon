@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Fix slug uniqueness index: scope root sessions per-execution (not globally).
 -- The original index on (COALESCE(parent_session_id, ''), slug) caused root sessions
 -- across different executions to collide on slugs.

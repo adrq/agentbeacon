@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Flatten A2A v1.0 JSON Schema by rewriting external $ref targets to internal #/definitions/ paths.
 
 The upstream schema uses external-looking filenames as $ref targets

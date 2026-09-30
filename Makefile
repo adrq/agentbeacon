@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 .PHONY: all build build-frontend build-docs build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-e2e-serial test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm run clean pre-commit dev-backend dev-frontend dev-docs
 
 RUST_STRICT_FLAGS ?= -Dwarnings

@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 <script lang="ts">
   import { get } from 'svelte/store';
   import { activeSection, sidebarOpen, selectedExecutionId, selectedProjectId, selectedAgentId, actionPanelCollapsed, userExplicitlyCollapsed, homeFeedFilter, routeMode } from '../stores/appState';

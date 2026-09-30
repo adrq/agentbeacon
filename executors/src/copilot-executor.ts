@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Redirect console to stderr before any imports — SDK or transitive deps
 // may call console.log which would corrupt the JSON Lines protocol on stdout.
 console.log = (...args: unknown[]) => console.error(...args);

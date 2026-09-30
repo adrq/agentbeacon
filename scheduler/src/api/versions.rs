@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use axum::{Json, Router, http::header, response::IntoResponse, routing::get};
 use serde::Serialize;
 use serde_json::{Map, Value, json};

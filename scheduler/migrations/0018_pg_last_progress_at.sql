@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- 0018: Add last_progress_at column to sessions
 -- Separates real progress (turn results, session claims) from heartbeat liveness
 -- (updated_at). Prevents stuck sessions from being masked by fresh heartbeats.

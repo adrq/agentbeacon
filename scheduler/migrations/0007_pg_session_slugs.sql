@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Add slug column for hierarchical naming (Docker-style adjective-noun)
 ALTER TABLE sessions ADD COLUMN slug TEXT NOT NULL DEFAULT '';
 

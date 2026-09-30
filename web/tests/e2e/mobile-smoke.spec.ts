@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { test, expect } from '@playwright/test';
 
 test('mobile: home page loads at mobile viewport', async ({ page }) => {

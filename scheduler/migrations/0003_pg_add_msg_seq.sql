@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- Add msg_seq for sequence-based deduplication of mid-turn messages.
 -- NULLs are distinct in unique indexes, so state_change/platform events
 -- (which have msg_seq = NULL) never conflict.

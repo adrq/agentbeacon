@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Reading pages of a session's history and recording the window they form.
 import type { QueryClient } from '@tanstack/svelte-query';
 import type { Event, Page } from './types';

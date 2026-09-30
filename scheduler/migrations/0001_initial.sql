@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- AgentBeacon target schema: lead-agent coordination model
 -- Replaces static DAG workflow model with A2A-aligned execution tracking
 

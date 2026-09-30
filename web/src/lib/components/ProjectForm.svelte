@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 <script lang="ts">
   import { createProjectMutation, updateProjectMutation, projectDetailQuery } from '../queries/projects';
   import { ApiError } from '../api';

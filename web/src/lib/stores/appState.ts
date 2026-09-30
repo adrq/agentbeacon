@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { writable } from 'svelte/store';
 import type { Theme, NavSection, ExecutionPrefill, RouteMode, UsageState, Execution } from '../types';
 

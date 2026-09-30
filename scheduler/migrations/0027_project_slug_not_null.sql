@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 -- 0027: Enforce projects.slug NOT NULL.
 -- Every row was given a slug by the 0026 code step.
 -- SQLite has no ALTER COLUMN, so the table is rebuilt. The runner toggles

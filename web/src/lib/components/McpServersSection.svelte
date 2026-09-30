@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 <script lang="ts">
   import { Dialog, AlertDialog } from 'bits-ui';
   import type { McpServer } from '../types';

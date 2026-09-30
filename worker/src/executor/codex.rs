@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Codex executor adapter — drives the Codex `app-server` binary via
 //! bidirectional JSON-RPC 2.0 over stdio.
 //!

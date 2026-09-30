@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { writable, derived, get } from 'svelte/store';
 import type { QuestionState } from '../questions';
 import type { DecisionBatchResponse, DecisionSummaryResponse } from '../types';

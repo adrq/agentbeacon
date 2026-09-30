@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Verify musl-static binaries are truly static and correctly targeted.
 
 These tests require musl binaries to be built first: make build-musl

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 const STATUS_LABELS: Record<string, string> = {
   working: 'Working',
   awaiting_input: 'Turn Complete',

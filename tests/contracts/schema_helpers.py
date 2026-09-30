@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Shared helpers for contract validation tests.
 
 These utilities centralise schema loading and validation logic so multiple

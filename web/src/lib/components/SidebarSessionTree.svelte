@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 <script lang="ts">
   import type { SessionSummary, Agent, UsageState, WorktreeInfo, SessionIdentity } from '../types';
   import { buildTree, partitionChildren, terminalSummaryText, containsSession, type TreeNode } from '../utils/treeLayout';

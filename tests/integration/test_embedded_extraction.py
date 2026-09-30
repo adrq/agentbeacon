@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Integration tests for embedded executor extraction.
 
 Verifies that the worker binary extracts embedded executor JS files

@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+
 CREATE TABLE sessions_new (
     id TEXT PRIMARY KEY,
     execution_id TEXT NOT NULL,

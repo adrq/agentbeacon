@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 import { mount } from 'svelte'
 import '@fontsource/geist/400.css'

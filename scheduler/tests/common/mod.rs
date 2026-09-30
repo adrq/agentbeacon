@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Test utilities for new schema
 // Each integration test compiles this module independently, so not all
 // functions are used by every test file. Suppress false dead_code warnings.

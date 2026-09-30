@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! ACP executor adapter wrapping existing ACP subprocess management.
 //!
 //! Background task pattern: `start()` initializes the ACP subprocess (JSON-RPC
