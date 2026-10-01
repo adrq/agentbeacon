@@ -1,11 +1,6 @@
 # SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Tests validating Tier 1 build prerequisites.
-
-Run with: uv run pytest tests/integration/test_build_prerequisites.py -v
-"""
-
 import re
 import subprocess
 from pathlib import Path
@@ -68,7 +63,7 @@ def test_version_flags_match():
 
 
 def test_no_openssl_in_dependency_tree():
-    """Cargo.lock must not contain native-tls or openssl after rustls migration."""
+    """Cargo.lock contains no native-tls/openssl crates (TLS is rustls-only)."""
     content = CARGO_LOCK.read_text()
     for banned in [
         "native-tls",
@@ -79,5 +74,5 @@ def test_no_openssl_in_dependency_tree():
         "tokio-native-tls",
     ]:
         assert f'name = "{banned}"' not in content, (
-            f"Cargo.lock still contains {banned} — rustls migration incomplete"
+            f"Cargo.lock contains banned TLS crate {banned}"
         )

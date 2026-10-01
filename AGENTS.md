@@ -44,7 +44,7 @@ AGENTBEACON_PORT=9457 make dev-backend    # Terminal 1
 AGENTBEACON_PORT=9457 make dev-frontend   # Terminal 2 → http://localhost:10457
 
 # E2E test on non-default port:
-AGENTBEACON_PORT=9457 ./scripts/manual_e2e.sh
+AGENTBEACON_PORT=9457 ./scripts/e2e.sh
 ```
 
 The `agentbeacon` binary reads `AGENTBEACON_PORT`, so `AGENTBEACON_PORT=9457 ./bin/agentbeacon` works without `--port`. The Vite dev port can be overridden independently via `VITE_DEV_PORT` env var if needed.
@@ -104,7 +104,7 @@ Common pitfalls:
 - **"unable to open database file"**: `make run` handles this automatically. If running binaries directly (e.g., `./bin/agentbeacon`), do `touch scheduler-9456.db` first.
 - **"Text file busy"**: A running process holds the binary. Kill it first: `fuser -k 9456/tcp` or find the PID with `pgrep -f agentbeacon`.
 - **Workers fail to start executor**: Executor JS files not built. `make all` handles this, but if you built Rust only (`cargo build`), run `cd executors && npm install && npm run build` separately.
-- **Execution stuck at "submitted"**: All workers are occupied with `input-required` executions. Cancel existing executions via API (`curl -X POST http://localhost:9456/api/executions/<id>/cancel`) or the UI to free a worker.
-- **Workers not picking up work**: The default poll interval is 5s. Wait at least 10s after creating an execution. `e2e.sh` uses `--worker-poll-interval 1s` for faster pickup.
+- **Execution stuck at "submitted"**: All workers are occupied with `input-required` executions. Terminate existing executions via API (`curl -X POST http://localhost:9456/api/v1/executions/<id>/terminate`) or the UI to free a worker.
+- **Workers not picking up work**: The default poll interval is 5s. Wait at least 10s after creating an execution. Pass `--worker-poll-interval 1s` to `agentbeacon` for faster pickup.
 
 To run the automated Playwright E2E suite instead: `make test-e2e`

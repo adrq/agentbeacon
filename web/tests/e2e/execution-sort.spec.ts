@@ -42,14 +42,12 @@ function makeExecution(overrides: Record<string, unknown>) {
   };
 }
 
-// Timestamps are deliberately arranged so that a naive "newest first" sort
-// would NOT reproduce the expected order — the tier split must dominate.
 const EXECUTIONS = [
   makeExecution({
     id: IDLE_EXEC_ID,
     title: TITLE_IDLE,
     status: 'awaiting_input',
-    updated_at: '2026-07-24T12:00:00Z', // newest, but idle → must sink below working
+    updated_at: '2026-07-24T12:00:00Z',
   }),
   makeExecution({
     id: COMPLETED_EXEC_ID,
@@ -69,7 +67,7 @@ const EXECUTIONS = [
     id: PENDING_EXEC_ID,
     title: TITLE_PENDING,
     status: 'awaiting_input', // idle status; flagged as pending question below
-    updated_at: '2026-07-24T09:00:00Z', // oldest, but a real question → must float to top
+    updated_at: '2026-07-24T09:00:00Z',
   }),
 ];
 
@@ -144,17 +142,9 @@ const TITLE_FLIPPER = 'Flipper Exec';
 const TITLE_STALE = 'Stale Newer Exec';
 const TITLE_UNTOUCHED = 'Untouched Older Exec';
 
-// `updated_at` does not reflect every activity, so an execution that was just
-// worked on can carry an older `updated_at` than one nobody has touched in a
-// while. The client-side activity high-water mark must keep it on top once it
-// goes idle and both land in the same tier.
 test('recently active execution stays above an idle one with a newer updated_at', async ({ page }) => {
   let flipperStatus = 'working';
 
-  // Payload order deliberately contradicts both the expected order and the
-  // `updated_at` order: the untouched pair never changes status, so it must fall
-  // back to `updated_at`. If observation stamped executions on first sight they
-  // would all tie and the sort would silently degrade to this array order.
   await page.route('**/api/v1/executions*', route => {
     if (route.request().method() !== 'GET') {
       route.continue();
@@ -200,8 +190,6 @@ test('recently active execution stays above an idle one with a newer updated_at'
   expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
     .toEqual([TITLE_FLIPPER, TITLE_STALE, TITLE_UNTOUCHED]);
 
-  // Same order below, but earned by recency rather than tier: once the flipper
-  // goes idle all three are tier 2.
   flipperStatus = 'awaiting_input';
   await expect(
     items.filter({ hasText: TITLE_FLIPPER }).locator('.exec-status')
@@ -216,17 +204,10 @@ const LATE_EXEC_ID = 'exec-late-working';
 const TITLE_EARLY = 'Early Working Exec';
 const TITLE_LATE = 'Late Working Exec';
 
-// Within the running tier, the execution that most recently started working
-// sorts first. Stamping on every poll while `working` instead of only on the
-// transition into it would give both the same timestamp and collapse this to
-// payload order.
 test('concurrently working executions order by when they started working', async ({ page }) => {
   let earlyStatus = 'awaiting_input';
   let lateStatus = 'awaiting_input';
 
-  // The execution that starts working later is listed first in the payload and
-  // carries the older `updated_at`, so neither payload order nor `updated_at`
-  // can produce the expected order by accident.
   await page.route('**/api/v1/executions*', route => {
     if (route.request().method() !== 'GET') {
       route.continue();
@@ -263,7 +244,6 @@ test('concurrently working executions order by when they started working', async
 
   const items = page.locator('.exec-list .exec-item');
   await expect(items).toHaveCount(2);
-  // Baseline: both idle and unstamped, so `updated_at` decides.
   expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
     .toEqual([TITLE_EARLY, TITLE_LATE]);
 

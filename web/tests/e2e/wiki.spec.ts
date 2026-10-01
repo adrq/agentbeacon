@@ -437,8 +437,6 @@ async function createSharedProjectPair(tagName: string) {
       acknowledge_share: true,
     });
   }
-  // No explicit tag cleanup: cleanupTestData() soft-deletes every project, which
-  // deactivates the memberships and so retires the share tag with them.
   return { owner, member, tagId };
 }
 

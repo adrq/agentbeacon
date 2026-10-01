@@ -23,7 +23,7 @@ wheels = [
 ]
 
 [[package]]
-name = "agentbeacon"
+name = "agentbeacon-testing"
 version = "0.16.0"
 source = { editable = "." }
 

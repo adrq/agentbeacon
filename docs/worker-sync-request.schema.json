@@ -33,7 +33,7 @@
         },
         "agentSessionId": {
           "type": "string",
-          "description": "Agent's native session ID (informational, reserved for Phase 3 heartbeat enrichment)."
+          "description": "Agent's native session ID (informational)."
         }
       }
     },

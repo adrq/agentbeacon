@@ -125,7 +125,7 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "$comment": "A2A v1.0 part: exactly one of text/raw/url/data should be set (member-presence polymorphism). A proper oneOf constraint is deferred to KI-107 (Rust JSON Schema validator upgrade).",
+                        "$comment": "A2A v1.0 part: exactly one of text/raw/url/data should be set (member-presence polymorphism); the schema does not enforce this.",
                         "properties": {
                           "text": { "type": "string" },
                           "raw": { "type": "string" },
