@@ -16,7 +16,6 @@ from tests.testhelpers import (
     PortManager,
     _ensure_driver,
     db_conn,
-    wait_for_port,
 )
 
 
@@ -347,39 +346,6 @@ def start_mock_agent_a2a(
         text=True,
         cwd=base_dir,
     )
-    return agent_proc, port
-
-
-def start_and_wait_for_a2a_agent(
-    port: int = None,
-    base_dir: Path = None,
-    timeout: float = 10,
-    config_file: str = None,
-) -> tuple[subprocess.Popen, int]:
-    if port is None:
-        port = PortManager().allocate_port()
-    if base_dir is None:
-        base_dir = Path.cwd()
-
-    cmd = ["uv", "run", "mock-agent", "--mode", "a2a", "--port", str(port)]
-    if config_file:
-        cmd.extend(["--config", config_file])
-
-    agent_proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=base_dir,
-    )
-
-    agent_ready = wait_for_port(
-        port, timeout=timeout, health_path="/.well-known/agent-card.json"
-    )
-    if not agent_ready:
-        agent_proc.kill()
-        raise AssertionError(f"Mock agent A2A server did not start on port {port}")
-
     return agent_proc, port
 
 

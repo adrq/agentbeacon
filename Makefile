@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-.PHONY: all build build-frontend build-docs build-rust-workspace build-scheduler build-worker install-bins npm-install executors test test-rust test-int test-e2e test-e2e-serial test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm run clean pre-commit dev-backend dev-frontend dev-docs
+.PHONY: all build build-frontend build-docs build-rust-workspace build-scheduler build-worker install-bins npm-install executors mock-sdks test test-rust test-int test-e2e test-e2e-serial test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm run clean pre-commit dev-backend dev-frontend dev-docs
 
 RUST_STRICT_FLAGS ?= -Dwarnings
 
@@ -14,6 +14,8 @@ all: build-frontend build-docs executors build
 executors:
 	cd executors && npm install && npm run build
 
+mock-sdks: executors
+	cd tests/mock_sdks && npm install && npm run build
 
 npm-install:
 	@echo "Installing npm dependencies..."
@@ -151,7 +153,7 @@ test-rust: all
 	RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo test -- --test-threads=1
 
 # Build Rust binaries and run Python integration tests
-test-int: all
+test-int: all mock-sdks
 	@echo "Running Python integration tests with Rust binaries..."
 	uv run pytest -n8 -v tests
 
@@ -162,12 +164,12 @@ test-int-ci: all
 
 # Boot system, seed agents, run Playwright E2E tests with sharding, tear down
 # Uses port 9480 by default to avoid colliding with dev instances on 9456-9460
-test-e2e: all
+test-e2e: all mock-sdks
 	@echo "Starting E2E test environment (4 shards)..."
 	@AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9480} ./scripts/e2e.sh --fresh --run-tests --shards 4
 
 # Serial E2E run for debugging (single backend, no sharding)
-test-e2e-serial: all
+test-e2e-serial: all mock-sdks
 	@echo "Starting E2E test environment (serial)..."
 	@AGENTBEACON_PORT=$${AGENTBEACON_PORT:-9456} ./scripts/e2e.sh --fresh --run-tests --shards 1
 
@@ -188,6 +190,7 @@ clean:
 	cd web && rm -rf dist/
 	cd docs && rm -rf dist/
 	rm -rf executors/dist
+	rm -rf tests/mock_sdks/_build tests/mock_sdks/executors tests/mock_sdks/node_modules/@anthropic-ai tests/mock_sdks/node_modules/@github
 	cargo clean
 
 # Run pre-commit hooks on all staged files

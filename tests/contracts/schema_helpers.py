@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import json
 import re
-import uuid
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict
 
 import jsonschema
 
@@ -166,100 +165,3 @@ def schema_validator(schema_name: str) -> Callable[[Any], None]:
         validate_payload(schema_name, payload)
 
     return _validator
-
-
-DEFAULT_WORKFLOW_REGISTRY_ID = "integration/mock-orchestrator"
-DEFAULT_WORKFLOW_VERSION = "test-version-001"
-DEFAULT_WORKFLOW_REF = f"{DEFAULT_WORKFLOW_REGISTRY_ID}:latest"
-
-
-def build_acp_task(
-    *,
-    node_id: str,
-    text: str,
-    cwd: str,
-    agent: str = "test-acp-agent",
-    execution_id: Optional[str] = None,
-    workflow_registry_id: str = DEFAULT_WORKFLOW_REGISTRY_ID,
-    workflow_version: str = DEFAULT_WORKFLOW_VERSION,
-    workflow_ref: str = DEFAULT_WORKFLOW_REF,
-    protocol_metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Construct an ACP task assignment with required metadata.cwd field.
-
-    ACP tasks use the A2A Send Message Request metadata extension field to pass
-    the cwd parameter required by the ACP protocol. This keeps validation enabled
-    while conforming to both A2A and ACP protocol requirements.
-    """
-    message_id = f"{node_id}-msg-{uuid.uuid4()}"
-    message = {
-        "messageId": message_id,
-        "role": "ROLE_USER",
-        "parts": [{"text": text}],
-    }
-
-    task_body = {"message": message, "metadata": {"cwd": cwd}}
-
-    return build_canonical_task(
-        node_id=node_id,
-        agent=agent,
-        execution_id=execution_id,
-        workflow_registry_id=workflow_registry_id,
-        workflow_version=workflow_version,
-        workflow_ref=workflow_ref,
-        protocol_metadata=protocol_metadata,
-        task_body=task_body,
-        validate_task=True,  # Keep validation enabled - metadata is valid per A2A schema
-    )
-
-
-def build_canonical_task(
-    *,
-    node_id: str,
-    text: Optional[str] = None,
-    agent: str = "mock-agent",
-    execution_id: Optional[str] = None,
-    workflow_registry_id: str = DEFAULT_WORKFLOW_REGISTRY_ID,
-    workflow_version: str = DEFAULT_WORKFLOW_VERSION,
-    workflow_ref: str = DEFAULT_WORKFLOW_REF,
-    protocol_metadata: Optional[Dict[str, Any]] = None,
-    artifacts: Optional[List[Dict[str, Any]]] = None,
-    task_body: Optional[Dict[str, Any]] = None,
-    validate_task: bool = True,
-) -> Dict[str, Any]:
-    """Construct a canonical scheduler assignment matching the sync contract."""
-
-    if task_body is None:
-        message_text = text or f"Task payload for {node_id}"
-        message = {
-            "messageId": f"{node_id}-msg-{uuid.uuid4()}",
-            "role": "ROLE_USER",
-            "parts": [{"text": message_text}],
-        }
-        task_body = {"message": message}
-
-    payload = {
-        "nodeId": node_id,
-        "executionId": execution_id or f"{node_id}-execution",
-        "workflowRegistryId": workflow_registry_id,
-        "workflowVersion": workflow_version,
-        "workflowRef": workflow_ref,
-        "agent": agent,
-        "task": dict(task_body),
-    }
-
-    if artifacts:
-        if validate_task:
-            raise ValueError(
-                "Send Message Request does not support artifacts field. "
-                "Set validate_task=False if testing invalid payloads."
-            )
-        payload["task"] = dict(payload["task"], artifacts=artifacts)
-
-    if protocol_metadata is not None:
-        payload["protocolMetadata"] = protocol_metadata
-
-    if validate_task:
-        validate_payload("message-send-params", payload["task"])
-
-    return payload

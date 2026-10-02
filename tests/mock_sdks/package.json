@@ -1,0 +1,13 @@
+{
+  "name": "@agentbeacon/mock-sdks",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "build": "bash build.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "~5.8"
+  }
+}

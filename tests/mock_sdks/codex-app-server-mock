@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Stand-in for the `codex` binary: ignores its arguments (`app-server --listen
+# stdio://`) and runs the Python mock codex app-server.
+exec uv run python -m agentbeacon.mock_agent --mode codex

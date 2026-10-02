@@ -32,7 +32,6 @@ STEER_REJECT_INPUT_ERROR = "STEER_REJECT_INPUT_ERROR"
 REQUEST_APPROVAL = "REQUEST_APPROVAL"
 FAIL_TURN_START = "FAIL_TURN_START"
 FAIL_TURN = "FAIL_TURN"
-STEER_REJECT_AND_HANG_FALLBACK = "STEER_REJECT_AND_HANG_FALLBACK"
 
 CODEX_SPECIAL_COMMANDS = {
     STEER_REJECT_NOT_STEERABLE,
@@ -40,7 +39,6 @@ CODEX_SPECIAL_COMMANDS = {
     REQUEST_APPROVAL,
     FAIL_TURN_START,
     FAIL_TURN,
-    STEER_REJECT_AND_HANG_FALLBACK,
 }
 
 
@@ -60,8 +58,6 @@ class CodexHandler:
         self._active_turn_task: Optional[asyncio.Task] = None
 
         self._next_steer_behavior: Optional[str] = None
-
-        self._hang_next_turn_start: bool = False
 
         self.pending_requests: Dict[str, asyncio.Future] = {}
 
@@ -245,12 +241,6 @@ class CodexHandler:
             )
             return
 
-        if self._hang_next_turn_start:
-            self._hang_next_turn_start = False
-            print("Codex mock: hanging on turn/start", file=sys.stderr)
-            await asyncio.Event().wait()
-            return
-
         if cmd_upper == STEER_REJECT_NOT_STEERABLE:
             self._next_steer_behavior = STEER_REJECT_NOT_STEERABLE
         elif cmd_upper == STEER_REJECT_INPUT_ERROR:
@@ -333,9 +323,6 @@ class CodexHandler:
             self._next_steer_behavior = STEER_REJECT_NOT_STEERABLE
         elif cmd_upper == STEER_REJECT_INPUT_ERROR:
             self._next_steer_behavior = STEER_REJECT_INPUT_ERROR
-        elif cmd_upper == STEER_REJECT_AND_HANG_FALLBACK:
-            self._next_steer_behavior = STEER_REJECT_NOT_STEERABLE
-            self._hang_next_turn_start = True
 
         behavior = self._next_steer_behavior
         self._next_steer_behavior = None
