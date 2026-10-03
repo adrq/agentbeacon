@@ -56,12 +56,17 @@ def test_create_driver_invalid_platform_returns_400(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-@pytest.mark.parametrize("dead_platform", ["opencode_sdk", "a2a"])
-def test_create_driver_dead_platforms_rejected(test_database, dead_platform):
+@pytest.mark.parametrize("unsupported_platform", ["opencode_sdk", "a2a"])
+def test_create_driver_unsupported_platforms_rejected(
+    test_database, unsupported_platform
+):
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
             f"{ctx['url']}/api/v1/drivers",
-            json={"name": f"test-{dead_platform}", "platform": dead_platform},
+            json={
+                "name": f"test-{unsupported_platform}",
+                "platform": unsupported_platform,
+            },
             timeout=5,
         )
         assert resp.status_code == 400
@@ -85,15 +90,15 @@ def test_get_driver_nonexistent_returns_404(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_get_dead_driver_returns_404(test_database):
+def test_get_unsupported_platform_driver_returns_404(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         with db_conn(ctx["db_url"]) as conn:
             row = conn.execute(
                 "SELECT id FROM drivers WHERE platform = 'opencode_sdk'"
             ).fetchone()
         assert row is not None, "opencode_sdk driver should exist in DB from migration"
-        dead_id = row[0]
-        resp = httpx.get(f"{ctx['url']}/api/v1/drivers/{dead_id}", timeout=5)
+        unsupported_id = row[0]
+        resp = httpx.get(f"{ctx['url']}/api/v1/drivers/{unsupported_id}", timeout=5)
         assert resp.status_code == 404
 
 

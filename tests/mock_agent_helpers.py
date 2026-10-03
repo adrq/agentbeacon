@@ -13,7 +13,6 @@ import httpx
 import uuid
 
 from tests.testhelpers import (
-    PortManager,
     _ensure_driver,
     db_conn,
 )
@@ -321,32 +320,6 @@ def assert_no_command(db_url: str, session_id: str) -> None:
     assert row["command_token"] is None, (
         f"session {session_id}: expected command_token to be NULL, got {row['command_token']!r}"
     )
-
-
-def start_mock_agent_a2a(
-    port: int = None, base_dir: Path = None
-) -> tuple[subprocess.Popen, int]:
-    if port is None:
-        port = PortManager().allocate_port()
-    if base_dir is None:
-        base_dir = Path.cwd()
-
-    agent_proc = subprocess.Popen(
-        [
-            "uv",
-            "run",
-            "mock-agent",
-            "--mode",
-            "a2a",
-            "--port",
-            str(port),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=base_dir,
-    )
-    return agent_proc, port
 
 
 def start_mock_scheduler(port: int, base_dir: Path = None) -> subprocess.Popen:

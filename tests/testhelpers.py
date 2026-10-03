@@ -76,47 +76,6 @@ class PortManager:
             self.release_port(port)
 
 
-class TempDatabase:
-    """Temporary SQLite database management for testing.
-
-    Creates isolated SQLite databases with automatic cleanup.
-    """
-
-    def __init__(self):
-        self._temp_dir = None
-        self._db_path = None
-
-    def create(self) -> str:
-        """Create a temporary database and return its URL.
-
-        Returns:
-            str: SQLite database URL
-        """
-        self._temp_dir = tempfile.TemporaryDirectory()
-        self._db_path = Path(self._temp_dir.name) / "test.db"
-        return f"sqlite:{self._db_path}?mode=rwc"
-
-    def cleanup(self) -> None:
-        """Remove the database and temporary directory."""
-        if self._temp_dir:
-            try:
-                self._temp_dir.cleanup()
-            except Exception:
-                # Best-effort cleanup
-                pass
-            finally:
-                self._temp_dir = None
-                self._db_path = None
-
-    def __enter__(self):
-        """Context manager entry."""
-        return self.create()
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit with cleanup."""
-        self.cleanup()
-
-
 class ProcessTracker:
     """Track and manage test-spawned processes for isolation from external instances.
 
@@ -785,28 +744,6 @@ def get_current_test_name(fallback: str = "unknown_test") -> str:
     return test_name if test_name else fallback
 
 
-@contextmanager
-def worker_context(orchestrator_url: str, interval: str = "1s"):
-    """Context manager for worker startup and cleanup.
-
-    Args:
-        orchestrator_url: URL of the orchestrator to connect to
-        interval: Polling interval (default: "1s")
-
-    Yields:
-        subprocess.Popen: The worker process
-    """
-    worker_process = None
-
-    try:
-        worker_process = start_worker(orchestrator_url, interval)
-        yield worker_process
-    finally:
-        # Cleanup
-        if worker_process:
-            cleanup_processes([worker_process])
-
-
 def start_orchestrator(
     port: int,
     max_workers: int | None = None,
@@ -1363,26 +1300,6 @@ def mcp_tools_call(
         params={"name": tool_name, "arguments": arguments},
     )
     return resp.get("result", {})
-
-
-def count_processes_by_name(name_pattern: str) -> int:
-    """Count running processes matching a name pattern.
-
-    Args:
-        name_pattern: String pattern to match in process command line
-
-    Returns:
-        int: Number of matching processes
-    """
-    count = 0
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            cmdline = " ".join(proc.info["cmdline"] or [])
-            if name_pattern in cmdline:
-                count += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    return count
 
 
 def seed_project(

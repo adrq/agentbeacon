@@ -86,7 +86,7 @@ def test_descriptor_schema_is_valid_json_schema(test_database, platform):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_descriptor_dead_platform_returns_404(test_database):
+def test_descriptor_unsupported_platform_returns_404(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.get(
             f"{ctx['url']}/api/v1/drivers/opencode_sdk/descriptor", timeout=5

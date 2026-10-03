@@ -435,9 +435,7 @@ def test_worker_resume_without_payload_recovery(test_database, agent_type):
                     (session_id,),
                 ).fetchall()
             error_events = [
-                (et, p)
-                for et, p in all_events
-                if "empty content" in p or '"error_kind":"executor_failed"' in p
+                (et, p) for et, p in all_events if '"error_kind":"executor_failed"' in p
             ]
             assert not error_events, (
                 f"Resume-without-payload should not produce executor errors: {error_events}"

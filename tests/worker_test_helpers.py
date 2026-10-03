@@ -96,27 +96,6 @@ def enqueue_session(
     assert resp.status_code == 200, f"Enqueue session failed: {resp.text}"
 
 
-def build_codex_task_payload(
-    prompt_text="hello from test",
-    agent_id="mock-agent",
-    extra_args=None,
-    timeout=30,
-):
-    args = ["run", "python", "-m", "agentbeacon.mock_agent", "--mode", "codex"]
-    if extra_args:
-        args.extend(extra_args)
-    return {
-        "agent_id": agent_id,
-        "driver": {"platform": "codex_sdk", "config": {}},
-        "agent_config": {
-            "command": "uv",
-            "args": args,
-            "timeout": timeout,
-        },
-        "message": {"role": "ROLE_USER", "parts": [{"text": prompt_text}]},
-    }
-
-
 def enqueue_prompt(
     scheduler_url,
     session_id="sess-1",

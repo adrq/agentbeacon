@@ -89,15 +89,13 @@ def mock_agent_acp():
 @pytest.fixture(scope="session")
 def assert_canonical_task_contract():
     def _assert(payload: Dict[str, Any]) -> None:
-        assert "id" in payload, f"task must include 'id': {list(payload.keys())}"
-        assert "status" in payload, (
-            f"task must include 'status': {list(payload.keys())}"
-        )
+        assert "id" in payload, f"task is missing 'id': {list(payload.keys())}"
+        assert "status" in payload, f"task is missing 'status': {list(payload.keys())}"
         assert "state" in payload["status"], (
-            f"task.status must include 'state': {payload['status']}"
+            f"task.status is missing 'state': {payload['status']}"
         )
 
-        assert "history" in payload, "canonical task payload must include history"
+        assert "history" in payload, "canonical task payload is missing history"
 
         contract_schema_helpers.validate_payload("a2a-task", payload)
 

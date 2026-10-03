@@ -131,6 +131,6 @@ def test_nonstreamed_result_backfills_result_from_flushed_text():
     result = result_events[0]
     assert result.get("subtype") == "success"
     assert NEEDLE in (result.get("result") or ""), (
-        f"Executor must backfill result.result from the flushed non-streamed "
-        f"text, got: {result.get('result')!r}"
+        f"expected result.result to contain the flushed non-streamed text, "
+        f"got: {result.get('result')!r}"
     )

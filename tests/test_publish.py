@@ -177,7 +177,7 @@ def test_tarball_name_format():
 
 def test_tarball_name_all_targets():
     names = [tarball_name("0.1.0", t) for t in TARGETS]
-    assert len(names) == len(set(names)), "Tarball names must be distinct per target"
+    assert len(names) == len(set(names)), "Tarball names are not distinct per target"
 
 
 # ---------------------------------------------------------------------------

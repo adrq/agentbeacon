@@ -122,7 +122,7 @@ def test_mock_scheduler_sdk_assign_shape():
     assert "agent_config" not in acp_assign
 
 
-def test_worker_reports_running_on_reinit_gated(mock_scheduler):
+def test_worker_reports_running_on_gated_auto_resume(mock_scheduler):
     _require_executors_built()
 
     scheduler_url = mock_scheduler
@@ -188,7 +188,7 @@ def test_worker_reports_running_on_reinit_gated(mock_scheduler):
         cleanup_processes([worker])
 
 
-def test_worker_reinit_burst_is_safe(mock_scheduler):
+def test_worker_ungated_auto_resume_reports_both_results(mock_scheduler):
     _require_executors_built()
 
     scheduler_url = mock_scheduler
@@ -217,7 +217,7 @@ def test_worker_reinit_burst_is_safe(mock_scheduler):
         cleanup_processes([worker])
 
 
-def test_worker_watchdog_rearmed_on_reinit(mock_scheduler):
+def test_worker_inactivity_watchdog_catches_stalled_auto_resume(mock_scheduler):
     _require_executors_built()
 
     scheduler_url = mock_scheduler

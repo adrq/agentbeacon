@@ -162,11 +162,11 @@ def test_codex_mock(test_database):
             for ue in _usage_events(ctx["db_url"], session_id):
                 params = ue.get("params", {})
                 assert params.get("threadId") is not None, (
-                    f"thread/tokenUsage/updated must have params.threadId "
+                    f"thread/tokenUsage/updated is missing params.threadId "
                     f"(schema: ThreadTokenUsageUpdatedNotification): {ue}"
                 )
                 assert params.get("turnId") is not None, (
-                    f"thread/tokenUsage/updated must have params.turnId "
+                    f"thread/tokenUsage/updated is missing params.turnId "
                     f"(schema: ThreadTokenUsageUpdatedNotification): {ue}"
                 )
         finally:
@@ -373,7 +373,7 @@ def test_codex_resume(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_codex_tool_blocking(test_database):
+def test_codex_home_config_toml_structure(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_codex_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(

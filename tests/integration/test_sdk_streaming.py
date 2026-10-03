@@ -280,7 +280,7 @@ def test_copilot_mock_thinking_before_text():
             "Expected at least 1 text_delta message"
         )
         assert first_thinking_idx < first_text_delta_idx, (
-            f"Thinking (index {first_thinking_idx}) must appear before "
+            f"expected thinking (index {first_thinking_idx}) before "
             f"text_delta (index {first_text_delta_idx})"
         )
     finally:

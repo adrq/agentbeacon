@@ -20,6 +20,7 @@ make dev-frontend   # Terminal 2 → http://localhost:10456
 
 # Run specific test suites
 make test           # Rust tests only
+make mock-sdks      # Build mock SDKs
 uv run pytest -v    # Python integration tests
 
 # Before committing changes

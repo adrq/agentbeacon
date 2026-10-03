@@ -161,7 +161,7 @@ def test_unhandled_system_subtype_persisted_as_raw_block():
     )
     msg = api_retry_msgs[0]
     assert msg.get("ephemeral") is not True, (
-        "system.api_retry must be persisted (non-ephemeral) — got ephemeral=True"
+        "expected system.api_retry to be non-ephemeral, got ephemeral=True"
     )
     block = next(b for b in msg["content"] if b.get("subtype") == "api_retry")
     assert block.get("attempt") == 1
@@ -188,14 +188,13 @@ def test_executor_populates_result_fallback_from_tracked_assistant_text():
     result = result_events[0]
     assert result.get("subtype") == "success"
     assert result.get("result") == "Retried successfully.", (
-        f"Executor must populate result.result from the tracked assistant "
-        f"text when the SDK omits it, got: {result.get('result')!r}"
+        f"expected result.result to be the assistant text, got: {result.get('result')!r}"
     )
 
     msgs = _messages(events)
     final_output_msgs = [m for m in msgs if "finalOutput" in m]
     assert final_output_msgs == [], (
-        f"message events must not carry finalOutput: {final_output_msgs}"
+        f"unexpected finalOutput in message events: {final_output_msgs}"
     )
 
 
@@ -226,7 +225,7 @@ def test_input_json_delta_subtype_is_ephemeral():
     )
     for m in delta_msgs:
         assert m.get("ephemeral") is True, (
-            f"input_json_delta message must be ephemeral, got: {m}"
+            f"expected input_json_delta message to be ephemeral, got: {m}"
         )
 
     fragments = [
@@ -251,7 +250,9 @@ def test_tool_progress_emitted_as_ephemeral():
         f"Expected 2 tool_progress messages, got {len(progress_msgs)}"
     )
     for m in progress_msgs:
-        assert m.get("ephemeral") is True, f"tool_progress must be ephemeral, got: {m}"
+        assert m.get("ephemeral") is True, (
+            f"expected tool_progress to be ephemeral, got: {m}"
+        )
 
     tool_use_msgs = [
         m

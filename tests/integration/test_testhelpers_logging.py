@@ -16,7 +16,7 @@ def test_parse_agent_log_reads_and_parses_correctly():
     test_entries = [
         "[exec_123][node_1] 2025-09-24T10:30:15Z First task execution",
         "[exec_123][node_2] 2025-09-24T10:31:22Z Second task execution",
-        "[workflow-run-456][data-processor] 2025-09-24T10:32:33Z Complex ID task",
+        "[exec-run-456][data-processor] 2025-09-24T10:32:33Z Complex ID task",
     ]
 
     log_file.write_text("\n".join(test_entries) + "\n")
@@ -35,7 +35,7 @@ def test_parse_agent_log_reads_and_parses_correctly():
     assert entries[1]["timestamp"] == "2025-09-24T10:31:22Z"
     assert entries[1]["task_text"] == "Second task execution"
 
-    assert entries[2]["execution_id"] == "workflow-run-456"
+    assert entries[2]["execution_id"] == "exec-run-456"
     assert entries[2]["node_id"] == "data-processor"
     assert entries[2]["timestamp"] == "2025-09-24T10:32:33Z"
     assert entries[2]["task_text"] == "Complex ID task"

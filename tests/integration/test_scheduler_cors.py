@@ -179,7 +179,7 @@ def test_cors_blocks_wildcard_origin(test_database):
             )
 
             allow_origin = response.headers.get("Access-Control-Allow-Origin", "")
-            assert allow_origin != "*", "Scheduler must not use wildcard CORS origin"
+            assert allow_origin != "*", "Scheduler uses a wildcard CORS origin"
             assert allow_origin != origin, (
                 f"Scheduler should not allow unauthorized origin {origin}"
             )

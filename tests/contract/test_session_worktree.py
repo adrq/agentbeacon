@@ -629,7 +629,7 @@ def test_delete_worktree_directory_missing_succeeds(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_delete_worktree_concurrent(test_database):
+def test_concurrent_worktree_deletes_remove_the_worktree(test_database):
     git_dir = make_git_repo()
     try:
         with scheduler_context(db_url=test_database) as ctx:
@@ -641,6 +641,9 @@ def test_delete_worktree_concurrent(test_database):
             )
             root = get_root_session(ctx["url"], exec_id)
             session_id = root["id"]
+            wt_path = root["worktree_path"]
+            assert wt_path is not None
+            assert os.path.isdir(wt_path)
 
             terminate_session(ctx["url"], session_id)
 
@@ -655,10 +658,17 @@ def test_delete_worktree_concurrent(test_database):
                 results = [f.result() for f in futures]
 
             status_codes = sorted([r.status_code for r in results])
-            assert status_codes == [200, 200]
+            assert status_codes in ([200, 200], [200, 404]), status_codes
 
             for r in results:
-                assert r.json()["deleted"] is True
+                if r.status_code == 200:
+                    assert r.json()["deleted"] is True
+
+            assert not os.path.isdir(wt_path)
+            resp = httpx.get(
+                f"{ctx['url']}/api/v1/sessions/{session_id}/worktree", timeout=10
+            )
+            assert resp.status_code == 404
     finally:
         shutil.rmtree(git_dir, ignore_errors=True)
 

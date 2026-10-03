@@ -82,7 +82,7 @@ def test_acp_models_returns_empty_list(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_dead_platform_models_returns_404(test_database):
+def test_unsupported_platform_models_returns_404(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.get(f"{ctx['url']}/api/v1/drivers/opencode_sdk/models", timeout=5)
         assert resp.status_code == 404
