@@ -435,6 +435,97 @@ def _read_log_tail(log_path: str, max_bytes: int = _LOG_TAIL_BYTES) -> str:
     return data
 
 
+class PortInUseError(RuntimeError):
+    pass
+
+
+_STARTUP_ATTEMPTS = 3
+
+_LOOPBACK = "127.0.0.1"
+
+
+def _listens_on(proc: subprocess.Popen, port: int) -> bool:
+    try:
+        root = psutil.Process(proc.pid)
+        candidates = [root] + root.children(recursive=True)
+    except psutil.NoSuchProcess:
+        return False
+    for candidate in candidates:
+        try:
+            for conn in candidate.net_connections(kind="inet"):
+                if (
+                    conn.status == psutil.CONN_LISTEN
+                    and conn.family == socket.AF_INET
+                    and conn.laddr
+                    and conn.laddr.ip in ("0.0.0.0", _LOOPBACK)
+                    and conn.laddr.port == port
+                ):
+                    return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return False
+
+
+def _wait_until_serving(
+    proc: subprocess.Popen, port: int, timeout: float, health_path: str = "/api/health"
+) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            if "Address already in use" in _read_log_tail(proc.log_path):
+                raise PortInUseError(
+                    f"port {port} was taken before the server bound it"
+                )
+            return False
+        if _listens_on(proc, port):
+            try:
+                url = f"http://{_LOOPBACK}:{port}{health_path}"
+                if requests.get(url, timeout=1).status_code == 200:
+                    return True
+            except requests.RequestException:
+                pass
+        time.sleep(0.1)
+    return False
+
+
+def _close_process_log(proc: subprocess.Popen, remove: bool = True) -> None:
+    log_file = getattr(proc, "log_file", None)
+    if log_file is not None:
+        try:
+            log_file.close()
+        except OSError:
+            pass
+    log_path = getattr(proc, "log_path", None)
+    if remove and log_path:
+        try:
+            os.unlink(log_path)
+        except OSError:
+            pass
+
+
+def _discard_failed_start(proc: subprocess.Popen, temp_db_path: str = None) -> None:
+    children = []
+    try:
+        children = psutil.Process(proc.pid).children(recursive=True)
+    except psutil.Error:
+        pass
+    _terminate_single_process(proc)
+    for child in children:
+        try:
+            child.kill()
+        except psutil.Error:
+            pass
+    try:
+        _close_process_log(proc)
+    except Exception:
+        pass
+    if temp_db_path:
+        try:
+            cleanup_files([temp_db_path])
+        except Exception:
+            pass
+
+
 def start_scheduler(
     port: int, base_dir: Path = None, db_url: str = None, env: dict = None
 ) -> tuple[subprocess.Popen, str | None]:
@@ -502,6 +593,8 @@ def start_scheduler(
             os.unlink(log_path)
         except OSError:
             pass
+        if temp_db_path:
+            cleanup_files([temp_db_path])
         raise
     # Stash the log handle/path on the process so scheduler_context can close
     # and remove it during teardown.
@@ -509,27 +602,16 @@ def start_scheduler(
     scheduler_process.log_path = log_path
 
     # Wait for scheduler ready
-    if not wait_for_port(port, timeout=15):
-        # Cleanup failed process
-        try:
-            scheduler_process.terminate()
-            scheduler_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            scheduler_process.kill()
-            try:
-                scheduler_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-        # Surface a bounded tail of the captured output, then clean up.
-        captured = _read_log_tail(log_path)
-        log_file.close()
-        try:
-            os.unlink(log_path)
-        except OSError:
-            pass
-        raise RuntimeError(
-            f"Scheduler failed to start within timeout. Output (tail):\n{captured}"
-        )
+    try:
+        if not _wait_until_serving(scheduler_process, port, timeout=15):
+            # Surface a bounded tail of the captured output, then clean up.
+            captured = _read_log_tail(log_path)
+            raise RuntimeError(
+                f"Scheduler failed to start within timeout. Output (tail):\n{captured}"
+            )
+    except BaseException:
+        _discard_failed_start(scheduler_process, temp_db_path)
+        raise
 
     return scheduler_process, temp_db_path
 
@@ -548,10 +630,12 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
             Note: db_path will be None if db_url was provided
     """
     port_manager = PortManager() if port is None else None
-    allocated_port = port_manager.allocate_port() if port_manager else port
+    allocated_port = port
+    tried_ports = []
     scheduler_process = None
     temp_db_path = None
     wiki_index_dir = None
+    keep_log = False
 
     try:
         # Create temp directory for wiki search index
@@ -564,39 +648,44 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
         if env:
             merged_env.update(env)
 
-        scheduler_process, temp_db_path = start_scheduler(
-            allocated_port, db_url=db_url, env=merged_env
-        )
-        yield {
-            "process": scheduler_process,
-            "url": f"http://localhost:{allocated_port}",
-            "port": allocated_port,
-            "db_path": temp_db_path,
-            "db_url": db_url if db_url else f"sqlite:{temp_db_path}?mode=rwc",
-        }
+        attempts = _STARTUP_ATTEMPTS if port_manager else 1
+        for attempt in range(attempts):
+            if port_manager:
+                allocated_port = port_manager.allocate_port()
+                tried_ports.append(allocated_port)
+            try:
+                scheduler_process, temp_db_path = start_scheduler(
+                    allocated_port, db_url=db_url, env=merged_env
+                )
+                break
+            except PortInUseError:
+                if attempt == attempts - 1:
+                    raise
+        try:
+            yield {
+                "process": scheduler_process,
+                "url": f"http://{_LOOPBACK}:{allocated_port}",
+                "port": allocated_port,
+                "db_path": temp_db_path,
+                "db_url": db_url if db_url else f"sqlite:{temp_db_path}?mode=rwc",
+            }
+        except GeneratorExit:
+            raise
+        except BaseException as error:
+            keep_log = True
+            error.add_note(f"scheduler log: {scheduler_process.log_path}")
+            raise
     finally:
         # Cleanup
         if scheduler_process:
             cleanup_processes([scheduler_process])
-            # Close and remove the captured scheduler log file (see start_scheduler).
-            log_file = getattr(scheduler_process, "log_file", None)
-            if log_file is not None:
-                try:
-                    log_file.close()
-                except OSError:
-                    pass
-            log_path = getattr(scheduler_process, "log_path", None)
-            if log_path:
-                try:
-                    os.unlink(log_path)
-                except OSError:
-                    pass
+            _close_process_log(scheduler_process, remove=not keep_log)
         if temp_db_path:
             cleanup_files([temp_db_path])
         if wiki_index_dir:
             shutil.rmtree(wiki_index_dir, ignore_errors=True)
-        if port_manager:
-            port_manager.release_port(allocated_port)
+        for tried in tried_ports:
+            port_manager.release_port(tried)
 
 
 def start_worker(
@@ -886,7 +975,8 @@ def orchestrator_context(
 
     # Allocate port if not provided
     port_manager = PortManager() if port is None else None
-    allocated_port = port_manager.allocate_scheduler_port() if port_manager else port
+    allocated_port = port
+    tried_ports = []
 
     # Create temp database if not provided
     temp_db_path = None
@@ -901,17 +991,44 @@ def orchestrator_context(
 
     orchestrator_proc = None
     base_dir = Path(__file__).parent.parent
+    keep_log = False
 
     try:
-        # Start orchestrator
-        orchestrator_proc = start_orchestrator(
-            allocated_port,
-            max_workers=max_workers,
-            db_url=db_url,
-            base_dir=base_dir,
-            worker_poll_interval=worker_poll_interval,
-            idle_timeout=idle_timeout,
-        )
+        attempts = _STARTUP_ATTEMPTS if port_manager else 1
+        for attempt in range(attempts):
+            if port_manager:
+                allocated_port = port_manager.allocate_scheduler_port()
+                tried_ports.append(allocated_port)
+            # Start orchestrator
+            orchestrator_proc = start_orchestrator(
+                allocated_port,
+                max_workers=max_workers,
+                db_url=db_url,
+                base_dir=base_dir,
+                worker_poll_interval=worker_poll_interval,
+                idle_timeout=idle_timeout,
+            )
+            # Wait for scheduler to be ready
+            try:
+                if not _wait_until_serving(
+                    orchestrator_proc, allocated_port, timeout=15
+                ):
+                    captured = _read_log_tail(orchestrator_proc.log_path)
+                    raise RuntimeError(
+                        f"AgentBeacon did not start on port {allocated_port} within "
+                        f"15 seconds. Output (tail):\n{captured}"
+                    )
+            except PortInUseError:
+                _discard_failed_start(orchestrator_proc)
+                orchestrator_proc = None
+                if attempt == attempts - 1:
+                    raise
+                continue
+            except BaseException:
+                _discard_failed_start(orchestrator_proc)
+                orchestrator_proc = None
+                raise
+            break
 
         # Register orchestrator PID
         effective_workers = max_workers if max_workers is not None else 0
@@ -920,14 +1037,6 @@ def orchestrator_context(
             "orchestrator",
             {"port": allocated_port, "workers": effective_workers},
         )
-
-        # Wait for scheduler to be ready
-        if not wait_for_port(allocated_port, timeout=15):
-            captured = _read_log_tail(orchestrator_proc.log_path)
-            raise RuntimeError(
-                f"AgentBeacon did not start on port {allocated_port} within 15 "
-                f"seconds. Output (tail):\n{captured}"
-            )
 
         # Give agentbeacon time to spawn all workers
         time.sleep(2)
@@ -942,17 +1051,24 @@ def orchestrator_context(
         tracker.log_external_processes()
 
         # Yield control to test
-        yield {
-            "orchestrator": orchestrator_proc,
-            "orchestrator_pid": orchestrator_pid,
-            "orchestrator_log": orchestrator_proc.log_path,
-            "port": allocated_port,
-            "url": f"http://localhost:{allocated_port}",
-            "tracker": tracker,
-            "worker_pids": worker_pids,
-            "db_url": db_url,
-            "temp_db_path": temp_db_path,
-        }
+        try:
+            yield {
+                "orchestrator": orchestrator_proc,
+                "orchestrator_pid": orchestrator_pid,
+                "orchestrator_log": orchestrator_proc.log_path,
+                "port": allocated_port,
+                "url": f"http://{_LOOPBACK}:{allocated_port}",
+                "tracker": tracker,
+                "worker_pids": worker_pids,
+                "db_url": db_url,
+                "temp_db_path": temp_db_path,
+            }
+        except GeneratorExit:
+            raise
+        except BaseException as error:
+            keep_log = True
+            error.add_note(f"orchestrator log: {orchestrator_proc.log_path}")
+            raise
 
     finally:
         # Cleanup all tracked processes
@@ -962,26 +1078,16 @@ def orchestrator_context(
         # Close and remove the captured orchestrator log file (see
         # start_orchestrator).
         if orchestrator_proc is not None:
-            log_file = getattr(orchestrator_proc, "log_file", None)
-            if log_file is not None:
-                try:
-                    log_file.close()
-                except OSError:
-                    pass
-            log_path = getattr(orchestrator_proc, "log_path", None)
-            if log_path:
-                try:
-                    os.unlink(log_path)
-                except OSError:
-                    pass
+            _terminate_single_process(orchestrator_proc)
+            _close_process_log(orchestrator_proc, remove=not keep_log)
 
         # Cleanup temporary database file
         if temp_db_path:
             cleanup_files([temp_db_path])
 
         # Release port
-        if port_manager:
-            port_manager.release_port(allocated_port)
+        for tried in tried_ports:
+            port_manager.release_port(tried)
 
 
 class _PgConnWrapper:

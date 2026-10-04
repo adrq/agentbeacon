@@ -54,7 +54,7 @@ dev = [
     { name = "httpx", specifier = ">=0.25.0" },
     { name = "jsonschema", specifier = ">=4.25.1" },
     { name = "pre-commit", specifier = ">=3.5.0" },
-    { name = "psutil", specifier = ">=5.8.0" },
+    { name = "psutil", specifier = ">=6.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.0" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-xdist", specifier = ">=3.5.0" },
