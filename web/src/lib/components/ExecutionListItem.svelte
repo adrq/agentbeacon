@@ -73,7 +73,7 @@
         {#if isActive}
           <ElapsedTime startTime={execution.created_at} />
         {:else}
-          {relativeTime(execution.updated_at)}
+          {relativeTime(execution.last_activity_at)}
         {/if}
       </span>
     </div>

@@ -84,6 +84,7 @@ EXPECTED_COLUMNS = {
         "outcome",
         "created_at",
         "updated_at",
+        "last_activity_at",
         "completed_at",
     ],
     "sessions": [

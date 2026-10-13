@@ -23,6 +23,7 @@ enum DbType {
 pub enum TimestampColumn {
     CreatedAt,
     UpdatedAt,
+    LastActivityAt,
     CompletedAt,
     Timestamp,
     DesiredAt,
@@ -35,6 +36,7 @@ impl TimestampColumn {
         match self {
             Self::CreatedAt => "created_at",
             Self::UpdatedAt => "updated_at",
+            Self::LastActivityAt => "last_activity_at",
             Self::CompletedAt => "completed_at",
             Self::Timestamp => "timestamp",
             Self::DesiredAt => "desired_at",

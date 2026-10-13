@@ -5,7 +5,8 @@ import { test, expect, type Page } from '@playwright/test';
 
 // Verifies sidebar execution ordering (ExecutionList.svelte): executions
 // needing a response sort first, then running, then idle, then finished —
-// regardless of recency. Expected top-to-bottom order:
+// regardless of recency. Within a tier, the most recently active execution sorts
+// first. Expected top-to-bottom order:
 //   pending question  →  working  →  idle awaiting_input  →  completed
 //
 // Fully network-mocked so it is deterministic and needs no seeded backend data.
@@ -37,6 +38,7 @@ function makeExecution(overrides: Record<string, unknown>) {
     sandbox_policy: { fs_level: 'workspace' },
     created_at: '2026-07-24T10:00:00Z',
     updated_at: '2026-07-24T10:00:00Z',
+    last_activity_at: '2026-07-24T10:00:00Z',
     completed_at: null,
     ...overrides,
   };
@@ -47,7 +49,7 @@ const EXECUTIONS = [
     id: IDLE_EXEC_ID,
     title: TITLE_IDLE,
     status: 'awaiting_input',
-    updated_at: '2026-07-24T12:00:00Z',
+    last_activity_at: '2026-07-24T12:00:00Z',
   }),
   makeExecution({
     id: COMPLETED_EXEC_ID,
@@ -55,19 +57,19 @@ const EXECUTIONS = [
     status: 'completed',
     outcome: 'completed',
     completed_at: '2026-07-24T11:30:00Z',
-    updated_at: '2026-07-24T11:30:00Z',
+    last_activity_at: '2026-07-24T11:30:00Z',
   }),
   makeExecution({
     id: WORKING_EXEC_ID,
     title: TITLE_WORKING,
     status: 'working',
-    updated_at: '2026-07-24T10:30:00Z',
+    last_activity_at: '2026-07-24T10:30:00Z',
   }),
   makeExecution({
     id: PENDING_EXEC_ID,
     title: TITLE_PENDING,
     status: 'awaiting_input', // idle status; flagged as pending question below
-    updated_at: '2026-07-24T09:00:00Z',
+    last_activity_at: '2026-07-24T09:00:00Z',
   }),
 ];
 
@@ -135,45 +137,7 @@ test('sidebar sorts pending-question above working above idle above terminal', a
   expect(titles).toEqual([TITLE_PENDING, TITLE_WORKING, TITLE_IDLE, TITLE_COMPLETED]);
 });
 
-const FLIPPER_EXEC_ID = 'exec-flipper';
-const STALE_EXEC_ID = 'exec-stale-newer';
-const UNTOUCHED_EXEC_ID = 'exec-untouched-older';
-const TITLE_FLIPPER = 'Flipper Exec';
-const TITLE_STALE = 'Stale Newer Exec';
-const TITLE_UNTOUCHED = 'Untouched Older Exec';
-
-test('recently active execution stays above an idle one with a newer updated_at', async ({ page }) => {
-  let flipperStatus = 'working';
-
-  await page.route('**/api/v1/executions*', route => {
-    if (route.request().method() !== 'GET') {
-      route.continue();
-      return;
-    }
-    route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify([
-        makeExecution({
-          id: UNTOUCHED_EXEC_ID,
-          title: TITLE_UNTOUCHED,
-          status: 'awaiting_input',
-          updated_at: '2026-07-24T10:00:00Z',
-        }),
-        makeExecution({
-          id: STALE_EXEC_ID,
-          title: TITLE_STALE,
-          status: 'awaiting_input',
-          updated_at: '2026-07-24T12:00:00Z',
-        }),
-        makeExecution({
-          id: FLIPPER_EXEC_ID,
-          title: TITLE_FLIPPER,
-          status: flipperStatus,
-          updated_at: '2026-07-24T09:00:00Z',
-        }),
-      ]),
-    });
-  });
+async function mockDecisionsEmpty(page: Page) {
   await page.route('**/api/v1/decisions*', route => {
     if (route.request().method() === 'GET') {
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({ decisions: [] }) });
@@ -181,83 +145,159 @@ test('recently active execution stays above an idle one with a newer updated_at'
       route.continue();
     }
   });
+}
+
+async function mockExecutionList(page: Page, body: () => unknown[]) {
+  await page.route('**/api/v1/executions*', route => {
+    if (route.request().method() !== 'GET') {
+      route.continue();
+      return;
+    }
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify(body()) });
+  });
+}
+
+const OLDER_EXEC_ID = 'exec-older-activity';
+const NEWER_EXEC_ID = 'exec-newer-activity';
+const MIDDLE_EXEC_ID = 'exec-middle-activity';
+const TITLE_OLDER = 'Older Activity Exec';
+const TITLE_NEWER = 'Newer Activity Exec';
+const TITLE_MIDDLE = 'Middle Activity Exec';
+
+test('within a tier, newer last activity sorts first', async ({ page }) => {
+  await mockExecutionList(page, () => [
+    makeExecution({
+      id: OLDER_EXEC_ID,
+      title: TITLE_OLDER,
+      status: 'awaiting_input',
+      updated_at: '2026-07-24T12:00:00Z',
+      last_activity_at: '2026-07-24T09:00:00Z',
+    }),
+    makeExecution({
+      id: MIDDLE_EXEC_ID,
+      title: TITLE_MIDDLE,
+      status: 'awaiting_input',
+      updated_at: '2026-07-24T11:00:00Z',
+      last_activity_at: '2026-07-24T10:00:00Z',
+    }),
+    makeExecution({
+      id: NEWER_EXEC_ID,
+      title: TITLE_NEWER,
+      status: 'awaiting_input',
+      updated_at: '2026-07-24T08:00:00Z',
+      last_activity_at: '2026-07-24T11:00:00Z',
+    }),
+  ]);
+  await mockDecisionsEmpty(page);
 
   await page.goto('/#/executions');
   await expect(page.locator('.exec-list')).toBeVisible();
 
-  const items = page.locator('.exec-list .exec-item');
-  await expect(items).toHaveCount(3);
+  await expect(page.locator('.exec-list .exec-item')).toHaveCount(3);
   expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
-    .toEqual([TITLE_FLIPPER, TITLE_STALE, TITLE_UNTOUCHED]);
-
-  flipperStatus = 'awaiting_input';
-  await expect(
-    items.filter({ hasText: TITLE_FLIPPER }).locator('.exec-status')
-  ).toHaveText('turn complete', { timeout: 15_000 });
-
-  expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
-    .toEqual([TITLE_FLIPPER, TITLE_STALE, TITLE_UNTOUCHED]);
+    .toEqual([TITLE_NEWER, TITLE_MIDDLE, TITLE_OLDER]);
 });
 
-const EARLY_EXEC_ID = 'exec-early-working';
-const LATE_EXEC_ID = 'exec-late-working';
-const TITLE_EARLY = 'Early Working Exec';
-const TITLE_LATE = 'Late Working Exec';
-
-test('concurrently working executions order by when they started working', async ({ page }) => {
-  let earlyStatus = 'awaiting_input';
-  let lateStatus = 'awaiting_input';
-
-  await page.route('**/api/v1/executions*', route => {
-    if (route.request().method() !== 'GET') {
-      route.continue();
-      return;
-    }
-    route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify([
-        makeExecution({
-          id: EARLY_EXEC_ID,
-          title: TITLE_EARLY,
-          status: earlyStatus,
-          updated_at: '2026-07-24T12:00:00Z',
-        }),
-        makeExecution({
-          id: LATE_EXEC_ID,
-          title: TITLE_LATE,
-          status: lateStatus,
-          updated_at: '2026-07-24T09:00:00Z',
-        }),
-      ]),
-    });
-  });
-  await page.route('**/api/v1/decisions*', route => {
-    if (route.request().method() === 'GET') {
-      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ decisions: [] }) });
-    } else {
-      route.continue();
-    }
-  });
+test('an execution moves up when its last activity advances', async ({ page }) => {
+  let olderActivity = '2026-07-24T09:00:00Z';
+  await mockExecutionList(page, () => [
+    makeExecution({
+      id: NEWER_EXEC_ID,
+      title: TITLE_NEWER,
+      status: 'awaiting_input',
+      last_activity_at: '2026-07-24T11:00:00Z',
+    }),
+    makeExecution({
+      id: OLDER_EXEC_ID,
+      title: TITLE_OLDER,
+      status: 'awaiting_input',
+      last_activity_at: olderActivity,
+    }),
+  ]);
+  await mockDecisionsEmpty(page);
 
   await page.goto('/#/executions');
   await expect(page.locator('.exec-list')).toBeVisible();
 
-  const items = page.locator('.exec-list .exec-item');
-  await expect(items).toHaveCount(2);
-  expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
-    .toEqual([TITLE_EARLY, TITLE_LATE]);
+  const titles = page.locator('.exec-list .exec-item .exec-title');
+  await expect(titles).toHaveText([TITLE_NEWER, TITLE_OLDER]);
 
-  // Separate polls, so the two transitions land at distinguishable times.
-  earlyStatus = 'working';
-  await expect(
-    items.filter({ hasText: TITLE_EARLY }).locator('.exec-status')
-  ).toHaveText('working', { timeout: 15_000 });
+  olderActivity = '2026-07-24T12:00:00Z';
+  await expect(titles).toHaveText([TITLE_OLDER, TITLE_NEWER], { timeout: 15_000 });
+});
 
-  lateStatus = 'working';
-  await expect(
-    items.filter({ hasText: TITLE_LATE }).locator('.exec-status')
-  ).toHaveText('working', { timeout: 15_000 });
+test('sidebar requests 100 executions', async ({ page }) => {
+  await mockExecutionList(page, () => [
+    makeExecution({ id: NEWER_EXEC_ID, title: TITLE_NEWER, status: 'awaiting_input' }),
+  ]);
+  await mockDecisionsEmpty(page);
 
-  expect(await page.locator('.exec-list .exec-item .exec-title').allTextContents())
-    .toEqual([TITLE_LATE, TITLE_EARLY]);
+  const listRequest = page.waitForRequest(req => {
+    const url = new URL(req.url());
+    return req.method() === 'GET' && url.pathname === '/api/v1/executions';
+  });
+
+  await page.goto('/#/executions');
+  const url = new URL((await listRequest).url());
+  expect(url.searchParams.get('limit')).toBe('100');
+  await expect(page.locator('.exec-list .exec-item')).toHaveCount(1);
+});
+
+function isoAgo(ms: number): string {
+  return new Date(Date.now() - ms).toISOString();
+}
+
+const MINUTE_MS = 60_000;
+const DAY_MS = 24 * 60 * MINUTE_MS;
+
+test('home activity feed orders by last activity and shows its relative time', async ({ page }) => {
+  const recent = isoAgo(5 * MINUTE_MS + 30_000);
+  const old = isoAgo(3 * DAY_MS + 12 * 60 * MINUTE_MS);
+  await mockExecutionList(page, () => [
+    makeExecution({
+      id: OLDER_EXEC_ID,
+      title: TITLE_OLDER,
+      status: 'awaiting_input',
+      updated_at: recent,
+      last_activity_at: old,
+    }),
+    makeExecution({
+      id: NEWER_EXEC_ID,
+      title: TITLE_NEWER,
+      status: 'awaiting_input',
+      updated_at: old,
+      last_activity_at: recent,
+    }),
+  ]);
+  await mockDecisionsEmpty(page);
+
+  await page.goto('/');
+  const feedItems = page.locator('.activity-feed .feed-item');
+  await expect(feedItems).toHaveCount(2);
+  await expect(feedItems.locator('.feed-exec-name')).toHaveText([TITLE_NEWER, TITLE_OLDER]);
+  await expect(feedItems.first().locator('.feed-time')).toHaveText('5m');
+  await expect(feedItems.nth(1).locator('.feed-time')).toHaveText('3d');
+});
+
+test('sidebar item shows time since last activity', async ({ page }) => {
+  const recent = isoAgo(5 * MINUTE_MS + 30_000);
+  const old = isoAgo(3 * DAY_MS + 12 * 60 * MINUTE_MS);
+  await mockExecutionList(page, () => [
+    makeExecution({
+      id: COMPLETED_EXEC_ID,
+      title: TITLE_COMPLETED,
+      status: 'completed',
+      outcome: 'completed',
+      desired: 'terminate',
+      created_at: old,
+      completed_at: old,
+      updated_at: old,
+      last_activity_at: recent,
+    }),
+  ]);
+  await mockDecisionsEmpty(page);
+
+  await page.goto('/#/executions');
+  const item = page.locator('.exec-list .exec-item', { hasText: TITLE_COMPLETED });
+  await expect(item.locator('.exec-time')).toHaveText('5m ago');
 });

@@ -438,6 +438,11 @@ pub async fn worker_sync(
                             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
                                 format!("persist crash notice event: {e}").into()
                             })?;
+                            db::executions::touch_last_activity(pool, &mut tx)
+                                .await
+                                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                                    e.to_string().into()
+                                })?;
                         }
                     }
                 }

@@ -684,6 +684,10 @@ async fn issue_assign(
         return Ok(ReconcilerAction::NoAction);
     }
 
+    if has_payload && session.parent_session_id.is_none() {
+        db::executions::touch_last_activity(pool, &mut tx).await?;
+    }
+
     let briefing_ctx = crate::services::agent_config::briefing_context_for_session_in_tx(
         pool, &mut tx, session, &agent, &tx_exec,
     )
@@ -848,6 +852,10 @@ async fn issue_feed_turn(
             .await
             .map_err(|e| SchedulerError::Database(format!("rollback failed: {e}")))?;
         return Ok(ReconcilerAction::NoAction);
+    }
+
+    if session.parent_session_id.is_none() {
+        db::executions::touch_last_activity(pool, &mut tx).await?;
     }
 
     tx.commit()

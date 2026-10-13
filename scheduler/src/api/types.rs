@@ -29,6 +29,7 @@ pub struct ExecutionResponse {
     pub sandbox_policy: serde_json::Value,
     pub created_at: String,
     pub updated_at: String,
+    pub last_activity_at: String,
     pub completed_at: Option<String>,
 }
 
@@ -194,6 +195,7 @@ impl ExecutionResponse {
             sandbox_policy,
             created_at: e.created_at.to_rfc3339(),
             updated_at: e.updated_at.to_rfc3339(),
+            last_activity_at: e.last_activity_at.to_rfc3339(),
             completed_at: e.completed_at.map(|dt| dt.to_rfc3339()),
         })
     }

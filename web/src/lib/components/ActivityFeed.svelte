@@ -79,7 +79,7 @@
   let feedItems = $derived(
     [...executions]
       .filter(exec => matchesFilter(exec, $homeFeedFilter))
-      .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+      .sort((a, b) => new Date(b.last_activity_at).getTime() - new Date(a.last_activity_at).getTime())
       .slice(0, 20)
       .map((exec): FeedItem => {
         const cfg = statusConfig[exec.status] ?? { icon: '\u25CF', iconClass: 'muted' };
@@ -90,7 +90,7 @@
           title: exec.title ?? exec.id.slice(0, 8),
           projectName: exec.project_id ? (projectNameMap.get(exec.project_id) ?? null) : null,
           verb: verbMap[exec.status] ?? exec.status,
-          timeAgo: relativeTime(exec.updated_at),
+          timeAgo: relativeTime(exec.last_activity_at),
           status: exec.status,
         };
       })

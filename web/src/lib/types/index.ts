@@ -86,6 +86,7 @@ export interface Execution {
   sandbox_policy: { fs_level: string };
   created_at: string;
   updated_at: string;
+  last_activity_at: string;
   completed_at: string | null;
 }
 

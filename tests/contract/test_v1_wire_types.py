@@ -45,6 +45,7 @@ EXECUTION = {
     "completion_eligible",
     "created_at",
     "updated_at",
+    "last_activity_at",
     "completed_at",
 }
 
@@ -171,6 +172,7 @@ def test_executions_endpoints(test_database):
         assert isinstance(listed, list)
         _exact(listed[0], EXECUTION, "execution list item")
         assert isinstance(listed[0]["id"], str)
+        assert isinstance(listed[0]["last_activity_at"], str)
 
         detail = httpx.get(
             f"{ctx['url']}/api/v1/executions/{exec_id}", timeout=10

@@ -25,6 +25,7 @@ pub struct Execution {
     pub sandbox_policy: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub last_activity_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
 
@@ -32,13 +33,14 @@ pub struct Execution {
 fn execution_columns(pool: &DbPool) -> String {
     let created_fmt = pool.format_timestamp(TimestampColumn::CreatedAt);
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
+    let last_activity_fmt = pool.format_timestamp(TimestampColumn::LastActivityAt);
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
 
     format!(
         "id, project_id, parent_execution_id, context_id, desired, outcome, title, metadata, \
          max_depth, max_width, sandbox_policy, \
          {created_fmt} as created_at, {updated_fmt} as updated_at, \
-         {completed_fmt} as completed_at"
+         {last_activity_fmt} as last_activity_at, {completed_fmt} as completed_at"
     )
 }
 
@@ -56,8 +58,8 @@ pub async fn create(
 ) -> Result<(), SchedulerError> {
     let query = pool.prepare_query(
         "INSERT INTO executions (id, project_id, parent_execution_id, context_id, title, \
-         metadata, max_depth, max_width, sandbox_policy, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+         metadata, max_depth, max_width, sandbox_policy, created_at, updated_at, last_activity_at) \
+         VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
     );
 
     sqlx::query(&query)
@@ -107,7 +109,10 @@ pub async fn list(
     if project_id.is_some() {
         sql.push_str(" AND project_id = ?");
     }
-    sql.push_str(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
+    sql.push_str(
+        " ORDER BY executions.last_activity_at DESC, executions.created_at DESC, \
+         executions.id DESC LIMIT ? OFFSET ?",
+    );
 
     let prepared = pool.prepare_query(&sql);
     let mut q = sqlx::query(&prepared);
@@ -253,6 +258,22 @@ pub async fn lock_for_update(
         .fetch_one(&mut **tx)
         .await
         .map_err(|e| map_db_error("execution lock", id, e))?;
+    Ok(())
+}
+
+/// Record activity on the execution this transaction is scoped to.
+pub async fn touch_last_activity(
+    pool: &DbPool,
+    tx: &mut ExecutionTx<'_>,
+) -> Result<(), SchedulerError> {
+    let sql = pool
+        .prepare_query("UPDATE executions SET last_activity_at = CURRENT_TIMESTAMP WHERE id = ?");
+    let execution_id = tx.execution_id().to_string();
+    sqlx::query(&sql)
+        .bind(execution_id)
+        .execute(&mut ***tx)
+        .await
+        .map_err(|e| SchedulerError::Database(format!("touch last activity failed: {e}")))?;
     Ok(())
 }
 
@@ -407,6 +428,7 @@ fn parse_execution_row(row: sqlx::any::AnyRow) -> Result<Execution, SchedulerErr
         sandbox_policy: row.get("sandbox_policy"),
         created_at: parse_timestamp(&row, "created_at")?,
         updated_at: parse_timestamp(&row, "updated_at")?,
+        last_activity_at: parse_timestamp(&row, "last_activity_at")?,
         completed_at: parse_optional_timestamp(&row, "completed_at"),
     })
 }

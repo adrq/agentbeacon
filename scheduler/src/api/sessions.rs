@@ -243,6 +243,7 @@ async fn post_message(
         payload: delivery_payload,
         resolution: resolution_marker,
         emit_message_delivered: true,
+        from_user: true,
     });
     let event_id =
         match transition::transition(&state.db_pool, &session.execution_id, &session.id, action)

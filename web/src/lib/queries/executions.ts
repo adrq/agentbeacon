@@ -59,6 +59,7 @@ export function executionsQuery(projectId?: () => string | null | undefined) {
   return createQuery(() => ({
     queryKey: ['executions', { projectId: projectId?.() || undefined }],
     queryFn: () => api.getExecutions({
+      limit: 100,
       project_id: projectId?.() || undefined,
     }),
     // A caller that asked to filter waits until it has something to filter by.

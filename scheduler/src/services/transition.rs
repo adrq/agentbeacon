@@ -28,6 +28,7 @@ pub struct SendMessageArgs {
     pub payload: serde_json::Value,
     pub resolution: Option<ResolutionMarker>,
     pub emit_message_delivered: bool,
+    pub from_user: bool,
 }
 
 impl SendMessageArgs {
@@ -37,6 +38,7 @@ impl SendMessageArgs {
             payload,
             resolution: None,
             emit_message_delivered: false,
+            from_user: false,
         }
     }
 }
@@ -577,7 +579,8 @@ pub async fn write_execution_terminal_in_tx(
 ) -> Result<bool, SchedulerError> {
     let sql = pool.prepare_query(
         "UPDATE executions SET desired = 'terminate', outcome = ?, \
-         updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP \
+         updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP, \
+         last_activity_at = CURRENT_TIMESTAMP \
          WHERE id = ? AND outcome IS NULL",
     );
     let wrote = sqlx::query(&sql)
@@ -746,6 +749,7 @@ async fn send_message(
         payload,
         resolution,
         emit_message_delivered,
+        from_user,
     } = args;
 
     db::executions::get_by_id(pool, &session.execution_id)
@@ -879,6 +883,12 @@ async fn send_message(
             .await
             .map_err(|_| Rejected::InvalidTransition("insert message_delivered failed".into()))?;
         test_failpoint("message_delivered_insert")?;
+    }
+
+    if from_user {
+        db::executions::touch_last_activity(pool, &mut tx)
+            .await
+            .map_err(|_| Rejected::InvalidTransition("touch last activity failed".into()))?;
     }
 
     tx.commit()
