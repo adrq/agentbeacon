@@ -2,7 +2,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
 <script lang="ts">
-  import { selectedFilterProjectId, selectedExecutionId, selectedSessionId, usageBySession } from '../stores/appState';
+  import { selectedFilterProjectId, selectedExecutionId, selectedSessionId, usageBySession, markExecutionViewed } from '../stores/appState';
   import { executionsQuery, executionDetailQuery, executionAgentsQuery, executionSessionsQuery, buildSessionIdentityMap } from '../queries/executions';
   import { projectsQuery } from '../queries/projects';
   import { agentsQuery } from '../queries/agents';
@@ -89,6 +89,31 @@
   );
 
   let selectedSessions = $derived(selectedDetailQuery.data?.sessions ?? []);
+
+  let pageVisible = $state(typeof document === 'undefined' || document.visibilityState === 'visible');
+  $effect(() => {
+    const onVisibilityChange = () => { pageVisible = document.visibilityState === 'visible'; };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  });
+
+  // The selected execution counts as viewed while the page is visible.
+  let viewedLastActivity = $derived.by(() => {
+    const id = $selectedExecutionId;
+    if (!id) return null;
+    const candidates = [
+      executions.find(e => e.id === id)?.last_activity_at,
+      selectedDetailQuery.data?.execution.id === id ? selectedDetailQuery.data.execution.last_activity_at : undefined,
+    ].filter((t): t is string => t !== undefined && Number.isFinite(Date.parse(t)));
+    if (candidates.length === 0) return null;
+    return candidates.reduce((latest, t) => (Date.parse(t) > Date.parse(latest) ? t : latest));
+  });
+
+  $effect(() => {
+    if (pageVisible && $selectedExecutionId && viewedLastActivity) {
+      markExecutionViewed($selectedExecutionId, viewedLastActivity);
+    }
+  });
   let selectedAgents = $derived(agentsQ.data ?? []);
   // Left undefined while loading or after a failed load so the tree can show the count as unknown.
   let selectedPoolAgents = $derived(selectedPoolQuery.data);
@@ -180,6 +205,7 @@
       <div class="pinned-item">
         <ExecutionListItem
           execution={pinnedExecution}
+          showUnread
           projectName={projectNameMap.get(pinnedExecution.project_id ?? '') ?? null}
           sessions={selectedSessions}
           agents={selectedAgents}
@@ -202,6 +228,7 @@
         {@const isSelected = $selectedExecutionId === execution.id}
         <ExecutionListItem
           {execution}
+          showUnread
           projectName={projectNameMap.get(execution.project_id ?? '') ?? null}
           sessions={isSelected ? selectedSessions : undefined}
           agents={isSelected ? selectedAgents : undefined}

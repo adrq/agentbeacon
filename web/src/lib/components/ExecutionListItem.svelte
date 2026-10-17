@@ -3,7 +3,7 @@
 
 <script lang="ts">
   import type { Execution, SessionSummary, Agent, UsageState, SessionIdentity } from '../types';
-  import { selectedExecutionId } from '../stores/appState';
+  import { selectedExecutionId, executionLastViewed, isExecutionUnread } from '../stores/appState';
   import { router } from '../router';
   import { executionsWithQuestions } from '../stores/questionState';
   import ElapsedTime from './ElapsedTime.svelte';
@@ -21,14 +21,16 @@
     sessionIdentity?: Map<string, SessionIdentity>;
     onselectsession?: (sessionId: string | null) => void;
     onstatuschange?: () => void;
+    showUnread?: boolean;
   }
 
-  let { execution, projectName = null, sessions, agents, selectedSessionId, usageBySession, poolAgents, isTerminal = false, sessionIdentity, onselectsession, onstatuschange }: Props = $props();
+  let { execution, projectName = null, sessions, agents, selectedSessionId, usageBySession, poolAgents, isTerminal = false, sessionIdentity, onselectsession, onstatuschange, showUnread = false }: Props = $props();
 
   let selected = $derived($selectedExecutionId === execution.id);
   let needsInput = $derived(execution.status === 'awaiting_input');
   let hasQuestions = $derived($executionsWithQuestions.has(execution.id));
   let isActive = $derived(execution.outcome == null && execution.desired !== 'terminate');
+  let unread = $derived(isExecutionUnread(execution, $executionLastViewed));
   let displayTitle = $derived(execution.title ?? execution.id.slice(0, 8));
   let statusText = $derived(needsInput ? 'turn complete'
     : execution.status === 'working' ? 'working'
@@ -76,6 +78,9 @@
           {relativeTime(execution.last_activity_at)}
         {/if}
       </span>
+      {#if showUnread && unread}
+        <span class="unread-dot" role="img" aria-label="Unread" title="Unread"></span>
+      {/if}
     </div>
     <div class="exec-item-bottom">
       <span class="exec-status">{statusText}</span>
@@ -192,6 +197,14 @@
   .exec-time {
     font-size: 0.6875rem;
     color: hsl(var(--muted-foreground));
+    flex-shrink: 0;
+  }
+
+  .unread-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: hsl(var(--status-attention));
     flex-shrink: 0;
   }
 
