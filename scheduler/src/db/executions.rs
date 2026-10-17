@@ -23,6 +23,10 @@ pub struct Execution {
     pub max_depth: i64,
     pub max_width: i64,
     pub sandbox_policy: String,
+    pub ceiling_mode: String,
+    pub ceiling_entries: String,
+    pub ceiling_by: Option<String>,
+    pub ceiling_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
@@ -35,18 +39,23 @@ fn execution_columns(pool: &DbPool) -> String {
     let updated_fmt = pool.format_timestamp(TimestampColumn::UpdatedAt);
     let last_activity_fmt = pool.format_timestamp(TimestampColumn::LastActivityAt);
     let completed_fmt = pool.format_timestamp(TimestampColumn::CompletedAt);
+    let ceiling_at_fmt = pool.format_timestamp(TimestampColumn::CeilingAt);
 
     format!(
         "id, project_id, parent_execution_id, context_id, desired, outcome, title, metadata, \
          max_depth, max_width, sandbox_policy, \
+         ceiling_mode, ceiling_entries, ceiling_by, {ceiling_at_fmt} as ceiling_at, \
          {created_fmt} as created_at, {updated_fmt} as updated_at, \
          {last_activity_fmt} as last_activity_at, {completed_fmt} as completed_at"
     )
 }
 
+/// Insert an execution and return the transaction holding its lock, uncommitted.
+///
+/// `ceiling` is the `(ceiling_mode, ceiling_entries)` column pair.
 #[allow(clippy::too_many_arguments)]
-pub async fn create(
-    pool: &DbPool,
+pub async fn create_in_tx<'a>(
+    pool: &'a DbPool,
     id: &str,
     context_id: &str,
     project_id: Option<&str>,
@@ -55,13 +64,19 @@ pub async fn create(
     max_depth: i64,
     max_width: i64,
     sandbox_policy: &str,
-) -> Result<(), SchedulerError> {
+    ceiling: (&str, &str),
+) -> Result<ExecutionTx<'a>, SchedulerError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| SchedulerError::Database(format!("begin execution tx failed: {e}")))?;
     let query = pool.prepare_query(
         "INSERT INTO executions (id, project_id, parent_execution_id, context_id, title, \
-         metadata, max_depth, max_width, sandbox_policy, created_at, updated_at, last_activity_at) \
-         VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+         metadata, max_depth, max_width, sandbox_policy, ceiling_mode, ceiling_entries, \
+         ceiling_by, ceiling_at, created_at, updated_at, last_activity_at) \
+         VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, 'user', CURRENT_TIMESTAMP, \
+         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
     );
-
     sqlx::query(&query)
         .bind(id)
         .bind(project_id)
@@ -71,11 +86,17 @@ pub async fn create(
         .bind(max_depth)
         .bind(max_width)
         .bind(sandbox_policy)
-        .execute(pool.as_ref())
+        .bind(ceiling.0)
+        .bind(ceiling.1)
+        .execute(&mut *tx)
         .await
         .map_err(|e| SchedulerError::Database(format!("create execution failed: {e}")))?;
-
-    Ok(())
+    lock_for_update(pool, &mut tx, id).await?;
+    Ok(ExecutionTx {
+        tx,
+        execution_id: id.to_string(),
+        verified_sessions: std::collections::HashSet::new(),
+    })
 }
 
 /// Get execution by ID
@@ -426,6 +447,10 @@ fn parse_execution_row(row: sqlx::any::AnyRow) -> Result<Execution, SchedulerErr
         max_depth: row.get("max_depth"),
         max_width: row.get("max_width"),
         sandbox_policy: row.get("sandbox_policy"),
+        ceiling_mode: row.get("ceiling_mode"),
+        ceiling_entries: row.get("ceiling_entries"),
+        ceiling_by: row.get("ceiling_by"),
+        ceiling_at: parse_optional_timestamp(&row, "ceiling_at"),
         created_at: parse_timestamp(&row, "created_at")?,
         updated_at: parse_timestamp(&row, "updated_at")?,
         last_activity_at: parse_timestamp(&row, "last_activity_at")?,

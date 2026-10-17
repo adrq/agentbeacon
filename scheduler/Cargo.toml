@@ -21,6 +21,8 @@ common = { path = "../common" }
 futures-util = "0.3"
 hex = "0.4"
 humantime = "2.3.0"
+idna = "1.1"
+ipnet = "2.11"
 jsonschema.workspace = true
 memchr = "2"
 regex = "1.11"

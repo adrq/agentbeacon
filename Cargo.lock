@@ -2485,6 +2485,8 @@ dependencies = [
  "futures-util",
  "hex",
  "humantime",
+ "idna",
+ "ipnet",
  "jsonschema",
  "libc",
  "memchr",

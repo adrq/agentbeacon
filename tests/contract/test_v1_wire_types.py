@@ -4,6 +4,7 @@
 import json
 import pathlib
 import re
+import tempfile
 
 import httpx
 
@@ -47,7 +48,14 @@ EXECUTION = {
     "updated_at",
     "last_activity_at",
     "completed_at",
+    "network",
 }
+
+NETWORK = {"ceiling", "by", "at"}
+
+UNSANDBOXED_CEILING = {"kind"}
+
+SANDBOXED_CEILING = {"kind", "mode", "entries"}
 
 AGENT = {
     "id",
@@ -164,6 +172,39 @@ def _fixture(ctx, name):
 
 
 @DUAL_BACKEND
+def test_patch_execution_endpoint(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        agent_id = seed_test_agent(ctx["db_url"], name="wire-patch")
+        made = httpx.post(
+            f"{ctx['url']}/api/v1/executions",
+            json={
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
+                "parts": [{"text": "wire"}],
+                "cwd": tempfile.gettempdir(),
+                "network": {"kind": "sandboxed", "mode": "egress"},
+            },
+            timeout=10,
+        )
+        assert made.status_code == 201
+        exec_id = made.json()["execution"]["id"]
+
+        patched = httpx.patch(
+            f"{ctx['url']}/api/v1/executions/{exec_id}",
+            json={"network": {"kind": "sandboxed", "mode": "none"}},
+            timeout=10,
+        )
+        assert patched.status_code == 200
+        _exact(patched.json(), EXECUTION, "patched execution")
+        _exact(patched.json()["network"], NETWORK, "patched execution network")
+        _exact(
+            patched.json()["network"]["ceiling"],
+            SANDBOXED_CEILING,
+            "patched execution network ceiling",
+        )
+
+
+@DUAL_BACKEND
 def test_executions_endpoints(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         _agent_id, exec_id, _session_id = _fixture(ctx, "wire-executions")
@@ -179,6 +220,12 @@ def test_executions_endpoints(test_database):
         ).json()
         _exact(detail, {"execution", "sessions"}, "execution detail")
         _exact(detail["execution"], EXECUTION, "execution detail execution")
+        _exact(detail["execution"]["network"], NETWORK, "execution network")
+        _exact(
+            detail["execution"]["network"]["ceiling"],
+            UNSANDBOXED_CEILING,
+            "execution network ceiling",
+        )
         _exact(detail["sessions"][0], SESSION, "execution detail session")
 
         sessions = httpx.get(
@@ -676,6 +723,7 @@ EXACT_CHECKED = {
     ("GET", "/executions"),
     ("POST", "/executions"),
     ("GET", "/executions/{id}"),
+    ("PATCH", "/executions/{id}"),
     ("POST", "/executions/{id}/terminate"),
     ("GET", "/executions/{id}/events"),
     ("GET", "/executions/{execution_id}/events/{event_id}"),

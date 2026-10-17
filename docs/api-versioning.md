@@ -95,6 +95,25 @@ owns are `message`, `state_change`, `escalate`, `question_answer`,
 `question_dismiss`, `message_delivered`, `turn_complete`, `delegate`,
 `child_continued` and `child_crashed`.
 
+`ceiling_changed` is not an `event_type` value. It is the `parts[0].data.type`
+of an event with `event_type: "platform"`, written when an execution is created
+sandboxed and each time its network ceiling changes:
+
+```json
+{ "parts": [ { "data": {
+  "type": "ceiling_changed",
+  "execution_id": "…",
+  "ceiling": { "kind": "sandboxed", "mode": "allowlist", "entries": ["github.com:443"] },
+  "previous": { "kind": "sandboxed", "mode": "egress", "entries": [] },
+  "by": "user",
+  "at": "2026-10-16T12:00:00+00:00"
+} } ] }
+```
+
+`ceiling` and `previous` are `{"kind":"unsandboxed"}` or
+`{"kind":"sandboxed","mode":"none"|"allowlist"|"egress","entries":[…]}`.
+`previous` is `null` on the event written at create.
+
 Raw provider content passed through inside message parts is **not** one of
 those kinds. It is documented as opaque: generic display and download only, no
 schema, no stability, and new `data.type` values may appear at any time.

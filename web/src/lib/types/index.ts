@@ -88,6 +88,19 @@ export interface Execution {
   updated_at: string;
   last_activity_at: string;
   completed_at: string | null;
+  network: ExecutionNetwork;
+}
+
+export type NetworkMode = 'none' | 'allowlist' | 'egress';
+
+export type NetworkCeiling =
+  | { kind: 'unsandboxed' }
+  | { kind: 'sandboxed'; mode: NetworkMode; entries: string[] };
+
+export interface ExecutionNetwork {
+  ceiling: NetworkCeiling;
+  by: string | null;
+  at: string | null;
 }
 
 // GET /api/v1/executions/{id} — wrapped execution + sessions

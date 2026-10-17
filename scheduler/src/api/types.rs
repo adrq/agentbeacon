@@ -8,6 +8,19 @@ use crate::api::problem::{Problem, ProblemCode};
 use crate::api::versions::{EVENT_PAYLOAD_BUDGET_BYTES, EVENTS_DEFAULT_PAGE, EVENTS_MAX_PAGE};
 use crate::db;
 use crate::error::SchedulerError;
+use crate::services::network_policy::Ceiling;
+
+/// Deserialize a field so that a missing key yields `None` while an explicit
+/// JSON `null` yields `Some(None)`. Any other value yields `Some(Some(v))`.
+pub fn deserialize_optional_value<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<serde_json::Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(Some(v))
+}
 
 /// Shared execution response shape used by list, detail, and create endpoints.
 #[derive(Debug, Serialize)]
@@ -31,6 +44,15 @@ pub struct ExecutionResponse {
     pub updated_at: String,
     pub last_activity_at: String,
     pub completed_at: Option<String>,
+    pub network: ExecutionNetwork,
+}
+
+/// The execution's network ceiling and who set it, when.
+#[derive(Debug, Serialize)]
+pub struct ExecutionNetwork {
+    pub ceiling: serde_json::Value,
+    pub by: Option<String>,
+    pub at: Option<String>,
 }
 
 /// Derived execution fields computed from session tree state.
@@ -172,6 +194,12 @@ impl ExecutionResponse {
     pub fn try_from_execution(e: db::Execution) -> Result<Self, SchedulerError> {
         let metadata = serde_json::from_str(&e.metadata).unwrap_or_else(|_| serde_json::json!({}));
         let sandbox_policy = parse_sandbox_policy_json(&e.sandbox_policy)?;
+        let ceiling = Ceiling::from_columns(&e.ceiling_mode, &e.ceiling_entries)?;
+        let network = ExecutionNetwork {
+            ceiling: ceiling.to_wire(),
+            by: e.ceiling_by.clone(),
+            at: e.ceiling_at.map(|dt| dt.to_rfc3339()),
+        };
         let status = if let Some(ref outcome) = e.outcome {
             outcome.clone()
         } else if e.desired == "terminate" {
@@ -197,6 +225,7 @@ impl ExecutionResponse {
             updated_at: e.updated_at.to_rfc3339(),
             last_activity_at: e.last_activity_at.to_rfc3339(),
             completed_at: e.completed_at.map(|dt| dt.to_rfc3339()),
+            network,
         })
     }
 }

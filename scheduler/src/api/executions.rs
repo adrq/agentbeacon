@@ -11,10 +11,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::api::problem::{Problem, ProblemCode};
 use crate::api::types::{self, ExecutionResponse, SessionResponse};
 use crate::app::{AppState, EventNotification};
 use crate::db;
 use crate::error::SchedulerError;
+use crate::services::network_policy::Ceiling;
 use crate::services::{execution, reconciler, transition};
 
 /// Query parameters for listing executions
@@ -46,20 +48,10 @@ pub struct CreateExecutionRequest {
     pub max_depth: Option<i64>,
     pub max_width: Option<i64>,
     /// Double-Option: None = key missing (default), Some(v) = key present (including explicit null).
-    #[serde(default, deserialize_with = "deserialize_optional_value")]
+    #[serde(default, deserialize_with = "types::deserialize_optional_value")]
     pub sandbox_policy: Option<Option<serde_json::Value>>,
-}
-
-/// Deserialize a field so that a missing key yields `None` while an explicit
-/// JSON `null` yields `Some(None)`. Any other value yields `Some(Some(v))`.
-fn deserialize_optional_value<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<serde_json::Value>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let v: Option<serde_json::Value> = Option::deserialize(deserializer)?;
-    Ok(Some(v))
+    #[serde(default, deserialize_with = "types::deserialize_optional_value")]
+    pub network: Option<Option<serde_json::Value>>,
 }
 
 /// Response for create execution
@@ -210,6 +202,17 @@ async fn create_execution_handler(
     let sandbox_policy_json = serde_json::to_string(&sandbox_policy)
         .map_err(|e| SchedulerError::Database(format!("serialize sandbox_policy: {e}")))?;
 
+    let ceiling = match req.network {
+        None => Ceiling::Unsandboxed,
+        Some(None) | Some(Some(serde_json::Value::Null)) => {
+            return Err(SchedulerError::Problem(Box::new(
+                Problem::new(ProblemCode::RequestInvalid)
+                    .with_detail("network must not be null; omit it for an unsandboxed execution"),
+            )));
+        }
+        Some(Some(raw)) => Ceiling::parse_authored(&raw)?,
+    };
+
     let agent_id_refs: Vec<&str> = all_agent_ids.iter().map(|s| s.as_str()).collect();
     let result = execution::create_execution(
         &state.db_pool,
@@ -225,6 +228,7 @@ async fn create_execution_handler(
         req.max_depth,
         req.max_width,
         &sandbox_policy_json,
+        &ceiling,
     )
     .await?;
 
@@ -245,6 +249,61 @@ async fn create_execution_handler(
             warning: result.warning,
         }),
     ))
+}
+
+/// Change an execution's network ceiling (PATCH /api/v1/executions/{id}).
+async fn patch_execution(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<ExecutionResponse>, SchedulerError> {
+    if crate::api::sessions::is_agent_session_bearer(&headers, &state).await? {
+        return Err(SchedulerError::Problem(Box::new(
+            Problem::new(ProblemCode::AuthForbidden).with_detail(
+                "changing the network ceiling is not available via agent session auth",
+            ),
+        )));
+    }
+    let invalid = |detail: String| {
+        SchedulerError::Problem(Box::new(
+            Problem::new(ProblemCode::RequestInvalid).with_detail(detail),
+        ))
+    };
+    let Some(fields) = body.as_object() else {
+        return Err(invalid("the body must be a JSON object".to_string()));
+    };
+    if let Some(key) = fields.keys().find(|k| k.as_str() != "network") {
+        return Err(invalid(format!(
+            "only network can be patched; unknown field: {key}"
+        )));
+    }
+    let network = match fields.get("network") {
+        None | Some(serde_json::Value::Null) => {
+            return Err(invalid("network is required".to_string()));
+        }
+        Some(value) => value,
+    };
+    let ceiling = Ceiling::parse_authored(network)?;
+    if ceiling == Ceiling::Unsandboxed {
+        return Err(invalid(
+            "network.kind must be \"sandboxed\"; the kind is fixed when the execution is created"
+                .to_string(),
+        ));
+    }
+
+    if crate::services::ceiling::set_ceiling(&state.db_pool, &id, &ceiling).await? {
+        let _ = state
+            .event_broadcast
+            .send(EventNotification::persisted(id.clone(), 0));
+    }
+
+    let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
+    let derived = derive_execution_fields_async(&state.db_pool, &exec).await?;
+    let mut resp = ExecutionResponse::try_from_execution(exec)?;
+    resp.status = derived.status;
+    resp.completion_eligible = derived.completion_eligible;
+    Ok(Json(resp))
 }
 
 /// Sets desired=terminate on the root session.
@@ -555,7 +614,10 @@ pub fn routes() -> Router<AppState> {
             "/executions",
             get(list_executions).post(create_execution_handler),
         )
-        .route("/executions/{id}", get(get_execution))
+        .route(
+            "/executions/{id}",
+            get(get_execution).patch(patch_execution),
+        )
         .route(
             "/executions/{id}/terminate",
             axum::routing::post(terminate_execution),

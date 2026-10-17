@@ -86,6 +86,10 @@ EXPECTED_COLUMNS = {
         "updated_at",
         "last_activity_at",
         "completed_at",
+        "ceiling_mode",
+        "ceiling_entries",
+        "ceiling_by",
+        "ceiling_at",
     ],
     "sessions": [
         "id",

@@ -10,6 +10,8 @@ use crate::db;
 use crate::db::DbPool;
 use crate::error::SchedulerError;
 use crate::queue::{TaskAssignment, TaskQueue};
+use crate::services::ceiling::write_ceiling_changed_in_tx;
+use crate::services::network_policy::Ceiling;
 
 pub struct CreateExecutionResult {
     pub execution: db::Execution,
@@ -32,6 +34,7 @@ pub async fn create_execution(
     max_depth: Option<i64>,
     max_width: Option<i64>,
     sandbox_policy: &str,
+    ceiling: &Ceiling,
 ) -> Result<CreateExecutionResult, SchedulerError> {
     // Validate parts non-empty
     if parts.is_empty() {
@@ -247,6 +250,7 @@ pub async fn create_execution(
         resolved_max_depth,
         resolved_max_width,
         sandbox_policy,
+        ceiling,
     )
     .await;
 
@@ -278,8 +282,10 @@ async fn persist_and_enqueue(
     max_depth: i64,
     max_width: i64,
     sandbox_policy: &str,
+    ceiling: &Ceiling,
 ) -> Result<CreateExecutionResult, SchedulerError> {
-    db::executions::create(
+    let (ceiling_mode, ceiling_entries) = ceiling.to_columns();
+    let mut tx = db::executions::create_in_tx(
         db_pool,
         execution_id,
         context_id,
@@ -289,8 +295,23 @@ async fn persist_and_enqueue(
         max_depth,
         max_width,
         sandbox_policy,
+        (ceiling_mode, &ceiling_entries),
     )
     .await?;
+    let launch = match ceiling {
+        Ceiling::Sandboxed(_) => write_ceiling_changed_in_tx(db_pool, &mut tx, None).await,
+        Ceiling::Unsandboxed => Ok(()),
+    };
+    match launch {
+        Ok(()) => tx
+            .commit()
+            .await
+            .map_err(|e| SchedulerError::Database(format!("commit execution failed: {e}")))?,
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Err(e);
+        }
+    }
 
     // Create lead session with cwd.
     // Retry on slug collision (unique constraint violation from concurrent creation).

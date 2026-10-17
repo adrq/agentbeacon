@@ -74,9 +74,19 @@ pub struct UpdateAgentRequest {
     pub description: Option<Option<String>>,
     pub driver_id: Option<serde_json::Value>, // presence triggers 400
     pub config: Option<serde_json::Value>,
+    #[serde(
+        default,
+        deserialize_with = "crate::api::types::deserialize_optional_value"
+    )]
     pub sandbox_config: Option<Option<serde_json::Value>>,
     pub enabled: Option<bool>,
     pub system_prompt: Option<Option<String>>,
+}
+
+/// Validate a `sandbox_config` value and serialize its canonical form.
+fn validated_sandbox_config(value: &serde_json::Value) -> Result<String, SchedulerError> {
+    let canonical = crate::services::network_policy::validate_sandbox_config(value)?;
+    Ok(canonical.to_string())
 }
 
 async fn list_agents(
@@ -149,10 +159,10 @@ async fn create_agent(
     let id = Uuid::new_v4().to_string();
     let config_str = serde_json::to_string(&req.config)
         .map_err(|e| SchedulerError::ValidationFailed(format!("invalid config JSON: {e}")))?;
-    let sandbox_str = req
-        .sandbox_config
-        .as_ref()
-        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".to_string()));
+    let sandbox_str = match req.sandbox_config.as_ref() {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(validated_sandbox_config(v)?),
+    };
 
     db::agents::create(
         &state.db_pool,
@@ -218,10 +228,11 @@ async fn update_agent(
         .as_ref()
         .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()));
 
-    let sandbox_config = req.sandbox_config.as_ref().map(|opt| {
-        opt.as_ref()
-            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".to_string()))
-    });
+    let sandbox_config = match req.sandbox_config.as_ref() {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(v)) => Some(Some(validated_sandbox_config(v)?)),
+    };
 
     let description = req.description.as_ref().map(|opt| opt.as_deref());
 
