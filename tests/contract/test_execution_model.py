@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -58,11 +59,11 @@ def test_session_running_execution_working(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "do work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_ID)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_ID))
         token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            WORKER_ID,
+            wid(WORKER_ID),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="agent-1"
             ),
@@ -245,7 +246,7 @@ def test_reconciler_repairs_execution_from_root_outcome(test_database):
             executor_state="idle",
         )
 
-        post_worker_sync(ctx["url"], "reconcile-worker")
+        post_worker_sync(ctx["url"], wid("reconcile-worker"))
 
         exec_row = get_execution_row(ctx["db_url"], exec_id)
         assert exec_row["desired"] == "terminate"
@@ -269,8 +270,8 @@ def test_no_execution_auto_completion(test_database):
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (root_sid,))
             conn.commit()
 
-        post_worker_sync(ctx["url"], "idle-worker")
-        post_worker_sync(ctx["url"], "idle-worker")
+        post_worker_sync(ctx["url"], wid("idle-worker"))
+        post_worker_sync(ctx["url"], wid("idle-worker"))
 
         assert_execution_state(ctx["db_url"], exec_id, desired="run", outcome=None)
 
@@ -291,7 +292,7 @@ def test_reconciler_repairs_desired_terminate_missing_outcome(test_database):
             executor_state="idle",
         )
 
-        post_worker_sync(ctx["url"], "repair-worker")
+        post_worker_sync(ctx["url"], wid("repair-worker"))
 
         root_row = get_session_row(ctx["db_url"], root_sid)
         assert root_row["desired"] == "terminate"
@@ -312,7 +313,7 @@ def test_reconciler_repairs_outcome_set_desired_not_terminate(test_database):
             executor_state="idle",
         )
 
-        post_worker_sync(ctx["url"], "repair-worker")
+        post_worker_sync(ctx["url"], wid("repair-worker"))
 
         root_row = get_session_row(ctx["db_url"], root_sid)
         assert root_row["desired"] == "terminate"
@@ -358,7 +359,7 @@ def test_reconciler_repairs_inconsistent_sessions(test_database):
         set_session_fields(ctx["db_url"], child_a, outcome="completed")
         set_session_fields(ctx["db_url"], child_b, outcome="failed")
 
-        post_worker_sync(ctx["url"], "tick-worker-1")
+        post_worker_sync(ctx["url"], wid("tick-worker-1"))
 
         row_a = get_session_row(ctx["db_url"], child_a)
         row_b = get_session_row(ctx["db_url"], child_b)
@@ -366,7 +367,7 @@ def test_reconciler_repairs_inconsistent_sessions(test_database):
         assert row_a["desired"] == "terminate" or row_b["desired"] == "terminate"
 
         if not (row_a["desired"] == "terminate" and row_b["desired"] == "terminate"):
-            post_worker_sync(ctx["url"], "tick-worker-2")
+            post_worker_sync(ctx["url"], wid("tick-worker-2"))
 
         row_a = get_session_row(ctx["db_url"], child_a)
         row_b = get_session_row(ctx["db_url"], child_b)
@@ -392,7 +393,7 @@ def test_root_session_repair_updates_execution_atomically(test_database):
             executor_state="idle",
         )
 
-        post_worker_sync(ctx["url"], "repair-worker")
+        post_worker_sync(ctx["url"], wid("repair-worker"))
 
         root_row = get_session_row(ctx["db_url"], root_sid)
         exec_row = get_execution_row(ctx["db_url"], exec_id)
@@ -439,7 +440,7 @@ def test_backup_cascade_from_workerless_terminal_root(test_database):
         child_before = get_session_row(ctx["db_url"], child_sid)
         assert child_before["desired"] == "run"
 
-        post_worker_sync(ctx["url"], "unrelated-worker")
+        post_worker_sync(ctx["url"], wid("unrelated-worker"))
 
         child_after = get_session_row(ctx["db_url"], child_sid)
         assert child_after["desired"] == "terminate", (

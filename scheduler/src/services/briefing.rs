@@ -69,41 +69,43 @@ You can message any non-terminal session. Stopped, idle, and running children al
 
 const DEFAULT_MESSAGING: &str = "Send a message:\n\
   curl -X POST \"$AGENTBEACON_API_BASE/api/v1/messages\" \\\n\
-    -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_TOKEN\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
     -d \"{\\\"to\\\": \\\"<hierarchical-name>\\\", \\\"parts\\\": [{\\\"text\\\": \\\"your message\\\"}]}\"\n\
 \n\
 Read your messages:\n\
-  curl \"$AGENTBEACON_API_BASE/api/v1/messages?session_id=$AGENTBEACON_SESSION_ID\"\n\
+  curl \"$AGENTBEACON_API_BASE/api/v1/messages?session_id=$AGENTBEACON_SESSION_ID\" \\\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_TOKEN\"\n\
 \n\
 Read messages since a known event ID:\n\
-  curl \"$AGENTBEACON_API_BASE/api/v1/messages?session_id=$AGENTBEACON_SESSION_ID&since_id=<id>\"\n\
+  curl \"$AGENTBEACON_API_BASE/api/v1/messages?session_id=$AGENTBEACON_SESSION_ID&since_id=<id>\" \\\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_TOKEN\"\n\
 \n\
 Discover sessions in your execution:\n\
   curl \"$AGENTBEACON_API_BASE/api/v1/executions/$AGENTBEACON_EXECUTION_ID/sessions\" \\\n\
-    -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_TOKEN\"\n\
 \n\
 Search the wiki (prefer this over listing pages):\n\
   curl \"$AGENTBEACON_API_BASE/api/v1/wiki/search?q=<terms>\" \\\n\
-    -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_TOKEN\"\n\
 - Results may include pages owned by other projects; each carries its owning project. \
 Fetch a page to see your access level.\n\
 \n\
 Read a wiki page:\n\
   curl \"$AGENTBEACON_API_BASE/api/v1/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
-    -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\"\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_TOKEN\"\n\
 - For a page owned by another project, replace $AGENTBEACON_PROJECT_ID with that project's slug \
 (shown in search results). You may edit it if your access level says read_write.\n\
 \n\
 Create a wiki page:\n\
   curl -X PUT \"$AGENTBEACON_API_BASE/api/v1/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
-    -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_TOKEN\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
     -d \"{\\\"title\\\": \\\"Page Title\\\", \\\"body\\\": \\\"Content here\\\"}\"\n\
 \n\
 Edit a wiki page (targeted find/replace -- the only way to update an existing page):\n\
   curl -X PATCH \"$AGENTBEACON_API_BASE/api/v1/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>\" \\\n\
-    -H \"Authorization: Bearer $AGENTBEACON_SESSION_ID\" \\\n\
+    -H \"Authorization: Bearer $AGENTBEACON_SESSION_TOKEN\" \\\n\
     -H \"Content-Type: application/json\" \\\n\
     -d \"{\\\"edits\\\": [{\\\"old_string\\\": \\\"find me\\\", \\\"new_string\\\": \\\"replace me\\\"}], \\\"revision_number\\\": 5}\"\n\
 - old_string must match exactly once (or set replace_all: true).\n\
@@ -116,7 +118,8 @@ const DEFAULT_RECOVERY: &str = "When a child session crashes, the system automat
 - Only re-delegate if the status reaches a terminal failure state (at which point the old session cannot receive messages).";
 
 const DEFAULT_REST_API: &str = "Environment variables for API access:\n\
-- `$AGENTBEACON_SESSION_ID` — your auth token (use as Bearer header)\n\
+- `$AGENTBEACON_SESSION_TOKEN` — your auth token (use as Bearer header)\n\
+- `$AGENTBEACON_SESSION_ID` — your session id\n\
 - `$AGENTBEACON_API_BASE` — scheduler base URL\n\
 - `$AGENTBEACON_EXECUTION_ID` — current execution\n\
 - `$AGENTBEACON_PROJECT_ID` — current project (if set)\n\

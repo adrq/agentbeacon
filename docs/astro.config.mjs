@@ -30,6 +30,7 @@ export default defineConfig({
           label: 'Configuration',
           items: [
             { label: 'Agents', slug: 'configuration/agents' },
+            { label: 'Authentication', slug: 'configuration/authentication' },
             { label: 'Drivers', slug: 'configuration/drivers' },
             { label: 'MCP Servers', slug: 'configuration/mcp-servers' },
             { label: 'Storage', slug: 'configuration/storage' },

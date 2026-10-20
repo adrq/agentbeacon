@@ -254,17 +254,9 @@ async fn create_execution_handler(
 /// Change an execution's network ceiling (PATCH /api/v1/executions/{id}).
 async fn patch_execution(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<ExecutionResponse>, SchedulerError> {
-    if crate::api::sessions::is_agent_session_bearer(&headers, &state).await? {
-        return Err(SchedulerError::Problem(Box::new(
-            Problem::new(ProblemCode::AuthForbidden).with_detail(
-                "changing the network ceiling is not available via agent session auth",
-            ),
-        )));
-    }
     let invalid = |detail: String| {
         SchedulerError::Problem(Box::new(
             Problem::new(ProblemCode::RequestInvalid).with_detail(detail),
@@ -402,30 +394,6 @@ async fn execution_event(
     Ok(Json(types::EventV1::full(event)))
 }
 
-/// Verify optional session auth matches the execution_id in the path.
-/// User callers (no auth) pass through; session callers get 403 on mismatch.
-async fn verify_execution_scope(
-    state: &AppState,
-    headers: &axum::http::HeaderMap,
-    path_execution_id: &str,
-) -> Result<(), SchedulerError> {
-    if let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok())
-        && auth_header.len() > 7
-        && auth_header[..7].eq_ignore_ascii_case("bearer ")
-    {
-        let token = &auth_header[7..];
-        let session = db::sessions::get_by_id(&state.db_pool, token)
-            .await
-            .map_err(|_| SchedulerError::Unauthorized("invalid session token".to_string()))?;
-        if session.execution_id != path_execution_id {
-            return Err(SchedulerError::Forbidden(
-                "session not authorized for this execution".to_string(),
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// Get agent config pool for an execution (GET /api/v1/executions/:id/agents)
 ///
 /// Returns the configured agent pool (what can be delegated to), not running sessions.
@@ -440,10 +408,8 @@ pub struct ExecutionAgentResponse {
 
 async fn execution_agents_handler(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ExecutionAgentResponse>>, SchedulerError> {
-    verify_execution_scope(&state, &headers, &id).await?;
     db::executions::get_by_id(&state.db_pool, &id).await?;
     let entries =
         db::execution_agents::list_agent_configs_for_execution(&state.db_pool, &id).await?;
@@ -556,11 +522,8 @@ fn derive_discovery_status(
 /// Get running sessions for an execution (GET /api/v1/executions/:id/sessions)
 async fn execution_sessions_handler(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<SessionDiscoveryResponse>>, SchedulerError> {
-    verify_execution_scope(&state, &headers, &id).await?;
-
     let exec = db::executions::get_by_id(&state.db_pool, &id).await?;
 
     let name_tuples =

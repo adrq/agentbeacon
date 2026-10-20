@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::IntoResponse,
     routing::get,
 };
@@ -130,34 +130,10 @@ async fn session_events(
     Ok(Json(event_page(events, limit, &window)))
 }
 
-/// True if the Authorization header carries a valid agent-session bearer token.
-pub async fn is_agent_session_bearer(
-    headers: &HeaderMap,
-    state: &AppState,
-) -> Result<bool, SchedulerError> {
-    let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
-        return Ok(false);
-    };
-    if auth.len() <= 7 || !auth[..7].eq_ignore_ascii_case("bearer ") {
-        return Ok(false);
-    }
-    bearer_names_a_session(&state.db_pool, &auth[7..]).await
-}
-
-/// Whether `token` names an existing session.
-async fn bearer_names_a_session(pool: &db::DbPool, token: &str) -> Result<bool, SchedulerError> {
-    match db::sessions::get_by_id(pool, token).await {
-        Ok(_) => Ok(true),
-        Err(SchedulerError::NotFound(_)) => Ok(false),
-        Err(e) => Err(e),
-    }
-}
-
 /// Post a user message to a session (POST /api/v1/sessions/{id}/message)
 async fn post_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
     Json(req): Json<PostMessageRequest>,
 ) -> Result<impl IntoResponse, SchedulerError> {
     use crate::resolution::{self, AnswerValidation};
@@ -219,12 +195,6 @@ async fn post_message(
                 return Err(SchedulerError::Problem(Box::new(
                     Problem::new(ProblemCode::DecisionWrongSession)
                         .with_detail("this decision belongs to a different session"),
-                )));
-            }
-            if is_agent_session_bearer(&headers, &state).await? {
-                return Err(SchedulerError::Problem(Box::new(
-                    Problem::new(ProblemCode::AuthForbidden)
-                        .with_detail("answering is not available via agent session auth"),
                 )));
             }
             Some(transition::ResolutionMarker {

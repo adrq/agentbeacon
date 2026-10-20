@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -26,7 +27,7 @@ def _escalate(url, session_id, questions, importance="blocking"):
     resp = httpx.post(
         f"{url}/api/v1/escalate",
         json={"questions": questions, "importance": importance},
-        headers={"Authorization": f"Bearer {session_id}"},
+        headers={**agent_headers(None, session_id)},
         timeout=10,
     )
     assert resp.status_code == 200, f"escalate failed: {resp.status_code} {resp.text}"
@@ -361,7 +362,7 @@ def test_answer_rejects_agent_session_bearer(test_database):
                     },
                 ]
             },
-            headers={"Authorization": f"Bearer {session_id}"},
+            headers={**agent_headers(None, session_id)},
             timeout=10,
         )
         assert resp.status_code == 403
@@ -369,7 +370,7 @@ def test_answer_rejects_agent_session_bearer(test_database):
 
 
 def _post(url, session_id, parts, bearer=None):
-    headers = {"Authorization": f"Bearer {bearer}"} if bearer else None
+    headers = {**agent_headers(None, bearer)} if bearer else None
     return httpx.post(
         f"{url}/api/v1/sessions/{session_id}/message",
         json={"parts": parts},
@@ -443,7 +444,7 @@ def test_compound_sender_precedes_size(test_database):
 
 
 @pytest.mark.parametrize("test_database", BACKENDS, indirect=True)
-def test_compound_size_precedes_agent_bearer_403(test_database):
+def test_agent_bearer_403_precedes_size(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"])
         _exec_id, session_id = create_execution_via_api(ctx["url"], agent_id)
@@ -462,13 +463,13 @@ def test_compound_size_precedes_agent_bearer_403(test_database):
             ],
             bearer=session_id,
         )
-        assert resp.status_code == 400
-        assert resp.json()["code"] == "decision.answer_too_large"
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "auth.forbidden"
         assert len(_markers(_session_events(ctx["url"], session_id))) == 0
 
 
 @pytest.mark.parametrize("test_database", BACKENDS, indirect=True)
-def test_compound_ownership_precedes_agent_bearer_403(test_database):
+def test_agent_bearer_403_precedes_ownership(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"])
         _exec1, session1 = create_execution_via_api(ctx["url"], agent_id)
@@ -488,13 +489,13 @@ def test_compound_ownership_precedes_agent_bearer_403(test_database):
             ],
             bearer=session2,
         )
-        assert resp.status_code == 409
-        assert resp.json()["code"] == "decision.wrong_session"
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "auth.forbidden"
         assert len(_markers(_session_events(ctx["url"], session2))) == 0
 
 
 @pytest.mark.parametrize("test_database", BACKENDS, indirect=True)
-def test_compound_unknown_batch_precedes_agent_bearer_403(test_database):
+def test_agent_bearer_403_precedes_unknown_batch(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"])
         _exec_id, session_id = create_execution_via_api(ctx["url"], agent_id)
@@ -507,8 +508,8 @@ def test_compound_unknown_batch_precedes_agent_bearer_403(test_database):
             ],
             bearer=session_id,
         )
-        assert resp.status_code == 404
-        assert resp.json()["code"] == "decision.not_found"
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "auth.forbidden"
         assert len(_markers(_session_events(ctx["url"], session_id))) == 0
 
 
@@ -568,7 +569,7 @@ def test_compound_write_barrier_precedes_already_resolved_409(test_database):
 
 
 @pytest.mark.parametrize("test_database", BACKENDS, indirect=True)
-def test_compound_agent_bearer_precedes_write_barrier_403(test_database):
+def test_ended_session_token_is_401_before_the_write_barrier(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id)
@@ -588,6 +589,6 @@ def test_compound_agent_bearer_precedes_write_barrier_403(test_database):
             ],
             bearer=session_id,
         )
-        assert resp.status_code == 403
-        assert resp.json()["code"] == "auth.forbidden"
+        assert resp.status_code == 401
+        assert resp.json()["code"] == "auth.unauthorized"
         assert len(_markers(_session_events(ctx["url"], session_id))) == 0

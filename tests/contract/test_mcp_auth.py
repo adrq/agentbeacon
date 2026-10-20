@@ -1,12 +1,18 @@
 # SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import hashlib
+import secrets
 import uuid
 
 import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
+    anonymous_headers,
+    assert_forbidden,
+    assert_unauthorized,
     create_execution_via_api,
     db_conn,
     mcp_call,
@@ -22,22 +28,24 @@ def test_missing_bearer_header_returns_401(test_database):
         resp = httpx.post(
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
-            headers={"Accept": "application/json, text/event-stream"},
+            headers=anonymous_headers(
+                {"Accept": "application/json, text/event-stream"}
+            ),
             timeout=5,
         )
-        assert resp.status_code == 401
+        assert_unauthorized(resp)
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_invalid_session_id_returns_401(test_database):
+def test_token_for_a_missing_session_returns_401(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        fake_token = str(uuid.uuid4())
-        resp = mcp_raw(ctx["url"], fake_token, "initialize")
-        assert resp.status_code == 401
+        missing_session = str(uuid.uuid4())
+        resp = mcp_raw(ctx["url"], missing_session, "initialize")
+        assert_unauthorized(resp)
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_terminal_session_returns_404(test_database):
+def test_terminal_session_returns_401(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -50,12 +58,12 @@ def test_terminal_session_returns_404(test_database):
             conn.commit()
 
         resp = mcp_raw(ctx["url"], session_id, "initialize")
-        assert resp.status_code == 404
+        assert_unauthorized(resp)
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 @pytest.mark.parametrize("terminal_status", ["completed", "failed", "canceled"])
-def test_all_terminal_statuses_return_404(test_database, terminal_status):
+def test_all_terminal_statuses_return_401(test_database, terminal_status):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
@@ -68,15 +76,31 @@ def test_all_terminal_statuses_return_404(test_database, terminal_status):
             conn.commit()
 
         resp = mcp_raw(ctx["url"], session_id, "tools/list")
-        assert resp.status_code == 404
+        assert_unauthorized(resp)
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_unknown_token_returns_401_not_404(test_database):
+def test_unknown_token_returns_401(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        fake_token = str(uuid.uuid4())
-        resp = mcp_raw(ctx["url"], fake_token, "initialize")
-        assert resp.status_code == 401
+        unknown = secrets.token_hex(32)
+        with db_conn(ctx["db_url"]) as conn:
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM credentials WHERE token_hash = ?",
+                (hashlib.sha256(unknown.encode()).hexdigest(),),
+            ).fetchone()[0]
+        assert rows == 0
+        resp = httpx.post(
+            f"{ctx['url']}/mcp",
+            json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
+            headers=anonymous_headers(
+                {
+                    "Authorization": f"Bearer {unknown}",
+                    "Accept": "application/json, text/event-stream",
+                }
+            ),
+            timeout=5,
+        )
+        assert_unauthorized(resp)
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -85,10 +109,12 @@ def test_401_includes_www_authenticate_header(test_database):
         resp = httpx.post(
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
-            headers={"Accept": "application/json, text/event-stream"},
+            headers=anonymous_headers(
+                {"Accept": "application/json, text/event-stream"}
+            ),
             timeout=5,
         )
-        assert resp.status_code == 401
+        assert_unauthorized(resp)
         assert "www-authenticate" in resp.headers
         assert resp.headers["www-authenticate"].startswith("Bearer")
 
@@ -168,7 +194,7 @@ def test_initialize_version_negotiation(test_database):
                 "id": 1,
             },
             headers={
-                "Authorization": f"Bearer {session_id}",
+                **agent_headers(None, session_id),
                 "Accept": "application/json, text/event-stream",
             },
             timeout=5,
@@ -213,14 +239,26 @@ def test_ping_returns_empty_result(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_get_mcp_returns_405(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        resp = httpx.get(f"{ctx['url']}/mcp", timeout=5)
+        agent_id = seed_test_agent(ctx["db_url"], name="mcp-get")
+        _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
+        resp = httpx.get(
+            f"{ctx['url']}/mcp",
+            headers=agent_headers(ctx["url"], session_id),
+            timeout=5,
+        )
         assert resp.status_code == 405
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_delete_mcp_returns_405(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        resp = httpx.delete(f"{ctx['url']}/mcp", timeout=5)
+        agent_id = seed_test_agent(ctx["db_url"], name="mcp-delete")
+        _, session_id = create_execution_via_api(ctx["url"], agent_id, "test task")
+        resp = httpx.delete(
+            f"{ctx['url']}/mcp",
+            headers=agent_headers(ctx["url"], session_id),
+            timeout=5,
+        )
         assert resp.status_code == 405
 
 
@@ -244,13 +282,13 @@ def test_invalid_origin_returns_403(test_database, origin):
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
             headers={
-                "Authorization": f"Bearer {session_id}",
+                **agent_headers(None, session_id),
                 "Origin": origin,
                 "Accept": "application/json, text/event-stream",
             },
             timeout=5,
         )
-        assert resp.status_code == 403
+        assert_forbidden(resp)
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -276,7 +314,7 @@ def test_valid_origin_succeeds(test_database, origin):
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
             headers={
-                "Authorization": f"Bearer {session_id}",
+                **agent_headers(None, session_id),
                 "Origin": origin,
                 "MCP-Protocol-Version": "2025-11-25",
                 "Accept": "application/json, text/event-stream",
@@ -306,7 +344,7 @@ def test_invalid_protocol_version_returns_400(test_database):
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
             headers={
-                "Authorization": f"Bearer {session_id}",
+                **agent_headers(None, session_id),
                 "MCP-Protocol-Version": "9999-01-01",
                 "Accept": "application/json, text/event-stream",
             },
@@ -325,7 +363,7 @@ def test_valid_protocol_version_succeeds(test_database):
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
             headers={
-                "Authorization": f"Bearer {session_id}",
+                **agent_headers(None, session_id),
                 "MCP-Protocol-Version": "2025-11-25",
                 "Accept": "application/json, text/event-stream",
             },
@@ -345,7 +383,7 @@ def test_mismatched_mcp_session_id_returns_400(test_database):
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
             headers={
-                "Authorization": f"Bearer {session_id}",
+                **agent_headers(None, session_id),
                 "MCP-Session-Id": wrong_session_id,
                 "MCP-Protocol-Version": "2025-11-25",
                 "Accept": "application/json, text/event-stream",
@@ -365,7 +403,7 @@ def test_matching_mcp_session_id_succeeds(test_database):
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
             headers={
-                "Authorization": f"Bearer {session_id}",
+                **agent_headers(None, session_id),
                 "MCP-Session-Id": session_id,
                 "MCP-Protocol-Version": "2025-11-25",
                 "Accept": "application/json, text/event-stream",
@@ -409,7 +447,7 @@ def test_full_lifecycle_initialize_then_tools_list(test_database):
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "method": "tools/list", "id": 2},
             headers={
-                "Authorization": f"Bearer {session_id}",
+                **agent_headers(None, session_id),
                 "MCP-Session-Id": mcp_session_id,
                 "MCP-Protocol-Version": "2025-11-25",
                 "Accept": "application/json, text/event-stream",

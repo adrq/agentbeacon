@@ -1565,6 +1565,27 @@ async function* echoTurn(
   };
 }
 
+function writeReport(options: Record<string, unknown> | undefined): void {
+  const path = process.env.AGENTBEACON_MOCK_REPORT_FILE;
+  if (!path) return;
+  const servers = options?.mcpServers as
+    | Record<string, { headers?: Record<string, string> }>
+    | undefined;
+  fs.writeFileSync(
+    path,
+    JSON.stringify({
+      driver: "claude_sdk",
+      pid: process.pid,
+      session_id: process.env.AGENTBEACON_SESSION_ID ?? null,
+      session_token: process.env.AGENTBEACON_SESSION_TOKEN ?? null,
+      worker_token: process.env.AGENTBEACON_WORKER_TOKEN ?? null,
+      username: process.env.AGENTBEACON_USERNAME ?? null,
+      password: process.env.AGENTBEACON_PASSWORD ?? null,
+      mcp_authorization: servers?.agentbeacon?.headers?.Authorization ?? null,
+    }),
+  );
+}
+
 export async function* query(params: {
   prompt: string | AsyncIterable<UserMessage>;
   options?: Record<string, unknown>;
@@ -1583,6 +1604,7 @@ export async function* query(params: {
   process.stderr.write(
     `[mock-claude-sdk] query() called, sessionId=${sessionId}\n`,
   );
+  writeReport(params.options);
 
   const resumeId = params.options?.resume as string | undefined;
   if (resumeId) {

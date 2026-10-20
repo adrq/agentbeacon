@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -61,11 +62,11 @@ def test_a_recovery_between_the_snapshot_and_finalize_survives(test_database):
         exec_id, root_id = create_execution_via_api(ctx["url"], agent_id, "task")
         httpx.post(
             f"{ctx['url']}/api/worker/sync",
-            json={"worker_id": "w-finalize"},
+            json={"worker_id": wid("w-finalize")},
             timeout=30,
         )
         _stage_crashed_child(
-            test_database, exec_id, agent_id, root_id, "race-child", "w-finalize"
+            test_database, exec_id, agent_id, root_id, "race-child", wid("w-finalize")
         )
         assert _queued(test_database, "race-child") == 1
         parent_queued_before = _queued(test_database, root_id)
@@ -75,7 +76,7 @@ def test_a_recovery_between_the_snapshot_and_finalize_survives(test_database):
         def sync():
             result["response"] = httpx.post(
                 f"{ctx['url']}/api/worker/sync",
-                json={"worker_id": "w-finalize"},
+                json={"worker_id": wid("w-finalize")},
                 timeout=60,
             )
 

@@ -6,6 +6,7 @@ import json
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -32,7 +33,7 @@ def _setup_parent_child(ctx, agent_name="test-agent"):
         )
         conn.commit()
 
-    data = post_worker_sync(ctx["url"], worker_id="w1")
+    data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
     assert data["type"] == "command"
     assert data["action"]["type"] == "assign"
     assert data["action"]["session_id"] == lead_id
@@ -40,7 +41,7 @@ def _setup_parent_child(ctx, agent_name="test-agent"):
 
     post_worker_sync(
         ctx["url"],
-        "w1",
+        wid("w1"),
         executor_report=make_executor_report(lead_id, "running"),
         command_ack=lead_assign_token,
     )
@@ -53,7 +54,7 @@ def _setup_parent_child(ctx, agent_name="test-agent"):
     )
     child_id = json.loads(result["content"][0]["text"])["session_id"]
 
-    data = post_worker_sync(ctx["url"], worker_id="w2")
+    data = post_worker_sync(ctx["url"], worker_id=wid("w2"))
     assert data["type"] == "command"
     assert data["action"]["type"] == "assign"
     assert data["action"]["session_id"] == child_id
@@ -61,7 +62,7 @@ def _setup_parent_child(ctx, agent_name="test-agent"):
 
     post_worker_sync(
         ctx["url"],
-        "w2",
+        wid("w2"),
         executor_report=make_executor_report(child_id, "running"),
         command_ack=child_assign_token,
     )
@@ -80,7 +81,7 @@ def test_turn_complete_notifies_parent(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child_id, "idle"),
             turn_result=make_turn_result(
                 child_id,
@@ -152,7 +153,7 @@ def test_turn_complete_notification_coexists_with_existing_queue_work(test_datab
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child_id, "idle"),
             turn_result=make_turn_result(
                 child_id,
@@ -172,21 +173,21 @@ def test_turn_complete_root_lead_emits_session_event(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, lead_id = create_execution_via_api(ctx["url"], agent_id, "lead task")
 
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
         assert data["type"] == "command"
         assert data["action"]["type"] == "assign"
         assign_token = data["token"]
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_id, "running"),
             command_ack=assign_token,
         )
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_id, "idle"),
             turn_result=make_turn_result(
                 lead_id,
@@ -235,7 +236,7 @@ def test_turn_complete_empty_turn_no_delivery(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child_id, "idle"),
             turn_result=make_turn_result(child_id, messages=[]),
         )
@@ -259,7 +260,7 @@ def test_turn_complete_parent_receives_feed_turn(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child_id, "idle"),
             turn_result=make_turn_result(
                 child_id,
@@ -274,7 +275,7 @@ def test_turn_complete_parent_receives_feed_turn(test_database):
 
         data = post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_id, "idle"),
         )
         assert data["type"] == "command"

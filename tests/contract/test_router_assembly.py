@@ -5,6 +5,8 @@ import httpx
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    worker_token,
+    wid,
     create_execution_via_api,
     scheduler_context,
     seed_test_agent,
@@ -50,12 +52,19 @@ def test_protocol_endpoints_are_not_under_v1(test_database):
 def test_worker_transport_stays_where_it_is(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
-            f"{ctx['url']}/api/worker/sync", json={"worker_id": "probe"}, timeout=5
+            f"{ctx['url']}/api/worker/sync", json={"worker_id": wid("probe")}, timeout=5
         )
         assert resp.status_code == 200, resp.text
         assert resp.headers["content-type"].startswith("application/json")
 
-        resp = httpx.post(f"{ctx['url']}/api/worker/events", json={}, timeout=5)
+        resp = httpx.post(
+            f"{ctx['url']}/api/worker/events",
+            json={},
+            headers={
+                "Authorization": f"Bearer {worker_token(ctx['url'], wid('probe'))}"
+            },
+            timeout=5,
+        )
         assert resp.status_code == 422
 
 

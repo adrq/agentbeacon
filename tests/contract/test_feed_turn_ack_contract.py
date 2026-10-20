@@ -4,6 +4,7 @@
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     post_user_message,
     scheduler_context,
@@ -29,14 +30,14 @@ def _setup_idle_session(ctx):
     agent_id = seed_test_agent(ctx["db_url"])
     exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-    resp = post_worker_sync(ctx["url"], WORKER)
+    resp = post_worker_sync(ctx["url"], wid(WORKER))
     assert resp["type"] == "command"
     assert resp["action"]["type"] == "assign"
     assign_token = resp["token"]
 
     post_worker_sync(
         ctx["url"],
-        WORKER,
+        wid(WORKER),
         executor_report=make_executor_report(
             session_id, "running", agent_session_id="sdk-1"
         ),
@@ -45,7 +46,7 @@ def _setup_idle_session(ctx):
 
     post_worker_sync(
         ctx["url"],
-        WORKER,
+        wid(WORKER),
         executor_report=make_executor_report(session_id, "idle"),
         turn_result=make_turn_result(
             session_id,
@@ -66,7 +67,7 @@ def test_feed_turn_command_stays_pending_until_acked(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "idle"),
         )
         assert resp["type"] == "command"
@@ -75,7 +76,7 @@ def test_feed_turn_command_stays_pending_until_acked(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "running"),
         )
 
@@ -85,7 +86,7 @@ def test_feed_turn_command_stays_pending_until_acked(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=feed_token,
         )
@@ -102,7 +103,7 @@ def test_feed_turn_ack_withheld_on_crash_triggers_recovery(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "idle"),
         )
         assert resp["type"] == "command"
@@ -110,7 +111,7 @@ def test_feed_turn_ack_withheld_on_crash_triggers_recovery(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "crashed"),
             turn_result=make_turn_result(
                 session_id,
@@ -124,9 +125,9 @@ def test_feed_turn_ack_withheld_on_crash_triggers_recovery(test_database):
 
         set_session_fields(ctx["db_url"], session_id, command_at="2020-01-01T00:00:00Z")
 
-        post_worker_sync(ctx["url"], WORKER)
+        post_worker_sync(ctx["url"], wid(WORKER))
 
-        resp = post_worker_sync(ctx["url"], WORKER)
+        resp = post_worker_sync(ctx["url"], wid(WORKER))
         assert resp["type"] == "command", (
             f"Expected assign command after crash recovery, got: {resp}"
         )
@@ -145,7 +146,7 @@ def test_cancel_overrides_pending_feed_turn(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "idle"),
         )
         assert resp["type"] == "command"
@@ -154,7 +155,7 @@ def test_cancel_overrides_pending_feed_turn(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "running"),
         )
 
@@ -167,7 +168,7 @@ def test_cancel_overrides_pending_feed_turn(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "running"),
         )
         assert resp["type"] == "command"
@@ -177,7 +178,7 @@ def test_cancel_overrides_pending_feed_turn(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack=cancel_token,
         )
@@ -191,14 +192,14 @@ def _setup_stopped_session(ctx):
     agent_id = seed_test_agent(ctx["db_url"])
     exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-    resp = post_worker_sync(ctx["url"], WORKER)
+    resp = post_worker_sync(ctx["url"], wid(WORKER))
     assert resp["type"] == "command"
     assert resp["action"]["type"] == "assign"
     assign_token = resp["token"]
 
     post_worker_sync(
         ctx["url"],
-        WORKER,
+        wid(WORKER),
         executor_report=make_executor_report(
             session_id, "running", agent_session_id="sdk-1"
         ),
@@ -210,7 +211,7 @@ def _setup_stopped_session(ctx):
 
     resp = post_worker_sync(
         ctx["url"],
-        WORKER,
+        wid(WORKER),
         executor_report=make_executor_report(session_id, "running"),
     )
     assert resp["type"] == "command"
@@ -219,7 +220,7 @@ def _setup_stopped_session(ctx):
 
     post_worker_sync(
         ctx["url"],
-        WORKER,
+        wid(WORKER),
         executor_report=make_executor_report(session_id, "idle"),
         command_ack=stop_token,
     )
@@ -242,7 +243,7 @@ def test_stop_resume_feed_turn_acked(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "idle"),
         )
         assert resp["type"] == "command"
@@ -251,7 +252,7 @@ def test_stop_resume_feed_turn_acked(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=feed_token,
         )
@@ -263,7 +264,7 @@ def test_stop_resume_feed_turn_acked(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "idle"),
             turn_result=make_turn_result(
                 session_id,
@@ -288,7 +289,7 @@ def test_stuck_feed_turn_after_resume_times_out(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "idle"),
         )
         assert resp["type"] == "command"
@@ -298,7 +299,7 @@ def test_stuck_feed_turn_after_resume_times_out(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER,
+            wid(WORKER),
             executor_report=make_executor_report(session_id, "running"),
         )
 

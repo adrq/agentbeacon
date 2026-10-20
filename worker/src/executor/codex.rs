@@ -281,7 +281,7 @@ fn write_config_toml(
     ab_server.insert("url".into(), Tv::String(mcp_url));
     ab_server.insert(
         "bearer_token_env_var".into(),
-        Tv::String("AGENTBEACON_SESSION_ID".into()),
+        Tv::String("AGENTBEACON_SESSION_TOKEN".into()),
     );
     ab_server.insert("required".into(), Tv::Boolean(true));
     mcp_table.insert("agentbeacon".into(), Tv::Table(ab_server));
@@ -490,12 +490,16 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
 
     cmd.env("CODEX_HOME", codex_home.to_string_lossy().as_ref());
     cmd.env("AGENTBEACON_SESSION_ID", &config.session_id);
+    cmd.env("AGENTBEACON_SESSION_TOKEN", &config.session_token);
     cmd.env("AGENTBEACON_API_BASE", &config.scheduler_url);
     cmd.env("AGENTBEACON_EXECUTION_ID", &config.execution_id);
     if let Some(ref pid) = config.project_id {
         cmd.env("AGENTBEACON_PROJECT_ID", pid);
     } else {
         cmd.env("AGENTBEACON_PROJECT_ID", "");
+    }
+    for name in crate::EXECUTOR_REMOVED_ENV {
+        cmd.env_remove(name);
     }
 
     let mut child = cmd.spawn().with_context(|| {

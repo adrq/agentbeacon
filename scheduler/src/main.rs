@@ -49,7 +49,7 @@ struct Cli {
     wiki_index_dir: Option<String>,
 
     /// Maximum auto-spawned workers. Default: unlimited.
-    /// Set to 0 to disable auto-spawning (for external/test workers).
+    /// Set to 0 to disable auto-spawning (for externally supervised workers).
     #[arg(long, env = "AGENTBEACON_MAX_WORKERS")]
     max_workers: Option<usize>,
 
@@ -61,13 +61,26 @@ struct Cli {
     #[arg(long, default_value = "300s", value_parser = parse_duration, env = "AGENTBEACON_IDLE_TIMEOUT")]
     idle_timeout: std::time::Duration,
 
+    /// How long a login stays valid (e.g., '30d', '12h')
+    #[arg(long, default_value = "30d", value_parser = parse_duration, env = "AGENTBEACON_LOGIN_TTL")]
+    login_ttl: std::time::Duration,
+
     /// Worker sync polling interval (e.g., '1s', '500ms')
     #[arg(long)]
     worker_poll_interval: Option<String>,
 
-    /// Run SDK setup (delegates to worker binary)
+    /// Create or update the user, then run SDK setup (delegates to worker binary)
     #[arg(long, help_heading = "Setup")]
     setup: bool,
+
+    /// With --setup: only create or update the user; skip SDK setup
+    #[arg(
+        long,
+        requires = "setup",
+        conflicts_with = "status",
+        help_heading = "Setup"
+    )]
+    user_only: bool,
 
     /// Show installed SDK status without installing (use with --setup)
     #[arg(long, requires = "setup", help_heading = "Setup")]
@@ -80,11 +93,32 @@ struct Cli {
     detect_orphans: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    use scheduler::services::auth::setup;
+
     let cli = Cli::parse();
 
+    let setup_credentials = setup::credentials_from_env();
+    unsafe {
+        std::env::remove_var(setup::USERNAME_ENV);
+        std::env::remove_var(setup::PASSWORD_ENV);
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Failed to build the async runtime")?
+        .block_on(run(cli, setup_credentials))
+}
+
+async fn run(cli: Cli, setup_credentials: Result<Option<(String, String)>, String>) -> Result<()> {
     if cli.setup {
+        if !cli.status {
+            run_user_setup(&cli, setup_credentials).await?;
+        }
+        if cli.user_only {
+            return Ok(());
+        }
         return run_scheduler_setup(&cli);
     }
 
@@ -105,6 +139,12 @@ async fn main() -> Result<()> {
         warn!(
             "AGENTBEACON_TEST_FAIL_AT is set — a test-only transaction failpoint is active; \
              unset it outside tests"
+        );
+    }
+
+    if std::env::var_os("AGENTBEACON_TEST_PAUSE_AT").is_some() {
+        warn!(
+            "AGENTBEACON_TEST_PAUSE_AT is set — a test-only pause is active; unset it outside tests"
         );
     }
 
@@ -140,6 +180,45 @@ fn detector_db_url(url: String) -> String {
     format!("{base}?{}", params.join("&"))
 }
 
+/// The database URL for the port or `--db-url` in use.
+fn resolve_db_url(cli: &Cli) -> String {
+    cli.db_url
+        .clone()
+        .unwrap_or_else(|| format!("sqlite://scheduler-{}.db?mode=rwc", cli.port))
+}
+
+async fn run_user_setup(
+    cli: &Cli,
+    setup_credentials: Result<Option<(String, String)>, String>,
+) -> Result<()> {
+    use scheduler::services::auth::setup::{self, SetupMode, SetupOutcome};
+
+    sqlx::any::install_default_drivers();
+    let db_url = resolve_db_url(cli);
+    let pool = db::pool::create(&db_url)
+        .await
+        .context("Failed to create database pool")?;
+    db::migrations::run(&pool, &db_url)
+        .await
+        .context("Failed to run database migrations")?;
+    let supplied = setup_credentials.map_err(anyhow::Error::msg)?;
+    let mode = SetupMode::detect(!cli.user_only);
+    match setup::run(&pool, supplied, &mode).await {
+        Ok(SetupOutcome::Created) => println!("User created."),
+        Ok(SetupOutcome::PasswordChanged) => {
+            println!("Password changed. Every existing login was signed out.")
+        }
+        Ok(SetupOutcome::Unchanged) => println!("User unchanged."),
+        Ok(SetupOutcome::Skipped) => println!("User exists; nothing to change."),
+        Err(message) => {
+            eprintln!("setup failed: {message}");
+            std::process::exit(1);
+        }
+    }
+    pool.close().await;
+    Ok(())
+}
+
 fn run_scheduler_setup(cli: &Cli) -> Result<()> {
     use scheduler::supervisor;
 
@@ -166,9 +245,7 @@ fn run_scheduler_setup(cli: &Cli) -> Result<()> {
 async fn bootstrap(cli: Cli) -> Result<()> {
     let dev_mode = std::env::var("DEV_MODE").map(|v| v == "1").unwrap_or(false);
 
-    let db_url = cli
-        .db_url
-        .unwrap_or_else(|| format!("sqlite://scheduler-{}.db?mode=rwc", cli.port));
+    let db_url = resolve_db_url(&cli);
 
     info!("Connecting to database: {}", db_url);
     let db_pool = db::pool::create(&db_url)
@@ -186,6 +263,12 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         .await
         .context("Failed to run database migrations")?;
     info!("Database migrations completed successfully");
+
+    match db::users::get_single(&db_pool).await {
+        Ok(None) => warn!("No user exists; run `agentbeacon --setup` to create one"),
+        Ok(Some(_)) => {}
+        Err(e) => warn!(error = %e, "Could not check for a user"),
+    }
 
     let _pause_summary = services::restart_park::park_live_sessions_on_boot(&db_pool).await;
 
@@ -271,6 +354,7 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         cli.worker_poll_interval.clone(),
         cli.max_workers,
         cli.idle_timeout,
+        Some(db_pool.clone()),
     ));
 
     let app_state = AppState::new(
@@ -282,7 +366,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         event_broadcast.clone(),
         wiki_search,
         supervisor.clone(),
-    );
+    )
+    .with_login_ttl(cli.login_ttl);
     let vite_dev_port = app_state.vite_dev_port;
     let app = create_router(app_state.clone(), dev_mode, cli.port);
 
@@ -465,6 +550,22 @@ async fn bootstrap(cli: Cli) -> Result<()> {
                     if mutated > 0 {
                         tick_task_queue.wake_waiters();
                         info!(mutated, "Liveness check complete");
+                    }
+
+                    let externals = tick_supervisor.external_ids().await;
+                    let aged_out: Vec<String> = {
+                        let heartbeats = tick_heartbeats.read().unwrap();
+                        externals
+                            .into_iter()
+                            .filter(|wid| {
+                                heartbeats
+                                    .get(wid)
+                                    .is_none_or(|last_seen| last_seen.elapsed() > tick_hb_timeout)
+                            })
+                            .collect()
+                    };
+                    for wid in &aged_out {
+                        tick_supervisor.kill_worker(wid).await;
                     }
 
                     let tracked = tick_supervisor.worker_ids().await;

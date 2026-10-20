@@ -18,13 +18,12 @@ use crate::app::AppState;
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Validate transport-level headers per MCP 2025-11-25 spec.
-/// Runs before auth extraction so DNS rebinding attacks are blocked early.
 async fn validate_mcp_transport(request: Request, next: Next) -> Response {
     // Origin validation: MUST reject invalid origins with 403
     if let Some(origin) = request.headers().get("origin") {
         let origin_str = origin.to_str().unwrap_or("");
         if !is_valid_origin(origin_str) {
-            return StatusCode::FORBIDDEN.into_response();
+            return crate::api::authz::forbidden();
         }
     }
 
@@ -36,19 +35,14 @@ async fn validate_mcp_transport(request: Request, next: Next) -> Response {
         }
     }
 
-    // MCP-Session-Id mismatch: if present, must match Bearer token
-    if let Some(mcp_sid) = request.headers().get("mcp-session-id")
-        && let Some(auth_header) = request.headers().get("authorization")
-    {
-        let auth_str = auth_header.to_str().unwrap_or("");
-        // RFC 7235: auth schemes are case-insensitive
-        let bearer_token = if auth_str.len() > 7 && auth_str[..7].eq_ignore_ascii_case("bearer ") {
-            &auth_str[7..]
-        } else {
-            ""
-        };
-        let mcp_sid_str = mcp_sid.to_str().unwrap_or("");
-        if !bearer_token.is_empty() && !mcp_sid_str.is_empty() && bearer_token != mcp_sid_str {
+    // MCP-Session-Id, when present, must name the authenticated session
+    if let Some(mcp_sid) = request.headers().get("mcp-session-id") {
+        let session_id = request
+            .extensions()
+            .get::<crate::services::auth::principal::Principal>()
+            .and_then(|p| p.agent())
+            .map(|a| a.session_id.as_str());
+        if session_id.is_none() || mcp_sid.to_str().ok() != session_id {
             return StatusCode::BAD_REQUEST.into_response();
         }
     }
@@ -82,7 +76,7 @@ fn is_valid_origin(origin: &str) -> bool {
 
 /// MCP endpoint handler (POST /mcp)
 ///
-/// Accepts JSON-RPC 2.0 requests with Bearer token auth (session_id).
+/// Accepts JSON-RPC 2.0 requests from an authenticated agent session.
 /// Dispatches to MCP method handlers (initialize, tools/list, tools/call, ping).
 async fn handle_mcp(auth: McpSession, State(state): State<AppState>, body: String) -> Response {
     let request: JsonRpcRequest = match serde_json::from_str(&body) {

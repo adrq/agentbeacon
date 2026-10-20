@@ -2,13 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use axum::{
-    Json, Router,
-    extract::Path,
-    extract::State,
-    extract::rejection::JsonRejection,
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
-    routing::post,
+    Json, Router, extract::Path, extract::State, extract::rejection::JsonRejection,
+    http::StatusCode, response::IntoResponse, routing::post,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -171,17 +166,9 @@ fn already_resolved(cand: &crate::resolution::ResolutionCandidate) -> SchedulerE
 }
 
 async fn dismiss(
-    headers: HeaderMap,
     Path(event_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, SchedulerError> {
-    if crate::api::sessions::is_agent_session_bearer(&headers, &state).await? {
-        return Err(SchedulerError::Problem(Box::new(
-            Problem::new(ProblemCode::AuthForbidden)
-                .with_detail("dismiss is not available via agent session auth"),
-        )));
-    }
-
     let decision_not_found = || {
         SchedulerError::Problem(Box::new(
             Problem::new(ProblemCode::DecisionNotFound).with_detail("no decision has this id"),

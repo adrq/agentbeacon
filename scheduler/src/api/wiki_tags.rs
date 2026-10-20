@@ -4,7 +4,7 @@
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::api::wiki_auth::resolve_session_principal;
 use crate::app::AppState;
 use crate::db;
 use crate::db::DbPool;
@@ -86,19 +85,6 @@ fn member_detail(member: &Member, tag_id: &str) -> MemberDetail {
     }
 }
 
-/// Reject a caller presenting a session token.
-async fn require_operator(headers: &HeaderMap, pool: &DbPool) -> Result<(), Response> {
-    match resolve_session_principal(headers, pool).await {
-        Err(e) => Err(e.into_response()),
-        Ok(Some(_)) => Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "operator_scope_only" })),
-        )
-            .into_response()),
-        Ok(None) => Ok(()),
-    }
-}
-
 fn tag_not_found() -> Response {
     (
         StatusCode::NOT_FOUND,
@@ -127,14 +113,7 @@ fn invalid_access_level() -> SchedulerError {
     SchedulerError::ValidationFailed("access_level must be \"read\" or \"read_write\"".into())
 }
 
-async fn list_tags(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, SchedulerError> {
-    if let Err(resp) = require_operator(&headers, &state.db_pool).await {
-        return Ok(resp);
-    }
-
+async fn list_tags(State(state): State<AppState>) -> Result<Response, SchedulerError> {
     let tags = db::wiki_sharing::list_tags_with_members(&state.db_pool).await?;
     let items: Vec<TagListItem> = tags
         .into_iter()
@@ -220,14 +199,9 @@ fn already_a_member(existing: &Member, tag_id: &str, requested: &str) -> Respons
 
 async fn admit_member(
     State(state): State<AppState>,
-    headers: HeaderMap,
     AxumPath(tag_id): AxumPath<String>,
     body: Result<Json<AdmitMemberRequest>, JsonRejection>,
 ) -> Result<Response, SchedulerError> {
-    if let Err(resp) = require_operator(&headers, &state.db_pool).await {
-        return Ok(resp);
-    }
-
     let Json(req) = body.map_err(|e| SchedulerError::ValidationFailed(e.body_text()))?;
     if !is_access_level(&req.access_level) {
         return Err(invalid_access_level());
@@ -399,14 +373,9 @@ async fn admit_member(
 
 async fn set_member_access(
     State(state): State<AppState>,
-    headers: HeaderMap,
     AxumPath(path): AxumPath<MemberPath>,
     body: Result<Json<SetAccessRequest>, JsonRejection>,
 ) -> Result<Response, SchedulerError> {
-    if let Err(resp) = require_operator(&headers, &state.db_pool).await {
-        return Ok(resp);
-    }
-
     let Json(req) = body.map_err(|e| SchedulerError::ValidationFailed(e.body_text()))?;
     if !is_access_level(&req.access_level) {
         return Err(invalid_access_level());
@@ -520,13 +489,8 @@ async fn set_member_access(
 
 async fn revoke_member(
     State(state): State<AppState>,
-    headers: HeaderMap,
     AxumPath(path): AxumPath<MemberPath>,
 ) -> Result<Response, SchedulerError> {
-    if let Err(resp) = require_operator(&headers, &state.db_pool).await {
-        return Ok(resp);
-    }
-
     if db::wiki_sharing::tag_name(&state.db_pool, &path.tag_id)
         .await?
         .is_none()

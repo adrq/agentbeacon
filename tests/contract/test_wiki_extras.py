@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     create_project_via_api,
     scheduler_context,
@@ -414,7 +415,7 @@ def test_changes_feed_execution_id_filter(test_database):
             ctx["url"], agent_id, "wiki work", project_id=pid
         )
 
-        headers = {"Authorization": f"Bearer {session_id}"}
+        headers = {**agent_headers(None, session_id)}
         httpx.put(
             f"{ctx['url']}/api/v1/projects/{pid}/wiki/pages/auth-page",
             json={"title": "Auth", "body": "body"},

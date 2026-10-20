@@ -30,6 +30,7 @@ def _run_setup(binary, *extra_args, data_dir=None):
     return subprocess.run(
         [str(binary), "--setup", *extra_args],
         env=env,
+        cwd=data_dir,
         capture_output=True,
         text=True,
         timeout=120,

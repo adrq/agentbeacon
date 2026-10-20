@@ -11,6 +11,7 @@ import type {
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
   DecisionBatchResponse, DecisionSummaryResponse, Page,
 } from './types';
+import { markSignedOut } from './stores/auth';
 
 /** Either a fresh pending snapshot or the server's word that nothing changed. */
 export type PendingDecisionsResult =
@@ -50,6 +51,7 @@ export class ApiError extends Error {
 
 /** Build an ApiError, parsing a problem body when there is one. */
 async function toApiError(response: Response): Promise<ApiError> {
+  if (response.status === 401) markSignedOut();
   const text = await response.text().catch(() => '');
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.includes('application/problem+json')) {
@@ -107,6 +109,31 @@ class AgentBeaconAPI {
     if (!response.ok) {
       throw await toApiError(response);
     }
+  }
+
+  // Logins
+  /** Sign in with a username and password; the browser receives the login as a cookie. */
+  async login(username: string, password: string): Promise<void> {
+    const response = await fetch(`${this.baseURL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, label: 'web', delivery: 'cookie' }),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      let problem: ProblemDetails | undefined;
+      try {
+        problem = JSON.parse(text) as ProblemDetails;
+      } catch {
+        problem = undefined;
+      }
+      throw new ApiError(response.status, text, problem);
+    }
+  }
+
+  /** Sign out: delete the current login. */
+  async logout(): Promise<void> {
+    return this.fetchNoContent('/auth/logout', { method: 'POST' });
   }
 
   // Projects

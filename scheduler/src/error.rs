@@ -58,15 +58,8 @@ impl IntoResponse for SchedulerError {
             SchedulerError::Conflict(msg) => {
                 (StatusCode::CONFLICT, Json(json!({"error": msg}))).into_response()
             }
-            SchedulerError::Unauthorized(msg) => (
-                StatusCode::UNAUTHORIZED,
-                [("www-authenticate", "Bearer")],
-                Json(json!({"error": msg})),
-            )
-                .into_response(),
-            SchedulerError::Forbidden(msg) => {
-                (StatusCode::FORBIDDEN, Json(json!({"error": msg}))).into_response()
-            }
+            SchedulerError::Unauthorized(_) => crate::api::authz::unauthorized(),
+            SchedulerError::Forbidden(_) => crate::api::authz::forbidden(),
             SchedulerError::SearchFailed(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": msg})),

@@ -7,6 +7,7 @@ import time
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     mcp_call,
     mcp_tools_call,
@@ -85,7 +86,7 @@ def test_release_cascades_to_grandchildren(test_database):
             gc_row = get_session_row(ctx["db_url"], gc_id)
             if gc_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], "cascade-trigger")
+            post_worker_sync(ctx["url"], wid("cascade-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -127,7 +128,7 @@ def test_release_cascade_running_child_gets_canceled(test_database):
             gc_row = get_session_row(ctx["db_url"], gc_id)
             if gc_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], "cascade-trigger")
+            post_worker_sync(ctx["url"], wid("cascade-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -345,7 +346,7 @@ def test_release_working_root_with_mixed_descendants(test_database):
             r2 = get_session_row(ctx["db_url"], gc_idle)
             if r1.get("desired") == "terminate" and r2.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], "cascade-trigger")
+            post_worker_sync(ctx["url"], wid("cascade-trigger"))
             time.sleep(0.25)
 
         assert_session_state(

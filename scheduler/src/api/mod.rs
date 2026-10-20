@@ -9,6 +9,8 @@ use crate::app::AppState;
 pub mod agent_card;
 pub mod agents;
 pub mod auth;
+pub mod auth_routes;
+pub mod authz;
 pub mod config;
 pub mod decisions;
 pub mod docs;
@@ -33,6 +35,7 @@ pub mod wiki;
 pub mod wiki_auth;
 pub mod wiki_tags;
 pub mod worker;
+pub mod workers;
 
 async fn api_path_not_found() -> Problem {
     Problem::new(ProblemCode::ResourceNotFound).with_detail("no route matches this path")

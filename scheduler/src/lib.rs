@@ -14,3 +14,4 @@ pub mod services;
 pub mod slugs;
 pub mod supervisor;
 pub mod telemetry;
+pub mod test_pause;

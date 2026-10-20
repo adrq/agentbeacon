@@ -255,6 +255,7 @@ pub async fn create_page(
     title: &str,
     body: &str,
     created_by: Option<&str>,
+    credential: Option<&str>,
     tags: Option<&[String]>,
     acknowledge_share: bool,
 ) -> Result<CreateOutcome, SchedulerError> {
@@ -327,7 +328,10 @@ pub async fn create_page(
         .ok_or_else(|| SchedulerError::Database("created page vanished".into()))?;
 
     if let Some(session_id) = created_by
-        && !crate::db::sessions::is_live_in_tx(&mut tx, pool, session_id).await?
+        && !crate::db::credentials::session_credential_live_in_tx(
+            &mut tx, pool, session_id, credential,
+        )
+        .await?
     {
         rollback(tx).await?;
         return Err(SchedulerError::Unauthorized("session is not live".into()));
@@ -453,6 +457,7 @@ pub async fn delete_page(
     project_id: &str,
     page_id: &str,
     session_id: Option<&str>,
+    credential: Option<&str>,
 ) -> Result<(), SchedulerError> {
     let mut tx = pool
         .begin()
@@ -485,7 +490,10 @@ pub async fn delete_page(
     }
 
     if let Some(session_id) = session_id
-        && !crate::db::sessions::is_live_in_tx(&mut tx, pool, session_id).await?
+        && !crate::db::credentials::session_credential_live_in_tx(
+            &mut tx, pool, session_id, credential,
+        )
+        .await?
     {
         rollback(tx).await?;
         return Err(SchedulerError::Unauthorized("session is not live".into()));
@@ -797,6 +805,7 @@ pub struct WikiSubscription {
 
 /// Create a subscription (idempotent via partial unique indexes).
 /// Returns (subscription, was_created).
+#[allow(clippy::too_many_arguments)]
 pub async fn create_subscription(
     pool: &DbPool,
     id: &str,
@@ -805,6 +814,7 @@ pub async fn create_subscription(
     page_slug: Option<&str>,
     tag_name: Option<&str>,
     session_id: Option<&str>,
+    credential: Option<&str>,
 ) -> Result<(WikiSubscription, bool), SchedulerError> {
     let insert_sql = if pool.is_postgres() {
         "INSERT INTO wiki_subscriptions (id, project_id, subscriber, page_slug, tag_name) \
@@ -879,7 +889,10 @@ pub async fn create_subscription(
 
     let subscription = parse_subscription_row(row)?;
     if let Some(session_id) = session_id
-        && !crate::db::sessions::is_live_in_tx(&mut tx, pool, session_id).await?
+        && !crate::db::credentials::session_credential_live_in_tx(
+            &mut tx, pool, session_id, credential,
+        )
+        .await?
     {
         rollback(tx).await?;
         return Err(SchedulerError::Unauthorized("session is not live".into()));
@@ -898,6 +911,7 @@ pub async fn delete_subscription(
     project_id: &str,
     id: &str,
     session_id: Option<&str>,
+    credential: Option<&str>,
 ) -> Result<(), SchedulerError> {
     let mut tx = pool
         .begin()
@@ -920,7 +934,10 @@ pub async fn delete_subscription(
     }
 
     if let Some(session_id) = session_id
-        && !crate::db::sessions::is_live_in_tx(&mut tx, pool, session_id).await?
+        && !crate::db::credentials::session_credential_live_in_tx(
+            &mut tx, pool, session_id, credential,
+        )
+        .await?
     {
         rollback(tx).await?;
         return Err(SchedulerError::Unauthorized("session is not live".into()));
@@ -1085,6 +1102,8 @@ pub struct PageChange<'a> {
     pub remove_tags: &'a [String],
     pub summary: Option<&'a str>,
     pub updated_by: Option<&'a str>,
+    /// The credential the author presented, checked against its session before commit.
+    pub credential: Option<&'a str>,
     /// Present only when the caller's project does not own the page.
     pub foreign: Option<ForeignWriter<'a>>,
     pub acknowledge_share: bool,
@@ -1494,7 +1513,13 @@ where
         .ok_or_else(|| SchedulerError::Database("updated page vanished".into()))?;
 
     if let Some(session_id) = change.updated_by
-        && !crate::db::sessions::is_live_in_tx(&mut tx, pool, session_id).await?
+        && !crate::db::credentials::session_credential_live_in_tx(
+            &mut tx,
+            pool,
+            session_id,
+            change.credential,
+        )
+        .await?
     {
         rollback(tx).await?;
         return Ok((PageChangeOutcome::PrincipalGone, locked_project_slug));

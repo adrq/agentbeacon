@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    anonymous_headers,
     create_execution_via_api,
     db_conn,
     mcp_call,
@@ -340,6 +341,7 @@ def test_escalate_missing_auth_returns_401(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/v1/escalate",
             json={"questions": [{"question": "hello?"}]},
+            headers=anonymous_headers(),
             timeout=5,
         )
         assert resp.status_code == 401
@@ -357,7 +359,7 @@ def test_escalate_invalid_token_returns_401(test_database):
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
-def test_escalate_terminal_session_returns_404(test_database):
+def test_escalate_terminal_session_returns_401(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="claude-code")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
@@ -374,7 +376,8 @@ def test_escalate_terminal_session_returns_404(test_database):
             session_id,
             {"questions": [{"question": "hello?"}]},
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 401
+        assert resp.json()["code"] == "auth.unauthorized"
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

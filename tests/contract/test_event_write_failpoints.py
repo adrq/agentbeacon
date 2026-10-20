@@ -11,6 +11,8 @@ import pytest
 from tests.dual_backend import DUAL_BACKEND
 
 from tests.testhelpers import (
+    admit_worker,
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -171,15 +173,15 @@ def test_a_crash_notice_that_cannot_record_itself_is_not_claimed(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="failpoint-notice")
         exec_id, root_id = create_execution_via_api(ctx["url"], agent_id, "task")
         httpx.post(
-            f"{ctx['url']}/api/worker/sync", json={"worker_id": "w-fp"}, timeout=30
+            f"{ctx['url']}/api/worker/sync", json={"worker_id": wid("w-fp")}, timeout=30
         )
         with db_conn(test_database) as conn:
             conn.execute(
                 "INSERT INTO sessions (id, execution_id, agent_id, parent_session_id, slug, "
                 "desired, executor_state, outcome, desired_by, parent_notified, worker_id, "
                 "sandbox_policy) VALUES (?, ?, ?, ?, ?, 'terminate', 'crashed', 'failed', "
-                "'system:crash_unrecoverable', FALSE, 'w-fp', 'none')",
-                ("fp-child", exec_id, agent_id, root_id, "fp-child"),
+                "'system:crash_unrecoverable', FALSE, ?, 'none')",
+                ("fp-child", exec_id, agent_id, root_id, "fp-child", wid("w-fp")),
             )
             conn.execute(
                 "INSERT INTO task_queue (execution_id, session_id, task_payload, source) "
@@ -190,7 +192,9 @@ def test_a_crash_notice_that_cannot_record_itself_is_not_claimed(test_database):
 
         with _EventInsertFails(test_database, "platform"):
             httpx.post(
-                f"{ctx['url']}/api/worker/sync", json={"worker_id": "w-fp"}, timeout=30
+                f"{ctx['url']}/api/worker/sync",
+                json={"worker_id": wid("w-fp")},
+                timeout=30,
             )
 
         with db_conn(test_database) as conn:
@@ -210,13 +214,15 @@ def test_an_automatic_retry_that_cannot_record_itself_does_not_happen(test_datab
         agent_id = seed_test_agent(ctx["db_url"], name="failpoint-retry")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
         httpx.post(
-            f"{ctx['url']}/api/worker/sync", json={"worker_id": "w-retry"}, timeout=30
+            f"{ctx['url']}/api/worker/sync",
+            json={"worker_id": wid("w-retry")},
+            timeout=30,
         )
         with db_conn(test_database) as conn:
             conn.execute(
-                "UPDATE sessions SET executor_state = 'crashed', worker_id = 'w-retry', "
+                "UPDATE sessions SET executor_state = 'crashed', worker_id = ?, "
                 "agent_session_id = 'as-1', recovery_attempts = 0, cwd = '/tmp' WHERE id = ?",
-                (session_id,),
+                (wid("w-retry"), session_id),
             )
             conn.commit()
         events_before = _events(test_database, exec_id)
@@ -224,7 +230,7 @@ def test_an_automatic_retry_that_cannot_record_itself_does_not_happen(test_datab
         with _EventInsertFails(test_database, "state_change"):
             httpx.post(
                 f"{ctx['url']}/api/worker/sync",
-                json={"worker_id": "w-retry"},
+                json={"worker_id": wid("w-retry")},
                 timeout=30,
             )
 
@@ -245,18 +251,22 @@ def test_an_automatic_retry_records_itself_before_anything_can_follow(test_datab
         agent_id = seed_test_agent(ctx["db_url"], name="retry-ordering")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
         httpx.post(
-            f"{ctx['url']}/api/worker/sync", json={"worker_id": "w-order"}, timeout=30
+            f"{ctx['url']}/api/worker/sync",
+            json={"worker_id": wid("w-order")},
+            timeout=30,
         )
         with db_conn(test_database) as conn:
             conn.execute(
-                "UPDATE sessions SET executor_state = 'crashed', worker_id = 'w-order', "
+                "UPDATE sessions SET executor_state = 'crashed', worker_id = ?, "
                 "agent_session_id = 'as-1', recovery_attempts = 0, cwd = '/tmp' WHERE id = ?",
-                (session_id,),
+                (wid("w-order"), session_id),
             )
             conn.commit()
 
         httpx.post(
-            f"{ctx['url']}/api/worker/sync", json={"worker_id": "w-order"}, timeout=30
+            f"{ctx['url']}/api/worker/sync",
+            json={"worker_id": wid("w-order")},
+            timeout=30,
         )
 
         with db_conn(test_database) as conn:
@@ -335,11 +345,12 @@ def test_a_message_delivered_before_the_crash_lands_still_warns(test_database):
     ) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="feed-vs-crash")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
+        worker = wid("w-feed")
         with db_conn(test_database) as conn:
             conn.execute(
-                "UPDATE sessions SET worker_id = 'w-feed', executor_state = 'running', "
+                "UPDATE sessions SET worker_id = ?, executor_state = 'running', "
                 "command_has_payload = FALSE WHERE id = ?",
-                (session_id,),
+                (worker, session_id),
             )
             conn.commit()
 
@@ -351,7 +362,7 @@ def test_a_message_delivered_before_the_crash_lands_still_warns(test_database):
             )
 
         _report_under_lock(
-            ctx, test_database, exec_id, session_id, "w-feed", "crashed", deliver
+            ctx, test_database, exec_id, session_id, worker, "crashed", deliver
         )
 
         assert any(
@@ -367,11 +378,12 @@ def test_an_idle_report_resets_a_budget_spent_while_it_waited(test_database):
     ) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="retry-vs-idle")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
+        worker = wid("w-idle")
         with db_conn(test_database) as conn:
             conn.execute(
-                "UPDATE sessions SET worker_id = 'w-idle', executor_state = 'running', "
+                "UPDATE sessions SET worker_id = ?, executor_state = 'running', "
                 "recovery_attempts = 0 WHERE id = ?",
-                (session_id,),
+                (worker, session_id),
             )
             conn.commit()
 
@@ -381,7 +393,7 @@ def test_an_idle_report_resets_a_budget_spent_while_it_waited(test_database):
             )
 
         _report_under_lock(
-            ctx, test_database, exec_id, session_id, "w-idle", "idle", spend_budget
+            ctx, test_database, exec_id, session_id, worker, "idle", spend_budget
         )
 
         with db_conn(test_database) as conn:
@@ -398,11 +410,12 @@ def test_a_state_change_that_happened_while_waiting_is_still_recorded(test_datab
     ) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="idle-vs-detect")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
+        worker = wid("w-dedup")
         with db_conn(test_database) as conn:
             conn.execute(
-                "UPDATE sessions SET worker_id = 'w-dedup', executor_state = 'idle' "
+                "UPDATE sessions SET worker_id = ?, executor_state = 'idle' "
                 "WHERE id = ?",
-                (session_id,),
+                (worker, session_id),
             )
             conn.commit()
         before = len(_state_changes(test_database, session_id))
@@ -414,7 +427,7 @@ def test_a_state_change_that_happened_while_waiting_is_still_recorded(test_datab
             )
 
         _report_under_lock(
-            ctx, test_database, exec_id, session_id, "w-dedup", "idle", start_running
+            ctx, test_database, exec_id, session_id, worker, "idle", start_running
         )
 
         emitted = _state_changes(test_database, session_id)[before:]
@@ -473,20 +486,22 @@ def test_a_lost_failure_advisory_does_not_stop_the_failure(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="advisory-failure")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
         httpx.post(
-            f"{ctx['url']}/api/worker/sync", json={"worker_id": "w-adv"}, timeout=30
+            f"{ctx['url']}/api/worker/sync",
+            json={"worker_id": wid("w-adv")},
+            timeout=30,
         )
         with db_conn(test_database) as conn:
             conn.execute(
-                "UPDATE sessions SET worker_id = 'w-adv', executor_state = 'crashed', "
+                "UPDATE sessions SET worker_id = ?, executor_state = 'crashed', "
                 "agent_session_id = 'as-1', recovery_attempts = 9, cwd = '/tmp' WHERE id = ?",
-                (session_id,),
+                (wid("w-adv"), session_id),
             )
             conn.commit()
 
         with _EventInsertFails(test_database, "platform"):
             httpx.post(
                 f"{ctx['url']}/api/worker/sync",
-                json={"worker_id": "w-adv"},
+                json={"worker_id": wid("w-adv")},
                 timeout=30,
             )
 
@@ -517,7 +532,9 @@ def test_a_dead_worker_holding_a_payload_command_warns(test_database):
         time.sleep(2)
 
         httpx.post(
-            f"{ctx['url']}/api/worker/sync", json={"worker_id": "w-other"}, timeout=60
+            f"{ctx['url']}/api/worker/sync",
+            json={"worker_id": wid("w-other")},
+            timeout=60,
         )
 
         with db_conn(test_database) as conn:
@@ -552,7 +569,7 @@ def test_a_repair_does_not_undo_a_recovery_that_won_the_lock(test_database):
         def sweep():
             httpx.post(
                 f"{ctx['url']}/api/worker/sync",
-                json={"worker_id": "w-repair"},
+                json={"worker_id": admit_worker(ctx["url"])},
                 timeout=60,
             )
 
@@ -593,20 +610,22 @@ def test_an_idle_report_before_the_verdict_lands_stops_the_failure(test_database
         agent_id = seed_test_agent(ctx["db_url"], name="verdict-vs-idle")
         exec_id, root_id = create_execution_via_api(ctx["url"], agent_id, "task")
         httpx.post(
-            f"{ctx['url']}/api/worker/sync", json={"worker_id": "w-verdict"}, timeout=30
+            f"{ctx['url']}/api/worker/sync",
+            json={"worker_id": wid("w-verdict")},
+            timeout=30,
         )
         with db_conn(test_database) as conn:
             conn.execute(
-                "UPDATE sessions SET worker_id = 'w-verdict', executor_state = 'crashed', "
+                "UPDATE sessions SET worker_id = ?, executor_state = 'crashed', "
                 "agent_session_id = 'as-1', recovery_attempts = 9, cwd = '/tmp' WHERE id = ?",
-                (root_id,),
+                (wid("w-verdict"), root_id),
             )
             conn.commit()
 
         def verdict():
             httpx.post(
                 f"{ctx['url']}/api/worker/sync",
-                json={"worker_id": "w-verdict"},
+                json={"worker_id": wid("w-verdict")},
                 timeout=60,
             )
 
@@ -663,14 +682,14 @@ def test_two_detectors_produce_one_advisory(test_database):
             conn.commit()
         time.sleep(2)
 
+        sweepers = [admit_worker(ctx["url"]) for _ in range(2)]
+
         def sweep(worker):
             httpx.post(
                 f"{ctx['url']}/api/worker/sync", json={"worker_id": worker}, timeout=60
             )
 
-        threads = [
-            threading.Thread(target=sweep, args=(f"w-sweeper-{i}",)) for i in range(2)
-        ]
+        threads = [threading.Thread(target=sweep, args=(w,)) for w in sweepers]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -695,21 +714,23 @@ def test_a_stop_landing_before_a_retry_leaves_the_session_parked(test_database):
         )
         exec_id, root_id = create_execution_via_api(ctx["url"], agent_id, "task")
         httpx.post(
-            f"{ctx['url']}/api/worker/sync", json={"worker_id": "w-retry"}, timeout=30
+            f"{ctx['url']}/api/worker/sync",
+            json={"worker_id": wid("w-retry")},
+            timeout=30,
         )
         with db_conn(test_database) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (root_id,))
             conn.execute(
-                "UPDATE sessions SET worker_id = 'w-retry', executor_state = 'crashed', "
+                "UPDATE sessions SET worker_id = ?, executor_state = 'crashed', "
                 "agent_session_id = 'as-1', recovery_attempts = 0, cwd = '/tmp' WHERE id = ?",
-                (root_id,),
+                (wid("w-retry"), root_id),
             )
             conn.commit()
 
         def retry():
             httpx.post(
                 f"{ctx['url']}/api/worker/sync",
-                json={"worker_id": "w-retry"},
+                json={"worker_id": wid("w-retry")},
                 timeout=60,
             )
 

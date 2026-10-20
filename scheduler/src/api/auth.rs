@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use axum::{
-    Json,
     extract::FromRequestParts,
-    http::{StatusCode, request::Parts},
+    http::request::Parts,
     response::{IntoResponse, Response},
 };
-use serde_json::json;
 
+use crate::api::authz::forbidden;
 use crate::app::AppState;
 use crate::db;
+use crate::services::auth::principal::Principal;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpRole {
@@ -34,89 +34,32 @@ pub struct McpSession {
     pub sandbox_policy: String,
 }
 
-/// Auth/session rejection per MCP spec:
-/// - 401 for invalid/missing credentials (with WWW-Authenticate: Bearer)
-/// - 404 for terminated sessions (spec: "MUST respond with HTTP 404 Not Found")
-pub enum AuthRejection {
-    Unauthorized(String),
-    SessionTerminated(String),
-    InternalError(String),
-}
-
-impl IntoResponse for AuthRejection {
-    fn into_response(self) -> Response {
-        match self {
-            Self::Unauthorized(detail) => (
-                StatusCode::UNAUTHORIZED,
-                [("www-authenticate", "Bearer")],
-                Json(json!({"error": "unauthorized", "detail": detail})),
-            )
-                .into_response(),
-            Self::SessionTerminated(detail) => (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "session_terminated", "detail": detail})),
-            )
-                .into_response(),
-            Self::InternalError(detail) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "internal_error", "detail": detail})),
-            )
-                .into_response(),
-        }
-    }
-}
-
 impl FromRequestParts<AppState> for McpSession {
-    type Rejection = AuthRejection;
+    type Rejection = Response;
 
     fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
     ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
         let db_pool = state.db_pool.clone();
-        let auth_header = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+        let agent = parts
+            .extensions
+            .get::<Principal>()
+            .and_then(|p| p.agent().cloned());
 
         async move {
-            let header = auth_header.ok_or_else(|| {
-                AuthRejection::Unauthorized("missing Authorization header".into())
-            })?;
+            let agent = agent.ok_or_else(forbidden)?;
+            let internal = |e: crate::error::SchedulerError| e.into_response();
 
-            // RFC 7235: auth schemes are case-insensitive
-            let token = if header.len() > 7 && header[..7].eq_ignore_ascii_case("bearer ") {
-                &header[7..]
-            } else {
-                return Err(AuthRejection::Unauthorized(
-                    "invalid Authorization format, expected Bearer <token>".into(),
-                ));
-            };
-
-            let session = db::sessions::get_by_id(&db_pool, token)
+            let session = db::sessions::get_by_id(&db_pool, &agent.session_id)
                 .await
-                .map_err(|e| match e {
-                    crate::error::SchedulerError::NotFound(_) => {
-                        AuthRejection::Unauthorized("session not found".into())
-                    }
-                    other => AuthRejection::InternalError(other.to_string()),
-                })?;
-
-            // Terminated sessions → 404 per MCP spec, not 401
-            if session.outcome.is_some() {
-                return Err(AuthRejection::SessionTerminated(
-                    "session is in terminal state".into(),
-                ));
-            }
-
+                .map_err(internal)?;
             let execution = db::executions::get_by_id(&db_pool, &session.execution_id)
                 .await
-                .map_err(|e| AuthRejection::InternalError(e.to_string()))?;
-
+                .map_err(internal)?;
             let depth = db::sessions::compute_depth(&db_pool, &session.id, &session.execution_id)
                 .await
-                .map_err(|e| AuthRejection::InternalError(e.to_string()))?;
+                .map_err(internal)?;
 
             let role = if session.parent_session_id.is_none() {
                 McpRole::RootLead

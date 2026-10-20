@@ -7,6 +7,8 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    anonymous_headers,
+    agent_headers,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -34,7 +36,7 @@ def _send_lateral(ctx, sender_session_id, to, body):
     return httpx.post(
         f"{ctx['url']}/api/v1/messages",
         json={"to": to, "parts": [{"text": body}]},
-        headers={"Authorization": f"Bearer {sender_session_id}"},
+        headers={**agent_headers(None, sender_session_id)},
         timeout=5,
     )
 
@@ -210,7 +212,7 @@ def test_lateral_message_no_message_delivered_and_non_resolving(test_database):
                     },
                 ],
             },
-            headers={"Authorization": f"Bearer {lead_session_id}"},
+            headers={**agent_headers(None, lead_session_id)},
             timeout=10,
         )
         assert resp.status_code == 200, resp.text
@@ -351,6 +353,7 @@ def test_send_lateral_message_no_auth_rejected(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/v1/messages",
             json={"to": "some-name", "parts": [{"text": "hello"}]},
+            headers=anonymous_headers(),
             timeout=5,
         )
         assert resp.status_code == 401
@@ -548,7 +551,8 @@ def test_send_lateral_message_from_terminated_session_rejected(test_database):
         )
 
         resp = _send_lateral(ctx, session_id, my_name, "from the grave")
-        assert resp.status_code == 404
+        assert resp.status_code == 401
+        assert resp.json()["code"] == "auth.unauthorized"
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

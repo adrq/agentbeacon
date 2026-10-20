@@ -10,6 +10,9 @@ import httpx
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    TEST_PASSWORD,
+    TEST_USERNAME,
+    anonymous_headers,
     create_execution_via_api,
     create_project_via_api,
     db_conn,
@@ -526,6 +529,57 @@ def test_agents_drivers_projects_and_config(test_database):
             assert isinstance(entry["updated_at"], str)
 
 
+LOGIN = {"id", "label", "created_at", "expires_at"}
+
+
+@DUAL_BACKEND
+def test_auth_and_worker_admission_endpoints(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        bearer = httpx.post(
+            f"{ctx['url']}/api/v1/auth/login",
+            json={
+                "username": TEST_USERNAME,
+                "password": TEST_PASSWORD,
+                "label": "wire",
+                "delivery": "bearer",
+            },
+            headers=anonymous_headers(),
+            timeout=30,
+        )
+        assert bearer.status_code == 201
+        _exact(bearer.json(), {"token", "login"}, "bearer login")
+        _exact(bearer.json()["login"], LOGIN, "login")
+        for key in LOGIN:
+            assert isinstance(bearer.json()["login"][key], str)
+
+        cookie = httpx.post(
+            f"{ctx['url']}/api/v1/auth/login",
+            json={
+                "username": TEST_USERNAME,
+                "password": TEST_PASSWORD,
+                "delivery": "cookie",
+            },
+            headers=anonymous_headers(),
+            timeout=30,
+        )
+        assert cookie.status_code == 201
+        _exact(cookie.json(), {"login"}, "cookie login")
+        _exact(cookie.json()["login"], LOGIN, "login")
+        assert cookie.json()["login"]["label"] is None
+
+        logins = httpx.get(f"{ctx['url']}/api/v1/auth/logins", timeout=10).json()
+        assert logins, "an empty list would assert nothing"
+        for entry in logins:
+            _exact(entry, LOGIN | {"current"}, "login list entry")
+            assert isinstance(entry["current"], bool)
+
+        admitted = httpx.post(f"{ctx['url']}/api/v1/workers", timeout=10)
+        assert admitted.status_code == 201
+        _exact(admitted.json(), {"worker_id", "token"}, "admitted worker")
+        assert isinstance(admitted.json()["worker_id"], str)
+        assert isinstance(admitted.json()["token"], str)
+
+
 @DUAL_BACKEND
 def test_discovery(test_database):
     with scheduler_context(db_url=test_database) as ctx:
@@ -704,6 +758,9 @@ def _registered_routes():
 
 
 EXACT_CHECKED = {
+    ("POST", "/auth/login"),
+    ("GET", "/auth/logins"),
+    ("POST", "/workers"),
     ("GET", "/agents"),
     ("POST", "/agents"),
     ("GET", "/agents/{id}"),
@@ -759,6 +816,8 @@ EXACT_CHECKED = {
 }
 
 EXCLUDED = {
+    ("DELETE", "/auth/logins/{id}"): "204 with no body",
+    ("POST", "/auth/logout"): "204 with no body",
     ("DELETE", "/agents/{id}"): "204 with no body",
     ("DELETE", "/drivers/{id}"): "204 with no body",
     ("DELETE", "/projects/{id}"): "204 with no body",

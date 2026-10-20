@@ -11,7 +11,7 @@ use crate::error::SchedulerError;
 
 /// Highest schema version this binary ships; also the PostgreSQL `application_name` tag
 /// (`agentbeacon-schema{LATEST_SCHEMA_VERSION}`).
-pub const LATEST_SCHEMA_VERSION: i32 = 30;
+pub const LATEST_SCHEMA_VERSION: i32 = 31;
 
 /// Embedded migration files
 const MIGRATION_0001: &str = include_str!("../../migrations/0001_initial.sql");
@@ -74,6 +74,8 @@ const MIGRATION_0029_PG: &str =
     include_str!("../../migrations/0029_pg_execution_last_activity.sql");
 const MIGRATION_0030: &str = include_str!("../../migrations/0030_execution_ceiling.sql");
 const MIGRATION_0030_PG: &str = include_str!("../../migrations/0030_pg_execution_ceiling.sql");
+const MIGRATION_0031: &str = include_str!("../../migrations/0031_auth.sql");
+const MIGRATION_0031_PG: &str = include_str!("../../migrations/0031_pg_auth.sql");
 
 /// Replace SQL type keyword using sqlparser tokenizer for correctness
 ///
@@ -187,7 +189,7 @@ enum MigrationStep {
 }
 
 /// The ordered migration steps this binary ships: SQL 1..23, the 0024 code-step, SQL 25,
-/// the 0026 code-step, then SQL 27 through 30.
+/// the 0026 code-step, then SQL 27 through 31.
 fn default_migration_steps(is_postgres: bool) -> Vec<(MigrationStep, i32)> {
     let pick = |pg: &'static str, lite: &'static str| if is_postgres { pg } else { lite };
     vec![
@@ -301,6 +303,10 @@ fn default_migration_steps(is_postgres: bool) -> Vec<(MigrationStep, i32)> {
         (
             MigrationStep::Sql(pick(MIGRATION_0030_PG, MIGRATION_0030)),
             30,
+        ),
+        (
+            MigrationStep::Sql(pick(MIGRATION_0031_PG, MIGRATION_0031)),
+            31,
         ),
     ]
 }

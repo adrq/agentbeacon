@@ -3,7 +3,15 @@
 
 //! Worker sync handler.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+
+use crate::api::authz::{Authenticated, forbidden, unauthorized};
+use crate::services::auth::principal::{Principal, WorkerBinding};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
@@ -74,11 +82,52 @@ pub enum WorkerSyncResponse {
 
 pub async fn worker_sync(
     State(state): State<AppState>,
+    Authenticated(principal): Authenticated,
     Json(req): Json<WorkerSyncRequest>,
+) -> Response {
+    let Principal::Worker {
+        worker_id,
+        credential_hash,
+    } = principal
+    else {
+        return forbidden();
+    };
+    if req.worker_id != worker_id {
+        return forbidden();
+    }
+    let binding = WorkerBinding::new(worker_id, credential_hash, state.supervisor.clone());
+    match sync(&state, &req, &binding).await {
+        Ok(Json(response)) => {
+            if matches!(response, WorkerSyncResponse::Command { .. }) {
+                match binding.holds(&state.db_pool).await {
+                    Ok(true) => {}
+                    Ok(false) => return unauthorized(),
+                    Err(e) => {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                    }
+                }
+            }
+            Json(response).into_response()
+        }
+        Err((StatusCode::UNAUTHORIZED, _)) => unauthorized(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn sync(
+    state: &AppState,
+    req: &WorkerSyncRequest,
+    binding: &WorkerBinding,
 ) -> Result<Json<WorkerSyncResponse>, (StatusCode, String)> {
+    let state = state.clone();
     let pool = &state.db_pool;
     let worker_id = &req.worker_id;
 
+    match binding.holds(pool).await {
+        Ok(true) => {}
+        Ok(false) => return Err((StatusCode::UNAUTHORIZED, "credential ended".to_string())),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
     {
         let mut heartbeats = state.worker_heartbeats.write().unwrap();
         heartbeats.insert(worker_id.clone(), std::time::Instant::now());
@@ -100,7 +149,10 @@ pub async fn worker_sync(
         } else {
             None
         };
-        match process_executor_report(pool, worker_id, report, crash_meta, &state).await {
+        match process_executor_report(pool, binding, report, crash_meta, &state).await {
+            Err(ReportError::CredentialEnded) => {
+                return Err((StatusCode::UNAUTHORIZED, "credential ended".to_string()));
+            }
             Ok(applied) => {
                 executor_report_succeeded = applied;
                 if !applied || report.executor_state == "crashed" {
@@ -119,7 +171,7 @@ pub async fn worker_sync(
                             || session.worker_id.as_deref() != Some(worker_id)
                         {
                             if session.worker_id.as_deref() != Some(worker_id) {
-                                state.supervisor.kill_worker(worker_id).await;
+                                end_stale_worker(&state, binding).await?;
                             }
                             skip_reconciler = true;
                         } else {
@@ -157,7 +209,7 @@ pub async fn worker_sync(
                 turn_result_session = Some(session);
             } else {
                 tracing::debug!("stale turn_result dropped");
-                state.supervisor.kill_worker(worker_id).await;
+                end_stale_worker(&state, binding).await?;
                 skip_reconciler = true;
             }
         }
@@ -232,6 +284,11 @@ pub async fn worker_sync(
                     .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
                         e.to_string().into()
                     })?;
+
+                if let Err(e) = binding_holds(binding, &mut tx, pool).await {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
 
                 let mut tx_child_session: Option<db::sessions::Session> = None;
                 if let Some(result) = &req.turn_result
@@ -463,6 +520,10 @@ pub async fn worker_sync(
                     }
                 }
 
+                if let Err(e) = binding_holds(binding, &mut tx, pool).await {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
                 tx.commit()
                     .await
                     .inspect_err(|e| tracing::warn!(attempt, error = %e, "commit tx failed"))
@@ -487,6 +548,9 @@ pub async fn worker_sync(
                     skip_reconciler |= ps;
                     break;
                 }
+                Err(e) if e.downcast_ref::<CredentialEnded>().is_some() => {
+                    return Err((StatusCode::UNAUTHORIZED, "credential ended".to_string()));
+                }
                 Err(e)
                     if (e
                         .downcast_ref::<sqlx::Error>()
@@ -506,7 +570,7 @@ pub async fn worker_sync(
         }
 
         if ack_stale_worker || turn_result_stale_worker {
-            state.supervisor.kill_worker(worker_id).await;
+            end_stale_worker(&state, binding).await?;
         }
 
         if let Some(ref session) = turn_result_session {
@@ -576,6 +640,14 @@ pub async fn worker_sync(
             let _ =
                 tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), notified).await;
 
+            match binding.holds(pool).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err((StatusCode::UNAUTHORIZED, "credential ended".to_string()));
+                }
+                Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+            }
+
             {
                 let mut heartbeats = state.worker_heartbeats.write().unwrap();
                 heartbeats.insert(worker_id.to_string(), std::time::Instant::now());
@@ -596,11 +668,12 @@ pub async fn worker_sync(
 /// Returns Ok(true) if the report was applied, Ok(false) if it was dropped (stale).
 async fn process_executor_report(
     pool: &db::DbPool,
-    worker_id: &str,
+    binding: &WorkerBinding,
     report: &ExecutorReport,
     crash_meta: Option<transition::CrashMeta>,
     state: &AppState,
-) -> Result<bool, String> {
+) -> Result<bool, ReportError> {
+    let worker_id = binding.worker_id();
     let session = db::sessions::get_by_id(pool, &report.session_id)
         .await
         .map_err(|e| format!("session not found: {e}"))?;
@@ -612,33 +685,139 @@ async fn process_executor_report(
             session.worker_id,
             worker_id
         );
-        state.supervisor.kill_worker(worker_id).await;
-        return Ok(false);
+        return match end_stale_worker(state, binding).await {
+            Ok(()) => Ok(false),
+            Err((StatusCode::UNAUTHORIZED, _)) => Err(ReportError::CredentialEnded),
+            Err((_, message)) => Err(ReportError::Failed(message)),
+        };
     }
 
     let state = match report.executor_state.as_str() {
         "running" => ExState::Running,
         "idle" => ExState::Idle,
         "crashed" => ExState::Crashed,
-        other => return Err(format!("unknown executor_state: {other}")),
+        other => return Err(format!("unknown executor_state: {other}").into()),
     };
 
     if let Some(ref asid) = report.agent_session_id {
-        db::sessions::update_agent_session_id(pool, &session.id, asid, worker_id)
-            .await
-            .map_err(|e| format!("update agent_session_id failed: {e}"))?;
+        update_agent_session_id(pool, binding, &session.id, asid).await?;
     }
 
-    transition::transition(
+    match transition::transition(
         pool,
         &session.execution_id,
         &session.id,
-        transition::Action::SetExecutorState(state, worker_id.to_string(), crash_meta),
+        transition::Action::SetExecutorState(state, binding.clone(), crash_meta),
     )
     .await
-    .map_err(|e| format!("transition failed: {e}"))?;
+    {
+        Ok(_) => Ok(true),
+        Err(transition::Rejected::CredentialEnded) => Err(ReportError::CredentialEnded),
+        Err(e) => Err(format!("transition failed: {e}").into()),
+    }
+}
 
-    Ok(true)
+/// Why an executor report was not applied.
+#[derive(Debug)]
+enum ReportError {
+    /// The worker's credential or registration ended before the write.
+    CredentialEnded,
+    Failed(String),
+}
+
+impl From<String> for ReportError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl std::fmt::Display for ReportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CredentialEnded => write!(f, "credential ended"),
+            Self::Failed(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+/// The worker's credential or registration ended before a write.
+#[derive(Debug)]
+struct CredentialEnded;
+
+/// End the registration of a worker whose request proved it stale, while that
+/// request's credential and registration still hold. An ended credential is a
+/// 401 and the registration is left as it is.
+async fn end_stale_worker(
+    state: &AppState,
+    binding: &WorkerBinding,
+) -> Result<(), (StatusCode, String)> {
+    match binding.holds(&state.db_pool).await {
+        Ok(true) => {
+            state.supervisor.kill_worker(binding.worker_id()).await;
+            Ok(())
+        }
+        Ok(false) => Err((StatusCode::UNAUTHORIZED, "credential ended".to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+/// `Ok` while the worker's credential and registration hold.
+async fn binding_holds(
+    binding: &WorkerBinding,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    pool: &db::DbPool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match binding.holds_in_tx(tx, pool).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(Box::new(CredentialEnded)),
+        Err(e) => Err(e.to_string().into()),
+    }
+}
+
+impl std::fmt::Display for CredentialEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "credential ended")
+    }
+}
+
+impl std::error::Error for CredentialEnded {}
+
+/// Record the agent's session id, holding the session row while the worker's
+/// credential and registration are checked.
+async fn update_agent_session_id(
+    pool: &db::DbPool,
+    binding: &WorkerBinding,
+    session_id: &str,
+    agent_session_id: &str,
+) -> Result<(), ReportError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("update agent_session_id failed: {e}"))?;
+    db::sessions::update_agent_session_id_in_tx(
+        pool,
+        &mut tx,
+        session_id,
+        agent_session_id,
+        binding.worker_id(),
+    )
+    .await
+    .map_err(|e| format!("update agent_session_id failed: {e}"))?;
+    match binding.holds_in_tx(&mut tx, pool).await {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = tx.rollback().await;
+            return Err(ReportError::CredentialEnded);
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Err(format!("update agent_session_id failed: {e}").into());
+        }
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("update agent_session_id failed: {e}"))?;
+    Ok(())
 }
 
 /// Process turn result inside caller's transaction.
@@ -1077,7 +1256,32 @@ pub struct WorkerMessageRequest {
 /// Handle POST /api/worker/events — persist mid-turn message and broadcast via SSE.
 pub async fn worker_event(
     State(state): State<AppState>,
+    Authenticated(principal): Authenticated,
     Json(request): Json<WorkerMessageRequest>,
+) -> Response {
+    let credential_hash = match principal {
+        Principal::Worker {
+            worker_id,
+            credential_hash,
+        } if worker_id == request.worker_id => credential_hash,
+        _ => return forbidden(),
+    };
+    let binding = WorkerBinding::new(
+        request.worker_id.clone(),
+        credential_hash,
+        state.supervisor.clone(),
+    );
+    match record_worker_event(state, request, &binding).await {
+        Ok(status) => status.into_response(),
+        Err((StatusCode::UNAUTHORIZED, _)) => unauthorized(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn record_worker_event(
+    state: AppState,
+    request: WorkerMessageRequest,
+    binding: &WorkerBinding,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let session = db::sessions::get_by_id(&state.db_pool, &request.session_id)
         .await
@@ -1089,7 +1293,7 @@ pub async fn worker_event(
             session.worker_id,
             request.worker_id
         );
-        state.supervisor.kill_worker(&request.worker_id).await;
+        end_stale_worker(&state, binding).await?;
         return Ok(StatusCode::OK);
     }
 
@@ -1117,7 +1321,7 @@ pub async fn worker_event(
                     s.worker_id,
                     request.worker_id
                 );
-                state.supervisor.kill_worker(&request.worker_id).await;
+                end_stale_worker(&state, binding).await?;
                 return Ok(StatusCode::OK);
             }
             Err(crate::error::SchedulerError::NotFound(_)) => return Ok(StatusCode::OK),
@@ -1129,6 +1333,19 @@ pub async fn worker_event(
             }
         }
 
+        crate::test_pause::pause_at("worker_event_publish").await;
+        match binding.holds(&state.db_pool).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err((StatusCode::UNAUTHORIZED, "credential ended".to_string()));
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("ephemeral event: {e}"),
+                ));
+            }
+        }
         let _ = state
             .event_broadcast
             .send(crate::app::EventNotification::ephemeral(
@@ -1158,12 +1375,27 @@ pub async fn worker_event(
                     s.worker_id,
                     request.worker_id
                 );
-                state.supervisor.kill_worker(&request.worker_id).await;
+                end_stale_worker(&state, binding).await?;
                 return Ok(StatusCode::OK);
             }
             Err(crate::error::SchedulerError::NotFound(_)) => {
                 let _ = tx.rollback().await;
                 return Ok(StatusCode::OK);
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("insert event: {e}"),
+                ));
+            }
+        }
+
+        match binding.holds_in_tx(&mut tx, &state.db_pool).await {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = tx.rollback().await;
+                return Err((StatusCode::UNAUTHORIZED, "credential ended".to_string()));
             }
             Err(e) => {
                 let _ = tx.rollback().await;
@@ -1185,6 +1417,17 @@ pub async fn worker_event(
         .await;
         let inserted = match inserted {
             Ok(inserted) => {
+                if let Err(e) = binding_holds(binding, &mut tx, &state.db_pool).await {
+                    let _ = tx.rollback().await;
+                    return Err(if e.downcast_ref::<CredentialEnded>().is_some() {
+                        (StatusCode::UNAUTHORIZED, "credential ended".to_string())
+                    } else {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("insert event: {e}"),
+                        )
+                    });
+                }
                 tx.commit().await.map_err(|e| {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,

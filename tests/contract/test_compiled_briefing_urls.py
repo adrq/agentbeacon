@@ -7,6 +7,8 @@ import httpx
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    wid,
+    agent_headers,
     create_execution_via_api,
     scheduler_context,
     seed_test_agent,
@@ -31,7 +33,7 @@ def _unversioned_product_paths(text: str) -> list[str]:
 def _briefing(db_url, url, agent_name):
     agent_id = seed_test_agent(db_url, name=agent_name)
     create_execution_via_api(url, agent_id, "briefing probe")
-    response = post_worker_sync(url, f"worker-{agent_name}")
+    response = post_worker_sync(url, wid(f"worker-{agent_name}"))
     assert response["type"] == "command", response
     action = response["action"]
     assert action["type"] == "assign", action
@@ -80,7 +82,7 @@ def test_the_mcp_tool_descriptions_have_no_unversioned_product_urls(test_databas
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
             headers={
-                "Authorization": f"Bearer {session_id}",
+                **agent_headers(None, session_id),
                 "Accept": "application/json, text/event-stream",
             },
             timeout=10,

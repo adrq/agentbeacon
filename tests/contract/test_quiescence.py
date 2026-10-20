@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -271,7 +272,7 @@ def test_terminating_execution_with_a_failed_root_ends_failed(test_database):
             worker_id="w-running",
         )
 
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
 
         resp = httpx.get(f"{ctx['url']}/api/v1/executions/{exec_id}", timeout=10)
         assert resp.status_code == 200
@@ -501,7 +502,7 @@ def test_mixed_outcome_tree_worked_example(test_database):
             child_c_row = get_session_row(ctx["db_url"], child_c)
             if child_c_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(

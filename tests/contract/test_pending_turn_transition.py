@@ -7,6 +7,7 @@ import time
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -33,7 +34,7 @@ def test_turn_result_keeps_session_running(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "init")
-        worker_id = "w-test-1"
+        worker_id = wid("w-test-1")
 
         data = post_worker_sync(ctx["url"], worker_id)
         assert data["type"] == "command"
@@ -70,8 +71,8 @@ def test_turn_result_delivers_to_parent(test_database):
                 (exec_id, agent_id),
             )
             conn.commit()
-        lead_worker_id = "w-lead"
-        child_worker_id = "w-child"
+        lead_worker_id = wid("w-lead")
+        child_worker_id = wid("w-child")
 
         data = post_worker_sync(ctx["url"], lead_worker_id)
         assert data["type"] == "command"
@@ -134,7 +135,7 @@ def test_queued_task_triggers_feed_turn_command(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "init")
-        worker_id = "w-test-3"
+        worker_id = wid("w-test-3")
 
         data = post_worker_sync(ctx["url"], worker_id)
         assert data["type"] == "command"
@@ -175,7 +176,7 @@ def test_reconciliation_catches_crashed_root(test_database):
             ctx1["db_url"], name="test-agent", agent_type="claude_sdk"
         )
         exec_id, session_id = create_execution_via_api(ctx1["url"], agent_id, "init")
-        worker_id = "w-test-4"
+        worker_id = wid("w-test-4")
 
         data = post_worker_sync(ctx1["url"], worker_id)
         assert data["type"] == "command"
@@ -195,7 +196,7 @@ def test_reconciliation_catches_crashed_root(test_database):
             row = get_session_row(ctx2["db_url"], session_id)
             if row.get("executor_state") != "crashed":
                 break
-            post_worker_sync(ctx2["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx2["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.5)
 
         row = get_session_row(ctx2["db_url"], session_id)
@@ -226,14 +227,14 @@ def test_reconciliation_all_terminal_transitions_execution(test_database):
             conn.commit()
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], "reconcile-trigger")
+        post_worker_sync(ctx["url"], wid("reconcile-trigger"))
 
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             row = get_execution_row(ctx["db_url"], exec_id)
             if row.get("outcome") is not None:
                 break
-            post_worker_sync(ctx["url"], "reconcile-trigger")
+            post_worker_sync(ctx["url"], wid("reconcile-trigger"))
             time.sleep(0.5)
 
         row = get_execution_row(ctx["db_url"], exec_id)
@@ -261,14 +262,14 @@ def test_reconciliation_failed_session_transitions_execution_to_failed(test_data
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], "reconcile-trigger")
+        post_worker_sync(ctx["url"], wid("reconcile-trigger"))
 
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             row = get_execution_row(ctx["db_url"], exec_id)
             if row.get("outcome") is not None:
                 break
-            post_worker_sync(ctx["url"], "reconcile-trigger")
+            post_worker_sync(ctx["url"], wid("reconcile-trigger"))
             time.sleep(0.5)
 
         row = get_execution_row(ctx["db_url"], exec_id)
@@ -307,7 +308,7 @@ def test_recovery_attempts_incremented_on_crash(test_database):
                 or row.get("recovery_attempts", 0) > 0
             ):
                 break
-            post_worker_sync(ctx2["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx2["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.3)
 
         row = get_session_row(ctx2["db_url"], session_id)
@@ -337,8 +338,8 @@ def test_recovery_attempts_not_incremented_for_terminal_sessions(test_database):
         row_before = get_session_row(ctx["db_url"], session_id)
         before = row_before["recovery_attempts"]
 
-        post_worker_sync(ctx["url"], worker_id="probe-worker")
-        post_worker_sync(ctx["url"], worker_id="probe-worker")
+        post_worker_sync(ctx["url"], worker_id=wid("probe-worker"))
+        post_worker_sync(ctx["url"], worker_id=wid("probe-worker"))
 
         row_after = get_session_row(ctx["db_url"], session_id)
         after = row_after["recovery_attempts"]

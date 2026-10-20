@@ -15,6 +15,10 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 import pytest
 import psycopg2
+import httpx
+import requests
+
+from tests.testhelpers import ANONYMOUS_HEADER, injected_authorization
 
 
 @pytest.fixture
@@ -77,3 +81,64 @@ def test_database(request):
 
     else:
         raise ValueError(f"Unknown backend: {backend}")
+
+
+def _with_injected_auth(request_url, path, headers, content):
+    """Apply the harness credential rules to one outgoing request's headers."""
+    if ANONYMOUS_HEADER in headers:
+        del headers[ANONYMOUS_HEADER]
+        return
+    if "authorization" in headers or "cookie" in headers:
+        return
+    value = injected_authorization(request_url, path, headers, content)
+    if value is not None:
+        headers["Authorization"] = value
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _inject_test_credentials():
+    """Send the harness's credentials with requests to test schedulers.
+
+    Requests that carry their own Authorization header, a cookie, or the
+    anonymous marker are left as they are (the marker is removed).
+    """
+    original_sync_send = httpx.Client.send
+    original_async_send = httpx.AsyncClient.send
+    original_requests_send = requests.Session.send
+
+    def _content(request):
+        try:
+            return request.content
+        except httpx.RequestNotRead:
+            return b""
+
+    def sync_send(self, request, *args, **kwargs):
+        _with_injected_auth(
+            str(request.url), request.url.path, request.headers, _content(request)
+        )
+        return original_sync_send(self, request, *args, **kwargs)
+
+    async def async_send(self, request, *args, **kwargs):
+        _with_injected_auth(
+            str(request.url), request.url.path, request.headers, _content(request)
+        )
+        return await original_async_send(self, request, *args, **kwargs)
+
+    def requests_send(self, request, *args, **kwargs):
+        body = request.body
+        if isinstance(body, str):
+            body = body.encode()
+        _with_injected_auth(
+            request.url, request.path_url.split("?")[0], request.headers, body or b""
+        )
+        return original_requests_send(self, request, *args, **kwargs)
+
+    httpx.Client.send = sync_send
+    httpx.AsyncClient.send = async_send
+    requests.Session.send = requests_send
+    try:
+        yield
+    finally:
+        httpx.Client.send = original_sync_send
+        httpx.AsyncClient.send = original_async_send
+        requests.Session.send = original_requests_send

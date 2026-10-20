@@ -6,12 +6,26 @@
 use serde::{Deserialize, Serialize};
 
 // JSON-RPC base types
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+
+/// A JSON-RPC request; `Debug` never prints `params`, which can carry the
+/// session token.
+#[derive(Serialize, Deserialize, PartialEq)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
     pub method: String,
     pub params: serde_json::Value,
     pub id: String,
+}
+
+impl std::fmt::Debug for JsonRpcRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JsonRpcRequest")
+            .field("jsonrpc", &self.jsonrpc)
+            .field("method", &self.method)
+            .field("params", &"[redacted]")
+            .field("id", &self.id)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -64,11 +78,24 @@ pub struct InitializeResult {
 }
 
 // Session types
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+/// `Debug` never prints `mcp_servers`, which carries the session token.
+#[derive(Serialize, Deserialize, PartialEq)]
 pub struct SessionNewParams {
     pub cwd: String,
     #[serde(rename = "mcpServers")]
     pub mcp_servers: Vec<serde_json::Value>,
+}
+
+impl std::fmt::Debug for SessionNewParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionNewParams")
+            .field("cwd", &self.cwd)
+            .field(
+                "mcp_servers",
+                &format_args!("[{} redacted]", self.mcp_servers.len()),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -102,6 +129,21 @@ pub struct SessionCancelParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_new_params_debug_omits_mcp_servers() {
+        let params = SessionNewParams {
+            cwd: "/workspace".to_string(),
+            mcp_servers: vec![serde_json::json!({
+                "name": "agentbeacon",
+                "headers": [{"name": "Authorization", "value": "Bearer session-token-secret"}],
+            })],
+        };
+        assert_eq!(
+            format!("{params:?}"),
+            r#"SessionNewParams { cwd: "/workspace", mcp_servers: [1 redacted] }"#
+        );
+    }
 
     #[test]
     fn test_initialize_params_deserialization_from_contract() {

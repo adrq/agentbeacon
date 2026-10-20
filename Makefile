@@ -178,6 +178,7 @@ test-all: test-rust test-int test-e2e
 
 # Run target
 run: all
+	@./bin/agentbeacon --setup --user-only --port $${AGENTBEACON_PORT:-9456}
 	@echo "Starting AgentBeacon on port $${AGENTBEACON_PORT:-9456}..."
 	AGENTBEACON_EXECUTORS_DIR=$${AGENTBEACON_EXECUTORS_DIR:-$(CURDIR)/executors/dist} \
 		./bin/agentbeacon --port $${AGENTBEACON_PORT:-9456}
@@ -200,6 +201,7 @@ pre-commit:
 
 # Development mode - run scheduler in dev mode
 dev-backend: build-docs
+	@cargo run --bin agentbeacon -- --setup --user-only --port $${AGENTBEACON_PORT:-9456}
 	@echo "Starting scheduler in dev mode on port $${AGENTBEACON_PORT:-9456}..."
 	DEV_MODE=1 cargo run --bin agentbeacon -- --port $${AGENTBEACON_PORT:-9456}
 

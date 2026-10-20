@@ -7,6 +7,7 @@ import time
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -32,11 +33,11 @@ def test_crash_marks_session_crashed(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 
@@ -52,11 +53,11 @@ def test_crash_state_change_event_includes_error_context(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
             turn_result=make_turn_result(
                 lead_sid,
@@ -89,7 +90,7 @@ def test_crash_cascades_children(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         child1 = create_child_session_raw(
             ctx["db_url"],
@@ -114,7 +115,7 @@ def test_crash_cascades_children(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 
@@ -123,7 +124,7 @@ def test_crash_cascades_children(test_database):
             r2 = get_session_row(ctx["db_url"], child2)
             if r1.get("desired") == "terminate" and r2.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], "cascade-trigger")
+            post_worker_sync(ctx["url"], wid("cascade-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -140,7 +141,7 @@ def test_crash_cascade_skips_terminal_children(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         child_running = create_child_session_raw(
             ctx["db_url"],
@@ -174,7 +175,7 @@ def test_crash_cascade_skips_terminal_children(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 
@@ -182,7 +183,7 @@ def test_crash_cascade_skips_terminal_children(test_database):
             r = get_session_row(ctx["db_url"], child_running)
             if r.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], "cascade-trigger")
+            post_worker_sync(ctx["url"], wid("cascade-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -198,7 +199,7 @@ def test_crash_notifies_parent_via_task_queue(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         child = create_child_session_raw(
             ctx["db_url"],
@@ -208,20 +209,20 @@ def test_crash_notifies_parent_via_task_queue(test_database):
             desired="run",
             executor_state="running",
         )
-        set_session_fields(ctx["db_url"], child, worker_id="w2")
+        set_session_fields(ctx["db_url"], child, worker_id=wid("w2"))
 
         set_session_fields(ctx["db_url"], child, recovery_attempts=2)
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child, "crashed"),
         )
 
         for _ in range(20):
             if get_task_queue_count(ctx["db_url"], lead_sid) > 0:
                 break
-            post_worker_sync(ctx["url"], "reconcile-trigger")
+            post_worker_sync(ctx["url"], wid("reconcile-trigger"))
             time.sleep(0.25)
 
         payload = get_task_queue_payload(ctx["db_url"], lead_sid)
@@ -247,7 +248,7 @@ def test_crash_notification_includes_error_and_stderr(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         child = create_child_session_raw(
             ctx["db_url"],
@@ -257,13 +258,13 @@ def test_crash_notification_includes_error_and_stderr(test_database):
             desired="run",
             executor_state="running",
         )
-        set_session_fields(ctx["db_url"], child, worker_id="w2")
+        set_session_fields(ctx["db_url"], child, worker_id=wid("w2"))
 
         set_session_fields(ctx["db_url"], child, recovery_attempts=2)
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child, "crashed"),
             turn_result=make_turn_result(
                 child,
@@ -275,7 +276,7 @@ def test_crash_notification_includes_error_and_stderr(test_database):
         for _ in range(20):
             if get_task_queue_count(ctx["db_url"], lead_sid) > 0:
                 break
-            post_worker_sync(ctx["url"], "reconcile-trigger")
+            post_worker_sync(ctx["url"], wid("reconcile-trigger"))
             time.sleep(0.25)
 
         payload = get_task_queue_payload(ctx["db_url"], lead_sid)
@@ -313,20 +314,20 @@ def test_crash_notifies_parent_via_task_queue_parked_lead(test_database):
             desired="run",
             executor_state="running",
         )
-        set_session_fields(ctx["db_url"], child, worker_id="w1")
+        set_session_fields(ctx["db_url"], child, worker_id=wid("w1"))
 
         set_session_fields(ctx["db_url"], child, recovery_attempts=2)
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(child, "crashed"),
         )
 
         for _ in range(20):
             if get_task_queue_count(ctx["db_url"], lead_sid) > 0:
                 break
-            post_worker_sync(ctx["url"], "reconcile-trigger")
+            post_worker_sync(ctx["url"], wid("reconcile-trigger"))
             time.sleep(0.25)
 
         payload = get_task_queue_payload(ctx["db_url"], lead_sid)
@@ -343,13 +344,13 @@ def test_crash_root_lead_fails_execution(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         set_session_fields(ctx["db_url"], lead_sid, recovery_attempts=2)
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 
@@ -357,7 +358,7 @@ def test_crash_root_lead_fails_execution(test_database):
             row = get_session_row(ctx["db_url"], lead_sid)
             if row.get("outcome") == "failed":
                 break
-            post_worker_sync(ctx["url"], "reconcile-trigger")
+            post_worker_sync(ctx["url"], wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(ctx["db_url"], lead_sid, outcome="failed")
@@ -370,7 +371,7 @@ def test_crash_child_does_not_fail_execution(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         child = create_child_session_raw(
             ctx["db_url"],
@@ -380,11 +381,11 @@ def test_crash_child_does_not_fail_execution(test_database):
             desired="run",
             executor_state="running",
         )
-        set_session_fields(ctx["db_url"], child, worker_id="w2")
+        set_session_fields(ctx["db_url"], child, worker_id=wid("w2"))
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child, "crashed"),
         )
 
@@ -399,7 +400,7 @@ def test_crash_deep_tree_cascade(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         child = create_child_session_raw(
             ctx["db_url"],
@@ -409,7 +410,7 @@ def test_crash_deep_tree_cascade(test_database):
             desired="run",
             executor_state="running",
         )
-        set_session_fields(ctx["db_url"], child, worker_id="w2")
+        set_session_fields(ctx["db_url"], child, worker_id=wid("w2"))
         grandchild = create_child_session_raw(
             ctx["db_url"],
             child,
@@ -424,7 +425,7 @@ def test_crash_deep_tree_cascade(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child, "crashed"),
         )
 
@@ -432,7 +433,7 @@ def test_crash_deep_tree_cascade(test_database):
             gc_row = get_session_row(ctx["db_url"], grandchild)
             if gc_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], "cascade-trigger")
+            post_worker_sync(ctx["url"], wid("cascade-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -443,7 +444,7 @@ def test_crash_deep_tree_cascade(test_database):
             payload = get_task_queue_payload(ctx["db_url"], lead_sid)
             if payload is not None:
                 break
-            post_worker_sync(ctx["url"], "notify-trigger")
+            post_worker_sync(ctx["url"], wid("notify-trigger"))
             time.sleep(0.25)
         assert payload is not None, "lead should have crash notification"
         parts = payload["message"]["parts"]
@@ -458,7 +459,7 @@ def test_crash_already_terminal_is_noop(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         with db_conn(ctx["db_url"]) as conn:
             conn.execute(
@@ -475,7 +476,7 @@ def test_crash_already_terminal_is_noop(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 
@@ -499,7 +500,7 @@ def test_cancelled_does_not_cascade_or_notify(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         child = create_child_session_raw(
             ctx["db_url"],
@@ -509,7 +510,7 @@ def test_cancelled_does_not_cascade_or_notify(test_database):
             desired="run",
             executor_state="running",
         )
-        set_session_fields(ctx["db_url"], child, worker_id="w2")
+        set_session_fields(ctx["db_url"], child, worker_id=wid("w2"))
         grandchild = create_child_session_raw(
             ctx["db_url"],
             child,
@@ -522,7 +523,7 @@ def test_cancelled_does_not_cascade_or_notify(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child, "idle"),
             turn_result=make_turn_result(child, error_kind="cancelled"),
         )
@@ -538,18 +539,18 @@ def test_crash_idempotent_double_report(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         set_session_fields(ctx["db_url"], lead_sid, recovery_attempts=2)
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 
@@ -579,7 +580,7 @@ def test_crash_notification_omits_stderr_when_none(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         child = create_child_session_raw(
             ctx["db_url"],
@@ -589,20 +590,20 @@ def test_crash_notification_omits_stderr_when_none(test_database):
             desired="run",
             executor_state="running",
         )
-        set_session_fields(ctx["db_url"], child, worker_id="w2")
+        set_session_fields(ctx["db_url"], child, worker_id=wid("w2"))
 
         set_session_fields(ctx["db_url"], child, recovery_attempts=2)
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child, "crashed"),
         )
 
         for _ in range(20):
             if get_task_queue_count(ctx["db_url"], lead_sid) > 0:
                 break
-            post_worker_sync(ctx["url"], "reconcile-trigger")
+            post_worker_sync(ctx["url"], wid("reconcile-trigger"))
             time.sleep(0.25)
 
         payload = get_task_queue_payload(ctx["db_url"], lead_sid)
@@ -618,11 +619,11 @@ def test_crash_without_error_kind_still_crashes_session(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="lead-agent")
         exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 

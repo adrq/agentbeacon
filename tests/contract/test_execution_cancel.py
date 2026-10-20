@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     scheduler_context,
     seed_test_agent,
@@ -56,7 +57,7 @@ def test_execution_cancel_terminates_all_sessions(test_database):
             r2 = get_session_row(ctx["db_url"], child2)
             if r1.get("desired") == "terminate" and r2.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_execution_state(
@@ -116,7 +117,7 @@ def test_execution_cancel_with_deep_tree(test_database):
             ggc_row = get_session_row(ctx["db_url"], great_grandchild)
             if ggc_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_execution_state(

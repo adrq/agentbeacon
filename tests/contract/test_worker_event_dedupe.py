@@ -10,6 +10,8 @@ import pytest
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    fresh_wid,
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -33,7 +35,9 @@ def _worker_event(url, db_url, exec_id, session_id, msg_seq, text):
     )
 
 
-def _claim_session(db_url, session_id, worker_id="dedupe-worker"):
+def _claim_session(db_url, session_id, worker_id=None):
+    if worker_id is None:
+        worker_id = wid("dedupe-worker")
     with db_conn(db_url) as conn:
         conn.execute(
             "UPDATE sessions SET worker_id = ? WHERE id = ?", (worker_id, session_id)
@@ -147,13 +151,14 @@ def test_a_worker_that_loses_the_session_mid_write_takes_no_sequence_number(
     ) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="dedupe-stale-owner")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
-        _claim_session(test_database, session_id, "worker-A")
+        _claim_session(test_database, session_id, wid("worker-A"))
+        wid("worker-B")
 
         result = {}
 
         def fire_a():
             result["response"] = _post_event(
-                ctx["url"], exec_id, session_id, "worker-A", 91, "STALE-A"
+                ctx["url"], exec_id, session_id, wid("worker-A"), 91, "STALE-A"
             )
 
         with db_conn(test_database) as holder:
@@ -169,7 +174,7 @@ def test_a_worker_that_loses_the_session_mid_write_takes_no_sequence_number(
 
             holder.execute(
                 "UPDATE sessions SET worker_id = ? WHERE id = ?",
-                ("worker-B", session_id),
+                (wid("worker-B"), session_id),
             )
             holder.commit()
 
@@ -179,7 +184,9 @@ def test_a_worker_that_loses_the_session_mid_write_takes_no_sequence_number(
         assert result["response"].status_code == 200, result["response"].text
         assert _payload_at(test_database, session_id, 91) is None
 
-        owner = _post_event(ctx["url"], exec_id, session_id, "worker-B", 91, "OWNER-B")
+        owner = _post_event(
+            ctx["url"], exec_id, session_id, wid("worker-B"), 91, "OWNER-B"
+        )
         assert owner.status_code == 201, owner.text
         stored = _payload_at(test_database, session_id, 91)
         assert stored is not None
@@ -197,12 +204,14 @@ def test_a_reassigned_sequence_number_never_holds_the_old_owner_payload(test_dat
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
         for seq in range(120, 132):
-            _claim_session(test_database, session_id, "worker-A")
+            worker_a = fresh_wid("worker-A")
+            worker_b = fresh_wid("worker-B")
+            _claim_session(test_database, session_id, worker_a)
 
             def flip_and_write():
-                _claim_session(test_database, session_id, "worker-B")
+                _claim_session(test_database, session_id, worker_b)
                 return _post_event(
-                    ctx["url"], exec_id, session_id, "worker-B", seq, "OWNER-B"
+                    ctx["url"], exec_id, session_id, worker_b, seq, "OWNER-B"
                 )
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
@@ -211,7 +220,7 @@ def test_a_reassigned_sequence_number_never_holds_the_old_owner_payload(test_dat
                     ctx["url"],
                     exec_id,
                     session_id,
-                    "worker-A",
+                    worker_a,
                     seq,
                     "STALE-A",
                 )
@@ -274,15 +283,15 @@ def test_a_replaced_worker_cannot_stream_into_the_session_it_lost(test_database)
     ) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="ephemeral-owner")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
-        _claim_session(test_database, session_id, "worker-A")
+        _claim_session(test_database, session_id, wid("worker-A"))
 
         with _StreamReader(ctx["url"], exec_id) as stream:
-            _claim_session(test_database, session_id, "worker-B")
+            _claim_session(test_database, session_id, wid("worker-B"))
 
             stale = httpx.post(
                 f"{ctx['url']}/api/worker/events",
                 json={
-                    "workerId": "worker-A",
+                    "workerId": wid("worker-A"),
                     "executionId": exec_id,
                     "sessionId": session_id,
                     "msgSeq": 200,
@@ -300,7 +309,7 @@ def test_a_replaced_worker_cannot_stream_into_the_session_it_lost(test_database)
             owner = httpx.post(
                 f"{ctx['url']}/api/worker/events",
                 json={
-                    "workerId": "worker-B",
+                    "workerId": wid("worker-B"),
                     "executionId": exec_id,
                     "sessionId": session_id,
                     "msgSeq": 201,

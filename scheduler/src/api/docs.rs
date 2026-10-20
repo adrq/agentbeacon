@@ -7,7 +7,7 @@ use crate::app::AppState;
 
 const API_DOCS: &str = r#"# AgentBeacon REST API Reference
 
-All endpoints require: `Authorization: Bearer $AGENTBEACON_SESSION_ID`
+All endpoints require: `Authorization: Bearer $AGENTBEACON_SESSION_TOKEN`
 Base URL: `$AGENTBEACON_API_BASE`
 
 ## Messages
@@ -149,8 +149,8 @@ Your project's pages plus any shared into it, each with its owning project and y
 `GET /api/v1/projects/{project_id}/wiki/pages/{slug}/revisions/{rev}`
 
 ### Share tag administration
-Operator-level, outside any project namespace, because a share tag spans projects and
-none owns it. These routes refuse a session token with 403 `operator_scope_only`.
+Operator-level, outside any project namespace. These routes refuse a session token
+with 403 `auth.forbidden`.
 
 `GET /api/v1/wiki/tags` — every tag, with its member projects inline where it has any.
 `POST /api/v1/wiki/tags/{tag_id}/members` — admit a project: `{"project": ..., "access_level": "read"}`.
@@ -181,7 +181,7 @@ oldest-first; pass `next_cursor` back as `before` to read the previous page, or
 ## Escalation (root lead only)
 
 `POST /api/v1/escalate`
-Authorization: Bearer $AGENTBEACON_SESSION_ID
+Authorization: Bearer $AGENTBEACON_SESSION_TOKEN
 
 Request body:
 ```json
@@ -215,29 +215,29 @@ Response: `{"batch_id": "uuid", "event_id": "123"}`
 ```bash
 # Discover agent configs available for delegation
 curl $AGENTBEACON_API_BASE/api/v1/executions/$AGENTBEACON_EXECUTION_ID/agents \
-  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
+  -H "Authorization: Bearer $AGENTBEACON_SESSION_TOKEN"
 
 # Discover running sessions (peer agents)
 curl $AGENTBEACON_API_BASE/api/v1/executions/$AGENTBEACON_EXECUTION_ID/sessions \
-  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
+  -H "Authorization: Bearer $AGENTBEACON_SESSION_TOKEN"
 
 # Send a message to another agent
 curl -X POST $AGENTBEACON_API_BASE/api/v1/messages \
-  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID" \
+  -H "Authorization: Bearer $AGENTBEACON_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"to":"swift-falcon/bold-eagle","parts":[{"text":"auth module ready for review"}]}'
 
 # Read a wiki page
 curl $AGENTBEACON_API_BASE/api/v1/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/architecture \
-  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
+  -H "Authorization: Bearer $AGENTBEACON_SESSION_TOKEN"
 
 # Search wiki
 curl "$AGENTBEACON_API_BASE/api/v1/wiki/search?q=auth+design" \
-  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID"
+  -H "Authorization: Bearer $AGENTBEACON_SESSION_TOKEN"
 
 # Escalate a question to the user (root lead only)
 curl -X POST $AGENTBEACON_API_BASE/api/v1/escalate \
-  -H "Authorization: Bearer $AGENTBEACON_SESSION_ID" \
+  -H "Authorization: Bearer $AGENTBEACON_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"questions": [{"question": "JWT or session cookies?", "options": [{"label": "JWT", "description": "Stateless"}, {"label": "Cookies", "description": "Simpler"}]}], "importance": "blocking"}'
 ```

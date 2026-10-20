@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -55,7 +56,7 @@ def test_terminate_session_cascades_to_children(test_database):
             gc_row = get_session_row(ctx["db_url"], gc_id)
             if gc_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -133,7 +134,7 @@ def test_terminate_session_quiescent_completes(test_database):
                 and gc_running_row.get("desired") == "terminate"
             ):
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(

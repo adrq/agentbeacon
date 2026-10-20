@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -18,7 +19,7 @@ def _escalate(url, session_id, q="Q?"):
     resp = httpx.post(
         f"{url}/api/v1/escalate",
         json={"questions": [{"question": q}], "importance": "blocking"},
-        headers={"Authorization": f"Bearer {session_id}"},
+        headers={**agent_headers(None, session_id)},
         timeout=10,
     )
     assert resp.status_code == 200, resp.text
@@ -131,7 +132,7 @@ def test_error_contract_zero_side_effects(test_database):
                 url,
                 session_id,
                 [{"text": "x"}, _qa(b1)],
-                headers={"Authorization": f"Bearer {session_id}"},
+                headers={**agent_headers(None, session_id)},
             ),
             403,
             code="auth.forbidden",
@@ -139,7 +140,7 @@ def test_error_contract_zero_side_effects(test_database):
         check(
             lambda: httpx.post(
                 f"{url}/api/v1/escalate/{b1}/dismiss",
-                headers={"Authorization": f"Bearer {session_id}"},
+                headers={**agent_headers(None, session_id)},
                 timeout=10,
             ),
             403,

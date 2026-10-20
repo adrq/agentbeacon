@@ -77,3 +77,7 @@ CORS_ALLOWED_ORIGINS="http://localhost:3000,https://app.example.com" \
 2. Minimize allowed origins - only add origins that legitimately need access
 3. Keep `DEV_MODE` disabled in production
 4. Regularly audit `CORS_ALLOWED_ORIGINS` configuration
+
+## Cookie-Authenticated Writes
+
+The web UI's login is a cookie. A request authenticated by that cookie with a method other than `GET`, `HEAD` or `OPTIONS` must carry an `Origin` header equal to the request's own origin, the configured public URL, or one of the allowed origins above; otherwise it is refused with `403 auth.forbidden`. Requests authenticated with an `Authorization: Bearer` header are not checked.

@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     cleanup_processes,
     create_execution_via_api,
     db_conn,
@@ -99,15 +100,15 @@ def _wait_for_recovery(url, db_url, session_id, timeout=8, interval=0.15):
             return current
         if current.get("outcome") is not None and baseline.get("outcome") is None:
             return current
-        post_worker_sync(url, worker_id="reconcile-trigger")
+        post_worker_sync(url, worker_id=wid("reconcile-trigger"))
         time.sleep(interval)
     return get_session_row(db_url, session_id)
 
 
-def _crash_session(ctx, session_id, worker_id="w1"):
+def _crash_session(ctx, session_id, worker_id=None):
     post_worker_sync(
         ctx["url"],
-        worker_id,
+        worker_id or wid("w1"),
         executor_report=make_executor_report(session_id, "crashed"),
     )
 
@@ -118,7 +119,7 @@ def _setup_resumable_sdk_session(ctx, agent_type):
     )
     exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "initial task")
 
-    response = post_worker_sync(ctx["url"], "w1")
+    response = post_worker_sync(ctx["url"], wid("w1"))
     assert response["type"] == "command"
     assert response["action"]["type"] == "assign"
 
@@ -166,7 +167,7 @@ def test_fresh_assign_includes_briefing_in_agent_config(test_database, agent_typ
                 f"SDK task_queue payload must not contain agent_config for {agent_type}"
             )
 
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
 
         assert response["type"] == "command"
         action = response["action"]
@@ -213,7 +214,7 @@ def test_recovery_assign_includes_briefing_in_agent_config(test_database, agent_
         )
         assert recovered["recovery_attempts"] == 1
 
-        recovery_response = post_worker_sync(ctx["url"], "w1")
+        recovery_response = post_worker_sync(ctx["url"], wid("w1"))
 
         assert recovery_response["type"] == "command"
         action = recovery_response["action"]
@@ -255,7 +256,7 @@ def test_recovery_with_payload_includes_briefing_in_agent_config(
             ctx["url"], agent_id, "initial task"
         )
 
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
         set_session_fields(
             ctx["db_url"],
             session_id,
@@ -287,7 +288,7 @@ def test_recovery_with_payload_includes_briefing_in_agent_config(
                 f"SDK recovery task_queue payload must not contain agent_config for {agent_type}"
             )
 
-        recovery_response = post_worker_sync(ctx["url"], "w1")
+        recovery_response = post_worker_sync(ctx["url"], wid("w1"))
         assert recovery_response["type"] == "command"
         action = recovery_response["action"]
         assert action["type"] == "assign"
@@ -343,7 +344,7 @@ def test_continue_from_first_assign_includes_briefing_in_agent_config(
 
         new_assign = None
         for _attempt in range(5):
-            new_assign = post_worker_sync(ctx["url"], "w-new")
+            new_assign = post_worker_sync(ctx["url"], wid("w-new"))
             if (
                 new_assign["type"] == "command"
                 and new_assign["action"].get("session_id") == new_session_id
@@ -433,7 +434,7 @@ def test_double_recovery_assign_includes_briefing_each_time(test_database, agent
                 f"Recovery #{recovery_num}: expected unassigned, got {recovered['executor_state']}"
             )
 
-            recovery_response = post_worker_sync(ctx["url"], "w1")
+            recovery_response = post_worker_sync(ctx["url"], wid("w1"))
             assert recovery_response["type"] == "command", (
                 f"Recovery #{recovery_num}: expected command, got {recovery_response['type']}"
             )

@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     cleanup_processes,
     scheduler_context,
@@ -95,7 +96,7 @@ def test_sse_delivers_live_events(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/v1/escalate",
             json={"questions": [{"question": "Live?"}], "importance": "blocking"},
-            headers={"Authorization": f"Bearer {session_id}"},
+            headers={**agent_headers(None, session_id)},
             timeout=10,
         )
         assert resp.status_code == 200, resp.text
@@ -234,7 +235,7 @@ def test_sse_event_format_matches_rest_api(test_database):
         resp = httpx.post(
             f"{ctx['url']}/api/v1/escalate",
             json={"questions": [{"question": "Same shape?"}], "importance": "blocking"},
-            headers={"Authorization": f"Bearer {session_id}"},
+            headers={**agent_headers(None, session_id)},
             timeout=10,
         )
         assert resp.status_code == 200, resp.text

@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -104,11 +105,11 @@ def test_finalization_drains_task_queue(test_database):
         )
         assert resp.status_code == 200
 
-        post_worker_sync(ctx["url"], worker_id="finalize-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("finalize-trigger"))
         for _ in range(20):
             if get_task_queue_count(ctx["db_url"], session_id) == 0:
                 break
-            post_worker_sync(ctx["url"], worker_id="finalize-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("finalize-trigger"))
             time.sleep(0.25)
 
         assert get_task_queue_count(ctx["db_url"], session_id) == 0
@@ -134,13 +135,13 @@ def test_recovery_preserves_queue(test_database):
         count_before = get_task_queue_count(ctx["db_url"], session_id)
         assert count_before >= 2
 
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
 
         for _ in range(20):
             row = get_session_row(ctx["db_url"], session_id)
             if row.get("executor_state") == "unassigned":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert get_task_queue_count(ctx["db_url"], session_id) >= count_before
@@ -162,12 +163,12 @@ def test_override_stop_over_feed_turn_discards_payload(test_database):
             desired="run",
             executor_state="running",
             agent_session_id="agent-sess-1",
-            worker_id=WORKER_ID,
+            worker_id=wid(WORKER_ID),
         )
 
         insert_task(ctx["db_url"], exec_id, session_id, "msg-to-discard")
 
-        post_worker_sync(ctx["url"], worker_id=WORKER_ID)
+        post_worker_sync(ctx["url"], worker_id=wid(WORKER_ID))
 
         for _ in range(20):
             row = get_session_row(ctx["db_url"], session_id)
@@ -184,7 +185,7 @@ def test_override_stop_over_feed_turn_discards_payload(test_database):
             row = get_session_row(ctx["db_url"], session_id)
             if row.get("command_type") == "stop_turn":
                 break
-            post_worker_sync(ctx["url"], worker_id=WORKER_ID)
+            post_worker_sync(ctx["url"], worker_id=wid(WORKER_ID))
             time.sleep(0.25)
 
         assert_command_pending(
@@ -198,7 +199,7 @@ def test_override_cancel_over_assign_discards_payload(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], worker_id=WORKER_ID)
+        resp = post_worker_sync(ctx["url"], worker_id=wid(WORKER_ID))
 
         for _ in range(20):
             row = get_session_row(ctx["db_url"], session_id)
@@ -217,7 +218,7 @@ def test_override_cancel_over_assign_discards_payload(test_database):
             row = get_session_row(ctx["db_url"], session_id)
             if row.get("command_type") == "cancel":
                 break
-            post_worker_sync(ctx["url"], worker_id=WORKER_ID)
+            post_worker_sync(ctx["url"], worker_id=wid(WORKER_ID))
             time.sleep(0.25)
 
         assert_command_pending(ctx["db_url"], session_id, "cancel", has_payload=False)
@@ -262,13 +263,13 @@ def test_atomic_pop_and_dispatch(test_database):
             desired="run",
             executor_state="idle",
             agent_session_id="agent-sess-1",
-            worker_id=WORKER_ID,
+            worker_id=wid(WORKER_ID),
         )
 
         insert_task(ctx["db_url"], exec_id, session_id, "deliver-me")
         assert get_task_queue_count(ctx["db_url"], session_id) == 1
 
-        post_worker_sync(ctx["url"], worker_id=WORKER_ID)
+        post_worker_sync(ctx["url"], worker_id=wid(WORKER_ID))
 
         for _ in range(20):
             row = get_session_row(ctx["db_url"], session_id)

@@ -5,6 +5,7 @@
 
 use crate::db::{self, DbPool};
 use crate::error::SchedulerError;
+use crate::services::auth::principal::WorkerBinding;
 use sqlx::Row;
 
 /// Crash metadata from the worker, included in the state_change event.
@@ -53,7 +54,7 @@ pub enum Action {
     /// Create a child session and enqueue its prompt.
     Delegate(String, serde_json::Value),
     /// Worker reports executor state change.
-    SetExecutorState(ExState, String, Option<CrashMeta>),
+    SetExecutorState(ExState, WorkerBinding, Option<CrashMeta>),
     /// Permanently fail an unrecoverable session.
     /// Scheduler detects a session crash.
     DetectCrash,
@@ -111,6 +112,8 @@ pub enum Rejected {
     ExecutionTerminated,
     /// Invalid transition (with reason).
     InvalidTransition(String),
+    /// The reporting worker's credential or registration ended before the write.
+    CredentialEnded,
 }
 
 impl std::fmt::Display for Rejected {
@@ -123,6 +126,7 @@ impl std::fmt::Display for Rejected {
             Self::DecisionExpired => write!(f, "decision expired"),
             Self::ExecutionTerminated => write!(f, "execution terminated"),
             Self::InvalidTransition(reason) => write!(f, "invalid transition: {reason}"),
+            Self::CredentialEnded => write!(f, "credential ended"),
         }
     }
 }
@@ -319,8 +323,8 @@ pub async fn transition(
             }
             Ok(None)
         }
-        Action::SetExecutorState(state, ref worker_id, ref crash_meta) => {
-            set_executor_state(pool, &session, state, worker_id, crash_meta.as_ref()).await?;
+        Action::SetExecutorState(state, ref binding, ref crash_meta) => {
+            set_executor_state(pool, &session, state, binding, crash_meta.as_ref()).await?;
             Ok(None)
         }
         Action::DetectCrash => {
@@ -912,9 +916,10 @@ async fn set_executor_state(
     pool: &DbPool,
     session: &db::sessions::Session,
     state: ExState,
-    worker_id: &str,
+    binding: &WorkerBinding,
     crash_meta: Option<&CrashMeta>,
 ) -> Result<(), Rejected> {
+    let worker_id = binding.worker_id();
     if session.outcome.is_some() && session.command_token.is_none() {
         return Err(Rejected::WriteBarrier);
     }
@@ -932,6 +937,11 @@ async fn set_executor_state(
             return Err(Rejected::NotFound);
         }
     };
+
+    if let Err(rejected) = binding_holds(&mut tx, pool, binding).await {
+        let _ = tx.rollback().await;
+        return Err(rejected);
+    }
 
     match state {
         ExState::Crashed => {
@@ -1080,11 +1090,30 @@ async fn set_executor_state(
         }
     }
 
+    if let Err(rejected) = binding_holds(&mut tx, pool, binding).await {
+        let _ = tx.rollback().await;
+        return Err(rejected);
+    }
     tx.commit()
         .await
         .map_err(|_| Rejected::InvalidTransition("commit executor state tx failed".into()))?;
 
     Ok(())
+}
+
+/// `Ok` while the reporting worker's credential and registration hold.
+async fn binding_holds(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    pool: &DbPool,
+    binding: &WorkerBinding,
+) -> Result<(), Rejected> {
+    match binding.holds_in_tx(tx, pool).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(Rejected::CredentialEnded),
+        Err(e) => Err(Rejected::InvalidTransition(format!(
+            "credential check failed: {e}"
+        ))),
+    }
 }
 
 /// Terminate a session as failed.

@@ -4,6 +4,7 @@
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -30,7 +31,7 @@ def test_root_lead_briefing_contains_all_sections(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="root-lead-sections")
         _exec_id, _session_id = create_execution_via_api(ctx["url"], agent_id, "hello")
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert _BRIEFING_MARKER in prompt
@@ -58,7 +59,7 @@ def test_sub_lead_briefing_omits_escalate(test_database):
             )
             conn.commit()
 
-        post_worker_sync(ctx["url"], "w-lead")
+        post_worker_sync(ctx["url"], wid("w-lead"))
 
         mcp_tools_call(
             ctx["url"],
@@ -67,7 +68,7 @@ def test_sub_lead_briefing_omits_escalate(test_database):
             {"agent": "child-sub-lead", "prompt": "do work"},
         )
 
-        response = post_worker_sync(ctx["url"], "w-child")
+        response = post_worker_sync(ctx["url"], wid("w-child"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert "## Delegation" in prompt
@@ -95,7 +96,7 @@ def test_leaf_briefing_omits_delegation_recovery_escalate(test_database):
             )
             conn.commit()
 
-        post_worker_sync(ctx["url"], "w-lead")
+        post_worker_sync(ctx["url"], wid("w-lead"))
 
         mcp_tools_call(
             ctx["url"],
@@ -104,7 +105,7 @@ def test_leaf_briefing_omits_delegation_recovery_escalate(test_database):
             {"agent": "child-leaf", "prompt": "leaf work"},
         )
 
-        response = post_worker_sync(ctx["url"], "w-child")
+        response = post_worker_sync(ctx["url"], wid("w-child"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert "## Delegation" not in prompt
@@ -120,7 +121,7 @@ def test_coordination_section_contains_turn_guidance(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="coordination-check")
         _exec_id, _session_id = create_execution_via_api(ctx["url"], agent_id, "hello")
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert "end your turn" in prompt
@@ -132,7 +133,7 @@ def test_messaging_section_contains_curl_examples(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="messaging-check")
         _exec_id, _session_id = create_execution_via_api(ctx["url"], agent_id, "hello")
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert 'POST "$AGENTBEACON_API_BASE/api/v1/messages"' in prompt
@@ -147,7 +148,7 @@ def test_recovery_section_warns_against_re_delegation(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="recovery-check")
         _exec_id, _session_id = create_execution_via_api(ctx["url"], agent_id, "hello")
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert "Do NOT immediately re-delegate" in prompt

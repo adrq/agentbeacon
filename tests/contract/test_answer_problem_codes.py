@@ -7,6 +7,7 @@ import httpx
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -122,7 +123,7 @@ def test_answer_from_another_session_is_wrong_session(test_database):
 def test_agent_session_bearer_is_forbidden(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         _exec, session_id, event_id = _decision(ctx, "codes-4")
-        headers = {"Authorization": f"Bearer {session_id}"}
+        headers = {**agent_headers(None, session_id)}
         _problem(
             _answer(ctx["url"], session_id, event_id, headers=headers),
             403,
@@ -323,7 +324,7 @@ def test_answer_size_gate_reserves_the_unknown_batch_id(test_database):
 def test_an_unreachable_session_lookup_answers_500_and_never_success(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         _exec, session_id, event_id = _decision(ctx, "codes-failclosed")
-        headers = {"Authorization": f"Bearer {session_id}"}
+        headers = {**agent_headers(None, session_id)}
 
         _problem(_dismiss(ctx["url"], event_id, headers=headers), 403, "auth.forbidden")
 

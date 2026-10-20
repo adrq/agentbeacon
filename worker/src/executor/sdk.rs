@@ -68,7 +68,8 @@ impl SdkKind {
 
 // --- Protocol types (Rust ↔ Node JSON Lines) ---
 
-#[derive(Debug, Serialize)]
+/// `Debug` never prints `mcp_servers`, which carries the session token.
+#[derive(Serialize)]
 #[serde(tag = "type")]
 #[allow(clippy::large_enum_variant)]
 enum SdkCommand {
@@ -110,6 +111,47 @@ enum SdkCommand {
     StopTurn,
     #[serde(rename = "stop")]
     Stop,
+}
+
+impl std::fmt::Debug for SdkCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SdkCommand::Start {
+                parts,
+                cwd,
+                mcp_servers,
+                model,
+                system_prompt,
+                resume_session_id,
+                max_turns,
+                max_budget_usd,
+                thinking,
+                effort,
+                provider,
+                reasoning_effort,
+                sandbox_policy,
+            } => f
+                .debug_struct("Start")
+                .field("parts", parts)
+                .field("cwd", cwd)
+                .field("mcp_servers", &mcp_servers.as_ref().map(|_| "[redacted]"))
+                .field("model", model)
+                .field("system_prompt", system_prompt)
+                .field("resume_session_id", resume_session_id)
+                .field("max_turns", max_turns)
+                .field("max_budget_usd", max_budget_usd)
+                .field("thinking", thinking)
+                .field("effort", effort)
+                .field("provider", provider)
+                .field("reasoning_effort", reasoning_effort)
+                .field("sandbox_policy", sandbox_policy)
+                .finish(),
+            SdkCommand::Prompt { parts } => f.debug_struct("Prompt").field("parts", parts).finish(),
+            SdkCommand::Cancel => f.write_str("Cancel"),
+            SdkCommand::StopTurn => f.write_str("StopTurn"),
+            SdkCommand::Stop => f.write_str("Stop"),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -239,6 +281,7 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
 
     // Inject AgentBeacon environment variables for REST API access
     cmd.env("AGENTBEACON_SESSION_ID", &config.session_id);
+    cmd.env("AGENTBEACON_SESSION_TOKEN", &config.session_token);
     cmd.env("AGENTBEACON_API_BASE", &config.scheduler_url);
     cmd.env("AGENTBEACON_EXECUTION_ID", &config.execution_id);
     if let Some(ref pid) = config.project_id {
@@ -256,6 +299,10 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
     // primary defense.
     if kind == SdkKind::Claude {
         cmd.env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+    }
+
+    for name in crate::EXECUTOR_REMOVED_ENV {
+        cmd.env_remove(name);
     }
 
     let mut child = cmd.spawn().with_context(|| {
@@ -335,7 +382,7 @@ pub async fn start(kind: SdkKind, config: SessionConfig) -> Result<ExecutorHandl
     // Build MCP servers config: coordination server + user-configured servers
     let mcp_url = format!("{}/mcp", config.scheduler_url.trim_end_matches('/'));
     let mcp_servers =
-        build_mcp_servers_config(&mcp_url, &config.session_id, &config.user_mcp_servers);
+        build_mcp_servers_config(&mcp_url, &config.session_token, &config.user_mcp_servers);
 
     // Channels for the worker main loop
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -791,7 +838,7 @@ fn map_result_to_turn(
 /// with any user-configured servers from project settings.
 fn build_mcp_servers_config(
     mcp_url: &str,
-    session_id: &str,
+    session_token: &str,
     user_mcp_servers: &serde_json::Value,
 ) -> serde_json::Value {
     let mut mcp_servers = serde_json::json!({
@@ -799,7 +846,7 @@ fn build_mcp_servers_config(
             "type": "http",
             "url": mcp_url,
             "headers": {
-                "Authorization": format!("Bearer {}", session_id)
+                "Authorization": format!("Bearer {}", session_token)
             }
         }
     });

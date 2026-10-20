@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, Query, State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get},
 };
@@ -15,9 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::api::wiki_auth::{
-    Access, Caller, SharingContext, resolve_caller, resolve_session_principal,
-};
+use crate::api::authz::Authenticated;
+use crate::api::wiki_auth::{Access, Caller, SharingContext, agent_caller, resolve_caller};
 use crate::app::AppState;
 use crate::db;
 use crate::db::DbPool;
@@ -517,11 +516,11 @@ fn reindex(state: &AppState, page: &WikiPage, tags: &[String]) {
 
 async fn list_pages(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(project_id): AxumPath<String>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     if let Some(resp) = collection_denial(&caller, &project.id) {
         return Ok(resp);
     }
@@ -558,11 +557,11 @@ async fn list_pages(
 
 async fn get_page(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(path): AxumPath<WikiPagePath>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &path.project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     let sharing = SharingContext::load(&state.db_pool, &caller).await?;
 
     let slug = normalize_slug(&path.slug);
@@ -580,14 +579,14 @@ async fn get_page(
 
 async fn put_page(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(path): AxumPath<WikiPagePath>,
     body: Result<Json<PutPageRequest>, JsonRejection>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &path.project_id).await?;
     let slug = validate_slug(&path.slug)?;
 
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     if !caller.owns(&project.id) {
         return Ok(deny(StatusCode::FORBIDDEN, ERR_CROSS_PROJECT_CREATE));
     }
@@ -617,6 +616,7 @@ async fn put_page(
         req.title.trim(),
         &req.body,
         caller.session_id.as_deref(),
+        caller.credential_hash.as_deref(),
         Some(&tags),
         req.acknowledge_share.unwrap_or(false),
     )
@@ -690,13 +690,13 @@ fn parse_title(value: Option<&PatchTitle>) -> Result<Option<(String, String)>, S
 async fn patch_page(
     State(state): State<AppState>,
     AxumPath((project_id, slug)): AxumPath<(String, String)>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     body: Result<Json<PatchPageRequest>, JsonRejection>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &project_id).await?;
     let slug = validate_slug(&slug)?;
 
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
 
     let Json(req) = body.map_err(|e| SchedulerError::ValidationFailed(e.body_text()))?;
 
@@ -793,6 +793,7 @@ async fn patch_page(
         remove_tags: &remove_tags,
         summary: req.summary.as_deref(),
         updated_by: caller.session_id.as_deref(),
+        credential: caller.credential_hash.as_deref(),
         foreign,
         acknowledge_share: req.acknowledge_share.unwrap_or(false),
     };
@@ -887,11 +888,11 @@ fn revision_conflict(page: WikiPage, project_slug: String, tags: Vec<String>) ->
 
 async fn delete_page(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(path): AxumPath<WikiPagePath>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &path.project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     let sharing = SharingContext::load(&state.db_pool, &caller).await?;
 
     let slug = normalize_slug(&path.slug);
@@ -907,6 +908,7 @@ async fn delete_page(
         &project.id,
         &resolved.page.id,
         caller.session_id.as_deref(),
+        caller.credential_hash.as_deref(),
     )
     .await?;
 
@@ -919,11 +921,11 @@ async fn delete_page(
 
 async fn list_revisions(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(path): AxumPath<WikiPagePath>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &path.project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     let sharing = SharingContext::load(&state.db_pool, &caller).await?;
 
     let slug = normalize_slug(&path.slug);
@@ -951,11 +953,11 @@ async fn list_revisions(
 
 async fn get_revision(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(path): AxumPath<WikiRevisionPath>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &path.project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     let sharing = SharingContext::load(&state.db_pool, &caller).await?;
 
     let slug = normalize_slug(&path.slug);
@@ -983,11 +985,11 @@ async fn get_revision(
 
 async fn list_tags(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(project_id): AxumPath<String>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     if let Some(resp) = collection_denial(&caller, &project.id) {
         return Ok(resp);
     }
@@ -1039,12 +1041,12 @@ async fn list_tags(
 
 async fn create_subscription(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(project_id): AxumPath<String>,
     body: Result<Json<SubscriptionRequest>, JsonRejection>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     if let Some(resp) = collection_denial(&caller, &project.id) {
         return Ok(resp);
     }
@@ -1089,6 +1091,7 @@ async fn create_subscription(
         page_slug.as_deref(),
         tag_name,
         caller.session_id.as_deref(),
+        caller.credential_hash.as_deref(),
     )
     .await?;
 
@@ -1114,12 +1117,12 @@ fn subscription_response(s: db::wiki::WikiSubscription) -> SubscriptionResponse 
 
 async fn list_subscriptions(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(project_id): AxumPath<String>,
     Query(query): Query<ListSubscriptionsQuery>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     if let Some(resp) = collection_denial(&caller, &project.id) {
         return Ok(resp);
     }
@@ -1145,11 +1148,11 @@ async fn list_subscriptions(
 
 async fn delete_subscription(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(path): AxumPath<SubscriptionPath>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &path.project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     if let Some(resp) = collection_denial(&caller, &project.id) {
         return Ok(resp);
     }
@@ -1159,6 +1162,7 @@ async fn delete_subscription(
         &project.id,
         &path.sub_id,
         caller.session_id.as_deref(),
+        caller.credential_hash.as_deref(),
     )
     .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -1166,12 +1170,12 @@ async fn delete_subscription(
 
 async fn list_changes(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(project_id): AxumPath<String>,
     Query(query): Query<ChangesQuery>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     if let Some(resp) = collection_denial(&caller, &project.id) {
         return Ok(resp);
     }
@@ -1231,11 +1235,11 @@ async fn list_changes(
 
 async fn export_pages(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     AxumPath(project_id): AxumPath<String>,
 ) -> Result<Response, SchedulerError> {
     let project = db::projects::resolve(&state.db_pool, &project_id).await?;
-    let caller = resolve_caller(&headers, &state.db_pool, &project.id).await?;
+    let caller = resolve_caller(&principal, &project.id)?;
     if let Some(resp) = collection_denial(&caller, &project.id) {
         return Ok(resp);
     }
@@ -1260,7 +1264,7 @@ async fn export_pages(
 
 async fn search_wiki(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Authenticated(principal): Authenticated,
     Query(query): Query<SearchQuery>,
 ) -> Result<Response, SchedulerError> {
     let terms = query.q.as_deref().map(str::trim).unwrap_or("");
@@ -1275,11 +1279,10 @@ async fn search_wiki(
     let offset = parse_bounded(query.offset.as_deref(), 0, |v| v >= 0)
         .ok_or_else(|| SchedulerError::ValidationFailed("offset must be >= 0".into()))?;
 
-    let principal = resolve_session_principal(&headers, &state.db_pool).await?;
-    let caller = principal.as_ref().map(|(session_id, project_id)| Caller {
-        session_id: Some(session_id.clone()),
-        project_id: project_id.clone(),
-    });
+    let caller = match principal.agent() {
+        Some(agent) => Some(agent_caller(agent)?),
+        None => None,
+    };
     let entry_context = match &caller {
         Some(caller) => Some(SharingContext::load(&state.db_pool, caller).await?),
         None => None,

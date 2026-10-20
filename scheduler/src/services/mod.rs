@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod agent_config;
+pub mod auth;
 pub mod briefing;
 pub mod ceiling;
 pub mod driver_descriptors;

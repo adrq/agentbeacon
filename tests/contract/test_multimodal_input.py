@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -157,7 +158,7 @@ def test_lateral_message_preserves_file_parts(test_database):
                     _file_part("data.png"),
                 ],
             },
-            headers={"Authorization": f"Bearer {lead_session_id}"},
+            headers={**agent_headers(None, lead_session_id)},
             timeout=5,
         )
         assert resp.status_code == 200
@@ -250,7 +251,7 @@ def test_get_messages_returns_parts(test_database):
                     _file_part("screenshot.png"),
                 ],
             },
-            headers={"Authorization": f"Bearer {lead_session_id}"},
+            headers={**agent_headers(None, lead_session_id)},
             timeout=5,
         )
 
@@ -340,7 +341,7 @@ def test_lateral_message_rejects_no_deliverable_content(test_database):
                 "to": child_hier_name,
                 "parts": [{"data": {"type": "meta"}}],
             },
-            headers={"Authorization": f"Bearer {lead_session_id}"},
+            headers={**agent_headers(None, lead_session_id)},
             timeout=5,
         )
         assert resp.status_code == 400

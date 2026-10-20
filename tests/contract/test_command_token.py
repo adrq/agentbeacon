@@ -8,6 +8,7 @@ from datetime import datetime
 import pytest
 
 from tests.testhelpers import (
+    wid,
     assert_event_exists,
     create_execution_via_api,
     db_conn,
@@ -32,7 +33,7 @@ def test_assign_command_for_pending_session(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "do work")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w1")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w1"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
@@ -61,7 +62,7 @@ def test_assign_resume_without_payload(test_database):
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        resp = post_worker_sync(ctx["url"], worker_id="w2")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w2"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
@@ -86,7 +87,7 @@ def test_assign_resume_with_pending_turns(test_database):
             agent_session_id="sdk-session-2",
         )
 
-        resp = post_worker_sync(ctx["url"], worker_id="w3")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w3"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
@@ -108,11 +109,11 @@ def test_feed_turn_to_idle_worker(test_database):
             session_id,
             desired="run",
             executor_state="idle",
-            worker_id="w4",
+            worker_id=wid("w4"),
         )
         insert_task(ctx["db_url"], exec_id, session_id, "next turn please")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w4")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w4"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "feed_turn"
@@ -134,11 +135,11 @@ def test_feed_turn_mid_turn(test_database):
             session_id,
             desired="run",
             executor_state="running",
-            worker_id="w5",
+            worker_id=wid("w5"),
         )
         insert_task(ctx["db_url"], exec_id, session_id, "mid-turn message")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w5")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w5"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "feed_turn"
@@ -159,10 +160,10 @@ def test_stop_turn_to_running_worker(test_database):
             session_id,
             desired="stop",
             executor_state="running",
-            worker_id="w6",
+            worker_id=wid("w6"),
         )
 
-        resp = post_worker_sync(ctx["url"], worker_id="w6")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w6"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "stop_turn"
@@ -186,10 +187,10 @@ def test_cancel_command_issued(test_database):
             desired="terminate",
             executor_state="running",
             outcome="canceled",
-            worker_id="w7",
+            worker_id=wid("w7"),
         )
 
-        resp = post_worker_sync(ctx["url"], worker_id="w7")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w7"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "cancel"
@@ -205,13 +206,13 @@ def test_ack_clears_command_token(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w8")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w8"))
         assert resp["type"] == "command"
         token = resp["token"]
 
         _resp2 = post_worker_sync(
             ctx["url"],
-            worker_id="w8",
+            worker_id=wid("w8"),
             executor_report=make_executor_report(session_id, "running", "sdk-1"),
             command_ack=token,
         )
@@ -225,13 +226,13 @@ def test_payload_command_ack_on_acceptance(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w9")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w9"))
         assert resp["type"] == "command"
         assign_token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            worker_id="w9",
+            worker_id=wid("w9"),
             executor_report=make_executor_report(session_id, "running", "sdk-1"),
             command_ack=assign_token,
         )
@@ -251,17 +252,17 @@ def test_control_command_ack_on_completion(test_database):
             session_id,
             desired="stop",
             executor_state="running",
-            worker_id="w10",
+            worker_id=wid("w10"),
         )
 
-        resp = post_worker_sync(ctx["url"], worker_id="w10")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w10"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "stop_turn"
         stop_token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            worker_id="w10",
+            worker_id=wid("w10"),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack=stop_token,
         )
@@ -276,14 +277,14 @@ def test_stale_token_ack_silently_dropped(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w11")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w11"))
         assert resp["type"] == "command"
         real_token = resp["token"]
 
         stale_token = "stale-token-" + str(uuid.uuid4())
         _resp2 = post_worker_sync(
             ctx["url"],
-            worker_id="w11",
+            worker_id=wid("w11"),
             command_ack=stale_token,
         )
 
@@ -299,13 +300,13 @@ def test_ack_retry_idempotent(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w12")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w12"))
         assert resp["type"] == "command"
         token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            worker_id="w12",
+            worker_id=wid("w12"),
             executor_report=make_executor_report(session_id, "running", "sdk-1"),
             command_ack=token,
         )
@@ -313,7 +314,7 @@ def test_ack_retry_idempotent(test_database):
 
         _resp2 = post_worker_sync(
             ctx["url"],
-            worker_id="w12",
+            worker_id=wid("w12"),
             executor_report=make_executor_report(session_id, "running", "sdk-1"),
             command_ack=token,
         )
@@ -327,14 +328,14 @@ def test_at_most_one_pending_command(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w13")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w13"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         original_token = resp["token"]
 
         insert_task(ctx["db_url"], exec_id, session_id, "another message")
 
-        resp2 = post_worker_sync(ctx["url"], worker_id="w13")
+        resp2 = post_worker_sync(ctx["url"], worker_id=wid("w13"))
         if resp2["type"] == "command":
             assert resp2["token"] == original_token, "must not issue a new token"
             assert resp2["action"]["type"] == "assign"
@@ -357,7 +358,7 @@ def test_priority_override_cancel_over_feed_turn(test_database):
             session_id,
             desired="run",
             executor_state="running",
-            worker_id="w14",
+            worker_id=wid("w14"),
             command_token="feed-token-1",
             command_type="feed_turn",
             command_has_payload=True,
@@ -371,7 +372,7 @@ def test_priority_override_cancel_over_feed_turn(test_database):
             outcome="canceled",
         )
 
-        resp = post_worker_sync(ctx["url"], worker_id="w14")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w14"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "cancel"
@@ -388,14 +389,14 @@ def test_priority_override_stop_turn_over_assign(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w15")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w15"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         assign_token = resp["token"]
 
         set_session_fields(ctx["db_url"], session_id, desired="stop")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w15")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w15"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "stop_turn"
@@ -416,7 +417,7 @@ def test_priority_override_cancel_over_stop_turn(test_database):
             session_id,
             desired="stop",
             executor_state="running",
-            worker_id="w16",
+            worker_id=wid("w16"),
             command_token="stop-token-1",
             command_type="stop_turn",
             command_has_payload=False,
@@ -430,7 +431,7 @@ def test_priority_override_cancel_over_stop_turn(test_database):
             outcome="canceled",
         )
 
-        resp = post_worker_sync(ctx["url"], worker_id="w16")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w16"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "cancel"
@@ -446,14 +447,14 @@ def test_non_preemptive_feed_turn_cannot_override_assign(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w17")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w17"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         assign_token = resp["token"]
 
         insert_task(ctx["db_url"], exec_id, session_id, "follow-up message")
 
-        _resp2 = post_worker_sync(ctx["url"], worker_id="w17")
+        _resp2 = post_worker_sync(ctx["url"], worker_id=wid("w17"))
 
         row = get_session_row(ctx["db_url"], session_id)
         assert row["command_token"] == assign_token
@@ -466,12 +467,12 @@ def test_command_timeout_triggers_detect_crash(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w18")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w18"))
         assert resp["type"] == "command"
 
         set_session_fields(ctx["db_url"], session_id, command_at="2020-01-01T00:00:00Z")
 
-        post_worker_sync(ctx["url"], worker_id="w18-probe")
+        post_worker_sync(ctx["url"], worker_id=wid("w18-probe"))
 
         row = get_session_row(ctx["db_url"], session_id)
         assert row["worker_id"] is None, "DetectCrash must clear worker_id"
@@ -493,20 +494,20 @@ def test_heartbeat_timeout_triggers_detect_crash(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w19")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w19"))
         assert resp["type"] == "command"
         token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            worker_id="w19",
+            worker_id=wid("w19"),
             executor_report=make_executor_report(session_id, "running", "sdk-1"),
             command_ack=token,
         )
 
         time.sleep(2)
 
-        post_worker_sync(ctx["url"], worker_id="w19-probe")
+        post_worker_sync(ctx["url"], worker_id=wid("w19-probe"))
 
         row = get_session_row(ctx["db_url"], session_id)
         assert row["worker_id"] is None, "DetectCrash must clear worker_id"
@@ -521,12 +522,12 @@ def test_payload_command_timeout_emits_platform_event(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w20")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w20"))
         assert resp["type"] == "command"
 
         set_session_fields(ctx["db_url"], session_id, command_at="2020-01-01T00:00:00Z")
 
-        post_worker_sync(ctx["url"], worker_id="w20-probe")
+        post_worker_sync(ctx["url"], worker_id=wid("w20-probe"))
 
         assert_event_exists(
             ctx["db_url"],
@@ -553,14 +554,14 @@ def test_resume_without_payload_timeout_no_event(test_database):
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        resp = post_worker_sync(ctx["url"], worker_id="w21")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w21"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         assert resp["action"]["payload"] is None
 
         set_session_fields(ctx["db_url"], session_id, command_at="2020-01-01T00:00:00Z")
 
-        post_worker_sync(ctx["url"], worker_id="w21-probe")
+        post_worker_sync(ctx["url"], worker_id=wid("w21-probe"))
 
         with db_conn(ctx["db_url"]) as conn:
             cur = conn.execute(
@@ -584,7 +585,7 @@ def test_override_discards_payload(test_database):
             session_id,
             desired="run",
             executor_state="running",
-            worker_id="w22",
+            worker_id=wid("w22"),
             command_token="feed-token-override",
             command_type="feed_turn",
             command_has_payload=True,
@@ -593,7 +594,7 @@ def test_override_discards_payload(test_database):
 
         set_session_fields(ctx["db_url"], session_id, desired="stop")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w22")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w22"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "stop_turn"
@@ -623,17 +624,17 @@ def test_terminal_cancel_ack_clears_worker_id(test_database):
             desired="terminate",
             executor_state="running",
             outcome="canceled",
-            worker_id="w23",
+            worker_id=wid("w23"),
         )
 
-        resp = post_worker_sync(ctx["url"], worker_id="w23")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w23"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "cancel"
         cancel_token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            worker_id="w23",
+            worker_id=wid("w23"),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack=cancel_token,
         )
@@ -649,14 +650,14 @@ def test_command_timeout_live_worker_supervisor_kill(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w24")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w24"))
         assert resp["type"] == "command"
 
         set_session_fields(ctx["db_url"], session_id, command_at="2020-01-01T00:00:00Z")
 
-        post_worker_sync(ctx["url"], worker_id="w24")
+        post_worker_sync(ctx["url"], worker_id=wid("w24"))
 
-        post_worker_sync(ctx["url"], worker_id="w24-probe")
+        post_worker_sync(ctx["url"], worker_id=wid("w24-probe"))
 
         row = get_session_row(ctx["db_url"], session_id)
         assert row["worker_id"] is None, "DetectCrash must clear worker_id"
@@ -680,13 +681,13 @@ def test_running_no_pending_turns_no_action(test_database):
             session_id,
             desired="run",
             executor_state="running",
-            worker_id="w25",
+            worker_id=wid("w25"),
         )
         with db_conn(ctx["db_url"]) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        resp = post_worker_sync(ctx["url"], worker_id="w25")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w25"))
 
         assert resp["type"] == "no_action"
         assert_no_command(ctx["db_url"], session_id)
@@ -704,13 +705,13 @@ def test_terminate_idle_worker_sends_cancel(test_database):
             desired="terminate",
             executor_state="idle",
             outcome="completed",
-            worker_id="w26",
+            worker_id=wid("w26"),
         )
         with db_conn(ctx["db_url"]) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        resp = post_worker_sync(ctx["url"], worker_id="w26")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w26"))
 
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "cancel"
@@ -737,7 +738,7 @@ def test_terminate_idle_no_worker_finalizes_directly(test_database):
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        _resp = post_worker_sync(ctx["url"], worker_id="w27-unrelated")
+        _resp = post_worker_sync(ctx["url"], worker_id=wid("w27-unrelated"))
 
         assert_no_command(ctx["db_url"], session_id)
 
@@ -750,20 +751,20 @@ def test_kill_confirmation_gates_reassignment(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "start")
 
-        resp = post_worker_sync(ctx["url"], worker_id="w28")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w28"))
         assert resp["type"] == "command"
         assign_token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            worker_id="w28",
+            worker_id=wid("w28"),
             executor_report=make_executor_report(session_id, "running", "sdk-1"),
             command_ack=assign_token,
         )
 
         time.sleep(2)
 
-        post_worker_sync(ctx["url"], worker_id="w28-probe")
+        post_worker_sync(ctx["url"], worker_id=wid("w28-probe"))
 
         row = get_session_row(ctx["db_url"], session_id)
         assert row["worker_id"] is None, "DetectCrash must clear worker_id"
@@ -771,7 +772,7 @@ def test_kill_confirmation_gates_reassignment(test_database):
             f"Post-timeout state must be crashed or unassigned, got {row['executor_state']}"
         )
 
-        resp2 = post_worker_sync(ctx["url"], worker_id="w28-new")
+        resp2 = post_worker_sync(ctx["url"], worker_id=wid("w28-new"))
 
         if resp2["type"] == "command" and resp2["action"]["type"] == "assign":
             assert resp2["action"]["session_id"] == session_id

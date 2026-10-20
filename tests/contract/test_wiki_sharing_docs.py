@@ -82,4 +82,4 @@ def test_docs_document_the_membership_admin_routes(test_database):
         assert "POST /api/v1/wiki/tags/{tag_id}/members" in body
         assert "PATCH /api/v1/wiki/tags/{tag_id}/members/{project}" in body
         assert "DELETE /api/v1/wiki/tags/{tag_id}/members/{project}" in body
-        assert "operator_scope_only" in body
+        assert "auth.forbidden" in body

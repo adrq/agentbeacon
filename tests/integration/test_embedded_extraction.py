@@ -15,6 +15,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from tests.testhelpers import worker_launch
+
 BASE_DIR = Path(__file__).parent.parent.parent
 WORKER_BIN = BASE_DIR / "bin" / "agentbeacon-worker"
 
@@ -24,6 +26,8 @@ def test_worker_extracts_embedded_executors():
     with tempfile.TemporaryDirectory() as tmpdir:
         env = os.environ.copy()
         env["AGENTBEACON_DATA_DIR"] = tmpdir
+        launch_args, launch_env = worker_launch("http://127.0.0.1:1")
+        env.update(launch_env)
         env.pop("AGENTBEACON_EXECUTORS_DIR", None)
 
         # Worker will fail to connect to scheduler (unreachable URL)
@@ -33,6 +37,7 @@ def test_worker_extracts_embedded_executors():
                 str(WORKER_BIN),
                 "--scheduler-url",
                 "http://127.0.0.1:1",
+                *launch_args,
                 "--startup-max-attempts",
                 "1",
                 "--retry-delay",
@@ -72,6 +77,8 @@ def test_override_skips_extraction():
     with tempfile.TemporaryDirectory() as tmpdir:
         env = os.environ.copy()
         env["AGENTBEACON_DATA_DIR"] = tmpdir
+        launch_args, launch_env = worker_launch("http://127.0.0.1:1")
+        env.update(launch_env)
         env["AGENTBEACON_EXECUTORS_DIR"] = str(BASE_DIR / "executors" / "dist")
 
         _ = subprocess.run(
@@ -79,6 +86,7 @@ def test_override_skips_extraction():
                 str(WORKER_BIN),
                 "--scheduler-url",
                 "http://127.0.0.1:1",
+                *launch_args,
                 "--startup-max-attempts",
                 "1",
                 "--retry-delay",

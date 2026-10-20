@@ -19,6 +19,7 @@ from tests.mock_agent_helpers import (
     post_worker_sync,
 )
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     scheduler_context,
     seed_test_agent,
@@ -95,6 +96,7 @@ def test_worker_sync_flush_command_ack_returns_immediately(test_database):
     env = {"AGENTBEACON_LONG_POLL_TIMEOUT_SECS": str(LONG_POLL_TIMEOUT_SECS)}
 
     with scheduler_context(db_url=test_database, env=env) as ctx:
+        worker_id = wid(worker_id)
         _, session_id, assign_token = _create_assigned_session(ctx, worker_id)
 
         response, elapsed = _sync_with_elapsed(
@@ -123,6 +125,7 @@ def test_worker_sync_flush_turn_result_returns_immediately(test_database):
     env = {"AGENTBEACON_LONG_POLL_TIMEOUT_SECS": str(LONG_POLL_TIMEOUT_SECS)}
 
     with scheduler_context(db_url=test_database, env=env) as ctx:
+        worker_id = wid(worker_id)
         _, session_id = _create_running_session(ctx, worker_id)
 
         response, elapsed = _sync_with_elapsed(
@@ -146,6 +149,7 @@ def test_worker_sync_non_flush_executor_report_long_polls(test_database):
     env = {"AGENTBEACON_LONG_POLL_TIMEOUT_SECS": str(LONG_POLL_TIMEOUT_SECS)}
 
     with scheduler_context(db_url=test_database, env=env) as ctx:
+        worker_id = wid(worker_id)
         _, session_id = _create_running_session(ctx, worker_id)
 
         response, elapsed = _sync_with_elapsed(
@@ -165,6 +169,7 @@ def test_worker_sync_flush_still_delivers_pending_command(test_database):
     env = {"AGENTBEACON_LONG_POLL_TIMEOUT_SECS": str(LONG_POLL_TIMEOUT_SECS)}
 
     with scheduler_context(db_url=test_database, env=env) as ctx:
+        worker_id = wid(worker_id)
         execution_id, session_id = _create_running_session(ctx, worker_id)
         insert_task(ctx["db_url"], execution_id, session_id, "follow-up task")
 
@@ -189,6 +194,7 @@ def test_worker_sync_stale_worker_race_does_not_assign_unrelated_work(test_datab
     env = {"AGENTBEACON_LONG_POLL_TIMEOUT_SECS": str(LONG_POLL_TIMEOUT_SECS)}
 
     with scheduler_context(db_url=test_database, env=env) as ctx:
+        worker_id = wid(worker_id)
         execution_id, session_id = _create_running_session(ctx, worker_id)
 
         next_agent_id = seed_test_agent(ctx["db_url"], name="flush-race-next-agent")

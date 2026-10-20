@@ -6,8 +6,8 @@ use tower_http::compression::CompressionLayer;
 
 use crate::api::problem::{Problem, ProblemCode};
 use crate::api::{
-    agents, config, decisions, drivers, escalate, executions, mcp_servers, messages, projects,
-    sessions, sse, wiki, wiki_tags,
+    agents, auth_routes, config, decisions, drivers, escalate, executions, mcp_servers, messages,
+    projects, sessions, sse, wiki, wiki_tags, workers,
 };
 use crate::app::AppState;
 
@@ -18,15 +18,21 @@ async fn route_not_found() -> Problem {
     Problem::new(ProblemCode::ResourceNotFound).with_detail("no route matches this path")
 }
 
-async fn method_not_allowed() -> Problem {
+/// The 405 problem of every versioned route.
+pub(crate) fn method_not_allowed_problem() -> Problem {
     Problem::new(ProblemCode::MethodNotAllowed)
         .with_detail("this route does not support the request method")
+}
+
+async fn method_not_allowed() -> Problem {
+    method_not_allowed_problem()
 }
 
 /// Build the versioned product router.
 pub fn routes() -> Router<AppState> {
     let rest = Router::new()
         .merge(agents::routes())
+        .merge(auth_routes::routes())
         .merge(config::routes())
         .merge(decisions::routes())
         .merge(drivers::routes())
@@ -38,6 +44,7 @@ pub fn routes() -> Router<AppState> {
         .merge(sessions::routes())
         .merge(wiki::routes())
         .merge(wiki_tags::routes())
+        .merge(workers::routes())
         .layer(CompressionLayer::new());
 
     rest.merge(sse::routes())

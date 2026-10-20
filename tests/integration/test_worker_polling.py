@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import os
 import re
 import signal
 import subprocess
@@ -14,6 +15,7 @@ from tests.testhelpers import (
     cleanup_processes,
     start_worker_with_retry_config,
     wait_for_port,
+    worker_launch,
 )
 from tests.mock_agent_helpers import start_mock_scheduler
 
@@ -30,6 +32,7 @@ def test_worker_respects_polling_interval():
         processes.append(scheduler_proc)
         assert wait_for_port(port, timeout=10), "Mock scheduler did not start"
 
+        launch_args, launch_env = worker_launch(f"http://localhost:{port}")
         worker_proc = subprocess.Popen(
             [
                 "./bin/agentbeacon-worker",
@@ -37,11 +40,13 @@ def test_worker_respects_polling_interval():
                 f"http://localhost:{port}",
                 "--interval",
                 "2s",
+                *launch_args,
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             cwd=BASE_DIR,
+            env={**os.environ, **launch_env},
         )
         processes.append(worker_proc)
 
@@ -113,6 +118,7 @@ def test_worker_shutdown_on_signal():
         processes.append(scheduler_proc)
         assert wait_for_port(port, timeout=10), "Mock scheduler did not start"
 
+        launch_args, launch_env = worker_launch(f"http://localhost:{port}")
         worker_proc = subprocess.Popen(
             [
                 "./bin/agentbeacon-worker",
@@ -120,11 +126,13 @@ def test_worker_shutdown_on_signal():
                 f"http://localhost:{port}",
                 "--interval",
                 "5s",
+                *launch_args,
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             cwd=BASE_DIR,
+            env={**os.environ, **launch_env},
         )
         processes.append(worker_proc)
 

@@ -22,8 +22,9 @@ use uuid::Uuid;
 
 use super::protocol::*;
 
-/// ACP agent config shape used by spawn_acp_subprocess
-#[derive(Debug, Deserialize, Clone)]
+/// ACP agent config shape used by spawn_acp_subprocess. `Debug` prints the
+/// names of `env` but not its values, which include the session token.
+#[derive(Deserialize, Clone)]
 #[allow(dead_code)]
 pub(crate) struct LegacyAcpConfig {
     pub command: String,
@@ -31,6 +32,22 @@ pub(crate) struct LegacyAcpConfig {
     pub args: Vec<String>,
     pub timeout: Option<u64>,
     pub env: Option<HashMap<String, String>>,
+}
+
+impl std::fmt::Debug for LegacyAcpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env_names = self.env.as_ref().map(|env| {
+            let mut names: Vec<&str> = env.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            names
+        });
+        f.debug_struct("LegacyAcpConfig")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("timeout", &self.timeout)
+            .field("env", &env_names)
+            .finish()
+    }
 }
 
 /// Spawn ACP subprocess with stdio communication
@@ -55,6 +72,9 @@ pub(crate) fn spawn_acp_subprocess(acp_config: &LegacyAcpConfig) -> Result<Child
                 "failed to set environment variables (platform limitation)"
             ));
         }
+    }
+    for name in crate::EXECUTOR_REMOVED_ENV {
+        cmd.env_remove(name);
     }
 
     cmd.spawn().context("failed to spawn ACP subprocess")
@@ -177,28 +197,34 @@ pub(crate) async fn send_initialize(
     ))
 }
 
-/// Send session/new request and wait for response
-pub(crate) async fn send_session_new(
-    client: &mut JsonRpcClient,
-    notification_rx: &mut mpsc::UnboundedReceiver<JsonRpcMessage>,
-    cwd: &str,
-    scheduler_url: &str,
-    session_id: &str,
-) -> Result<String> {
+/// The session/new parameters: the working directory and the coordination
+/// MCP server, authenticated with the session token.
+fn session_new_params(cwd: &str, scheduler_url: &str, session_token: &str) -> SessionNewParams {
     // TODO: merge SessionConfig.user_mcp_servers here (needs format
     // translation — ACP uses array of {name, type, url, headers:[{name,value}]},
     // not the keyed-object Claude Desktop format used by the SDK path).
-    let session_params = SessionNewParams {
+    SessionNewParams {
         cwd: cwd.to_string(),
         mcp_servers: vec![serde_json::json!({
             "type": "http",
             "name": "beacon-coordinator",
             "url": format!("{}/mcp", scheduler_url.trim_end_matches('/')),
             "headers": [
-                {"name": "Authorization", "value": format!("Bearer {}", session_id)}
+                {"name": "Authorization", "value": format!("Bearer {}", session_token)}
             ]
         })],
-    };
+    }
+}
+
+/// Send session/new request and wait for response
+pub(crate) async fn send_session_new(
+    client: &mut JsonRpcClient,
+    notification_rx: &mut mpsc::UnboundedReceiver<JsonRpcMessage>,
+    cwd: &str,
+    scheduler_url: &str,
+    session_token: &str,
+) -> Result<String> {
+    let session_params = session_new_params(cwd, scheduler_url, session_token);
 
     let request_id = client
         .send_request("session/new", serde_json::to_value(&session_params)?)
@@ -620,5 +646,55 @@ pub(crate) async fn read_jsonrpc_lines(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{JsonRpcRequest, LegacyAcpConfig, session_new_params};
+    use std::collections::HashMap;
+
+    #[test]
+    fn session_new_request_debug_omits_the_session_token() {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "session/new".to_string(),
+            params: serde_json::to_value(session_new_params(
+                "/workspace",
+                "http://localhost:9456",
+                "session-token-secret",
+            ))
+            .unwrap(),
+            id: "req-1".to_string(),
+        };
+        assert!(
+            serde_json::to_string(&request)
+                .unwrap()
+                .contains("Bearer session-token-secret")
+        );
+        assert_eq!(
+            format!("{request:?}"),
+            r#"JsonRpcRequest { jsonrpc: "2.0", method: "session/new", params: "[redacted]", id: "req-1" }"#
+        );
+    }
+
+    #[test]
+    fn legacy_config_debug_omits_env_values() {
+        let config = LegacyAcpConfig {
+            command: "agent".to_string(),
+            args: vec![],
+            timeout: None,
+            env: Some(HashMap::from([
+                (
+                    "AGENTBEACON_SESSION_TOKEN".to_string(),
+                    "session-token-secret".to_string(),
+                ),
+                ("A".to_string(), "b".to_string()),
+            ])),
+        };
+        assert_eq!(
+            format!("{config:?}"),
+            r#"LegacyAcpConfig { command: "agent", args: [], timeout: None, env: Some(["A", "AGENTBEACON_SESSION_TOKEN"]) }"#
+        );
     }
 }

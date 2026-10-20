@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_project_via_api,
     scheduler_context,
     create_execution_via_api,
@@ -282,7 +283,7 @@ def test_crash_does_not_overwrite_terminated_outcome(test_database):
             lead_sid,
             desired="run",
             executor_state="running",
-            worker_id="crash-worker",
+            worker_id=wid("crash-worker"),
         )
         set_execution_fields(
             ctx["db_url"], exec_id, desired="terminate", outcome="canceled"
@@ -290,7 +291,7 @@ def test_crash_does_not_overwrite_terminated_outcome(test_database):
 
         _crash_resp = post_worker_sync(
             ctx["url"],
-            "crash-worker",
+            wid("crash-worker"),
             executor_report=make_executor_report(lead_sid, "crashed"),
             turn_result=make_turn_result(
                 lead_sid,
@@ -376,7 +377,7 @@ def test_turn_complete_does_not_overwrite_terminated_execution(test_database):
             lead_sid,
             desired="run",
             executor_state="running",
-            worker_id="turn-worker",
+            worker_id=wid("turn-worker"),
         )
         set_execution_fields(
             ctx["db_url"], exec_id, desired="terminate", outcome="canceled"
@@ -384,7 +385,7 @@ def test_turn_complete_does_not_overwrite_terminated_execution(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "turn-worker",
+            wid("turn-worker"),
             executor_report=make_executor_report(lead_sid, "idle"),
             turn_result=make_turn_result(lead_sid, messages=[]),
         )

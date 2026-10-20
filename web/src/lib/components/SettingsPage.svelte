@@ -6,6 +6,30 @@
   import ShareTagsSection from './ShareTagsSection.svelte';
   import { escalationNotificationsEnabled, turnCompleteNotificationsEnabled } from '../stores/appState';
   import { requestNotificationPermission } from '../adapters/standalone';
+  import { api, ApiError } from '../api';
+  import { signedOut } from '../stores/auth';
+  import { useQueryClient } from '@tanstack/svelte-query';
+
+  const queryClient = useQueryClient();
+  let signingOut = $state(false);
+  let signOutFailed = $state(false);
+
+  async function handleSignOut() {
+    signingOut = true;
+    signOutFailed = false;
+    try {
+      await api.logout();
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 401)) {
+        signOutFailed = true;
+        signingOut = false;
+        return;
+      }
+    }
+    signingOut = false;
+    queryClient.clear();
+    signedOut.set(true);
+  }
 
   let permissionState = $state<NotificationPermission>(
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default'
@@ -60,6 +84,24 @@
           <span class="notif-toggle-label">Notify when execution turn is complete</span>
         </label>
       </div>
+    </section>
+
+    <section id="account" class="settings-section">
+      <h3 class="section-heading">Account</h3>
+      <button
+        type="button"
+        class="notif-permission-btn"
+        onclick={handleSignOut}
+        disabled={signingOut}
+        data-testid="sign-out"
+      >
+        {signOutFailed ? 'Retry sign out' : 'Sign out'}
+      </button>
+      {#if signOutFailed}
+        <p class="sign-out-error" role="alert" data-testid="sign-out-error">
+          Sign out failed. You are still signed in.
+        </p>
+      {/if}
     </section>
 
     <section id="integrations" class="settings-section">
@@ -163,6 +205,12 @@
 
   .notif-status--denied {
     color: hsl(var(--muted-foreground));
+  }
+
+  .sign-out-error {
+    margin: 0.5rem 0 0;
+    font-size: 0.8125rem;
+    color: hsl(var(--destructive));
   }
 
   .notif-toggle {

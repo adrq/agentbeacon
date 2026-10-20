@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -234,7 +235,7 @@ def test_sandbox_policy_inherited_by_delegated_session(test_database):
             sandbox_policy={"fs_level": "read_only"},
         )
 
-        sync_data = post_worker_sync(ctx["url"], "w1")
+        sync_data = post_worker_sync(ctx["url"], wid("w1"))
         assert sync_data.get("type") == "command"
 
         result = mcp_tools_call(
@@ -364,7 +365,7 @@ def test_corrupted_sandbox_policy_prevents_assign(test_database):
             )
             conn.commit()
 
-        sync_data = post_worker_sync(ctx["url"], "w1")
+        sync_data = post_worker_sync(ctx["url"], wid("w1"))
         assert (
             sync_data.get("type") != "command"
             or sync_data.get("session_id") != session_id

@@ -73,11 +73,15 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
     acp_config.validate()?;
 
     let mut legacy_config = acp_config.to_legacy();
-    // Inject AGENTBEACON_* env vars (parity with SDK executor path in sdk.rs:190-198)
+    // Inject AGENTBEACON_* env vars (parity with the SDK executor path)
     let env = legacy_config.env.get_or_insert_with(HashMap::new);
     env.insert(
         "AGENTBEACON_SESSION_ID".to_string(),
         config.session_id.clone(),
+    );
+    env.insert(
+        "AGENTBEACON_SESSION_TOKEN".to_string(),
+        config.session_token.clone(),
     );
     env.insert(
         "AGENTBEACON_API_BASE".to_string(),
@@ -153,7 +157,7 @@ pub async fn start(config: SessionConfig) -> Result<ExecutorHandle> {
             &mut notification_rx,
             &config.cwd,
             &config.scheduler_url,
-            &config.session_id,
+            &config.session_token,
         ),
     )
     .await

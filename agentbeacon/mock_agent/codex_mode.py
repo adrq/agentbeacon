@@ -20,11 +20,13 @@ import json
 import os
 import signal
 import sys
+import tomllib
 import traceback
 import uuid
 from typing import Any, Dict, List, Optional
 
 from .special_commands import SpecialCommands
+from .report import write_report
 from .file_logger import log_task_completion
 
 STEER_REJECT_NOT_STEERABLE = "STEER_REJECT_NOT_STEERABLE"
@@ -40,6 +42,21 @@ CODEX_SPECIAL_COMMANDS = {
     FAIL_TURN_START,
     FAIL_TURN,
 }
+
+
+def _agentbeacon_mcp_authorization() -> Optional[str]:
+    home = os.environ.get("CODEX_HOME")
+    if not home:
+        return None
+    try:
+        with open(os.path.join(home, "config.toml"), "rb") as f:
+            config = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    server = config.get("mcp_servers", {}).get("agentbeacon", {})
+    env_var = server.get("bearer_token_env_var")
+    token = os.environ.get(env_var) if env_var else None
+    return f"Bearer {token}" if token else None
 
 
 class CodexHandler:
@@ -192,6 +209,7 @@ class CodexHandler:
         )
 
     async def _handle_thread_start(self, msg_id: Any, params: Dict[str, Any]):
+        write_report("codex_sdk", _agentbeacon_mcp_authorization())
         self.thread_id = f"thr_mock_{uuid.uuid4().hex[:8]}"
         thread_obj = {"id": self.thread_id}
 

@@ -15,6 +15,7 @@ from tests.testhelpers import (
     create_execution_via_api,
     db_conn,
     scheduler_context,
+    worker_launch,
 )
 from tests.mock_agent_helpers import (
     assert_session_state,
@@ -90,12 +91,15 @@ def _start_worker_with_inactivity_timeout(
     scheduler_url, inactivity_timeout="2s", interval="500ms"
 ):
     base_dir = Path(__file__).parent.parent.parent
+    launch_args, launch_env = worker_launch(scheduler_url)
     worker_env = os.environ.copy()
     worker_env.update(_EXECUTOR_ENV)
+    worker_env.update(launch_env)
     cmd = [
         "./bin/agentbeacon-worker",
         "--scheduler-url",
         scheduler_url,
+        *launch_args,
         "--interval",
         interval,
         "--inactivity-timeout",

@@ -85,7 +85,7 @@ class DelegateAskScenario(_BaseScenario):
         if self.phase == 1:
             self._send_marker("DELEGATE_ASK_PHASE_1")
             api_base = os.environ.get("AGENTBEACON_API_BASE", "")
-            session_id = os.environ.get("AGENTBEACON_SESSION_ID", self.session_id)
+            session_token = os.environ.get("AGENTBEACON_SESSION_TOKEN", "")
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     f"{api_base}/api/v1/escalate",
@@ -102,7 +102,7 @@ class DelegateAskScenario(_BaseScenario):
                         "importance": "blocking",
                     },
                     headers={
-                        "Authorization": f"Bearer {session_id}",
+                        "Authorization": f"Bearer {session_token}",
                         "Content-Type": "application/json",
                     },
                     timeout=5.0,
@@ -240,6 +240,7 @@ class EndTurnMessageScenario(_BaseScenario):
 
             api_base = os.environ.get("AGENTBEACON_API_BASE", "")
             session_id = os.environ.get("AGENTBEACON_SESSION_ID", "")
+            session_token = os.environ.get("AGENTBEACON_SESSION_TOKEN", "")
             execution_id = os.environ.get("AGENTBEACON_EXECUTION_ID", "")
 
             if api_base and session_id and execution_id:
@@ -247,7 +248,7 @@ class EndTurnMessageScenario(_BaseScenario):
                     async with httpx.AsyncClient() as client:
                         resp = await client.get(
                             f"{api_base}/api/v1/executions/{execution_id}/sessions",
-                            headers={"Authorization": f"Bearer {session_id}"},
+                            headers={"Authorization": f"Bearer {session_token}"},
                         )
                         resp.raise_for_status()
                         agents = resp.json()
@@ -268,7 +269,7 @@ class EndTurnMessageScenario(_BaseScenario):
                                     ],
                                 },
                                 headers={
-                                    "Authorization": f"Bearer {session_id}",
+                                    "Authorization": f"Bearer {session_token}",
                                     "Content-Type": "application/json",
                                 },
                             )

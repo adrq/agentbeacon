@@ -9,6 +9,7 @@ import httpx
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -242,10 +243,11 @@ def test_an_ephemeral_wake_also_carries_the_rows_behind_it(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id = seed_test_agent(ctx["db_url"], name="ephemeral-wake")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
+        worker = wid("wake-worker")
         with db_conn(test_database) as conn:
             conn.execute(
-                "UPDATE sessions SET worker_id = 'wake-worker' WHERE id = ?",
-                (session_id,),
+                "UPDATE sessions SET worker_id = ? WHERE id = ?",
+                (worker, session_id),
             )
             conn.commit()
 
@@ -289,7 +291,7 @@ def test_an_ephemeral_wake_also_carries_the_rows_behind_it(test_database):
             httpx.post(
                 f"{ctx['url']}/api/worker/events",
                 json={
-                    "workerId": "wake-worker",
+                    "workerId": wid("wake-worker"),
                     "executionId": exec_id,
                     "sessionId": session_id,
                     "msgSeq": 700,

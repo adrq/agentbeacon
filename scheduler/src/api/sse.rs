@@ -11,12 +11,15 @@ use axum::routing::get;
 use axum::{Router, response::IntoResponse};
 use tokio::sync::broadcast;
 
+use crate::api::authz::Authenticated;
 use crate::api::problem::{Problem, ProblemCode};
 use crate::api::types::EventV1;
 use crate::api::versions::EVENTS_MAX_PAGE;
 use crate::app::AppState;
 use crate::db;
 use crate::error::SchedulerError;
+use crate::services::auth::principal::{Principal, still_valid};
+use crate::supervisor::Supervisor;
 
 /// Catch-up interval for the event stream.
 const CATCH_UP_INTERVAL: Duration = Duration::from_secs(15);
@@ -29,8 +32,18 @@ pub fn routes() -> Router<AppState> {
     )
 }
 
+/// Whether the credential that opened a stream still authenticates its principal.
+async fn credential_holds(
+    pool: &db::DbPool,
+    supervisor: &Supervisor,
+    principal: &Principal,
+) -> bool {
+    matches!(still_valid(pool, supervisor, principal).await, Ok(true))
+}
+
 async fn execution_event_stream(
     State(state): State<AppState>,
+    Authenticated(principal): Authenticated,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, SchedulerError> {
     db::executions::get_by_id(&state.db_pool, &id)
@@ -43,6 +56,7 @@ async fn execution_event_stream(
         })?;
 
     let pool = state.db_pool.clone();
+    let supervisor = state.supervisor.clone();
     let exec_id = id.clone();
 
     let mut rx = state.event_broadcast.subscribe();
@@ -83,6 +97,8 @@ async fn execution_event_stream(
                 _ = interval.tick() => {}
             }
 
+            if !credential_holds(&pool, &supervisor, &principal).await { return; }
+
             if let Some(eph) = ephemeral
                 && let Ok(json) = serde_json::to_string(&serde_json::json!({
                     "session_id": eph.session_id,
@@ -96,6 +112,8 @@ async fn execution_event_stream(
             }
 
             loop {
+                if !credential_holds(&pool, &supervisor, &principal).await { return; }
+                let mut last_check = std::time::Instant::now();
                 let batch = db::events::list_by_execution_after(
                     &pool, &exec_id, last_sent_id, EVENTS_MAX_PAGE,
                 ).await;
@@ -116,6 +134,10 @@ async fn execution_event_stream(
                 let short_read = (batch.scanned() as i64) < EVENTS_MAX_PAGE;
                 let highest_scanned = batch.highest_id();
                 for event in &batch.events {
+                    if last_check.elapsed() >= CATCH_UP_INTERVAL {
+                        if !credential_holds(&pool, &supervisor, &principal).await { return; }
+                        last_check = std::time::Instant::now();
+                    }
                     let terminal = is_terminal_event(event);
                     if let Some(sse_event) = sse_event_from_db_event(event) {
                         last_sent_id = event.id;

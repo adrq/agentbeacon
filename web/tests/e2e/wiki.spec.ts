@@ -3,7 +3,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import * as fs from 'fs';
-import { apiPost, apiGet, apiDelete } from './helpers';
+import { apiFetch, apiPost, apiGet, apiDelete } from './helpers';
 
 const API_URL = process.env.API_URL ?? 'http://localhost:9456';
 
@@ -14,7 +14,7 @@ const createdProjectIds: string[] = [];
 const createdTempDirs: string[] = [];
 
 async function apiPut(path: string, body: unknown) {
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -24,7 +24,7 @@ async function apiPut(path: string, body: unknown) {
 }
 
 async function apiPatch(path: string, body: unknown) {
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await apiFetch(path, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

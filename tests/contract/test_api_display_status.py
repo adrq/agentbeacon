@@ -7,6 +7,7 @@ import pytest
 import requests
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -68,7 +69,7 @@ def test_session_status_running_is_working(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         resp = requests.get(f"{ctx['url']}/api/v1/sessions/{sid}")
         assert resp.status_code == 200
@@ -85,7 +86,7 @@ def test_session_status_pending_turns_is_working(test_database):
             sid,
             desired="run",
             executor_state="idle",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         insert_task(ctx["db_url"], exec_id, sid, '{"parts":[{"text":"hello"}]}')
         resp = requests.get(f"{ctx['url']}/api/v1/sessions/{sid}")
@@ -121,7 +122,7 @@ def test_session_status_stopped(test_database):
             sid,
             desired="stop",
             executor_state="idle",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         with db_conn(ctx["db_url"]) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (sid,))
@@ -179,7 +180,7 @@ def test_session_status_idle(test_database):
             sid,
             desired="run",
             executor_state="idle",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         with db_conn(ctx["db_url"]) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (sid,))
@@ -233,7 +234,7 @@ def test_session_status_in_execution_detail(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         resp = requests.get(f"{ctx['url']}/api/v1/executions/{exec_id}")
         assert resp.status_code == 200
@@ -252,7 +253,7 @@ def test_session_discovery_includes_status(test_database):
             sid,
             desired="run",
             executor_state="idle",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         with db_conn(ctx["db_url"]) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (sid,))
@@ -274,7 +275,7 @@ def test_execution_completion_eligible_quiescent_tree(test_database):
             sid,
             desired="run",
             executor_state="idle",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         with db_conn(ctx["db_url"]) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (sid,))
@@ -296,7 +297,7 @@ def test_execution_not_completion_eligible_active_session(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         resp = requests.get(f"{ctx['url']}/api/v1/executions/{exec_id}")
         assert resp.status_code == 200
@@ -336,7 +337,7 @@ def test_execution_completion_eligible_in_list(test_database):
             sid,
             desired="run",
             executor_state="idle",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         with db_conn(ctx["db_url"]) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (sid,))
@@ -385,7 +386,7 @@ def test_terminate_event_uses_desired_key(test_database):
             sid,
             desired="run",
             executor_state="idle",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         with db_conn(ctx["db_url"]) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (sid,))
@@ -421,7 +422,7 @@ def test_stop_event_uses_desired_key(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
 
         resp = requests.post(f"{ctx['url']}/api/v1/sessions/{sid}/stop")
@@ -453,12 +454,12 @@ def test_running_event_emitted_on_state_transition(test_database):
             sid,
             desired="run",
             executor_state="unassigned",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report={"session_id": sid, "executor_state": "running"},
         )
 
@@ -486,12 +487,12 @@ def test_idle_event_emitted_on_state_transition(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report={"session_id": sid, "executor_state": "idle"},
         )
 
@@ -519,12 +520,12 @@ def test_no_duplicate_event_on_same_state_report(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report={"session_id": sid, "executor_state": "running"},
         )
 
@@ -552,12 +553,12 @@ def test_crash_event_includes_error_fields(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report={"session_id": sid, "executor_state": "crashed"},
             turn_result={
                 "session_id": sid,

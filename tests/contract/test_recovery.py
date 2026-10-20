@@ -8,6 +8,7 @@ from datetime import datetime
 import pytest
 
 from tests.testhelpers import (
+    wid,
     assert_event_exists,
     create_execution_via_api,
     db_conn,
@@ -44,12 +45,12 @@ def test_resumable_crash_is_retried(test_database, agent_type):
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("executor_state") == "unassigned":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         row = get_session_row(ctx["db_url"], sid)
@@ -75,12 +76,12 @@ def test_resumable_crash_without_cwd_fails(test_database):
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], session_id)
             if row.get("outcome") == "failed":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         row = get_session_row(ctx["db_url"], session_id)
@@ -104,12 +105,12 @@ def test_crash_with_pending_turns_and_no_agent_session_is_retried(test_database)
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
         insert_task(ctx["db_url"], exec_id, sid, "initial prompt")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("executor_state") == "unassigned":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         row = get_session_row(ctx["db_url"], sid)
@@ -138,12 +139,12 @@ def test_crash_with_nothing_to_resume_or_process_fails(test_database):
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("outcome") == "failed":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(ctx["db_url"], sid, desired="terminate", outcome="failed")
@@ -166,12 +167,12 @@ def test_non_resumable_agent_crash_fails(test_database):
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("outcome") == "failed":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(ctx["db_url"], sid, desired="terminate", outcome="failed")
@@ -193,12 +194,12 @@ def test_crash_after_recovery_attempts_are_exhausted_fails(test_database):
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("outcome") == "failed":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(ctx["db_url"], sid, desired="terminate", outcome="failed")
@@ -215,13 +216,13 @@ def test_budget_reset_on_idle(test_database):
             desired="run",
             executor_state="running",
             recovery_attempts=1,
-            worker_id="worker-1",
+            worker_id=wid("worker-1"),
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
         post_worker_sync(
             ctx["url"],
-            "worker-1",
+            wid("worker-1"),
             executor_report=make_executor_report(sid, "idle"),
         )
 
@@ -240,13 +241,13 @@ def test_budget_not_reset_on_running(test_database):
             desired="run",
             executor_state="unassigned",
             recovery_attempts=1,
-            worker_id="worker-1",
+            worker_id=wid("worker-1"),
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
         post_worker_sync(
             ctx["url"],
-            "worker-1",
+            wid("worker-1"),
             executor_report=make_executor_report(sid, "running"),
         )
 
@@ -275,12 +276,12 @@ def test_agent_deleted_canceled_not_failed(test_database):
             )
             conn.commit()
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("outcome") == "canceled":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         row = get_session_row(ctx["db_url"], sid)
@@ -308,7 +309,7 @@ def test_consecutive_crashes_exhaust_budget(test_database, agent_type):
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if (
@@ -316,14 +317,14 @@ def test_consecutive_crashes_exhaust_budget(test_database, agent_type):
                 and row.get("recovery_attempts") == 1
             ):
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
         row = get_session_row(ctx["db_url"], sid)
         assert row["executor_state"] == "unassigned"
         assert row["recovery_attempts"] == 1
 
         set_session_fields(ctx["db_url"], sid, executor_state="crashed")
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if (
@@ -331,19 +332,19 @@ def test_consecutive_crashes_exhaust_budget(test_database, agent_type):
                 and row.get("recovery_attempts") == 2
             ):
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
         row = get_session_row(ctx["db_url"], sid)
         assert row["executor_state"] == "unassigned"
         assert row["recovery_attempts"] == 2
 
         set_session_fields(ctx["db_url"], sid, executor_state="crashed")
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("outcome") == "failed":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
         assert_session_state(ctx["db_url"], sid, desired="terminate", outcome="failed")
 
@@ -368,15 +369,15 @@ def test_resume_with_payload(test_database, agent_type):
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
         insert_task(ctx["db_url"], exec_id, sid, "queued work")
 
-        post_worker_sync(ctx["url"], worker_id="tick-1")
+        post_worker_sync(ctx["url"], worker_id=wid("tick-1"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("executor_state") == "unassigned":
                 break
-            post_worker_sync(ctx["url"], worker_id="tick-1")
+            post_worker_sync(ctx["url"], worker_id=wid("tick-1"))
             time.sleep(0.25)
 
-        resp = post_worker_sync(ctx["url"], worker_id="w-recovery")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w-recovery"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         assert resp["action"]["session_id"] == sid
@@ -408,15 +409,15 @@ def test_resume_without_payload(test_database, agent_type):
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="tick-1")
+        post_worker_sync(ctx["url"], worker_id=wid("tick-1"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("executor_state") == "unassigned":
                 break
-            post_worker_sync(ctx["url"], worker_id="tick-1")
+            post_worker_sync(ctx["url"], worker_id=wid("tick-1"))
             time.sleep(0.25)
 
-        resp = post_worker_sync(ctx["url"], worker_id="w-recovery")
+        resp = post_worker_sync(ctx["url"], worker_id=wid("w-recovery"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         assert resp["action"]["session_id"] == sid
@@ -445,12 +446,12 @@ def test_retry_with_agent_session_emits_may_have_been_lost_event(
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("executor_state") == "unassigned":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_event_exists(
@@ -477,12 +478,12 @@ def test_retry_without_agent_session_emits_no_platform_event(test_database):
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
         insert_task(ctx["db_url"], exec_id, sid, "initial prompt")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("executor_state") == "unassigned":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         with db_conn(ctx["db_url"]) as conn:
@@ -514,12 +515,12 @@ def test_permanent_failure_emits_failed_permanently_event(test_database):
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
         for _ in range(20):
             row = get_session_row(ctx["db_url"], sid)
             if row.get("outcome") == "failed":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_event_exists(
@@ -548,7 +549,7 @@ def test_detect_crash_clears_worker_id_and_command(test_database):
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
-        post_worker_sync(ctx["url"], worker_id="probe-worker")
+        post_worker_sync(ctx["url"], worker_id=wid("probe-worker"))
 
         row = get_session_row(ctx["db_url"], sid)
         assert row["executor_state"] == "crashed"
@@ -566,19 +567,19 @@ def test_set_executor_state_crashed_preserves_worker_id(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="worker-alive",
+            worker_id=wid("worker-alive"),
         )
         set_execution_fields(ctx["db_url"], exec_id, desired="run")
 
         post_worker_sync(
             ctx["url"],
-            "worker-alive",
+            wid("worker-alive"),
             executor_report=make_executor_report(sid, "crashed"),
         )
 
         row = get_session_row(ctx["db_url"], sid)
         assert row["executor_state"] == "crashed"
-        assert row["worker_id"] == "worker-alive"
+        assert row["worker_id"] == wid("worker-alive")
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -591,7 +592,7 @@ def test_set_executor_state_crashed_clears_command(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="worker-alive",
+            worker_id=wid("worker-alive"),
             command_token=str(uuid.uuid4()),
             command_type="stop_turn",
             command_has_payload=False,
@@ -601,7 +602,7 @@ def test_set_executor_state_crashed_clears_command(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "worker-alive",
+            wid("worker-alive"),
             executor_report=make_executor_report(sid, "crashed"),
         )
 
@@ -620,7 +621,7 @@ def test_worker_crash_with_payload_command_emits_event(test_database):
             sid,
             desired="run",
             executor_state="running",
-            worker_id="worker-alive",
+            worker_id=wid("worker-alive"),
             command_token=str(uuid.uuid4()),
             command_type="feed_turn",
             command_has_payload=True,
@@ -630,7 +631,7 @@ def test_worker_crash_with_payload_command_emits_event(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "worker-alive",
+            wid("worker-alive"),
             executor_report=make_executor_report(sid, "crashed"),
         )
 

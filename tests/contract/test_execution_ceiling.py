@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     db_conn,
     ensure_driver_via_api,
     scheduler_context,
@@ -448,11 +449,11 @@ def test_patch_rejects_agent_session_bearer(shared):
         shared,
         exec_id,
         {"network": NONE},
-        headers={"Authorization": f"Bearer {created['session_id']}"},
+        headers={**agent_headers(None, created["session_id"])},
     )
     assert resp.status_code == 403
     assert resp.json()["code"] == "auth.forbidden"
-    assert "not available via agent session auth" in resp.json()["detail"]
+    assert resp.json()["detail"] == "this credential is not permitted to do this"
     assert len(_ceiling_events(shared, exec_id)) == 1
     detail = httpx.get(f"{shared['url']}/api/v1/executions/{exec_id}", timeout=10)
     assert detail.json()["execution"]["network"]["ceiling"] == EGRESS

@@ -53,6 +53,8 @@ pub enum CommandAction {
         /// Next msg_seq for message dedup.
         #[serde(default)]
         next_msg_seq: i64,
+        /// The session's credential for this assignment.
+        session_token: SessionToken,
     },
     FeedTurn {
         session_id: String,
@@ -64,6 +66,17 @@ pub enum CommandAction {
     Cancel {
         session_id: String,
     },
+}
+
+/// A session token in a command; `Debug` never prints it.
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+pub struct SessionToken(pub String);
+
+impl std::fmt::Debug for SessionToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionToken([redacted])")
+    }
 }
 
 const MAX_RECOVERY_ATTEMPTS: i64 = 2;
@@ -684,6 +697,9 @@ async fn issue_assign(
         return Ok(ReconcilerAction::NoAction);
     }
 
+    let session_token = crate::services::auth::mint_token();
+    db::credentials::replace_session_in_tx(&mut tx, pool, &session.id, &session_token.hash).await?;
+
     if has_payload && session.parent_session_id.is_none() {
         db::executions::touch_last_activity(pool, &mut tx).await?;
     }
@@ -767,6 +783,7 @@ async fn issue_assign(
             project_id: tx_exec.project_id,
             mcp_servers,
             next_msg_seq,
+            session_token: SessionToken(session_token.plaintext),
         },
     })
 }

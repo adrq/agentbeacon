@@ -12,6 +12,7 @@ from .task_store import TaskStore, new_text_artifact
 from .special_commands import SpecialCommands
 from .file_logger import log_task_completion
 from .mcp_client import McpClient
+from .report import write_report
 
 
 class JSONRPCDispatcher:
@@ -614,6 +615,11 @@ class JSONRPCDispatcher:
                         headers[name] = value
                 self.mcp_client = McpClient(url, headers)
                 break
+
+        write_report(
+            "acp",
+            self.mcp_client.headers.get("Authorization") if self.mcp_client else None,
+        )
 
         return self._success_response(
             request_id, {"sessionId": session_id, "modes": None}

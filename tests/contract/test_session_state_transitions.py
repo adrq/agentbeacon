@@ -8,6 +8,8 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    mcp_raw,
+    wid,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -51,13 +53,13 @@ def test_worker_reports_running(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "do work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_ID)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_ID))
         assert resp["type"] == "command"
         token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            WORKER_ID,
+            wid(WORKER_ID),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="agent-sess-1"
             ),
@@ -79,12 +81,12 @@ def test_worker_reports_idle_after_turn(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "do work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_ID)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_ID))
         token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            WORKER_ID,
+            wid(WORKER_ID),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="agent-sess-1"
             ),
@@ -93,7 +95,7 @@ def test_worker_reports_idle_after_turn(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER_ID,
+            wid(WORKER_ID),
             executor_report=make_executor_report(session_id, "idle"),
             turn_result=make_turn_result(session_id, messages=[]),
         )
@@ -441,14 +443,18 @@ def test_write_barrier_delegate_rejected_when_execution_terminating(test_databas
                 (exec_id,),
             ).fetchone()[0]
 
-        result = mcp_tools_call(
+        resp = mcp_raw(
             ctx["url"],
             lead_session_id,
-            "delegate",
-            {"agent": "child-agent", "prompt": "should fail"},
+            "tools/call",
+            {
+                "name": "delegate",
+                "arguments": {"agent": "child-agent", "prompt": "should fail"},
+            },
         )
 
-        assert result.get("isError") is True
+        assert resp.status_code == 401
+        assert resp.json()["code"] == "auth.unauthorized"
 
         with db_conn(ctx["db_url"]) as conn:
             session_count_after = conn.execute(
@@ -523,7 +529,7 @@ def test_provenance_cascade(test_database):
             child_row = get_session_row(ctx["db_url"], child_session_id)
             if child_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         child_row = get_session_row(ctx["db_url"], child_session_id)
@@ -599,7 +605,7 @@ def test_stopped_idle_session_gets_no_action(test_database):
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        resp = post_worker_sync(ctx["url"], WORKER_ID)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_ID))
         assert resp["type"] == "no_action"
 
         assert_no_command(ctx["db_url"], session_id)
@@ -625,7 +631,7 @@ def test_stopped_unassigned_session_gets_no_action_and_terminates_canceled(
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        resp = post_worker_sync(ctx["url"], WORKER_ID)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_ID))
         assert resp["type"] == "no_action"
 
         assert_no_command(ctx["db_url"], session_id)
@@ -662,7 +668,7 @@ def test_stopped_crashed_session_gets_no_action_and_terminates_completed(test_da
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        resp = post_worker_sync(ctx["url"], WORKER_ID)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_ID))
         assert resp["type"] == "no_action"
 
         assert_no_command(ctx["db_url"], session_id)
@@ -698,7 +704,7 @@ def test_unassigned_session_without_pending_turns_gets_no_action(test_database):
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        resp = post_worker_sync(ctx["url"], WORKER_ID)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_ID))
         assert resp["type"] == "no_action"
 
         assert_no_command(ctx["db_url"], session_id)
@@ -723,7 +729,7 @@ def test_idle_session_without_pending_turns_gets_no_action(test_database):
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (session_id,))
             conn.commit()
 
-        resp = post_worker_sync(ctx["url"], WORKER_ID)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_ID))
         assert resp["type"] == "no_action"
 
         assert_no_command(ctx["db_url"], session_id)
@@ -760,7 +766,7 @@ def test_crash_during_stop_then_user_message_triggers_recovery(test_database):
             row = get_session_row(ctx["db_url"], session_id)
             if row.get("executor_state") == "unassigned":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(ctx["db_url"], session_id, executor_state="unassigned")

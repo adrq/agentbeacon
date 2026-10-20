@@ -12,7 +12,7 @@ import os
 import pytest
 import requests
 
-from tests.testhelpers import scheduler_context
+from tests.testhelpers import wid, scheduler_context
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -199,7 +199,7 @@ def test_cors_actual_api_request_respects_origin(test_database):
 
         response = requests.post(
             f"{scheduler_url}/api/worker/sync",
-            json={"worker_id": "test-worker-cors"},
+            json={"worker_id": wid("test-worker-cors")},
             headers=headers,
             timeout=5,
         )
@@ -213,7 +213,7 @@ def test_cors_actual_api_request_respects_origin(test_database):
         headers["Origin"] = "http://evil.example.com"
         response = requests.post(
             f"{scheduler_url}/api/worker/sync",
-            json={"worker_id": "test-worker-cors"},
+            json={"worker_id": wid("test-worker-cors")},
             headers=headers,
             timeout=5,
         )

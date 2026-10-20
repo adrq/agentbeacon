@@ -6,6 +6,8 @@
   import { QueryClientProvider, QueryClient } from '@tanstack/svelte-query';
   import AppShell from './lib/components/AppShell.svelte';
   import Toaster from './lib/components/Toaster.svelte';
+  import Login from './lib/components/Login.svelte';
+  import { signedOut } from './lib/stores/auth';
   import { clearWindows, dropCache, fullKey, windowKey } from './lib/historyWindow';
   import { clearSharedReads, discardSharedRead } from './lib/historyReads';
   import { onDestroy } from 'svelte';
@@ -32,6 +34,11 @@
     if (name === 'session-events-full') dropCache(fullKey(id));
   });
 
+  function handleSignedIn() {
+    signedOut.set(false);
+    queryClient.resetQueries();
+  }
+
   // Dropped with this client: the subscription, the paging metadata, and any
   // shared read.
   onDestroy(() => {
@@ -43,7 +50,11 @@
 
 <div class="app-shell">
   <QueryClientProvider client={queryClient}>
-    <AppShell />
+    {#if $signedOut}
+      <Login onSignedIn={handleSignedIn} />
+    {:else}
+      <AppShell />
+    {/if}
     <Toaster />
   </QueryClientProvider>
 </div>

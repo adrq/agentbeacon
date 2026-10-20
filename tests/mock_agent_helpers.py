@@ -14,6 +14,7 @@ import uuid
 
 from tests.testhelpers import (
     _ensure_driver,
+    agent_headers,
     db_conn,
 )
 
@@ -72,8 +73,6 @@ def post_worker_sync(
     command_ack: str = None,
     timeout: int = 10,
 ) -> dict:
-    import httpx
-
     body = {"worker_id": worker_id}
     if executor_report is not None:
         body["executor_report"] = executor_report
@@ -493,7 +492,7 @@ def rest_escalate(scheduler_url: str, session_id: str, body: dict) -> httpx.Resp
     return httpx.post(
         f"{scheduler_url}/api/v1/escalate",
         json=body,
-        headers={"Authorization": f"Bearer {session_id}"},
+        headers=agent_headers(scheduler_url, session_id),
         timeout=5,
     )
 

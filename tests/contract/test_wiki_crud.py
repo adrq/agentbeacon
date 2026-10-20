@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     create_project_via_api,
     scheduler_context,
@@ -501,7 +502,7 @@ def test_put_page_with_bearer_sets_created_by(test_database):
         resp = httpx.put(
             f"{ctx['url']}/api/v1/projects/{project['id']}/wiki/pages/auth-page",
             json={"title": "Auth Page", "body": "content"},
-            headers={"Authorization": f"Bearer {session_id}"},
+            headers={**agent_headers(None, session_id)},
             timeout=5,
         )
         assert resp.status_code == 201
@@ -535,7 +536,7 @@ def test_put_page_wrong_project_forbidden(test_database):
         resp = httpx.put(
             f"{ctx['url']}/api/v1/projects/{project_b['id']}/wiki/pages/cross-project",
             json={"title": "Cross", "body": "x"},
-            headers={"Authorization": f"Bearer {session_id}"},
+            headers={**agent_headers(None, session_id)},
             timeout=5,
         )
         assert resp.status_code == 403

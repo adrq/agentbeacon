@@ -3,7 +3,62 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
+use tokio::sync::Notify;
+
+static AUTH_FAILURE_STATUS: AtomicU16 = AtomicU16::new(0);
+static AUTH_FAILURE: Notify = Notify::const_new();
+
+/// The scheduler refused this worker's credential.
+#[derive(Debug)]
+pub struct AuthRejected(pub u16);
+
+impl std::fmt::Display for AuthRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "scheduler rejected the worker credential: status {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for AuthRejected {}
+
+/// Record a credential rejection and wake whoever waits for one.
+fn reject(status: u16) -> anyhow::Error {
+    AUTH_FAILURE_STATUS.store(status, Ordering::SeqCst);
+    AUTH_FAILURE.notify_waiters();
+    anyhow::Error::new(AuthRejected(status))
+}
+
+/// Resolve with the status once any request has had its credential rejected.
+pub async fn auth_failure() -> u16 {
+    loop {
+        let notified = AUTH_FAILURE.notified();
+        let status = AUTH_FAILURE_STATUS.load(Ordering::SeqCst);
+        if status != 0 {
+            return status;
+        }
+        notified.await;
+    }
+}
+
+fn is_auth_rejection(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
+}
+
+/// A session token from an assign command; `Debug` never prints it.
+#[derive(Clone, Deserialize)]
+#[serde(transparent)]
+pub struct SessionToken(pub String);
+
+impl std::fmt::Debug for SessionToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionToken([redacted])")
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
@@ -89,6 +144,7 @@ pub enum CommandAction {
         mcp_servers: Option<serde_json::Value>,
         #[serde(default)]
         next_msg_seq: i64,
+        session_token: SessionToken,
     },
     FeedTurn {
         session_id: String,
@@ -188,6 +244,9 @@ pub async fn post_worker_message(
     for attempt in 1..=max_attempts {
         match client.post(&url).json(event).send().await {
             Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) if is_auth_rejection(response.status()) => {
+                return Err(reject(response.status().as_u16()));
+            }
             Ok(response) => {
                 if attempt == max_attempts {
                     anyhow::bail!("worker event POST failed: status {}", response.status());
@@ -209,7 +268,7 @@ pub async fn post_worker_message(
     unreachable!()
 }
 
-/// Parse response body as SyncResponse, logging raw body on failure.
+/// Parse response body as SyncResponse.
 async fn parse_sync_response(response: reqwest::Response) -> Result<SyncResponse> {
     let body = response
         .text()
@@ -217,14 +276,80 @@ async fn parse_sync_response(response: reqwest::Response) -> Result<SyncResponse
         .context("failed to read sync response body")?;
 
     serde_json::from_str(&body).map_err(|e| {
+        let category = format!("{:?}", e.classify());
         tracing::error!(
             body_len = body.len(),
-            error = %e,
+            category = %category,
+            line = e.line(),
+            column = e.column(),
             "failed to parse sync response"
         );
-        tracing::debug!(body = %body, "raw sync response body");
-        anyhow::anyhow!("failed to parse sync response: {e}")
+        anyhow::anyhow!(
+            "failed to parse sync response ({category} error at line {}, column {})",
+            e.line(),
+            e.column()
+        )
     })
+}
+
+/// Exchange the presented worker token for a new one.
+pub async fn rotate_token(
+    client: &reqwest::Client,
+    scheduler_url: &str,
+    token: &str,
+) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Rotated {
+        token: String,
+    }
+    let response = client
+        .post(format!("{scheduler_url}/api/worker/token"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .context("failed to send token rotation request")?;
+    if is_auth_rejection(response.status()) {
+        return Err(reject(response.status().as_u16()));
+    }
+    if !response.status().is_success() {
+        anyhow::bail!("token rotation failed: status {}", response.status());
+    }
+    let rotated: Rotated = response
+        .json()
+        .await
+        .context("failed to parse token rotation response")?;
+    Ok(rotated.token)
+}
+
+/// Rotate the token, retrying transport failures within the startup budget.
+pub async fn rotate_token_with_retry(
+    client: &reqwest::Client,
+    scheduler_url: &str,
+    token: &str,
+    config: &RetryConfig,
+) -> Result<String> {
+    let mut attempt = 1;
+    loop {
+        match rotate_token(client, scheduler_url, token).await {
+            Ok(rotated) => return Ok(rotated),
+            Err(e) if e.is::<AuthRejected>() => return Err(e),
+            Err(e) => {
+                if attempt >= config.startup_max_attempts {
+                    return Err(e.context(format!(
+                        "sync failed during startup after {attempt} attempts"
+                    )));
+                }
+                tracing::warn!(
+                    attempt,
+                    max_attempts = config.startup_max_attempts,
+                    error = %e,
+                    "sync failed, retrying"
+                );
+                tokio::time::sleep(config.retry_delay).await;
+                attempt += 1;
+            }
+        }
+    }
 }
 
 pub async fn perform_sync(
@@ -241,6 +366,9 @@ pub async fn perform_sync(
         .await
         .context("failed to send sync request")?;
 
+    if is_auth_rejection(response.status()) {
+        return Err(reject(response.status().as_u16()));
+    }
     if !response.status().is_success() {
         return Err(anyhow::anyhow!(
             "send sync request failed: status {}",
@@ -268,6 +396,9 @@ pub async fn perform_sync_long_poll(
         .await
         .context("failed to send long-poll sync request")?;
 
+    if is_auth_rejection(response.status()) {
+        return Err(reject(response.status().as_u16()));
+    }
     if !response.status().is_success() {
         return Err(anyhow::anyhow!(
             "send long-poll sync request failed: status {}",
@@ -302,6 +433,7 @@ pub async fn perform_sync_with_retry(
     loop {
         match perform_sync(client, scheduler_url, request).await {
             Ok(response) => return Ok(response),
+            Err(e) if e.is::<AuthRejected>() => return Err(e),
             Err(e) => {
                 if attempt >= max_attempts {
                     let context = if is_in_session {

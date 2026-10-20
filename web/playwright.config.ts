@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { defineConfig, devices } from '@playwright/test';
+import { storageStatePath } from './tests/e2e/auth';
+
+const baseURL = process.env.BASE_URL ?? 'http://localhost:9456';
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -10,9 +13,12 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: 1,
   reporter: 'list',
+  globalSetup: './tests/e2e/global-setup.ts',
+  globalTeardown: './tests/e2e/global-teardown.ts',
 
   use: {
-    baseURL: process.env.BASE_URL ?? 'http://localhost:9456',
+    baseURL,
+    storageState: storageStatePath(),
     trace: 'on-first-retry',
     headless: true,
   },

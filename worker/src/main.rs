@@ -25,8 +25,33 @@ use crate::executor::{
 };
 use crate::sync::{
     CommandAction, ExecutorReport, RetryConfig, SyncRequest, SyncResponse, TurnMessage, TurnResult,
-    WorkerMessageEvent, perform_sync_long_poll, perform_sync_with_retry, post_worker_message,
+    WorkerMessageEvent, auth_failure, perform_sync_long_poll, perform_sync_with_retry,
+    post_worker_message, rotate_token_with_retry,
 };
+
+/// Environment variable that carries this worker's bootstrap token.
+pub(crate) const WORKER_TOKEN_ENV: &str = "AGENTBEACON_WORKER_TOKEN";
+
+/// Environment variables removed from every executor process, after its configured env is applied.
+pub(crate) const EXECUTOR_REMOVED_ENV: [&str; 3] = [
+    WORKER_TOKEN_ENV,
+    "AGENTBEACON_USERNAME",
+    "AGENTBEACON_PASSWORD",
+];
+
+/// Make this process non-dumpable: other processes of the same user cannot
+/// read its memory or environment.
+fn set_non_dumpable() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
+            tracing::warn!(
+                error = %std::io::Error::last_os_error(),
+                "could not make the worker non-dumpable"
+            );
+        }
+    }
+}
 
 /// Time to wait for executor response to a control command (cancel/stop_turn)
 /// before escalating to SIGINT.
@@ -59,6 +84,14 @@ async fn main() -> Result<()> {
         return run_setup(&args);
     }
 
+    set_non_dumpable();
+    let Some(bootstrap_token) = std::env::var(WORKER_TOKEN_ENV)
+        .ok()
+        .filter(|t| !t.is_empty())
+    else {
+        anyhow::bail!("{WORKER_TOKEN_ENV} is not set");
+    };
+
     let scheduler_url = args.scheduler_url.take().expect(
         "scheduler_url must be set in daemon mode (enforced by clap required_unless_present)",
     );
@@ -78,8 +111,32 @@ async fn main() -> Result<()> {
 
     validate_startup(&scheduler_url).await?;
 
+    let rotation_client = reqwest::Client::builder()
+        .timeout(args.http_timeout)
+        .build()
+        .context("failed to build HTTP client")?;
+    let rotation_retry = RetryConfig {
+        startup_max_attempts: args.startup_max_attempts,
+        reconnect_max_attempts: args.reconnect_max_attempts,
+        retry_delay: args.retry_delay,
+    };
+    let worker_token = rotate_token_with_retry(
+        &rotation_client,
+        &scheduler_url,
+        &bootstrap_token,
+        &rotation_retry,
+    )
+    .await?;
+    drop(bootstrap_token);
+
+    let mut auth_value = reqwest::header::HeaderValue::from_str(&format!("Bearer {worker_token}"))
+        .context("invalid worker token")?;
+    auth_value.set_sensitive(true);
+    let mut default_headers = reqwest::header::HeaderMap::new();
+    default_headers.insert(reqwest::header::AUTHORIZATION, auth_value);
     let client = reqwest::Client::builder()
         .timeout(args.http_timeout)
+        .default_headers(default_headers)
         .build()
         .context("failed to build HTTP client")?;
 
@@ -92,6 +149,10 @@ async fn main() -> Result<()> {
 
     tokio::select! {
         result = run_worker_loop(&scheduler_url, &worker_id, &args, &client) => result,
+        status = auth_failure() => {
+            tracing::error!(status, "Scheduler rejected the worker credential, exiting");
+            Err(anyhow::anyhow!("scheduler rejected the worker credential: status {status}"))
+        }
         _ = shutdown_signal() => {
             tracing::info!("Received shutdown signal, exiting gracefully");
             Ok(())
@@ -234,6 +295,7 @@ async fn run_worker_loop(
                     project_id,
                     mcp_servers,
                     next_msg_seq,
+                    session_token,
                 } => {
                     tracing::info!(
                         session_id = %session_id,
@@ -259,6 +321,7 @@ async fn run_worker_loop(
                         project_id,
                         mcp_servers,
                         next_msg_seq,
+                        session_token.0,
                     )
                     .await;
 
@@ -336,6 +399,7 @@ async fn run_session(
     cmd_project_id: Option<String>,
     cmd_mcp_servers: Option<serde_json::Value>,
     next_msg_seq: i64,
+    session_token: String,
 ) -> Result<SessionExit> {
     let agent_type = driver
         .get("platform")
@@ -410,6 +474,7 @@ async fn run_session(
         project_id,
         user_mcp_servers,
         resume_agent_session_id: initial_agent_session_id.clone(),
+        session_token,
     };
 
     let executor = match start_executor(config).await {

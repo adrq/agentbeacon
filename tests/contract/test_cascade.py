@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -71,7 +72,7 @@ def test_parent_terminate_cascades_to_children(test_database):
                 and row_b.get("desired") == "terminate"
             ):
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(ctx["db_url"], child_a, desired="terminate")
@@ -111,7 +112,7 @@ def test_cascade_quiescent_child_completed(test_database):
             child_row = get_session_row(ctx["db_url"], child)
             if child_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -152,7 +153,7 @@ def test_cascade_running_child_canceled(test_database):
             child_row = get_session_row(ctx["db_url"], child)
             if child_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -193,7 +194,7 @@ def test_cascade_delegated_child_with_pending_work_canceled(test_database):
             child_row = get_session_row(ctx["db_url"], child)
             if child_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -247,7 +248,7 @@ def test_cascade_skips_already_terminal(test_database):
                 and row_f.get("desired") == "terminate"
             ):
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(ctx["db_url"], child_completed, outcome="completed")
@@ -308,7 +309,7 @@ def test_cascade_never_produces_failed(test_database):
             )
             if all_cascaded:
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         for child_id in [child_running, child_crashed_run, child_with_pending]:
@@ -377,7 +378,7 @@ def test_deep_tree_cascade(test_database):
             ggc_row = get_session_row(ctx["db_url"], great_grandchild)
             if ggc_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -427,7 +428,7 @@ def test_cascade_idempotent(test_database):
             child_row = get_session_row(ctx["db_url"], child)
             if child_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -436,8 +437,8 @@ def test_cascade_idempotent(test_database):
 
         row_after_first = get_session_row(ctx["db_url"], child)
 
-        post_worker_sync(ctx["url"], "idempotent-worker-1")
-        post_worker_sync(ctx["url"], "idempotent-worker-2")
+        post_worker_sync(ctx["url"], wid("idempotent-worker-1"))
+        post_worker_sync(ctx["url"], wid("idempotent-worker-2"))
 
         row_after_second = get_session_row(ctx["db_url"], child)
         assert row_after_second["desired"] == row_after_first["desired"]
@@ -488,7 +489,7 @@ def test_release_tool_cascades_to_grandchildren(test_database):
             gc_row = get_session_row(ctx["db_url"], grandchild)
             if gc_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(
@@ -551,8 +552,8 @@ def test_finalization_order_cascade_drain_notify_release(test_database):
                 and child_row.get("worker_id") is None
             ):
                 break
-            post_worker_sync(ctx["url"], worker_id="finalize-trigger")
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("finalize-trigger"))
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         assert_session_state(ctx["db_url"], grandchild, desired="terminate")
@@ -597,7 +598,7 @@ def test_finalize_clears_worker_id(test_database):
                 and child_row.get("worker_id") is None
             ):
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         row = get_session_row(ctx["db_url"], child)
@@ -638,7 +639,7 @@ def test_cascade_desired_by_system_cascade(test_database):
             child_row = get_session_row(ctx["db_url"], child)
             if child_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         row = get_session_row(ctx["db_url"], child)

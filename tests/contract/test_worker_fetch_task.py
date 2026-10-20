@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -22,7 +23,7 @@ def _setup_assigned_session(ctx):
     agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
     exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "init")
 
-    data = post_worker_sync(ctx["url"], worker_id="w1")
+    data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
     assert data["type"] == "command"
     assert data["action"]["type"] == "assign"
     assert data["action"]["session_id"] == session_id
@@ -30,18 +31,18 @@ def _setup_assigned_session(ctx):
 
     post_worker_sync(
         ctx["url"],
-        "w1",
+        wid("w1"),
         executor_report=make_executor_report(session_id, "running"),
         command_ack=assign_token,
     )
 
     post_worker_sync(
         ctx["url"],
-        "w1",
+        wid("w1"),
         executor_report=make_executor_report(session_id, "idle"),
     )
 
-    return exec_id, session_id, "w1"
+    return exec_id, session_id, wid("w1")
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

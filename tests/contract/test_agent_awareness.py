@@ -9,6 +9,7 @@ import pytest
 import requests
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     mcp_call,
@@ -55,7 +56,7 @@ def test_task_payload_has_system_prompt_with_briefing(test_database):
 
         create_execution_via_api(ctx["url"], agent_id, "test task")
 
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         assert response["type"] == "command"
         action = response["action"]
         assert action["type"] == "assign"
@@ -112,9 +113,9 @@ def test_delegate_child_gets_briefing(test_database):
         )
         child_session_id = json.loads(result["content"][0]["text"])["session_id"]
 
-        root_resp = post_worker_sync(ctx["url"], "w-root")
+        root_resp = post_worker_sync(ctx["url"], wid("w-root"))
         assert root_resp["type"] == "command"
-        response = post_worker_sync(ctx["url"], "w-child")
+        response = post_worker_sync(ctx["url"], wid("w-child"))
         assert response["type"] == "command"
         action = response["action"]
         assert action["type"] == "assign"
@@ -147,8 +148,8 @@ def test_delegate_child_is_sub_lead(test_database):
         )
         child_session_id = json.loads(result["content"][0]["text"])["session_id"]
 
-        post_worker_sync(ctx["url"], "w-root")
-        response = post_worker_sync(ctx["url"], "w-child")
+        post_worker_sync(ctx["url"], wid("w-root"))
+        response = post_worker_sync(ctx["url"], wid("w-child"))
         assert response["type"] == "command"
         action = response["action"]
         assert action["session_id"] == child_session_id
@@ -184,8 +185,8 @@ def test_leaf_briefing_omits_delegation(test_database):
         )
         child_session_id = json.loads(result["content"][0]["text"])["session_id"]
 
-        post_worker_sync(ctx["url"], "w-root")
-        response = post_worker_sync(ctx["url"], "w-child")
+        post_worker_sync(ctx["url"], wid("w-root"))
+        response = post_worker_sync(ctx["url"], wid("w-child"))
         assert response["type"] == "command"
         action = response["action"]
         assert action["session_id"] == child_session_id
@@ -218,7 +219,7 @@ def test_system_prompt_from_column(test_database):
 
         create_execution_via_api(ctx["url"], agent_id, "test task")
 
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         assert response["type"] == "command"
         action = response["action"]
         assert action["type"] == "assign"

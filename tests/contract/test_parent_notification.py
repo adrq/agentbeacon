@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     assert_event_exists,
     create_execution_via_api,
     db_conn,
@@ -94,7 +95,7 @@ def _wait_for_parent_task(ctx, parent_id, max_wait=5.0):
     while time.time() < deadline:
         if get_task_queue_count(ctx["db_url"], parent_id) > 0:
             return True
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
         time.sleep(0.25)
     return False
 
@@ -116,7 +117,7 @@ def test_unrecoverable_child_crash_notifies_parent(test_database):
             desired_by="system:crash_unrecoverable",
         )
 
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
 
         assert _wait_for_parent_task(ctx, parent_id), (
             "parent task_queue should have a notification after child crash"
@@ -146,7 +147,7 @@ def test_crash_notification_coexists_with_existing_queue_work(test_database):
             outcome="failed",
             desired_by="system:crash_unrecoverable",
         )
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
 
         assert _wait_for_parent_task(ctx, parent_id), (
             "notification should be enqueued even with existing work"
@@ -177,7 +178,7 @@ def test_parent_notified_set_true_after_delivery(test_database):
             desired_by="system:crash_unrecoverable",
         )
 
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
 
         _wait_for_parent_task(ctx, parent_id)
 
@@ -205,8 +206,8 @@ def test_duplicate_notification_suppressed(test_database):
             parent_notified=True,
         )
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
 
         count = get_task_queue_count(ctx["db_url"], parent_id)
         assert count == 0, f"expected 0 tasks (dedup), got {count}"
@@ -233,8 +234,8 @@ def test_dead_parent_skips_notification(test_database):
             desired_by="system:crash_unrecoverable",
         )
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
 
         count = get_task_queue_count(ctx["db_url"], parent_id)
         assert count == 0, "no notification should be sent to a dead parent"
@@ -262,7 +263,7 @@ def test_stopped_parent_auto_resumes_on_crash_notification(test_database):
             desired_by="system:crash_unrecoverable",
         )
 
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
 
         _wait_for_parent_task(ctx, parent_id)
 
@@ -360,8 +361,8 @@ def test_agent_release_does_not_notify_parent(test_database):
         )
         assert result.get("isError") is not True, "release should succeed"
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
 
         assert_session_state(ctx["db_url"], child_id, desired="terminate")
 
@@ -401,13 +402,13 @@ def test_cascade_does_not_notify_parent(test_database):
             outcome="completed",
         )
 
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
 
         for _ in range(20):
             child_row = get_session_row(ctx["db_url"], child_id)
             if child_row.get("desired") == "terminate":
                 break
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             time.sleep(0.25)
 
         child_row = get_session_row(ctx["db_url"], child_id)
@@ -446,8 +447,8 @@ def test_repeated_stop_noop_does_not_notify(test_database):
         resp = httpx.post(f"{ctx['url']}/api/v1/sessions/{child_id}/stop", timeout=5)
         assert resp.status_code == 200
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
 
         count = get_task_queue_count(ctx["db_url"], parent_id)
         assert count == 0, "repeated same-value stop should not notify parent"
@@ -517,8 +518,8 @@ def test_notification_rejected_by_execution_write_barrier(test_database):
             desired_by="system:crash_unrecoverable",
         )
 
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
-        post_worker_sync(ctx["url"], worker_id="w-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
+        post_worker_sync(ctx["url"], worker_id=wid("w-trigger"))
 
         count = get_task_queue_count(ctx["db_url"], parent_id)
         assert count == 0, "execution write barrier should prevent notification"
@@ -555,7 +556,7 @@ def test_notification_content_is_structured_platform_message(test_database):
             desired_by="system:crash_unrecoverable",
         )
 
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
 
         assert _wait_for_parent_task(ctx, parent_id)
 
@@ -659,7 +660,7 @@ def test_failed_child_stops_blocking_completion_once_parent_is_notified(test_dat
             desired_by="system:crash_unrecoverable",
         )
 
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
         _wait_for_parent_task(ctx, parent_id)
 
         child_row = get_session_row(ctx["db_url"], child_id)
@@ -685,7 +686,7 @@ def test_failed_child_stops_blocking_completion_once_parent_is_notified(test_dat
         )
         assert resp.status_code == 200
 
-        post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+        post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
 
         exec_row = get_execution_row(ctx["db_url"], exec_id)
         assert exec_row["outcome"] == "completed", (

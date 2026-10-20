@@ -1543,13 +1543,18 @@ def test_a_session_terminated_mid_write_commits_nothing(test_database):
         kills = [
             ("session", "UPDATE sessions SET desired = 'terminate' WHERE id = %s"),
             ("execution", "UPDATE executions SET desired = 'terminate' WHERE id = %s"),
+            (
+                "token",
+                "UPDATE credentials SET token_hash = 'replaced-' || token_hash "
+                "WHERE principal_type = 'session' AND principal_id = %s",
+            ),
         ]
 
         for case_name, build in cases:
             for kill_name, kill_sql in kills:
                 revive()
                 lock_sql, lock_params, relation, request, untouched = build(kill_name)
-                target = session_id if kill_name == "session" else execution_id
+                target = execution_id if kill_name == "execution" else session_id
                 resp = race_and_release(
                     ctx, lock_sql, lock_params, relation, kill_sql, (target,), request
                 )
@@ -1557,6 +1562,11 @@ def test_a_session_terminated_mid_write_commits_nothing(test_database):
                 assert resp.status_code == 401, (
                     f"{label}: {resp.status_code} {resp.text}"
                 )
+                assert resp.headers["content-type"].startswith(
+                    "application/problem+json"
+                ), label
+                assert resp.headers["www-authenticate"] == "Bearer", label
+                assert resp.json()["code"] == "auth.unauthorized", label
                 assert untouched(), f"{label}: the database was mutated"
 
 
@@ -1702,7 +1712,10 @@ def test_a_read_cannot_use_authority_its_principal_never_held(test_database):
             ),
         ]
 
-        for label, request in reads:
+        for (label, request), kill in [
+            (read, kill) for read in reads for kill in ("terminate", "token")
+        ]:
+            label = f"{label}/{kill}"
             set_session_fields(ctx["db_url"], outsider, desired="run", outcome=None)
             set_execution_fields(
                 ctx["db_url"], execution_id, desired="run", outcome=None
@@ -1727,10 +1740,17 @@ def test_a_read_cannot_use_authority_its_principal_never_held(test_database):
                     wait_for_lock_waiter(observer_conn, "wiki_tag_members", future)
 
                     with lock_conn.cursor() as cur:
-                        cur.execute(
-                            "UPDATE sessions SET desired = 'terminate' WHERE id = %s",
-                            (outsider,),
-                        )
+                        if kill == "terminate":
+                            cur.execute(
+                                "UPDATE sessions SET desired = 'terminate' WHERE id = %s",
+                                (outsider,),
+                            )
+                        else:
+                            cur.execute(
+                                "UPDATE credentials SET token_hash = 'replaced-' || token_hash "
+                                "WHERE principal_type = 'session' AND principal_id = %s",
+                                (outsider,),
+                            )
                         cur.execute(
                             "INSERT INTO wiki_tag_members "
                             "(id, tag_id, project_id, access_level) "

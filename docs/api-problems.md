@@ -34,6 +34,12 @@ appropriate status. The wiki endpoints are in that group: every wiki error
 response uses the `{"error": ...}` form, including the conflict and confirmation
 responses that carry recovery data alongside it.
 
+Credential failures are problem documents on every route, the wiki and `/mcp`
+included: a missing, invalid, expired or revoked credential is
+`auth.unauthorized`, and a credential that may not use the route is
+`auth.forbidden`. The wiki's sharing denials (for example `read_only_member`)
+keep the `{"error": ...}` form.
+
 ## Codes
 
 | Code | Status | Meaning | Extensions |

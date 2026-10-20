@@ -8,6 +8,7 @@ import pytest
 import httpx
 
 from tests.testhelpers import (
+    wid,
     assert_event_exists,
     create_execution_via_api,
     db_conn,
@@ -41,7 +42,7 @@ def _setup_parent_child(ctx):
         )
         conn.commit()
 
-    resp = post_worker_sync(ctx["url"], LEAD_WORKER)
+    resp = post_worker_sync(ctx["url"], wid(LEAD_WORKER))
     assert resp["type"] == "command"
     assert resp["action"]["type"] == "assign"
 
@@ -51,7 +52,7 @@ def _setup_parent_child(ctx):
 
     post_worker_sync(
         ctx["url"],
-        LEAD_WORKER,
+        wid(LEAD_WORKER),
         executor_report=make_executor_report(lead_id, "running"),
         command_ack=assign_token,
     )
@@ -64,7 +65,7 @@ def _setup_parent_child(ctx):
     )
     child_id = json.loads(result["content"][0]["text"])["session_id"]
 
-    resp = post_worker_sync(ctx["url"], CHILD_WORKER)
+    resp = post_worker_sync(ctx["url"], wid(CHILD_WORKER))
     assert resp["type"] == "command"
     assert resp["action"]["type"] == "assign"
     child_assign_token = resp["token"]
@@ -72,7 +73,7 @@ def _setup_parent_child(ctx):
 
     post_worker_sync(
         ctx["url"],
-        CHILD_WORKER,
+        wid(CHILD_WORKER),
         executor_report=make_executor_report(child_id, "running"),
         command_ack=child_assign_token,
     )
@@ -90,14 +91,14 @@ def test_stop_drains_queue_and_issues_stop_turn_command(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="stop-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
-        resp = post_worker_sync(ctx["url"], LEAD_WORKER)
+        resp = post_worker_sync(ctx["url"], wid(LEAD_WORKER))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         assign_token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
@@ -113,7 +114,7 @@ def test_stop_drains_queue_and_issues_stop_turn_command(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
         )
         assert resp["type"] == "command"
@@ -122,7 +123,7 @@ def test_stop_drains_queue_and_issues_stop_turn_command(test_database):
 
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack=stop_token,
         )
@@ -146,7 +147,7 @@ def test_child_completion_after_parent_stop_resumes_parent(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(lead_id, "running"),
         )
         assert resp["type"] == "command"
@@ -155,7 +156,7 @@ def test_child_completion_after_parent_stop_resumes_parent(test_database):
 
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(lead_id, "idle"),
             command_ack=stop_token,
         )
@@ -166,7 +167,7 @@ def test_child_completion_after_parent_stop_resumes_parent(test_database):
 
         post_worker_sync(
             ctx["url"],
-            CHILD_WORKER,
+            wid(CHILD_WORKER),
             executor_report=make_executor_report(child_id, "idle"),
             turn_result=make_turn_result(
                 child_id,
@@ -186,11 +187,11 @@ def test_replayed_stop_ack_does_not_override_new_work(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="stop-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
-        resp = post_worker_sync(ctx["url"], LEAD_WORKER)
+        resp = post_worker_sync(ctx["url"], wid(LEAD_WORKER))
         assign_token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
@@ -200,7 +201,7 @@ def test_replayed_stop_ack_does_not_override_new_work(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
         )
         assert resp["type"] == "command"
@@ -209,7 +210,7 @@ def test_replayed_stop_ack_does_not_override_new_work(test_database):
 
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack=stop_token,
         )
@@ -225,7 +226,7 @@ def test_replayed_stop_ack_does_not_override_new_work(test_database):
 
         replay_resp = post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack=stop_token,
         )
@@ -241,11 +242,11 @@ def test_stop_ack_with_final_turn_output_accepted(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="stop-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
-        resp = post_worker_sync(ctx["url"], LEAD_WORKER)
+        resp = post_worker_sync(ctx["url"], wid(LEAD_WORKER))
         assign_token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
@@ -255,7 +256,7 @@ def test_stop_ack_with_final_turn_output_accepted(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
         )
         assert resp["type"] == "command"
@@ -264,7 +265,7 @@ def test_stop_ack_with_final_turn_output_accepted(test_database):
 
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "idle"),
             turn_result=make_turn_result(
                 session_id,
@@ -286,18 +287,18 @@ def test_stop_ack_after_midturn_output_accepted(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="stop-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
-        resp = post_worker_sync(ctx["url"], LEAD_WORKER)
+        resp = post_worker_sync(ctx["url"], wid(LEAD_WORKER))
         assign_token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
 
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
             turn_result=make_turn_result(
                 session_id,
@@ -314,7 +315,7 @@ def test_stop_ack_after_midturn_output_accepted(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
         )
         assert resp["type"] == "command"
@@ -323,7 +324,7 @@ def test_stop_ack_after_midturn_output_accepted(test_database):
 
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack=stop_token,
         )
@@ -341,11 +342,11 @@ def test_stop_preserves_messages_queued_after_stop(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="stop-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
-        resp = post_worker_sync(ctx["url"], LEAD_WORKER)
+        resp = post_worker_sync(ctx["url"], wid(LEAD_WORKER))
         assign_token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
@@ -365,18 +366,18 @@ def test_stop_overrides_pending_feed_turn(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="stop-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "task")
 
-        resp = post_worker_sync(ctx["url"], LEAD_WORKER)
+        resp = post_worker_sync(ctx["url"], wid(LEAD_WORKER))
         assign_token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
 
         post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "idle"),
         )
 
@@ -384,7 +385,7 @@ def test_stop_overrides_pending_feed_turn(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "idle"),
         )
         assert resp["type"] == "command"
@@ -396,7 +397,7 @@ def test_stop_overrides_pending_feed_turn(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(session_id, "idle"),
         )
         assert resp["type"] == "command"
@@ -417,7 +418,7 @@ def test_stop_during_child_turn_issues_stop_turn_on_parent(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            LEAD_WORKER,
+            wid(LEAD_WORKER),
             executor_report=make_executor_report(lead_id, "running"),
         )
         assert resp["type"] == "command"
@@ -438,7 +439,7 @@ def test_child_stop_notifies_parent(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            CHILD_WORKER,
+            wid(CHILD_WORKER),
             executor_report=make_executor_report(child_id, "running"),
         )
         assert resp["type"] == "command"
@@ -447,7 +448,7 @@ def test_child_stop_notifies_parent(test_database):
 
         post_worker_sync(
             ctx["url"],
-            CHILD_WORKER,
+            wid(CHILD_WORKER),
             executor_report=make_executor_report(child_id, "idle"),
             command_ack=stop_token,
         )
@@ -463,7 +464,7 @@ def _stop_and_ack_lead(ctx, lead_id):
 
     resp = post_worker_sync(
         ctx["url"],
-        LEAD_WORKER,
+        wid(LEAD_WORKER),
         executor_report=make_executor_report(lead_id, "running"),
     )
     assert resp["type"] == "command"
@@ -472,7 +473,7 @@ def _stop_and_ack_lead(ctx, lead_id):
 
     post_worker_sync(
         ctx["url"],
-        LEAD_WORKER,
+        wid(LEAD_WORKER),
         executor_report=make_executor_report(lead_id, "idle"),
         command_ack=stop_token,
     )
@@ -493,7 +494,7 @@ def test_auto_resume_state_change__turn_complete(test_database):
 
         post_worker_sync(
             ctx["url"],
-            CHILD_WORKER,
+            wid(CHILD_WORKER),
             executor_report=make_executor_report(child_id, "idle"),
             turn_result=make_turn_result(
                 child_id,
@@ -542,7 +543,7 @@ def test_auto_resume_state_change__child_crash(test_database):
             command_token=None,
         )
 
-        post_worker_sync(ctx["url"], "w-reconcile-trigger")
+        post_worker_sync(ctx["url"], wid("w-reconcile-trigger"))
 
         assert_session_state(ctx["db_url"], lead_id, desired="run")
         _assert_state_change_event(ctx["db_url"], lead_id, "system:child_crash_notify")

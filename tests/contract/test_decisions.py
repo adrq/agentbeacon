@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -18,7 +19,7 @@ def _escalate(url, session_id, questions, importance="blocking"):
     resp = httpx.post(
         f"{url}/api/v1/escalate",
         json={"questions": questions, "importance": importance},
-        headers={"Authorization": f"Bearer {session_id}"},
+        headers={**agent_headers(None, session_id)},
         timeout=5,
     )
     assert resp.status_code == 200, f"escalate failed: {resp.status_code} {resp.text}"
@@ -601,7 +602,7 @@ def test_dismiss_rejects_mcp_session_auth(test_database):
 
         resp = httpx.post(
             f"{ctx['url']}/api/v1/escalate/{event_id}/dismiss",
-            headers={"Authorization": f"Bearer {session_id}"},
+            headers={**agent_headers(None, session_id)},
             timeout=5,
         )
         assert resp.status_code == 403

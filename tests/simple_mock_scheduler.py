@@ -3,7 +3,8 @@
 
 import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from typing import Dict, Any, Optional, List, Literal
 from pydantic import BaseModel
 
@@ -63,6 +64,7 @@ class AssignAction(BaseModel):
     cwd: Optional[str] = None
     driver: Any = None
     agent_session_id: Optional[str] = None
+    session_token: str
 
     class Config:
         extra = "allow"
@@ -163,10 +165,58 @@ captured_messages: List[Dict[str, Any]] = []
 execution_sessions: Dict[str, List[Dict[str, str]]] = {}
 cancel_tokens: set[str] = set()
 raw_sync_log: List[Dict[str, Any]] = []
+authorization_log: List[Dict[str, Any]] = []
+forced_status: Dict[str, List[Any]] = {}
+raw_sync_responses: List[Dict[str, Any]] = []
+issued_cancel_tokens: List[str] = []
+forced_log: List[Dict[str, Any]] = []
 
 
 def _make_token() -> str:
     return str(uuid.uuid4())
+
+
+def _make_session_token() -> str:
+    return f"mock-session-token-{uuid.uuid4().hex}"
+
+
+def _record_authorization(route: str, request: Request) -> None:
+    authorization_log.append(
+        {"route": route, "authorization": request.headers.get("authorization")}
+    )
+
+
+def _sync_kind(sync_request: "WorkerSyncRequest") -> str:
+    if sync_request.turn_result is not None:
+        return "sync_turn_result"
+    if sync_request.command_ack is not None:
+        return "sync_ack"
+    if sync_request.executor_report is not None:
+        return "sync_report"
+    return "sync_idle"
+
+
+def _forced(kind: str, command_ack: str | None = None):
+    entry = forced_status.get(kind)
+    if entry is None:
+        return None
+    status, remaining = entry
+    if remaining is not None:
+        if remaining <= 1:
+            del forced_status[kind]
+        else:
+            entry[1] = remaining - 1
+    forced_log.append({"kind": kind, "command_ack": command_ack, "status": status})
+    return JSONResponse(status_code=status, content={"code": "forced"})
+
+
+def _forced_sync(sync_request: "WorkerSyncRequest"):
+    ack = sync_request.command_ack
+    if ack is not None and ack in issued_cancel_tokens:
+        forced = _forced("cancel_ack", ack)
+        if forced is not None:
+            return forced
+    return _forced(_sync_kind(sync_request), ack)
 
 
 def build_assign_action(session_data: Dict[str, Any]) -> AssignAction:
@@ -189,6 +239,7 @@ def build_assign_action(session_data: Dict[str, Any]) -> AssignAction:
             driver=driver,
             agent_session_id=None,
             agent_config=task.get("agent_config", {}),
+            session_token=_make_session_token(),
         )
 
     agent_cfg = task.get("agent_config", base_driver.get("config", {}))
@@ -201,6 +252,7 @@ def build_assign_action(session_data: Dict[str, Any]) -> AssignAction:
         cwd=task.get("cwd"),
         driver=driver,
         agent_session_id=None,
+        session_token=_make_session_token(),
     )
 
 
@@ -249,8 +301,21 @@ def _summarize_sync(sync_request: WorkerSyncRequest) -> Dict[str, Any]:
     return entry
 
 
-@app.post("/api/worker/sync")
-def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
+@app.post("/api/worker/token")
+def rotate_worker_token(request: Request) -> Dict[str, str]:
+    _record_authorization("token", request)
+    return {"token": f"mock-worker-token-{uuid.uuid4().hex}"}
+
+
+@app.post("/api/worker/sync", response_model=None)
+def worker_sync(sync_request: WorkerSyncRequest, request: Request):
+    _record_authorization("sync", request)
+    forced = _forced_sync(sync_request)
+    if forced is not None:
+        sync_log.append({**_summarize_sync(sync_request), "forced": forced.status_code})
+        return forced
+    if raw_sync_responses:
+        return JSONResponse(content=raw_sync_responses.pop(0))
     sync_log.append(_summarize_sync(sync_request))
     raw_sync_log.append(sync_request.model_dump())
 
@@ -300,6 +365,7 @@ def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
             complete_sessions.remove(session_id)
             token = _make_token()
             cancel_tokens.add(token)
+            issued_cancel_tokens.append(token)
             return CommandResponse(
                 token=token,
                 action=CancelAction(session_id=session_id),
@@ -310,6 +376,7 @@ def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
             if cmd["type"] == "cancel":
                 token = _make_token()
                 cancel_tokens.add(token)
+                issued_cancel_tokens.append(token)
                 return CommandResponse(
                     token=token,
                     action=CancelAction(session_id=session_id),
@@ -335,10 +402,52 @@ def worker_sync(sync_request: WorkerSyncRequest) -> WorkerSyncResponse:
     return NoActionResponse()
 
 
-@app.post("/api/worker/events")
-def worker_event(request: Dict[str, Any]) -> StatusResponse:
-    worker_events.append(request)
+@app.post("/api/worker/events", response_model=None)
+def worker_event(body: Dict[str, Any], request: Request):
+    _record_authorization("events", request)
+    forced = _forced("events")
+    if forced is not None:
+        return forced
+    worker_events.append(body)
     return StatusResponse(status="event received")
+
+
+class ForceStatusRequest(BaseModel):
+    kind: Literal[
+        "events",
+        "sync_turn_result",
+        "sync_ack",
+        "sync_report",
+        "sync_idle",
+        "cancel_ack",
+    ]
+    status: int
+    count: Optional[int] = None
+
+    class Config:
+        extra = "forbid"
+
+
+@app.post("/test/force_status")
+def force_status(request: ForceStatusRequest) -> StatusResponse:
+    forced_status[request.kind] = [request.status, request.count]
+    return StatusResponse(status="forced")
+
+
+@app.get("/test/raw_sync_queue")
+def get_raw_sync_queue() -> List[Dict[str, Any]]:
+    return raw_sync_responses
+
+
+@app.post("/test/raw_sync_response")
+def queue_raw_sync_response(body: Dict[str, Any]) -> StatusResponse:
+    raw_sync_responses.append(body)
+    return StatusResponse(status="queued")
+
+
+@app.get("/test/authorization_log")
+def get_authorization_log() -> List[Dict[str, Any]]:
+    return authorization_log
 
 
 @app.get("/api/v1/executions/{execution_id}/agents")
@@ -402,6 +511,16 @@ def send_command(request: SendCommandRequest) -> StatusResponse:
     return StatusResponse(status="command queued")
 
 
+@app.get("/test/issued_cancels")
+def get_issued_cancels() -> List[str]:
+    return issued_cancel_tokens
+
+
+@app.get("/test/forced_log")
+def get_forced_log() -> List[Dict[str, Any]]:
+    return forced_log
+
+
 @app.get("/test/results")
 def get_results() -> List[Dict[str, Any]]:
     return results
@@ -445,6 +564,11 @@ def clear_all() -> StatusResponse:
     execution_sessions.clear()
     cancel_tokens.clear()
     raw_sync_log.clear()
+    authorization_log.clear()
+    forced_status.clear()
+    raw_sync_responses.clear()
+    issued_cancel_tokens.clear()
+    forced_log.clear()
     return StatusResponse(status="cleared")
 
 

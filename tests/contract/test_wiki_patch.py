@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     create_project_via_api,
     scheduler_context,
@@ -191,7 +192,7 @@ def test_patch_with_bearer_sets_updated_by(test_database):
             "p7",
             [{"old_string": "body", "new_string": "updated"}],
             1,
-            headers={"Authorization": f"Bearer {session_id}"},
+            headers={**agent_headers(None, session_id)},
         )
         assert resp.status_code == 200
         assert resp.json()["updated_by"] == session_id
@@ -540,7 +541,7 @@ def test_patch_unshared_foreign_page_is_not_found(test_database):
             project_id=project_a["id"],
         )
         put_page(ctx["url"], project_b["id"], "auth2", "Title", "body")
-        headers = {"Authorization": f"Bearer {session_id}"}
+        headers = {**agent_headers(None, session_id)}
         edits = [{"old_string": "body", "new_string": "x"}]
 
         resp = patch_page(

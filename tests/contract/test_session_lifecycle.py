@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -50,7 +51,7 @@ def test_worker_sync_assigns_session(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "do work")
 
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
 
         assert data["type"] == "command"
         assert "token" in data
@@ -73,20 +74,20 @@ def test_worker_sync_delivers_feed_turn(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
         assert data["type"] == "command"
         assign_token = data["token"]
 
         data = post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
 
         data = post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "idle"),
         )
 
@@ -94,7 +95,7 @@ def test_worker_sync_delivers_feed_turn(test_database):
 
         data = post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "idle"),
         )
 
@@ -111,19 +112,19 @@ def test_message_delivers_feed_turn_on_next_sync(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
         assert data["type"] == "command"
         assign_token = data["token"]
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "idle"),
         )
 
@@ -136,7 +137,7 @@ def test_message_delivers_feed_turn_on_next_sync(test_database):
 
         data = post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "idle"),
         )
         assert data["type"] == "command"
@@ -152,19 +153,19 @@ def test_worker_sync_session_cancel(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
         assert data["type"] == "command"
         assign_token = data["token"]
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "idle"),
         )
 
@@ -177,7 +178,7 @@ def test_worker_sync_session_cancel(test_database):
 
         data = post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "idle"),
         )
 
@@ -193,13 +194,13 @@ def test_worker_sync_persists_agent_session_id(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
         assert data["type"] == "command"
         assign_token = data["token"]
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="claude-native-abc123"
             ),
@@ -217,7 +218,7 @@ def test_worker_sync_persists_agent_session_id(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_worker_sync_idle_no_sessions(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
         assert data["type"] == "no_action"
 
 
@@ -227,20 +228,20 @@ def test_worker_sync_running_heartbeat(test_database):
         agent_id = seed_test_agent(ctx["db_url"], name="test-agent")
         _, session_id = create_execution_via_api(ctx["url"], agent_id, "test")
 
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
         assert data["type"] == "command"
         assign_token = data["token"]
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "running"),
             command_ack=assign_token,
         )
 
         data = post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(session_id, "running"),
             timeout=35,
         )
@@ -260,7 +261,7 @@ def test_worker_sync_turn_result_then_idle_assigns_next(test_database):
         )
         both = {session_id_1, session_id_2}
 
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
         assert data["type"] == "command"
         assert data["action"]["type"] == "assign"
         first_sid = data["action"]["session_id"]
@@ -270,14 +271,14 @@ def test_worker_sync_turn_result_then_idle_assigns_next(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(first_sid, "running", "sdk-1"),
             command_ack=assign_token,
         )
 
         data = post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(first_sid, "idle"),
             turn_result=make_turn_result(
                 first_sid,
@@ -298,12 +299,12 @@ def test_worker_sync_turn_result_then_idle_assigns_next(test_database):
             if data["type"] == "command" and data["action"]["type"] == "cancel":
                 data = post_worker_sync(
                     ctx["url"],
-                    "w1",
+                    wid("w1"),
                     executor_report=make_executor_report(first_sid, "idle"),
                     command_ack=data["token"],
                 )
             else:
-                data = post_worker_sync(ctx["url"], "w1")
+                data = post_worker_sync(ctx["url"], wid("w1"))
 
         assert data["type"] == "command"
         assert data["action"]["type"] == "assign"

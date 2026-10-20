@@ -6,6 +6,7 @@ from datetime import datetime
 import pytest
 
 from tests.testhelpers import (
+    wid,
     assert_event_exists,
     create_execution_via_api,
     scheduler_context,
@@ -31,13 +32,13 @@ def test_atomic_sync_all_fields(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         assert resp["type"] == "command"
         token = resp["token"]
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
@@ -63,11 +64,11 @@ def test_processing_order_report_before_ack(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
@@ -88,7 +89,7 @@ def test_processing_order_report_before_ack(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack="cancel-token-1",
         )
@@ -104,24 +105,24 @@ def test_stale_worker_report_dropped(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         assert resp["type"] == "command"
         token = resp["token"]
 
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
             command_ack=token,
         )
 
-        assert_session_state(ctx["db_url"], session_id, worker_id=WORKER_A)
+        assert_session_state(ctx["db_url"], session_id, worker_id=wid(WORKER_A))
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER_B,
+            wid(WORKER_B),
             executor_report=make_executor_report(session_id, "idle"),
         )
 
@@ -131,7 +132,7 @@ def test_stale_worker_report_dropped(test_database):
             ctx["db_url"],
             session_id,
             executor_state="running",
-            worker_id=WORKER_A,
+            worker_id=wid(WORKER_A),
         )
 
 
@@ -141,11 +142,11 @@ def test_stale_worker_triggers_supervisor_kill(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
@@ -154,7 +155,7 @@ def test_stale_worker_triggers_supervisor_kill(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER_B,
+            wid(WORKER_B),
             executor_report=make_executor_report(session_id, "running"),
         )
         assert resp["type"] == "no_action"
@@ -163,7 +164,7 @@ def test_stale_worker_triggers_supervisor_kill(test_database):
             ctx["db_url"],
             session_id,
             executor_state="running",
-            worker_id=WORKER_A,
+            worker_id=wid(WORKER_A),
         )
 
 
@@ -173,11 +174,11 @@ def test_turn_result_accepted_during_stop(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
@@ -188,7 +189,7 @@ def test_turn_result_accepted_during_stop(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             turn_result=make_turn_result(
                 session_id,
                 messages=[
@@ -212,11 +213,11 @@ def test_turn_result_accepted_during_cancel(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
@@ -232,7 +233,7 @@ def test_turn_result_accepted_during_cancel(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             turn_result=make_turn_result(
                 session_id,
                 messages=[
@@ -253,12 +254,12 @@ def test_worker_id_recorded_on_assign(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
 
         row = get_session_row(ctx["db_url"], session_id)
-        assert row["worker_id"] == WORKER_A
+        assert row["worker_id"] == wid(WORKER_A)
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -267,14 +268,14 @@ def test_worker_id_cleared_on_detect_crash(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         assert resp["type"] == "command"
 
-        assert_session_state(ctx["db_url"], session_id, worker_id=WORKER_A)
+        assert_session_state(ctx["db_url"], session_id, worker_id=wid(WORKER_A))
 
         set_session_fields(ctx["db_url"], session_id, command_at="2020-01-01T00:00:00Z")
 
-        post_worker_sync(ctx["url"], "probe-worker")
+        post_worker_sync(ctx["url"], wid("probe-worker"))
 
         row = get_session_row(ctx["db_url"], session_id)
         assert row["executor_state"] == "crashed" or row["outcome"] == "failed", (
@@ -290,11 +291,11 @@ def test_worker_id_preserved_on_worker_reported_crash(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
@@ -303,13 +304,13 @@ def test_worker_id_preserved_on_worker_reported_crash(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(session_id, "crashed"),
         )
 
         row = get_session_row(ctx["db_url"], session_id)
         assert row["executor_state"] == "crashed"
-        assert row["worker_id"] == WORKER_A
+        assert row["worker_id"] == wid(WORKER_A)
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
@@ -330,7 +331,7 @@ def test_released_worker_ack_retry_harmless(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack="stale-cancel-token",
         )
@@ -351,11 +352,11 @@ def test_set_executor_state_rejected_on_finalized_session(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
@@ -373,7 +374,7 @@ def test_set_executor_state_rejected_on_finalized_session(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(session_id, "running"),
         )
         assert resp["type"] == "no_action"
@@ -387,11 +388,11 @@ def test_set_executor_state_accepted_during_cancel(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
@@ -411,7 +412,7 @@ def test_set_executor_state_accepted_during_cancel(test_database):
 
         resp = post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(session_id, "idle"),
             command_ack="cancel-token-1",
         )
@@ -427,11 +428,11 @@ def test_recovery_budget_reset_on_idle(test_database):
         agent_id = seed_test_agent(ctx["db_url"])
         exec_id, session_id = create_execution_via_api(ctx["url"], agent_id, "work")
 
-        resp = post_worker_sync(ctx["url"], WORKER_A)
+        resp = post_worker_sync(ctx["url"], wid(WORKER_A))
         token = resp["token"]
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(
                 session_id, "running", agent_session_id="sdk-1"
             ),
@@ -445,7 +446,7 @@ def test_recovery_budget_reset_on_idle(test_database):
 
         post_worker_sync(
             ctx["url"],
-            WORKER_A,
+            wid(WORKER_A),
             executor_report=make_executor_report(session_id, "idle"),
             turn_result=make_turn_result(session_id, messages=[]),
         )
@@ -457,5 +458,5 @@ def test_recovery_budget_reset_on_idle(test_database):
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
 def test_idle_worker_no_sessions_gets_no_action(test_database):
     with scheduler_context(db_url=test_database) as ctx:
-        resp = post_worker_sync(ctx["url"], "idle-worker-no-work")
+        resp = post_worker_sync(ctx["url"], wid("idle-worker-no-work"))
         assert resp["type"] == "no_action"

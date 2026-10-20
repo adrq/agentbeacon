@@ -7,6 +7,8 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
+    agent_headers,
     create_execution_via_api,
     create_project_via_api,
     db_conn,
@@ -249,7 +251,7 @@ def test_session_caller_scoped_to_own_execution(test_database):
 
         resp = httpx.get(
             f"{ctx['url']}/api/v1/executions/{exec_b}/agents",
-            headers={"Authorization": f"Bearer {session_a}"},
+            headers={**agent_headers(None, session_a)},
             timeout=5,
         )
         assert resp.status_code == 403
@@ -328,7 +330,7 @@ def test_briefing_reads_from_config_table(test_database):
         agent = seed_test_agent(ctx["db_url"], name="config-agent")
         create_execution_via_api(ctx["url"], agent, "test")
 
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         assert response["type"] == "command"
         system_prompt = response["action"]["agent_config"]["system_prompt"]
         assert custom_text in system_prompt
@@ -347,7 +349,7 @@ def test_briefing_no_agent_list(test_database):
             prompt="test",
         )
 
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         assert response["type"] == "command"
         system_prompt = response["action"]["agent_config"]["system_prompt"]
         assert "- `helper-agent`" not in system_prompt

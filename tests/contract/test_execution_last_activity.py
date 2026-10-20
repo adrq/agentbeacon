@@ -26,6 +26,8 @@ from tests.mock_agent_helpers import (
     set_session_fields,
 )
 from tests.testhelpers import (
+    wid,
+    agent_headers,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -87,6 +89,7 @@ def _seed_agent(ctx, agent_type="claude_sdk"):
 
 
 def _start_root(ctx, worker="w-root", state="idle", agent_session_id=None):
+    worker = wid(worker)
     agent_id, agent_name = _seed_agent(ctx)
     exec_id, root = create_execution_via_api(ctx["url"], agent_id, "initial prompt")
     data = post_worker_sync(ctx["url"], worker)
@@ -115,6 +118,7 @@ def _delegate(ctx, root, agent_name, prompt):
 
 
 def _claim_child(ctx, child, worker="w-child", agent_session_id=None):
+    worker = wid(worker)
     data = post_worker_sync(ctx["url"], worker)
     assert data["type"] == "command"
     assert data["action"]["type"] == "assign"
@@ -140,7 +144,7 @@ def _send_lateral(ctx, sender, to, text):
     return httpx.post(
         f"{ctx['url']}/api/v1/messages",
         json={"to": to, "parts": [{"text": text}]},
-        headers={"Authorization": f"Bearer {sender}"},
+        headers={**agent_headers(None, sender)},
         timeout=10,
     )
 
@@ -273,7 +277,7 @@ def test_agent_message_to_root_advances_last_activity_only_when_dispatched(
         assert _last_activity(ctx, exec_id) == baseline
 
         t0 = _now()
-        data = post_worker_sync(ctx["url"], "w-root")
+        data = post_worker_sync(ctx["url"], wid("w-root"))
         t1 = _now()
 
         assert data["type"] == "command"
@@ -296,7 +300,7 @@ def test_root_assign_with_payload_advances_last_activity(test_database):
         _backdate(ctx, exec_id)
 
         t0 = _now()
-        data = post_worker_sync(ctx["url"], "w-fresh")
+        data = post_worker_sync(ctx["url"], wid("w-fresh"))
         t1 = _now()
 
         assert data["type"] == "command"
@@ -326,7 +330,7 @@ def test_root_resume_assign_without_payload_leaves_last_activity_unchanged(
         )
         baseline = _backdate(ctx, exec_id)
 
-        data = post_worker_sync(ctx["url"], "w-resume")
+        data = post_worker_sync(ctx["url"], wid("w-resume"))
 
         assert data["type"] == "command"
         assert data["action"]["type"] == "assign"
@@ -345,7 +349,7 @@ def test_root_feed_turn_advances_last_activity(test_database):
         _backdate(ctx, exec_id)
 
         t0 = _now()
-        data = post_worker_sync(ctx["url"], "w-root")
+        data = post_worker_sync(ctx["url"], wid("w-root"))
         t1 = _now()
 
         assert data["type"] == "command"
@@ -364,7 +368,7 @@ def test_child_dispatch_leaves_last_activity_unchanged(test_database):
         assert get_task_queue_count(ctx["db_url"], root) == 0
 
         baseline = _backdate(ctx, exec_id)
-        data = post_worker_sync(ctx["url"], "w-child")
+        data = post_worker_sync(ctx["url"], wid("w-child"))
 
         assert data["type"] == "command"
         assert data["action"]["type"] == "assign"
@@ -375,7 +379,7 @@ def test_child_dispatch_leaves_last_activity_unchanged(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w-child",
+            wid("w-child"),
             executor_report=make_executor_report(child, "running"),
             command_ack=data["token"],
         )
@@ -383,7 +387,7 @@ def test_child_dispatch_leaves_last_activity_unchanged(test_database):
         insert_task(ctx["db_url"], exec_id, child, f"more {feed_marker}")
         baseline = _backdate(ctx, exec_id)
 
-        data = post_worker_sync(ctx["url"], "w-child")
+        data = post_worker_sync(ctx["url"], wid("w-child"))
 
         assert data["type"] == "command"
         assert data["action"]["type"] == "feed_turn"
@@ -401,7 +405,7 @@ def test_root_turn_complete_with_output_advances_last_activity(test_database):
         t0 = _now()
         data = post_worker_sync(
             ctx["url"],
-            "w-root",
+            wid("w-root"),
             executor_report=make_executor_report(root, "idle"),
             turn_result=make_turn_result(root, messages=[_message("done", 1)]),
         )
@@ -423,7 +427,7 @@ def test_streamed_output_leaves_last_activity_unchanged_until_root_turn_complete
             resp = httpx.post(
                 f"{ctx['url']}/api/worker/events",
                 json={
-                    "workerId": "w-root",
+                    "workerId": wid("w-root"),
                     "executionId": exec_id,
                     "sessionId": root,
                     "msgSeq": seq,
@@ -439,7 +443,7 @@ def test_streamed_output_leaves_last_activity_unchanged_until_root_turn_complete
         t0 = _now()
         data = post_worker_sync(
             ctx["url"],
-            "w-root",
+            wid("w-root"),
             executor_report=make_executor_report(root, "idle"),
             turn_result=make_turn_result(
                 root, messages=[_message("working on it", 1), _message("done", 2)]
@@ -460,7 +464,7 @@ def test_root_empty_turn_leaves_last_activity_unchanged(test_database):
 
         data = post_worker_sync(
             ctx["url"],
-            "w-root",
+            wid("w-root"),
             executor_report=make_executor_report(root, "idle"),
             turn_result=make_turn_result(root, messages=[]),
         )
@@ -485,7 +489,7 @@ def test_root_crashed_report_with_output_leaves_last_activity_unchanged(
 
         data = post_worker_sync(
             ctx["url"],
-            "w-root",
+            wid("w-root"),
             executor_report=make_executor_report(root, "crashed"),
             turn_result=make_turn_result(
                 root, messages=[_message("partial", 1), _message("more", 2)]
@@ -503,14 +507,14 @@ def test_command_ack_leaves_last_activity_unchanged(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         agent_id, _ = _seed_agent(ctx)
         exec_id, root = create_execution_via_api(ctx["url"], agent_id, "start")
-        data = post_worker_sync(ctx["url"], "w-root")
+        data = post_worker_sync(ctx["url"], wid("w-root"))
         assert data["type"] == "command"
         assert data["action"]["type"] == "assign"
         token = data["token"]
         assert get_task_queue_count(ctx["db_url"], root) == 0
         baseline = _backdate(ctx, exec_id)
 
-        data = post_worker_sync(ctx["url"], "w-root", command_ack=token)
+        data = post_worker_sync(ctx["url"], wid("w-root"), command_ack=token)
 
         assert data["type"] == "no_action"
         assert get_session_row(ctx["db_url"], root)["command_token"] is None
@@ -525,7 +529,7 @@ def _complete_child_turn(ctx, exec_id, root, agent_name):
 
     post_worker_sync(
         ctx["url"],
-        "w-child",
+        wid("w-child"),
         executor_report=make_executor_report(child, "idle"),
         turn_result=make_turn_result(child, messages=[_message("child done", 1)]),
     )
@@ -552,7 +556,7 @@ def test_root_dispatch_of_child_notification_advances_last_activity(test_databas
         assert get_task_queue_count(ctx["db_url"], root) == 1
 
         t0 = _now()
-        data = post_worker_sync(ctx["url"], "w-root")
+        data = post_worker_sync(ctx["url"], wid("w-root"))
         t1 = _now()
 
         assert data["type"] == "command"
@@ -598,7 +602,7 @@ def test_stopped_root_idle_result_leaves_last_activity_unchanged(test_database):
 
         data = post_worker_sync(
             ctx["url"],
-            "w-root",
+            wid("w-root"),
             executor_report=make_executor_report(root, "idle"),
             turn_result=make_turn_result(
                 root, messages=[_message("stopped output", 1)]
@@ -630,7 +634,7 @@ def test_repaired_terminal_root_advances_last_activity(test_database):
         _backdate(ctx, exec_id)
 
         t0 = _now()
-        post_worker_sync(ctx["url"], "repair-worker")
+        post_worker_sync(ctx["url"], wid("repair-worker"))
         t1 = _now()
 
         assert get_execution_row(ctx["db_url"], exec_id)["outcome"] == "completed"
@@ -703,7 +707,7 @@ def test_detected_crash_and_retry_leave_last_activity_unchanged(test_database):
         )
         baseline = _backdate(ctx, exec_id)
 
-        post_worker_sync(ctx["url"], "probe-worker")
+        post_worker_sync(ctx["url"], wid("probe-worker"))
 
         row = get_session_row(ctx["db_url"], root)
         assert row["executor_state"] == "crashed"
@@ -714,7 +718,7 @@ def test_detected_crash_and_retry_leave_last_activity_unchanged(test_database):
         for _ in range(20):
             if get_session_row(ctx["db_url"], root)["recovery_attempts"] == 1:
                 break
-            post_worker_sync(ctx["url"], "reconcile-trigger")
+            post_worker_sync(ctx["url"], wid("reconcile-trigger"))
             time.sleep(0.25)
 
         row = get_session_row(ctx["db_url"], root)
@@ -742,7 +746,7 @@ def test_worker_reported_crash_leaves_last_activity_unchanged(test_database):
         for worker, session in (("w-root", root), ("w-child", child)):
             data = post_worker_sync(
                 ctx["url"],
-                worker,
+                wid(worker),
                 executor_report=make_executor_report(session, "crashed"),
             )
             assert data["type"] == "no_action"

@@ -74,6 +74,12 @@ pub struct AppState {
     pub heartbeat_timeout_secs: u64,
     pub scheduler_started_at: std::time::Instant,
     pub long_poll_timeout_secs: u64,
+    /// Name of the cookie that carries a browser login.
+    pub login_cookie_name: String,
+    /// How long a new login stays valid, in seconds.
+    pub login_ttl_secs: i64,
+    /// Origins, besides the request's own, accepted on cookie-authenticated writes.
+    pub allowed_origins: Arc<Vec<String>>,
 }
 
 impl AppState {
@@ -118,7 +124,16 @@ impl AppState {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
+            login_cookie_name: format!("agentbeacon_login_{port}"),
+            login_ttl_secs: 30 * 24 * 60 * 60,
+            allowed_origins: Arc::new(Vec::new()),
         }
+    }
+
+    /// Set how long a new login stays valid.
+    pub fn with_login_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.login_ttl_secs = i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX).max(1);
+        self
     }
 
     /// Resolve the public base URL for this request
@@ -165,8 +180,10 @@ impl AppState {
 }
 
 /// Build Axum router with all routes and middleware
-pub fn create_router(state: AppState, dev_mode: bool, port: u16) -> Router {
+pub fn create_router(mut state: AppState, dev_mode: bool, port: u16) -> Router {
     let vite_dev_port = state.vite_dev_port;
+    let origins = allowed_origins(dev_mode, port, vite_dev_port);
+    state.allowed_origins = Arc::new(origins.clone());
 
     // Base routes get compression
     let base_router = Router::new().merge(crate::api::routes());
@@ -192,25 +209,17 @@ pub fn create_router(state: AppState, dev_mode: bool, port: u16) -> Router {
     Router::new()
         .merge(compressed)
         .nest(crate::api::v1::PREFIX, crate::api::v1::routes())
-        .layer(build_cors_layer(dev_mode, port, vite_dev_port))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::api::authz::authorize,
+        ))
+        .layer(build_cors_layer(&origins))
         .with_state(state)
 }
 
-/// Build CORS layer with restricted origins for security
-///
-/// Default allowed origins:
-/// - Development mode: http://localhost:{vite_dev_port} (Vite dev server)
-/// - Production mode: http://localhost:{port} (embedded UI)
-///
-/// Additional origins can be configured via CORS_ALLOWED_ORIGINS environment variable
-/// (comma-separated list of origins, e.g., "http://localhost:3000,http://localhost:8080")
-fn build_cors_layer(dev_mode: bool, port: u16, vite_dev_port: u16) -> CorsLayer {
-    use axum::http::{
-        HeaderValue, Method,
-        header::{AUTHORIZATION, CONTENT_TYPE},
-    };
-    use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin};
-
+/// Origins allowed by CORS: the embedded UI, the Vite dev server in dev mode,
+/// and any listed in `CORS_ALLOWED_ORIGINS`.
+fn allowed_origins(dev_mode: bool, port: u16, vite_dev_port: u16) -> Vec<String> {
     let mut allowed_origins = Vec::new();
 
     if dev_mode {
@@ -226,6 +235,16 @@ fn build_cors_layer(dev_mode: bool, port: u16, vite_dev_port: u16) -> CorsLayer 
             }
         }
     }
+    allowed_origins
+}
+
+/// Build CORS layer restricted to `allowed_origins`.
+fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
+    use axum::http::{
+        HeaderValue, Method,
+        header::{AUTHORIZATION, CONTENT_TYPE},
+    };
+    use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin};
 
     let origin_values: Vec<HeaderValue> = allowed_origins
         .iter()

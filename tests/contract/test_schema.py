@@ -28,6 +28,8 @@ EXPECTED_TABLES = [
     "wiki_page_tags",
     "wiki_subscriptions",
     "wiki_tag_members",
+    "users",
+    "credentials",
 ]
 
 EXPECTED_COLUMNS = {
@@ -189,6 +191,15 @@ EXPECTED_COLUMNS = {
         "created_by",
         "created_at",
         "revoked_at",
+    ],
+    "users": ["id", "username", "password_hash", "created_at", "updated_at"],
+    "credentials": [
+        "token_hash",
+        "principal_type",
+        "principal_id",
+        "label",
+        "expires_at",
+        "created_at",
     ],
 }
 
@@ -465,6 +476,46 @@ def test_sharing_partial_indexes_present_on_both_dialects(test_database):
                 "UNIQUE"
                 not in definitions["idx_wiki_tag_members_project_active"].upper()
             )
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_auth_indexes_present_on_both_dialects(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        with db_conn(ctx["db_url"]) as conn:
+            if ctx["db_url"].startswith("sqlite:"):
+                cursor = conn.execute(
+                    "SELECT name, sql FROM sqlite_master WHERE type = 'index'"
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT indexname, indexdef FROM pg_indexes "
+                    "WHERE schemaname = 'public'"
+                )
+            definitions = {row[0]: (row[1] or "") for row in cursor.fetchall()}
+
+    single = re.sub(r"\s+", " ", definitions["idx_users_single"].upper())
+    assert single.startswith("CREATE UNIQUE INDEX IDX_USERS_SINGLE ON ")
+    assert re.search(r"USERS (USING BTREE )?\(\(1\)\)$", single), single
+
+    session = re.sub(r"\s+", " ", definitions["idx_credentials_session"].upper())
+    assert session.startswith("CREATE UNIQUE INDEX IDX_CREDENTIALS_SESSION ON ")
+    assert re.search(
+        r"CREDENTIALS (USING BTREE )?\(PRINCIPAL_TYPE, PRINCIPAL_ID\) "
+        r"WHERE \(?PRINCIPAL_TYPE = 'SESSION'(::TEXT)?\)?$",
+        session,
+    ), session
+
+
+@pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)
+def test_credentials_principal_type_check_constraint(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        with db_conn(ctx["db_url"]) as conn:
+            with pytest.raises(Exception, match="(?i)check|constraint"):
+                conn.execute(
+                    "INSERT INTO credentials (token_hash, principal_type, principal_id) "
+                    "VALUES ('h-check', 'agent', 'p')"
+                )
+                conn.commit()
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

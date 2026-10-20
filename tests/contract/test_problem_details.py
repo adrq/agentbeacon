@@ -5,6 +5,7 @@ import httpx
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -101,9 +102,7 @@ def test_the_decision_emitters(test_database):
         )
         assert _problem(answer("x", event_id="999999"))["code"] == "decision.not_found"
         assert (
-            _problem(answer("x", headers={"Authorization": f"Bearer {session_id}"}))[
-                "code"
-            ]
+            _problem(answer("x", headers={**agent_headers(None, session_id)}))["code"]
             == "auth.forbidden"
         )
 

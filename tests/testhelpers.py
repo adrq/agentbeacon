@@ -29,6 +29,11 @@ import psutil
 import requests
 import re
 import uuid
+import hashlib
+import itertools
+import json
+import secrets
+from urllib.parse import urlparse
 
 
 class PortManager:
@@ -442,6 +447,8 @@ class PortInUseError(RuntimeError):
 _STARTUP_ATTEMPTS = 3
 
 _LOOPBACK = "127.0.0.1"
+# Hosts the harness reaches its schedulers by; credentials go to no other.
+_INJECTION_HOSTS = (_LOOPBACK, "localhost")
 
 
 def _listens_on(proc: subprocess.Popen, port: int) -> bool:
@@ -503,6 +510,300 @@ def _close_process_log(proc: subprocess.Popen, remove: bool = True) -> None:
             pass
 
 
+TEST_USERNAME = "test-admin"
+# Generated once per test process; setup, login and restarts all use it.
+TEST_PASSWORD = secrets.token_urlsafe(24)
+
+# A request carrying this header is sent without injected credentials;
+# the header itself is removed before the request leaves the client.
+ANONYMOUS_HEADER = "x-test-anonymous"
+
+_SCHEDULER_AUTH: Dict[int, Dict[str, Any]] = {}
+_WORKER_TOKENS: Dict[tuple, str] = {}
+_WORKER_LABELS: Dict[tuple, str] = {}
+_AGENT_TOKENS: Dict[tuple, str] = {}
+_GENERATIONS = itertools.count(1)
+_AUTH_LOCK = threading.RLock()
+
+
+def bootstrap_user(db_url: str, base_dir: Path = None, env: dict = None) -> None:
+    """Create the test user in `db_url` with `agentbeacon --setup --user-only`."""
+    if base_dir is None:
+        base_dir = Path(__file__).parent.parent
+    setup_env = os.environ.copy()
+    if env:
+        setup_env.update(env)
+    setup_env["AGENTBEACON_USERNAME"] = TEST_USERNAME
+    setup_env["AGENTBEACON_PASSWORD"] = TEST_PASSWORD
+    result = subprocess.run(
+        ["./bin/agentbeacon", "--setup", "--user-only", "--db-url", db_url],
+        cwd=base_dir,
+        env=setup_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"user setup failed ({result.returncode}): {result.stdout}{result.stderr}"
+        )
+
+
+def _port_of(url: str) -> int:
+    return urlparse(url).port
+
+
+def register_scheduler(port: int, db_url: str) -> str:
+    """Log in to the scheduler on `port` and remember its human token."""
+    resp = httpx.post(
+        f"http://{_LOOPBACK}:{port}/api/v1/auth/login",
+        json={
+            "username": TEST_USERNAME,
+            "password": TEST_PASSWORD,
+            "label": "pytest",
+            "delivery": "bearer",
+        },
+        headers={ANONYMOUS_HEADER: "1"},
+        timeout=30,
+    )
+    if resp.status_code != 201:
+        raise RuntimeError(f"login failed: {resp.status_code} {resp.text}")
+    token = resp.json()["token"]
+    _SCHEDULER_AUTH[port] = {
+        "token": token,
+        "db_url": db_url,
+        "generation": next(_GENERATIONS),
+    }
+    return token
+
+
+def unregister_scheduler(port: int) -> None:
+    """Forget the credentials held for the scheduler on `port`."""
+    _SCHEDULER_AUTH.pop(port, None)
+    for key in [k for k in _WORKER_TOKENS if k[0] == port]:
+        del _WORKER_TOKENS[key]
+    for key in [k for k in _WORKER_LABELS if k[0] == port]:
+        del _WORKER_LABELS[key]
+    for key in [k for k in _AGENT_TOKENS if k[0] == port]:
+        del _AGENT_TOKENS[key]
+
+
+def _scheduler_info(url: str = None) -> tuple:
+    if url is None:
+        if len(_SCHEDULER_AUTH) != 1:
+            raise RuntimeError(
+                f"pass the scheduler url: {len(_SCHEDULER_AUTH)} schedulers are running"
+            )
+        port = next(iter(_SCHEDULER_AUTH))
+    else:
+        port = _port_of(url)
+    if port not in _SCHEDULER_AUTH:
+        raise RuntimeError(f"no test scheduler is registered on port {port}")
+    return port, _SCHEDULER_AUTH[port]
+
+
+def human_token(url: str) -> str:
+    """The harness's human bearer token for the scheduler at `url`."""
+    return _scheduler_info(url)[1]["token"]
+
+
+def human_headers(url: str) -> dict:
+    """An Authorization header carrying the human token."""
+    return {"Authorization": f"Bearer {human_token(url)}"}
+
+
+UNAUTHORIZED_DETAIL = "a valid credential is required"
+FORBIDDEN_DETAIL = "this credential is not permitted to do this"
+LOGIN_FAILED_DETAIL = "invalid username or password"
+
+
+def assert_problem(resp, status: int, code: str, detail: str) -> None:
+    """Assert `resp` is a problem document with this status and code, whose
+    detail contains `detail`."""
+    assert resp.status_code == status, resp.text
+    assert resp.headers["content-type"].startswith("application/problem+json"), (
+        resp.headers
+    )
+    body = resp.json()
+    assert body["code"] == code, body
+    assert detail in body["detail"], body
+
+
+def assert_unauthorized(resp, detail: str = UNAUTHORIZED_DETAIL) -> None:
+    """Assert `resp` is the 401 for a missing or unusable credential."""
+    assert_problem(resp, 401, "auth.unauthorized", detail)
+    assert resp.headers["www-authenticate"] == "Bearer"
+
+
+def assert_forbidden(resp) -> None:
+    """Assert `resp` is the 403 for a credential that may not do this."""
+    assert_problem(resp, 403, "auth.forbidden", FORBIDDEN_DETAIL)
+
+
+def anonymous_headers(extra: dict = None) -> dict:
+    """Headers that send a request with no injected credential."""
+    headers = {ANONYMOUS_HEADER: "1"}
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def agent_token(url: str, session_id: str) -> str:
+    """A session credential for `session_id`, written to the test database.
+
+    The row replaces any existing credential of that session, as an assign does.
+    A token handed out earlier is reused while its row is still the session's.
+    """
+    port, info = _scheduler_info(url)
+    with _AUTH_LOCK:
+        return _agent_token_locked(port, info, session_id)
+
+
+def _agent_token_locked(port: int, info: dict, session_id: str) -> str:
+    cached = _AGENT_TOKENS.get((port, session_id))
+    with db_conn(info["db_url"]) as conn:
+        if cached is not None:
+            row = conn.execute(
+                "SELECT 1 FROM credentials WHERE token_hash = ? "
+                "AND principal_type = 'session' AND principal_id = ?",
+                (_token_hash(cached), session_id),
+            ).fetchone()
+            if row is not None:
+                return cached
+        token = secrets.token_hex(32)
+        conn.execute(
+            "DELETE FROM credentials WHERE principal_type = 'session' AND principal_id = ?",
+            (session_id,),
+        )
+        conn.execute(
+            "INSERT INTO credentials (token_hash, principal_type, principal_id) "
+            "VALUES (?, 'session', ?)",
+            (_token_hash(token), session_id),
+        )
+        conn.commit()
+    _AGENT_TOKENS[(port, session_id)] = token
+    return token
+
+
+def agent_headers(url: str, session_id: str, extra: dict = None) -> dict:
+    """An Authorization header carrying `session_id`'s credential."""
+    headers = {"Authorization": f"Bearer {agent_token(url, session_id)}"}
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def admit_worker(url: str = None) -> str:
+    """Admit an externally supervised worker; returns its worker id.
+
+    The worker's token is kept by the harness and sent with requests that name
+    the worker.
+    """
+    port, info = _scheduler_info(url)
+    resp = httpx.post(
+        f"http://{_LOOPBACK}:{port}/api/v1/workers",
+        headers={"Authorization": f"Bearer {info['token']}"},
+        timeout=10,
+    )
+    if resp.status_code != 201:
+        raise RuntimeError(f"worker admission failed: {resp.status_code} {resp.text}")
+    body = resp.json()
+    _WORKER_TOKENS[(port, body["worker_id"])] = body["token"]
+    return body["worker_id"]
+
+
+def admit_worker_with_token(url: str = None) -> tuple:
+    """Admit a worker and return `(worker_id, token)`."""
+    port, _ = _scheduler_info(url)
+    worker_id = admit_worker(url)
+    return worker_id, _WORKER_TOKENS[(port, worker_id)]
+
+
+def worker_token(url: str, worker_id: str) -> str | None:
+    """The token the harness holds for an admitted worker."""
+    return _WORKER_TOKENS.get((_port_of(url), worker_id))
+
+
+def wid(label: str, url: str = None) -> str:
+    """The admitted worker id standing for `label` on this scheduler.
+
+    The first use admits a worker; later uses on the same scheduler return it.
+    """
+    port, info = _scheduler_info(url)
+    key = (port, info["generation"], label)
+    with _AUTH_LOCK:
+        if key not in _WORKER_LABELS:
+            _WORKER_LABELS[key] = admit_worker(f"http://{_LOOPBACK}:{port}")
+        return _WORKER_LABELS[key]
+
+
+def fresh_wid(label: str, url: str = None) -> str:
+    """Admit a new worker for `label`, replacing the one it stood for."""
+    port, info = _scheduler_info(url)
+    worker_id = admit_worker(f"http://{_LOOPBACK}:{port}")
+    _WORKER_LABELS[(port, info["generation"], label)] = worker_id
+    return worker_id
+
+
+DUMMY_WORKER_TOKEN = "test-bootstrap-token"
+
+
+def worker_credential(url: str) -> tuple:
+    """`(worker_id, token)` for launching a worker binary against `url`.
+
+    A registered test scheduler admits a worker; any other target (a mock
+    scheduler, an unreachable address) gets a fixed dummy credential.
+    """
+    port = _port_of(url)
+    if port in _SCHEDULER_AUTH:
+        return admit_worker_with_token(f"http://{_LOOPBACK}:{port}")
+    return str(uuid.uuid4()), DUMMY_WORKER_TOKEN
+
+
+def worker_launch(url: str) -> tuple:
+    """`(extra_args, extra_env)` that give a worker binary its credential."""
+    worker_id, token = worker_credential(url)
+    return ["--worker-id", worker_id], {"AGENTBEACON_WORKER_TOKEN": token}
+
+
+def _worker_id_in_body(content: bytes) -> str | None:
+    try:
+        body = json.loads(content or b"{}")
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    value = body.get("worker_id", body.get("workerId"))
+    return value if isinstance(value, str) else None
+
+
+def injected_authorization(url: str, path: str, headers, content: bytes) -> str | None:
+    """The Authorization value the harness adds to a request, if any.
+
+    Requests to a registered scheduler (plain http, a loopback host the harness
+    uses, and the scheduler's port) that carry no Authorization header and no
+    cookie get the human token, or on the worker routes the token of the
+    admitted worker the body names.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "http" or parsed.hostname not in _INJECTION_HOSTS:
+        return None
+    port = parsed.port
+    info = _SCHEDULER_AUTH.get(port)
+    if info is None:
+        return None
+    if path in ("/api/worker/sync", "/api/worker/events"):
+        worker_id = _worker_id_in_body(content)
+        token = _WORKER_TOKENS.get((port, worker_id)) if worker_id else None
+        return f"Bearer {token}" if token else None
+    return f"Bearer {info['token']}"
+
+
 def _discard_failed_start(proc: subprocess.Popen, temp_db_path: str = None) -> None:
     children = []
     try:
@@ -527,7 +828,11 @@ def _discard_failed_start(proc: subprocess.Popen, temp_db_path: str = None) -> N
 
 
 def start_scheduler(
-    port: int, base_dir: Path = None, db_url: str = None, env: dict = None
+    port: int,
+    base_dir: Path = None,
+    db_url: str = None,
+    env: dict = None,
+    create_user: bool = True,
 ) -> tuple[subprocess.Popen, str | None]:
     """Start the scheduler binary with specified configuration.
 
@@ -570,6 +875,8 @@ def start_scheduler(
     log_path = log_file.name
 
     try:
+        if create_user:
+            bootstrap_user(db_url, base_dir, env)
         scheduler_process = subprocess.Popen(
             [
                 "./bin/agentbeacon",
@@ -609,6 +916,8 @@ def start_scheduler(
             raise RuntimeError(
                 f"Scheduler failed to start within timeout. Output (tail):\n{captured}"
             )
+        if create_user:
+            register_scheduler(port, db_url)
     except BaseException:
         _discard_failed_start(scheduler_process, temp_db_path)
         raise
@@ -617,7 +926,9 @@ def start_scheduler(
 
 
 @contextmanager
-def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
+def scheduler_context(
+    port: int = None, db_url: str = None, env: dict = None, create_user: bool = True
+):
     """Context manager for scheduler startup and cleanup.
 
     Args:
@@ -655,7 +966,10 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
                 tried_ports.append(allocated_port)
             try:
                 scheduler_process, temp_db_path = start_scheduler(
-                    allocated_port, db_url=db_url, env=merged_env
+                    allocated_port,
+                    db_url=db_url,
+                    env=merged_env,
+                    create_user=create_user,
                 )
                 break
             except PortInUseError:
@@ -677,6 +991,8 @@ def scheduler_context(port: int = None, db_url: str = None, env: dict = None):
             raise
     finally:
         # Cleanup
+        if allocated_port is not None:
+            unregister_scheduler(allocated_port)
         if scheduler_process:
             cleanup_processes([scheduler_process])
             _close_process_log(scheduler_process, remove=not keep_log)
@@ -712,7 +1028,9 @@ def start_worker(
     if base_dir is None:
         base_dir = Path(__file__).parent.parent
 
+    launch_args, launch_env = worker_launch(orchestrator_url)
     worker_env = os.environ.copy()
+    worker_env.update(launch_env)
     if extra_env:
         worker_env.update(extra_env)
 
@@ -722,6 +1040,7 @@ def start_worker(
         orchestrator_url,
         "--interval",
         interval,
+        *launch_args,
     ]
 
     worker_process = subprocess.Popen(
@@ -771,7 +1090,9 @@ def start_worker_with_retry_config(
         base_dir = Path(__file__).parent.parent
 
     # Copy current environment for pytest context
+    launch_args, launch_env = worker_launch(scheduler_url)
     worker_env = os.environ.copy()
+    worker_env.update(launch_env)
     if extra_env:
         worker_env.update(extra_env)
 
@@ -779,6 +1100,7 @@ def start_worker_with_retry_config(
         "./bin/agentbeacon-worker",
         "--scheduler-url",
         scheduler_url,
+        *launch_args,
         "--interval",
         interval,
         "--startup-max-attempts",
@@ -840,6 +1162,8 @@ def start_orchestrator(
     base_dir: Path = None,
     worker_poll_interval: str = None,
     idle_timeout: str = None,
+    env: dict = None,
+    binary: str = "./bin/agentbeacon",
 ) -> subprocess.Popen:
     """Start the agentbeacon binary with specified configuration.
 
@@ -863,6 +1187,7 @@ def start_orchestrator(
         temp_db.close()
         db_url = f"sqlite:///{temp_db.name}"
 
+    extra_env = env
     env = os.environ.copy()
     env["DATABASE_URL"] = db_url
     # Short intervals for tests so dynamic workers react quickly.
@@ -871,9 +1196,11 @@ def start_orchestrator(
     env.setdefault("AGENTBEACON_HEARTBEAT_TIMEOUT_SECS", "10")
     env.setdefault("AGENTBEACON_LIVENESS_INTERVAL_SECS", "10")
     env.setdefault("AGENTBEACON_SPAWN_TICK_SECS", "2")
+    if extra_env:
+        env.update(extra_env)
 
     cmd = [
-        "./bin/agentbeacon",
+        binary,
         "--port",
         str(port),
     ]
@@ -897,6 +1224,7 @@ def start_orchestrator(
     log_path = log_file.name
 
     try:
+        bootstrap_user(db_url, base_dir)
         orchestrator_proc = subprocess.Popen(
             cmd,
             stdout=log_file,
@@ -928,6 +1256,8 @@ def orchestrator_context(
     test_name: str = None,
     worker_poll_interval: str = None,
     idle_timeout: str = None,
+    env: dict = None,
+    binary: str = "./bin/agentbeacon",
 ):
     """Context manager for agentbeacon with PID-tracked process management.
 
@@ -1007,6 +1337,8 @@ def orchestrator_context(
                 base_dir=base_dir,
                 worker_poll_interval=worker_poll_interval,
                 idle_timeout=idle_timeout,
+                env=env,
+                binary=binary,
             )
             # Wait for scheduler to be ready
             try:
@@ -1029,6 +1361,7 @@ def orchestrator_context(
                 orchestrator_proc = None
                 raise
             break
+        register_scheduler(allocated_port, db_url)
 
         # Register orchestrator PID
         effective_workers = max_workers if max_workers is not None else 0
@@ -1071,6 +1404,8 @@ def orchestrator_context(
             raise
 
     finally:
+        if allocated_port is not None:
+            unregister_scheduler(allocated_port)
         # Cleanup all tracked processes
         if tracker:
             tracker.cleanup_all()
@@ -1310,7 +1645,7 @@ def mcp_call(
 
     Args:
         scheduler_url: Base URL of the scheduler
-        session_id: Session ID used as Bearer token
+        session_id: Session whose credential authenticates the call
         method: JSON-RPC method name
         params: Optional method parameters
         rpc_id: JSON-RPC request ID
@@ -1326,7 +1661,7 @@ def mcp_call(
         f"{scheduler_url}/mcp",
         json=body,
         headers={
-            "Authorization": f"Bearer {session_id}",
+            "Authorization": f"Bearer {agent_token(scheduler_url, session_id)}",
             "MCP-Protocol-Version": "2025-11-25",
             "Accept": "application/json, text/event-stream",
         },
@@ -1344,7 +1679,7 @@ def mcp_raw(
 
     Args:
         scheduler_url: Base URL of the scheduler
-        session_id: Session ID used as Bearer token
+        session_id: Session whose credential authenticates the call
         method: JSON-RPC method name
         params: Optional method parameters
         rpc_id: JSON-RPC request ID (None for notifications)
@@ -1362,7 +1697,7 @@ def mcp_raw(
         f"{scheduler_url}/mcp",
         json=body,
         headers={
-            "Authorization": f"Bearer {session_id}",
+            "Authorization": f"Bearer {agent_token(scheduler_url, session_id)}",
             "MCP-Protocol-Version": "2025-11-25",
             "Accept": "application/json, text/event-stream",
         },
@@ -1375,7 +1710,7 @@ def mcp_tools_list(scheduler_url: str, session_id: str) -> list:
 
     Args:
         scheduler_url: Base URL of the scheduler
-        session_id: Session ID used as Bearer token
+        session_id: Session whose credential authenticates the call
 
     Returns:
         list: Tool name strings
@@ -1392,7 +1727,7 @@ def mcp_tools_call(
 
     Args:
         scheduler_url: Base URL of the scheduler
-        session_id: Session ID used as Bearer token
+        session_id: Session whose credential authenticates the call
         tool_name: Name of the tool to call
         arguments: Tool arguments
 

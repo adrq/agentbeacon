@@ -9,6 +9,7 @@ import pytest
 
 from tests.mock_agent_helpers import db_conn, set_execution_fields, set_session_fields
 from tests.testhelpers import (
+    agent_headers,
     create_project_via_api,
     scheduler_context,
 )
@@ -402,7 +403,7 @@ def test_operator_routes_reject_agent_tokens(test_database):
                 timeout=5,
             )
             assert resp.status_code == 403, f"{method} {url}"
-            assert resp.json()["error"] == "operator_scope_only"
+            assert resp.json()["code"] == "auth.forbidden"
 
         entry = [
             t
@@ -459,7 +460,7 @@ def test_malformed_and_unknown_tokens_are_401_on_every_read_path(test_database):
             {"Authorization": "NotBearer abc"},
             {"Authorization": "Bearer"},
             {"Authorization": f"Bearer {uuid.uuid4()}"},
-            {"Authorization": f"Bearer {sessions['read_member']}"},
+            {**agent_headers(None, sessions["read_member"])},
         ]
         paths = [
             (f"/api/v1/projects/{owner_project}/wiki/pages", {}),
@@ -1881,13 +1882,13 @@ def test_auth_answer_wins_over_body_validation(test_database):
                 "admit member",
                 "POST",
                 f"/api/v1/wiki/tags/{tag_id}/members",
-                (403, "operator_scope_only"),
+                (403, "auth.forbidden"),
             ),
             (
                 "set member access",
                 "PATCH",
                 f"/api/v1/wiki/tags/{tag_id}/members/{projects['read_member']['id']}",
-                (403, "operator_scope_only"),
+                (403, "auth.forbidden"),
             ),
         ]
 
@@ -1923,7 +1924,8 @@ def test_auth_answer_wins_over_body_validation(test_database):
                     f"{resp.status_code} {resp.text[:120]}"
                 )
                 if agent_error is not None:
-                    assert resp.json()["error"] == agent_error, (
+                    body = resp.json()
+                    assert body.get("error", body.get("code")) == agent_error, (
                         f"{label} / {body_label}: {resp.text[:120]}"
                     )
 

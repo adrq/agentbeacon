@@ -5,6 +5,7 @@ pub mod agents;
 pub mod artifacts;
 pub mod backfill;
 pub mod config;
+pub mod credentials;
 pub mod detector;
 pub mod drivers;
 pub mod events;
@@ -19,6 +20,7 @@ pub mod project_mcp_servers;
 pub mod projects;
 pub mod sessions;
 pub mod task_queue;
+pub mod users;
 pub mod wiki;
 pub mod wiki_sharing;
 

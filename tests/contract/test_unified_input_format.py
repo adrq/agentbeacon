@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -94,7 +95,7 @@ def test_delegate_has_driver_object(test_database):
             )
             conn.commit()
 
-        data = post_worker_sync(ctx["url"], worker_id="w-delegate")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w-delegate"))
         assert data["type"] == "command"
 
         result = mcp_tools_call(
@@ -132,13 +133,13 @@ def test_turn_complete_is_a2a(test_database):
             )
             conn.commit()
 
-        data = post_worker_sync(ctx["url"], worker_id="w1")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w1"))
         assert data["type"] == "command"
         token = data["token"]
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_id, "running"),
             command_ack=token,
         )
@@ -151,20 +152,20 @@ def test_turn_complete_is_a2a(test_database):
         )
         child_id = json.loads(result["content"][0]["text"])["session_id"]
 
-        data = post_worker_sync(ctx["url"], worker_id="w2")
+        data = post_worker_sync(ctx["url"], worker_id=wid("w2"))
         assert data["type"] == "command"
         child_token = data["token"]
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child_id, "running"),
             command_ack=child_token,
         )
 
         post_worker_sync(
             ctx["url"],
-            "w2",
+            wid("w2"),
             executor_report=make_executor_report(child_id, "idle"),
             turn_result=make_turn_result(
                 child_id,

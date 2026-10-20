@@ -5,6 +5,8 @@ import httpx
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    admit_worker_with_token,
+    anonymous_headers,
     create_execution_via_api,
     create_project_via_api,
     db_conn,
@@ -85,7 +87,13 @@ def test_the_protocol_endpoints_keep_their_own_error_formats(test_database):
             "id": 7,
         }
 
-        worker = httpx.post(f"{ctx['url']}/api/worker/events", json={}, timeout=10)
+        worker_id, token = admit_worker_with_token(ctx["url"])
+        worker = httpx.post(
+            f"{ctx['url']}/api/worker/events",
+            json={},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
         assert worker.status_code == 422
         assert worker.headers["content-type"].startswith("text/plain")
         assert "missing field `workerId`" in worker.text
@@ -93,16 +101,15 @@ def test_the_protocol_endpoints_keep_their_own_error_formats(test_database):
         mcp = httpx.post(
             f"{ctx['url']}/mcp",
             json={"jsonrpc": "2.0", "id": 1, "method": "nope"},
-            headers={"Accept": "application/json, text/event-stream"},
+            headers=anonymous_headers(
+                {"Accept": "application/json, text/event-stream"}
+            ),
             timeout=10,
         )
         assert mcp.status_code == 401
-        assert mcp.headers["content-type"].startswith("application/json")
-        assert not mcp.headers["content-type"].startswith("application/problem+json")
-        assert mcp.json() == {
-            "error": "unauthorized",
-            "detail": "missing Authorization header",
-        }
+        assert mcp.headers["content-type"].startswith("application/problem+json")
+        assert mcp.headers["www-authenticate"] == "Bearer"
+        assert mcp.json()["code"] == "auth.unauthorized"
 
 
 @DUAL_BACKEND
@@ -124,7 +131,7 @@ def test_the_wiki_surface_uses_the_error_body(test_database):
 
 
 @DUAL_BACKEND
-def test_auth_rejections_keep_the_error_body(test_database):
+def test_auth_rejections_are_problem_documents(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         resp = httpx.post(
             f"{ctx['url']}/api/v1/escalate",
@@ -134,8 +141,8 @@ def test_auth_rejections_keep_the_error_body(test_database):
         )
         assert resp.status_code == 401
         assert resp.headers["www-authenticate"] == "Bearer"
-        assert not resp.headers["content-type"].startswith("application/problem+json")
-        assert resp.json() == {"error": "unauthorized", "detail": "session not found"}
+        assert resp.headers["content-type"].startswith("application/problem+json")
+        assert resp.json()["code"] == "auth.unauthorized"
 
 
 @DUAL_BACKEND

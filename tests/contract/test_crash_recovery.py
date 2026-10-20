@@ -7,6 +7,7 @@ import time
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -31,7 +32,7 @@ def _wait_for_recovery(url, db_url, session_id, timeout=5, interval=0.15):
             return current
         if current.get("outcome") is not None and baseline.get("outcome") is None:
             return current
-        post_worker_sync(url, worker_id="reconcile-trigger")
+        post_worker_sync(url, worker_id=wid("reconcile-trigger"))
         time.sleep(interval)
     return get_session_row(db_url, session_id)
 
@@ -42,7 +43,7 @@ def _wait_for_task_payload(url, db_url, session_id, timeout=5, interval=0.15):
         payload = get_task_queue_payload(db_url, session_id)
         if payload is not None:
             return payload
-        post_worker_sync(url, worker_id="reconcile-trigger")
+        post_worker_sync(url, worker_id=wid("reconcile-trigger"))
         time.sleep(interval)
     return None
 
@@ -52,7 +53,7 @@ def _setup_crashed_session(ctx, agent_type="claude_sdk"):
         ctx["db_url"], name=f"test-{agent_type}", agent_type=agent_type
     )
     exec_id, lead_sid = create_execution_via_api(ctx["url"], agent_id, "test prompt")
-    post_worker_sync(ctx["url"], "w1")
+    post_worker_sync(ctx["url"], wid("w1"))
     set_session_fields(
         ctx["db_url"],
         lead_sid,
@@ -61,7 +62,7 @@ def _setup_crashed_session(ctx, agent_type="claude_sdk"):
     )
     post_worker_sync(
         ctx["url"],
-        "w1",
+        wid("w1"),
         executor_report=make_executor_report(lead_sid, "crashed"),
     )
     return agent_id, exec_id, lead_sid
@@ -86,18 +87,18 @@ def test_recovery_resubmits_idle_then_crashed_session(test_database):
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"], agent_id, "test prompt"
         )
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
         set_session_fields(
             ctx["db_url"],
             lead_sid,
             agent_session_id="sdk-session-abc",
             cwd="/tmp/test-workspace",
             executor_state="idle",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 
@@ -115,7 +116,7 @@ def test_recovery_skips_session_without_agent_session_id(test_database):
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"], agent_id, "test prompt"
         )
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
         set_session_fields(ctx["db_url"], lead_sid, cwd="/tmp/workspace")
         with db_conn(ctx["db_url"]) as conn:
             conn.execute("DELETE FROM task_queue WHERE session_id = ?", (lead_sid,))
@@ -123,7 +124,7 @@ def test_recovery_skips_session_without_agent_session_id(test_database):
 
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 
@@ -166,7 +167,7 @@ def test_recovery_skips_terminal_execution(test_database):
             outcome="completed",
         )
 
-        post_worker_sync(ctx["url"], worker_id="probe-worker")
+        post_worker_sync(ctx["url"], worker_id=wid("probe-worker"))
 
         session = get_session_row(ctx["db_url"], lead_sid)
         assert session["executor_state"] == "crashed"
@@ -180,7 +181,7 @@ def test_recovery_assign_has_resume(test_database):
 
         _wait_for_recovery(ctx["url"], ctx["db_url"], lead_sid)
 
-        resp = post_worker_sync(ctx["url"], "w1")
+        resp = post_worker_sync(ctx["url"], wid("w1"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         assert resp["action"]["session_id"] == lead_sid
@@ -194,7 +195,7 @@ def test_recovery_assign_has_driver_info(test_database):
 
         _wait_for_recovery(ctx["url"], ctx["db_url"], lead_sid)
 
-        resp = post_worker_sync(ctx["url"], "w1")
+        resp = post_worker_sync(ctx["url"], wid("w1"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         action = resp["action"]
@@ -242,11 +243,11 @@ def test_double_crash_recovers_again(test_database):
             executor_state="running",
             agent_session_id="sdk-session-def",
             cwd="/tmp/test-workspace",
-            worker_id="w1",
+            worker_id=wid("w1"),
         )
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 
@@ -262,7 +263,7 @@ def test_recovery_assign_uses_session_cwd(test_database):
 
         _wait_for_recovery(ctx["url"], ctx["db_url"], lead_sid)
 
-        resp = post_worker_sync(ctx["url"], "w1")
+        resp = post_worker_sync(ctx["url"], wid("w1"))
         assert resp["type"] == "command"
         assert resp["action"]["type"] == "assign"
         assert resp["action"].get("cwd") == "/tmp/test-workspace"
@@ -277,7 +278,7 @@ def test_recovery_skips_session_without_cwd(test_database):
         exec_id, lead_sid = create_execution_via_api(
             ctx["url"], agent_id, "test prompt"
         )
-        post_worker_sync(ctx["url"], "w1")
+        post_worker_sync(ctx["url"], wid("w1"))
         set_session_fields(
             ctx["db_url"],
             lead_sid,
@@ -286,7 +287,7 @@ def test_recovery_skips_session_without_cwd(test_database):
         )
         post_worker_sync(
             ctx["url"],
-            "w1",
+            wid("w1"),
             executor_report=make_executor_report(lead_sid, "crashed"),
         )
 

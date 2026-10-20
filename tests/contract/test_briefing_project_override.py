@@ -7,6 +7,7 @@ import uuid
 import pytest
 
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     mcp_tools_call,
@@ -72,7 +73,7 @@ def test_project_override_takes_precedence(test_database):
         _exec_id, _session_id = create_execution_via_api(
             ctx["url"], agent_id, "hello", project_id=project_id
         )
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert custom_delegation in prompt
@@ -95,7 +96,7 @@ def test_missing_override_falls_through_to_default(test_database):
         _exec_id, _session_id = create_execution_via_api(
             ctx["url"], agent_id, "hello", project_id=project_id
         )
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert "/api/v1/executions/$AGENTBEACON_EXECUTION_ID/agents" in prompt
@@ -123,7 +124,7 @@ def test_partial_override_only_affects_specified_section(test_database):
         _exec_id, _session_id = create_execution_via_api(
             ctx["url"], agent_id, "hello", project_id=project_id
         )
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert custom_coordination in prompt
@@ -158,14 +159,14 @@ def test_project_override_isolation(test_database):
         _exec_a, _sess_a = create_execution_via_api(
             ctx["url"], agent_id, "hello a", project_id=project_a
         )
-        resp_a = post_worker_sync(ctx["url"], "w-a")
+        resp_a = post_worker_sync(ctx["url"], wid("w-a"))
         prompt_a = _get_system_prompt_from_assign(resp_a)
         assert custom_text in prompt_a
 
         _exec_b, _sess_b = create_execution_via_api(
             ctx["url"], agent_id, "hello b", project_id=project_b
         )
-        resp_b = post_worker_sync(ctx["url"], "w-b")
+        resp_b = post_worker_sync(ctx["url"], wid("w-b"))
         prompt_b = _get_system_prompt_from_assign(resp_b)
         assert custom_text not in prompt_b
         assert "delegate` MCP tool" in prompt_b
@@ -205,7 +206,7 @@ def test_project_override_propagates_to_child_session(test_database):
             )
             conn.commit()
 
-        lead_response = post_worker_sync(ctx["url"], "w-lead")
+        lead_response = post_worker_sync(ctx["url"], wid("w-lead"))
         lead_prompt = _get_system_prompt_from_assign(lead_response)
         assert custom_coordination in lead_prompt
 
@@ -218,7 +219,7 @@ def test_project_override_propagates_to_child_session(test_database):
         child_payload = json.loads(result["content"][0]["text"])
         child_session_id = child_payload["session_id"]
 
-        child_response = post_worker_sync(ctx["url"], "w-child")
+        child_response = post_worker_sync(ctx["url"], wid("w-child"))
         child_prompt = _get_system_prompt_from_assign(child_response)
 
         assert custom_coordination in child_prompt
@@ -238,7 +239,7 @@ def test_use_db_overrides_false_ignores_config_table(test_database):
 
         agent_id = seed_test_agent(ctx["db_url"], name="no-override-test")
         _exec_id, _session_id = create_execution_via_api(ctx["url"], agent_id, "hello")
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert custom_text not in prompt
@@ -259,7 +260,7 @@ def test_use_db_overrides_true_reads_config_table(test_database):
 
         agent_id = seed_test_agent(ctx["db_url"], name="override-enabled-test")
         _exec_id, _session_id = create_execution_via_api(ctx["url"], agent_id, "hello")
-        response = post_worker_sync(ctx["url"], "w1")
+        response = post_worker_sync(ctx["url"], wid("w1"))
         prompt = _get_system_prompt_from_assign(response)
 
         assert custom_text in prompt

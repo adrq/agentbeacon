@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -18,7 +19,7 @@ def _escalate(url, session_id):
     resp = httpx.post(
         f"{url}/api/v1/escalate",
         json={"questions": [{"question": "Q?"}], "importance": "blocking"},
-        headers={"Authorization": f"Bearer {session_id}"},
+        headers={**agent_headers(None, session_id)},
         timeout=10,
     )
     assert resp.status_code == 200, resp.text

@@ -91,6 +91,8 @@ pub struct SessionConfig {
     /// For resume: the agent_session_id (Codex thread_id) from the prior session.
     /// Used by the Codex executor to derive the correct CODEX_HOME path.
     pub resume_agent_session_id: Option<String>,
+    /// The session's credential, delivered to the executor.
+    pub session_token: String,
 }
 
 pub struct TurnResult {

@@ -4,7 +4,9 @@
 //! Worker process supervision.
 //!
 //! Manages worker subprocess lifecycle: on-demand spawning, instant SIGKILL,
-//! zombie reaping, colored log streaming, and graceful shutdown.
+//! zombie reaping, colored log streaming, and graceful shutdown. Also holds the
+//! registry of admitted workers: local child processes and externally
+//! supervised workers.
 
 use anyhow::{Context, Result};
 use nix::sys::signal::{Signal, kill};
@@ -18,6 +20,11 @@ use tokio::process::{Child, Command};
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant, sleep};
 use tracing::{info, warn};
+
+use crate::db::{self, DbPool};
+
+/// Environment variable that carries a worker's token.
+pub const WORKER_TOKEN_ENV: &str = "AGENTBEACON_WORKER_TOKEN";
 
 /// ANSI color codes for log prefixes.
 const COLORS: &[&str] = &[
@@ -61,16 +68,29 @@ pub fn worker_binary_path() -> PathBuf {
     PathBuf::from("./bin/agentbeacon-worker")
 }
 
-/// Worker process tracked by the supervisor. One field — just a PID.
-/// The Child handle is owned by monitor_worker() (background task).
-struct WorkerEntry {
-    pid: u32,
+/// Who supervises an admitted worker.
+/// A local entry's Child handle is owned by monitor_worker() (background task).
+enum WorkerEntry {
+    /// A child process of this supervisor.
+    Local { pid: u32 },
+    /// A worker admitted through the API and supervised elsewhere.
+    External,
+}
+
+impl WorkerEntry {
+    fn pid(&self) -> Option<u32> {
+        match self {
+            WorkerEntry::Local { pid } => Some(*pid),
+            WorkerEntry::External => None,
+        }
+    }
 }
 
 pub enum KillResult {
-    /// SIGKILL sent (process is dead) or ESRCH (already dead).
+    /// SIGKILL sent (process is dead), ESRCH (already dead), or an external
+    /// worker's registration removed.
     Confirmed,
-    /// UUID not in supervisor tracking (already killed or external worker).
+    /// UUID not registered (already killed or never admitted).
     NotFound,
 }
 
@@ -81,7 +101,7 @@ pub struct Supervisor {
     worker_poll_interval: Option<String>,
     /// Idle timeout passed through to spawned worker processes.
     idle_timeout: Duration,
-    /// Worker UUID -> PID. Protected by RwLock for concurrent access.
+    /// Admitted workers by UUID. Protected by RwLock for concurrent access.
     workers: Arc<RwLock<HashMap<String, WorkerEntry>>>,
     shutting_down: Arc<RwLock<bool>>,
     /// Maximum concurrent workers. None = unlimited, Some(0) = disabled.
@@ -89,6 +109,8 @@ pub struct Supervisor {
     /// Serializes spawn_worker() to prevent concurrent callers from
     /// exceeding max_workers. Protects against overlapping ticks.
     spawn_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Database for worker credentials.
+    db_pool: Option<DbPool>,
 }
 
 impl Supervisor {
@@ -97,6 +119,7 @@ impl Supervisor {
         worker_poll_interval: Option<String>,
         max_workers: Option<usize>,
         idle_timeout: Duration,
+        db_pool: Option<DbPool>,
     ) -> Self {
         Self {
             port,
@@ -106,7 +129,57 @@ impl Supervisor {
             shutting_down: Arc::new(RwLock::new(false)),
             max_workers,
             spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            db_pool,
         }
+    }
+
+    /// Mint a token for `worker_id` and store its hash.
+    async fn issue_worker_token(&self, worker_id: &str) -> Result<String> {
+        let pool = self
+            .db_pool
+            .as_ref()
+            .context("supervisor has no database for worker credentials")?;
+        let token = crate::services::auth::mint_token();
+        db::credentials::insert(
+            pool,
+            &token.hash,
+            db::credentials::PRINCIPAL_WORKER,
+            worker_id,
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("store worker credential failed: {e}"))?;
+        Ok(token.plaintext)
+    }
+
+    /// Admit an externally supervised worker under `worker_id`. Returns its
+    /// token. The registration is published last.
+    pub async fn admit_external(&self, worker_id: &str) -> Result<String> {
+        let token = self.issue_worker_token(worker_id).await?;
+        self.workers
+            .write()
+            .await
+            .insert(worker_id.to_string(), WorkerEntry::External);
+        info!(worker_id = %worker_id, "Admitted external worker");
+        crate::test_pause::pause_at("worker_admit").await;
+        Ok(token)
+    }
+
+    /// Whether `worker_id` is an admitted worker.
+    pub async fn is_registered(&self, worker_id: &str) -> bool {
+        self.workers.read().await.contains_key(worker_id)
+    }
+
+    /// The ids of admitted external workers.
+    pub async fn external_ids(&self) -> Vec<String> {
+        self.workers
+            .read()
+            .await
+            .iter()
+            .filter(|(_, entry)| matches!(entry, WorkerEntry::External))
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     pub async fn spawn_worker(&self) -> Result<String> {
@@ -115,17 +188,19 @@ impl Supervisor {
             anyhow::bail!("supervisor is shutting down");
         }
         if let Some(max) = self.max_workers {
-            let count = self.workers.read().await.len();
+            let count = self.local_count().await;
             if count >= max {
                 anyhow::bail!("max workers ({}) reached", max);
             }
         }
 
         let worker_id = uuid::Uuid::new_v4().to_string();
+        let token = self.issue_worker_token(&worker_id).await?;
         let scheduler_url = format!("http://localhost:{}", self.port);
         let worker_bin = worker_binary_path();
 
         let mut cmd = Command::new(&worker_bin);
+        cmd.env(WORKER_TOKEN_ENV, &token);
         cmd.arg("--scheduler-url").arg(&scheduler_url);
         cmd.arg("--worker-id").arg(&worker_id);
         cmd.arg("--idle-timeout")
@@ -138,21 +213,24 @@ impl Supervisor {
 
         let color = get_color(&worker_id);
         let name = format!("worker-{}", &worker_id[..8]);
+
+        // Held from spawn until the entry is inserted.
+        let mut workers = self.workers.write().await;
         let mut child = cmd.spawn().context(format!(
             "failed to spawn {name} from {}",
             worker_bin.display()
         ))?;
-
-        let pid = child.id().context("no PID for child process")?;
+        let pid = match child.id() {
+            Some(pid) => pid,
+            None => anyhow::bail!("no PID for child process"),
+        };
+        crate::test_pause::pause_at("supervisor_register").await;
+        workers.insert(worker_id.clone(), WorkerEntry::Local { pid });
+        drop(workers);
         info!(worker_id = %worker_id, pid = pid, "Spawned worker");
 
         let stdout = child.stdout.take().context("failed to get stdout pipe")?;
         let stderr = child.stderr.take().context("failed to get stderr pipe")?;
-
-        self.workers
-            .write()
-            .await
-            .insert(worker_id.clone(), WorkerEntry { pid });
 
         // Log streaming tasks
         let name_out = name.clone();
@@ -175,23 +253,39 @@ impl Supervisor {
         Ok(worker_id)
     }
 
-    /// Instant kill. Sends SIGKILL (non-blocking syscall) and removes from tracking.
+    /// Instant kill. Removes the worker from the registry, which ends its token,
+    /// and sends SIGKILL (non-blocking syscall) to a local worker.
     /// monitor_worker() reaps the zombie in the background.
     pub async fn kill_worker(&self, worker_id: &str) -> KillResult {
-        let pid = match self.workers.write().await.remove(worker_id) {
-            Some(entry) => entry.pid,
-            None => return KillResult::NotFound,
-        };
-        crate::process_group::kill_process_group(pid, Signal::SIGKILL);
-        info!(worker_id = %worker_id, pid = pid, "Killed worker");
-        KillResult::Confirmed
+        match self.workers.write().await.remove(worker_id) {
+            Some(WorkerEntry::Local { pid }) => {
+                crate::process_group::kill_process_group(pid, Signal::SIGKILL);
+                info!(worker_id = %worker_id, pid = pid, "Killed worker");
+                KillResult::Confirmed
+            }
+            Some(WorkerEntry::External) => {
+                info!(worker_id = %worker_id, "Ended external worker registration");
+                KillResult::Confirmed
+            }
+            None => KillResult::NotFound,
+        }
     }
 
+    /// The number of local worker processes.
     pub async fn worker_count(&self) -> usize {
-        self.workers.read().await.len()
+        self.local_count().await
     }
 
-    /// Returns the set of tracked worker UUIDs (for heartbeat cleanup).
+    async fn local_count(&self) -> usize {
+        self.workers
+            .read()
+            .await
+            .values()
+            .filter(|entry| matches!(entry, WorkerEntry::Local { .. }))
+            .count()
+    }
+
+    /// Returns the set of admitted worker UUIDs (for heartbeat cleanup).
     pub async fn worker_ids(&self) -> HashSet<String> {
         self.workers.read().await.keys().cloned().collect()
     }
@@ -230,7 +324,7 @@ impl Supervisor {
             let workers = self.workers.read().await;
             workers
                 .iter()
-                .map(|(uuid, entry)| (entry.pid, uuid.clone()))
+                .filter_map(|(uuid, entry)| entry.pid().map(|pid| (pid, uuid.clone())))
                 .collect()
         };
 
@@ -293,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kill_worker_not_found() {
-        let sup = Supervisor::new(9999, None, None, Duration::from_secs(300));
+        let sup = Supervisor::new(9999, None, None, Duration::from_secs(300), None);
         match sup.kill_worker("nonexistent-uuid").await {
             KillResult::NotFound => {}
             KillResult::Confirmed => panic!("expected NotFound for unknown UUID"),

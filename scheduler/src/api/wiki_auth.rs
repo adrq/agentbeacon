@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use axum::http::HeaderMap;
-use sqlx::Row;
-
 use crate::db;
 use crate::db::DbPool;
 use crate::db::wiki_sharing::{
@@ -11,6 +8,7 @@ use crate::db::wiki_sharing::{
 };
 use crate::error::SchedulerError;
 use crate::search::SearchScope;
+use crate::services::auth::principal::{AgentPrincipal, Principal};
 
 /// Whether writes to another project's page are allowed. Enabled unless the
 /// stored value is exactly "false".
@@ -55,11 +53,13 @@ impl Access {
     }
 }
 
-/// The identified caller: a session when one presented a token, and always the
+/// The identified caller: a session when an agent is calling, and always the
 /// project the request is evaluated against.
 pub struct Caller {
     pub session_id: Option<String>,
     pub project_id: String,
+    /// The hash of the agent's credential, re-checked on held snapshots.
+    pub credential_hash: Option<String>,
 }
 
 impl Caller {
@@ -69,95 +69,41 @@ impl Caller {
 }
 
 /// Identify the caller of a project-scoped wiki route.
-pub async fn resolve_caller(
-    headers: &HeaderMap,
-    pool: &DbPool,
+pub fn resolve_caller(
+    principal: &Principal,
     target_project_id: &str,
 ) -> Result<Caller, SchedulerError> {
-    match resolve_session_principal(headers, pool).await? {
-        Some((session_id, project_id)) => Ok(Caller {
-            session_id: Some(session_id),
-            project_id,
-        }),
-        None => Ok(Caller {
+    match principal {
+        Principal::Human { .. } => Ok(Caller {
             session_id: None,
             project_id: target_project_id.to_string(),
+            credential_hash: None,
         }),
+        Principal::Agent(agent) => agent_caller(agent),
+        Principal::Worker { .. } => Err(SchedulerError::Forbidden("worker".into())),
     }
 }
 
-/// True while the session/execution is still usable for auth
-fn is_live(desired: &str, outcome: Option<&str>) -> bool {
-    desired != "terminate" && outcome.is_none()
-}
-
-/// `Some((session_id, project_id))` when a token is presented and valid.
-///
-/// Returns `Err` for a malformed header, an unknown token, a token for a
-/// session that has ended, or a session whose execution has no project.
-pub async fn resolve_session_principal(
-    headers: &HeaderMap,
-    pool: &DbPool,
-) -> Result<Option<(String, String)>, SchedulerError> {
-    let Some(auth_header) = headers.get("authorization") else {
-        return Ok(None);
-    };
-    let header_str = auth_header.to_str().map_err(|_| {
-        SchedulerError::Unauthorized("invalid Authorization header encoding".into())
-    })?;
-
-    let token = if header_str.len() > 7 && header_str[..7].eq_ignore_ascii_case("bearer ") {
-        header_str[7..].trim()
-    } else {
-        return Err(SchedulerError::Unauthorized(
-            "invalid Authorization format, expected Bearer <token>".into(),
-        ));
-    };
-
-    if token.is_empty() {
-        return Err(SchedulerError::Unauthorized(
-            "invalid Authorization format, expected Bearer <token>".into(),
-        ));
-    }
-
-    let row = sqlx::query(&pool.prepare_query(
-        "SELECT s.id as session_id, s.desired as session_desired, \
-                s.outcome as session_outcome, e.desired as execution_desired, \
-                e.outcome as execution_outcome, e.project_id as project_id \
-         FROM sessions s JOIN executions e ON e.id = s.execution_id \
-         WHERE s.id = ?",
-    ))
-    .bind(token)
-    .fetch_optional(pool.as_ref())
-    .await
-    .map_err(|e| SchedulerError::Database(format!("resolve session failed: {e}")))?
-    .ok_or_else(|| SchedulerError::Unauthorized("session not found".into()))?;
-
-    let session_desired: String = row.get("session_desired");
-    let session_outcome: Option<String> = row.get("session_outcome");
-    let execution_desired: String = row.get("execution_desired");
-    let execution_outcome: Option<String> = row.get("execution_outcome");
-
-    if !is_live(&session_desired, session_outcome.as_deref())
-        || !is_live(&execution_desired, execution_outcome.as_deref())
-    {
-        return Err(SchedulerError::Unauthorized("session is not live".into()));
-    }
-
-    let Some(project_id): Option<String> = row.get("project_id") else {
-        return Err(SchedulerError::Unauthorized(
+/// The caller for an agent, which must belong to a project.
+pub fn agent_caller(agent: &AgentPrincipal) -> Result<Caller, SchedulerError> {
+    let Some(project_id) = agent.project_id.clone() else {
+        return Err(SchedulerError::Forbidden(
             "session is not scoped to a project".into(),
         ));
     };
-
-    Ok(Some((row.get("session_id"), project_id)))
+    Ok(Caller {
+        session_id: Some(agent.session_id.clone()),
+        project_id,
+        credential_hash: Some(agent.credential_hash.clone()),
+    })
 }
 
 /// The links through which a caller reaches other projects' pages.
 pub struct SharingContext {
     pub caller_project_id: String,
-    /// The token presented, when one was. Re-resolved inside a read snapshot.
+    /// The agent session calling, when one is. Re-resolved inside a read snapshot.
     session_id: Option<String>,
+    credential_hash: Option<String>,
     pub links: Vec<SharedTagLink>,
     pub cross_project_writes: bool,
     caller_active: bool,
@@ -169,6 +115,7 @@ impl SharingContext {
         Ok(Self {
             caller_project_id: caller_project_id.to_string(),
             session_id: caller.session_id.clone(),
+            credential_hash: caller.credential_hash.clone(),
             links: db::wiki_sharing::shared_links(pool, caller_project_id).await?,
             cross_project_writes: cross_project_writes_enabled(pool).await,
             caller_active: db::projects::resolve(pool, caller_project_id).await.is_ok(),
@@ -196,8 +143,11 @@ impl SharingContext {
         pool: &DbPool,
     ) -> Result<Self, SchedulerError> {
         if let Some(session_id) = &self.session_id {
-            match db::sessions::live_project_in_tx(tx, pool, session_id).await? {
-                Some(project_id) if project_id == self.caller_project_id => {}
+            let credential = self.credential_hash.as_deref().unwrap_or_default();
+            match db::credentials::live_session_project_in_tx(tx, pool, session_id, credential)
+                .await?
+            {
+                Some(Some(project_id)) if project_id == self.caller_project_id => {}
                 _ => return Err(SchedulerError::Unauthorized("session is not live".into())),
             }
         }
@@ -205,6 +155,7 @@ impl SharingContext {
         Ok(Self {
             caller_project_id: self.caller_project_id.clone(),
             session_id: self.session_id.clone(),
+            credential_hash: self.credential_hash.clone(),
             links: db::wiki_sharing::shared_links_in_tx(tx, pool, &self.caller_project_id).await?,
             cross_project_writes: db::wiki::cross_project_writes_in_tx(tx, pool).await,
             caller_active: db::projects::is_active_in_tx(tx, pool, &self.caller_project_id).await?,

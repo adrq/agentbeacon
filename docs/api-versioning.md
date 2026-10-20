@@ -12,7 +12,9 @@ Outside the promise, and unversioned by design:
 | `GET /api/docs` | The agent-facing API reference. A docs locator, not a JSON wire contract. |
 | `POST /rpc`, `GET /.well-known/agent-card.json` | A2A. |
 | `/mcp` | MCP Streamable HTTP. |
-| `POST /api/worker/sync`, `POST /api/worker/events` | Internal worker endpoints; not part of the client API. |
+| `POST /api/worker/sync`, `POST /api/worker/events`, `POST /api/worker/token` | Internal worker endpoints; not part of the client API. |
+
+Authentication is part of the v1 contract: `POST /api/v1/auth/login`, `GET /api/v1/auth/logins`, `DELETE /api/v1/auth/logins/{id}`, `POST /api/v1/auth/logout`, and `POST /api/v1/workers` for admitting an externally supervised worker.
 
 There are no unversioned aliases for product routes. A client that needs to
 tell a v1 server from an older one asks `/api/versions`: **a non-JSON response

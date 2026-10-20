@@ -9,6 +9,7 @@ import httpx
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    wid,
     cleanup_processes,
     create_execution_via_api,
     db_conn,
@@ -231,11 +232,11 @@ def test_parent_notification_writes_are_served_in_order(test_database):
             )
             conn.commit()
 
-        lead = post_worker_sync(ctx["url"], worker_id="w-lead")
+        lead = post_worker_sync(ctx["url"], worker_id=wid("w-lead"))
         assert lead["action"]["session_id"] == lead_id
         post_worker_sync(
             ctx["url"],
-            "w-lead",
+            wid("w-lead"),
             executor_report=make_executor_report(lead_id, "running"),
             command_ack=lead["token"],
         )
@@ -249,17 +250,17 @@ def test_parent_notification_writes_are_served_in_order(test_database):
             )["content"][0]["text"]
         )["session_id"]
 
-        child = post_worker_sync(ctx["url"], worker_id="w-child")
+        child = post_worker_sync(ctx["url"], worker_id=wid("w-child"))
         assert child["action"]["session_id"] == child_id
         post_worker_sync(
             ctx["url"],
-            "w-child",
+            wid("w-child"),
             executor_report=make_executor_report(child_id, "running"),
             command_ack=child["token"],
         )
         post_worker_sync(
             ctx["url"],
-            "w-child",
+            wid("w-child"),
             executor_report=make_executor_report(child_id, "idle"),
             turn_result=make_turn_result(
                 child_id,
@@ -318,7 +319,7 @@ def test_reconciler_notice_writes_are_served_in_order(test_database):
 
         deadline = time.time() + 10
         while time.time() < deadline:
-            post_worker_sync(ctx["url"], worker_id="reconcile-trigger")
+            post_worker_sync(ctx["url"], worker_id=wid("reconcile-trigger"))
             if "child_crashed" in _platform_kinds(test_database, exec_id, parent_id):
                 break
             time.sleep(0.25)

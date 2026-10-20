@@ -10,6 +10,7 @@ import pytest
 
 from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
+    wid,
     create_execution_via_api,
     db_conn,
     scheduler_context,
@@ -585,15 +586,16 @@ def test_a_deleted_agent_terminates_the_tree_after_the_terminal_row(test_databas
             "deleted-grandchild",
             "running",
         )
+        worker = wid("w-deleted")
         with db_conn(test_database) as conn:
             conn.execute(
                 "UPDATE agents SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (agent_id,),
             )
             conn.execute(
-                "UPDATE sessions SET executor_state = 'unassigned', worker_id = 'w-deleted' "
+                "UPDATE sessions SET executor_state = 'unassigned', worker_id = ? "
                 "WHERE id = ?",
-                (root_id,),
+                (worker, root_id),
             )
             conn.commit()
 
@@ -602,7 +604,7 @@ def test_a_deleted_agent_terminates_the_tree_after_the_terminal_row(test_databas
         while time.time() < deadline and outcome is None:
             httpx.post(
                 f"{ctx['url']}/api/worker/sync",
-                json={"worker_id": "w-deleted"},
+                json={"worker_id": wid("w-deleted")},
                 timeout=30,
             )
             time.sleep(0.5)

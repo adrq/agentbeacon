@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tests.testhelpers import (
+    wid,
     scheduler_context,
     create_execution_via_api,
     db_conn,
@@ -360,7 +361,7 @@ def test_failed_child_wakes_paused_parent(test_database):
         def parent_a_woke():
             httpx.post(
                 f"{ctx2['url']}/api/worker/sync",
-                json={"worker_id": "reconcile-trigger"},
+                json={"worker_id": wid("reconcile-trigger")},
                 timeout=5,
             )
             return get_session_row(test_database, parent_a)["desired"] == "run"

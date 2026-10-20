@@ -6,6 +6,7 @@ from __future__ import annotations
 import httpx
 
 from tests.testhelpers import (
+    agent_headers,
     create_execution_via_api,
     create_project_via_api,
     db_conn,
@@ -19,7 +20,7 @@ TAG_SEED_BODY = "tag seed page, not shared"
 
 
 def bearer(session_id: str = None) -> dict:
-    return {"Authorization": f"Bearer {session_id}"} if session_id else None
+    return agent_headers(None, session_id) if session_id else None
 
 
 def set_config_flag(url: str, name: str, value: bool) -> httpx.Response:
