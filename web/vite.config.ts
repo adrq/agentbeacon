@@ -16,7 +16,7 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: `http://localhost:${beaconPort}`,
-        changeOrigin: true,
+        changeOrigin: false,
         // Prevent http-proxy from buffering SSE responses
         configure: (proxy) => {
           proxy.on('proxyRes', (proxyRes) => {
@@ -29,15 +29,15 @@ export default defineConfig({
       },
       '/.well-known': {
         target: `http://localhost:${beaconPort}`,
-        changeOrigin: true,
+        changeOrigin: false,
       },
       '/rpc': {
         target: `http://localhost:${beaconPort}`,
-        changeOrigin: true,
+        changeOrigin: false,
       },
       '/docs': {
         target: `http://localhost:${beaconPort}`,
-        changeOrigin: true,
+        changeOrigin: false,
       },
     },
   },
