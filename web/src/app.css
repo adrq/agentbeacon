@@ -46,6 +46,18 @@
   /* Radius scale */
   --radius-sm: 0.25rem;   /* 4px - tight elements */
   --radius-lg: 0.75rem;   /* 12px - pills, large cards */
+
+  /* Shared by the brand lockup, sidebar brand row and execution header so they line up */
+  --top-row-height: 41px;
+  --rail-width: 48px;
+  /* Right edge of the brand wordmark; measured at runtime by BrandLockup */
+  --brand-lockup-width: 136px;
+}
+
+@media (max-width: 1024px) {
+  :root {
+    --rail-width: 40px;
+  }
 }
 
 .light {
@@ -175,24 +187,6 @@
   flex: 1;
   overflow-y: auto;
   padding: 1rem;
-}
-
-.form-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 1.5rem;
-}
-
-.form-panel-title {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: hsl(var(--foreground));
-}
-
-.form-panel-actions {
-  display: flex;
-  gap: 0.5rem;
 }
 
 .form-section-divider {

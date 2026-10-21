@@ -49,7 +49,7 @@ test('register a project via UI', async ({ page }) => {
 
   await page.getByLabel('Name').fill('E2E Test Project');
   await page.getByLabel('Path').fill(uniquePath);
-  await page.locator('.form-panel').getByRole('button', { name: 'Register' }).click();
+  await page.locator('.page-header .page-actions').getByRole('button', { name: 'Register' }).click();
 
   await expect(page.getByRole('heading', { name: 'Register Project' })).not.toBeVisible({ timeout: 5000 });
   // Project should appear in the sidebar list
@@ -101,5 +101,5 @@ test('delete project', async ({ page }) => {
   await alertDialog.getByRole('button', { name: 'Delete' }).click();
 
   // Should navigate back to projects welcome
-  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('.projects-welcome').getByRole('heading', { name: 'Projects' })).toBeVisible({ timeout: 5000 });
 });

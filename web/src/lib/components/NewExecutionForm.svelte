@@ -12,6 +12,7 @@
   import { api } from '../api';
   import type { AgentPoolEntry } from '../types';
   import Button from './ui/button.svelte';
+  import PageHeader from './PageHeader.svelte';
 
   const agents = agentsQuery();
   const projects = projectsQuery();
@@ -246,16 +247,16 @@
   }
 </script>
 
+<PageHeader title={hasPrefill ? 'Re-run Execution' : 'New Execution'} titleClass="form-panel-title">
+  {#snippet actions()}
+    <Button variant="ghost" size="sm" onclick={handleCancel}>Cancel</Button>
+    <Button variant="default" size="sm" disabled={!canSubmit} onclick={handleSubmit}>
+      {submitting ? 'Starting...' : 'Start'}
+    </Button>
+  {/snippet}
+</PageHeader>
+
 <div class="form-panel scroll-thin">
-  <div class="form-panel-header">
-    <h2 class="form-panel-title">{hasPrefill ? 'Re-run Execution' : 'New Execution'}</h2>
-    <div class="form-panel-actions">
-      <Button variant="ghost" onclick={handleCancel}>Cancel</Button>
-      <Button variant="default" disabled={!canSubmit} onclick={handleSubmit}>
-        {submitting ? 'Starting...' : 'Start'}
-      </Button>
-    </div>
-  </div>
 
   <div class="field">
     <label class="field-label" for="exec-project">Project</label>

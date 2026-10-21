@@ -398,7 +398,7 @@ test('wiki cross-section link from project detail', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Wiki Cross Link Test' })).toBeVisible();
 
   // Scope to header actions to avoid matching the NavRail Wiki button
-  await page.locator('.header-actions').getByRole('button', { name: 'Wiki' }).click();
+  await page.locator('.page-header .page-actions').getByRole('button', { name: 'Wiki' }).click();
 
   await expect(page.getByRole('combobox', { name: 'Select project' })).toHaveValue(project.id, { timeout: 10000 });
   await expect(page.getByRole('button', { name: /Linked Page/ })).toBeVisible();

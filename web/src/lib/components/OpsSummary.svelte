@@ -5,7 +5,7 @@
   import { get } from 'svelte/store';
   import type { Execution } from '../types';
   import { executionsWithQuestions } from '../stores/questionState';
-  import { homeFeedFilter, type HomeFeedFilter, actionPanelCollapsed, userExplicitlyCollapsed } from '../stores/appState';
+  import { homeFeedFilter, type HomeFeedFilter, openDecisionsPanel } from '../stores/appState';
 
   interface Props {
     executions: Execution[];
@@ -41,8 +41,7 @@
     const wasActive = get(homeFeedFilter) === filter;
     homeFeedFilter.update(current => current === filter ? null : filter);
     if (filter === 'waiting' && questions > 0 && !wasActive) {
-      actionPanelCollapsed.set(false);
-      userExplicitlyCollapsed.set(false);
+      openDecisionsPanel();
     }
   }
 

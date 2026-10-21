@@ -39,6 +39,12 @@ function createThemeStore() {
 }
 
 export const theme = createThemeStore();
+
+export function applyTheme(next: Theme): void {
+  const root = document.documentElement.classList;
+  if (next === 'light') root.add('light'); else root.remove('light');
+  theme.set(next);
+}
 export const activeSection = writable<NavSection>('home');
 export const sidebarOpen = writable<boolean>(false);
 export const selectedExecutionId = writable<string | null>(null);
@@ -61,6 +67,18 @@ function createPersistedBoolStore(key: string, defaultValue: boolean) {
 
 export const actionPanelCollapsed = createPersistedBoolStore('agentbeacon-action-panel-collapsed', true);
 export const userExplicitlyCollapsed = writable<boolean>(false);
+// At tablet and mobile widths the decisions panel is an overlay. Its open state lasts
+// only for the page load, so a phone never reopens straight into it.
+export const decisionsOverlayOpen = writable<boolean>(false);
+
+export function openDecisionsPanel(): void {
+  if (window.matchMedia('(max-width: 1024px)').matches) {
+    decisionsOverlayOpen.set(true);
+  } else {
+    actionPanelCollapsed.set(false);
+    userExplicitlyCollapsed.set(false);
+  }
+}
 
 // Migrate old notification key BEFORE creating stores, so the store picks up the migrated value.
 // Only preserve affirmative opt-in (old key was set to true when browser permission was granted).

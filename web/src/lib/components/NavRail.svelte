@@ -2,7 +2,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
 <script lang="ts">
-  import { activeSection, sidebarOpen } from '../stores/appState';
+  import { activeSection, sidebarOpen, theme, applyTheme, decisionsOverlayOpen } from '../stores/appState';
   import { decisionCount } from '../stores/questionState';
   import { router } from '../router';
   import type { NavSection } from '../types';
@@ -23,12 +23,19 @@
   ];
 
   function handleNavClick(section: NavSection) {
+    // Any nav tap closes the decisions overlay, even when it doesn't change the route.
+    decisionsOverlayOpen.set(false);
     if (section === 'home') {
       router.navigate('#/');
       return;
     }
     if (section === 'wiki') {
       router.navigate('#/wiki');
+      return;
+    }
+    // Mobile has no sidebar to toggle; like an iOS tab bar, tapping a section returns to its list.
+    if (window.matchMedia('(max-width: 768px)').matches) {
+      router.navigate(`#/${section}`);
       return;
     }
     if ($activeSection === section && $sidebarOpen) {
@@ -42,6 +49,8 @@
 </script>
 
 <nav class="nav-rail" aria-label="Main navigation">
+  <!-- Space for the brand lockup, which AppShell overlays so it never moves when the sidebar toggles. -->
+  <div class="nav-rail-top desktop-only" aria-hidden="true"></div>
   {#each sectionItems as item}
     <button
       class="nav-rail-item"
@@ -88,6 +97,41 @@
 
   <div class="nav-rail-spacer"></div>
 
+  <a href="/docs/" target="_blank" rel="noopener" class="nav-rail-item desktop-only" aria-label="Docs" title="Docs">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="8" y1="13" x2="16" y2="13" />
+      <line x1="8" y1="17" x2="13" y2="17" />
+    </svg>
+  </a>
+
+  <button
+    class="nav-rail-item desktop-only"
+    aria-label={$theme === 'dark' ? 'Activate light theme' : 'Activate dark theme'}
+    aria-pressed={$theme === 'light'}
+    title={$theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+    onclick={() => applyTheme($theme === 'dark' ? 'light' : 'dark')}
+  >
+    {#if $theme === 'dark'}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+      </svg>
+    {:else}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="5" />
+        <line x1="12" y1="1" x2="12" y2="3" />
+        <line x1="12" y1="21" x2="12" y2="23" />
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+        <line x1="1" y1="12" x2="3" y2="12" />
+        <line x1="21" y1="12" x2="23" y2="12" />
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+      </svg>
+    {/if}
+  </button>
+
   <button
     class="nav-rail-item decisions-toggle"
     class:panel-open={panelOpen}
@@ -112,7 +156,7 @@
     aria-label="Settings"
     title="Settings"
     aria-current={$activeSection === 'settings' ? 'page' : undefined}
-    onclick={() => router.navigate('#/settings')}
+    onclick={() => { decisionsOverlayOpen.set(false); router.navigate('#/settings'); }}
   >
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M6.5 1L6.2 2.6C5.8 2.8 5.4 3 5.1 3.3L3.5 2.7L2 5.3L3.4 6.4C3.4 6.6 3.3 6.8 3.3 7V7C3.3 7.2 3.4 7.4 3.4 7.6L2 8.7L3.5 11.3L5.1 10.7C5.4 11 5.8 11.2 6.2 11.4L6.5 13H9.5L9.8 11.4C10.2 11.2 10.6 11 10.9 10.7L12.5 11.3L14 8.7L12.6 7.6C12.6 7.4 12.7 7.2 12.7 7V7C12.7 6.8 12.6 6.6 12.6 6.4L14 5.3L12.5 2.7L10.9 3.3C10.6 3 10.2 2.8 9.8 2.6L9.5 1H6.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
@@ -123,15 +167,22 @@
 
 <style>
   .nav-rail {
-    width: 48px;
-    flex: 0 0 48px;
+    width: var(--rail-width);
+    flex: 0 0 var(--rail-width);
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 0.5rem 0;
+    padding: 0 0 0.5rem;
     gap: 0.25rem;
     border-right: 1px solid hsl(var(--border));
     background: hsl(var(--background));
+  }
+
+  .nav-rail-top {
+    width: 100%;
+    height: var(--top-row-height);
+    flex-shrink: 0;
+    margin-bottom: 0.25rem;
   }
 
   .nav-rail-item {
@@ -215,13 +266,6 @@
     line-height: 1;
   }
 
-  @media (max-width: 1024px) {
-    .nav-rail {
-      width: 40px;
-      flex: 0 0 40px;
-    }
-  }
-
   @media (max-width: 768px) {
     .nav-rail {
       position: fixed;
@@ -239,7 +283,8 @@
       z-index: 100;
     }
 
-    .nav-rail-spacer {
+    .nav-rail-spacer,
+    .desktop-only {
       display: none;
     }
 

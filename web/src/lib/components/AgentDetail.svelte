@@ -8,6 +8,7 @@
   import { router } from '../router';
   import { typeLabels } from '../utils/agentUtils';
   import Button from './ui/button.svelte';
+  import PageHeader from './PageHeader.svelte';
   import ExecutionListItem from './ExecutionListItem.svelte';
 
   interface Props {
@@ -66,28 +67,29 @@
 
 </script>
 
+<PageHeader title={agent?.name ?? ''} titleClass="detail-title">
+  {#snippet badges()}
+    {#if agent}
+      <span class="type-badge">{typeLabels[agent.agent_type] ?? agent.agent_type}</span>
+      {#if !agent.enabled}
+        <span class="disabled-badge">disabled</span>
+      {/if}
+    {/if}
+  {/snippet}
+  {#snippet actions()}
+    {#if agent}
+      <Button variant="ghost" size="sm" onclick={() => router.navigate(`/agents/${agentId}/edit`)}>Edit</Button>
+      <Button variant="ghost" size="sm" onclick={() => { deleteError = null; showDeleteConfirm = true; }}>Delete</Button>
+    {/if}
+  {/snippet}
+</PageHeader>
+
 {#if agentQuery.isLoading}
   <div class="detail-loading">Loading agent...</div>
 {:else if agentQuery.isError}
   <div class="detail-error">{agentQuery.error?.message ?? 'Not found'}</div>
 {:else if agent}
   <div class="agent-detail scroll-thin">
-    <div class="detail-header">
-      <div class="header-top">
-        <h2 class="detail-title">{agent.name}</h2>
-        <div class="header-actions">
-          <Button variant="ghost" size="sm" onclick={() => router.navigate(`/agents/${agentId}/edit`)}>Edit</Button>
-          <Button variant="ghost" size="sm" onclick={() => { deleteError = null; showDeleteConfirm = true; }}>Delete</Button>
-        </div>
-      </div>
-      <div class="header-badges">
-        <span class="type-badge">{typeLabels[agent.agent_type] ?? agent.agent_type}</span>
-        {#if !agent.enabled}
-          <span class="disabled-badge">disabled</span>
-        {/if}
-      </div>
-    </div>
-
     <div class="info-section">
       <div class="info-row">
         <span class="info-label">Type</span>
@@ -172,34 +174,6 @@
     flex: 1;
     overflow-y: auto;
     padding: 1rem;
-  }
-
-  .detail-header {
-    margin-bottom: 1.5rem;
-  }
-
-  .header-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-  }
-
-  .detail-title {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: hsl(var(--foreground));
-  }
-
-  .header-actions {
-    display: flex;
-    gap: 0.25rem;
-  }
-
-  .header-badges {
-    display: flex;
-    gap: 0.375rem;
-    margin-top: 0.375rem;
   }
 
   .type-badge {

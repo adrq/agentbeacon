@@ -4,7 +4,10 @@
 <script lang="ts">
   import Button from './ui/button.svelte';
   import { router } from '../router';
+  import PageHeader from './PageHeader.svelte';
 </script>
+
+<PageHeader title="Projects" />
 
 <div class="projects-welcome scroll-thin">
   <div class="welcome-content">

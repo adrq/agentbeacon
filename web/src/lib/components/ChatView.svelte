@@ -19,7 +19,7 @@
   import ErrorPanel from './renderers/ErrorPanel.svelte';
   import TodoChecklist from './renderers/TodoChecklist.svelte';
   import TodoPanel from './TodoPanel.svelte';
-  import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
+  import { matchesFilter, type EventFilter } from '../eventFilterGroups';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import { tick, untrack } from 'svelte';
   import { useQueryClient } from '@tanstack/svelte-query';
@@ -48,7 +48,6 @@
     // parseEntries. Session-scoped, NOT execution-wide: a completed viewed
     // session must surface true orphans even if a sibling is still running.
     viewedSessionSettled?: boolean;
-    onfilterchange?: (filter: EventFilter) => void;
     onthreadopen?: (sessionA: string, sessionB: string) => void;
     /** Reports whether the list is holding its head, for the session named. */
     onprepending?: (sessionId: string, held: boolean) => void;
@@ -58,7 +57,7 @@
     onready?: () => void;
   }
 
-  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, ephemeralToolCalls = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', viewedSessionSettled = false, onfilterchange, onthreadopen, onready, onprepending }: Props = $props();
+  let { events, agents, sessions, sessionId, ephemeralText = '', ephemeralThinking = null, ephemeralToolCalls = null, settledThinkingDuration = null, usageBySession, sessionIdentity, agentPool, eventFilter = 'all', viewedSessionSettled = false, onthreadopen, onready, onprepending }: Props = $props();
 
   let readySignaled = false;
   function signalReady() {
@@ -1191,17 +1190,6 @@
 </script>
 
 <div class="chat-container">
-<div class="event-filter-pills" role="radiogroup" aria-label="Filter events">
-  {#each EVENT_FILTER_PILLS as pill}
-    <button
-      class="event-filter-pill"
-      class:active={eventFilter === pill.value}
-      role="radio"
-      aria-checked={eventFilter === pill.value}
-      onclick={() => onfilterchange?.(pill.value)}
-    >{pill.label}</button>
-  {/each}
-</div>
 <div class="chat-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll} tabindex="-1">
   <div class="chat-top" bind:this={topEl}>
     <!-- Mounted only once the scroll container it is observed within exists. -->
@@ -1660,33 +1648,6 @@
   .load-full-btn:disabled {
     opacity: 0.6;
     cursor: default;
-  }
-
-  .event-filter-pills {
-    display: flex;
-    gap: 2px;
-    padding: 0.375rem 1rem;
-    flex-shrink: 0;
-  }
-  .event-filter-pill {
-    padding: 0.1875rem 0.5rem;
-    border: 1px solid hsl(var(--border));
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: hsl(var(--muted-foreground));
-    font-size: 0.6875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 0.1s, color 0.1s, border-color 0.1s;
-  }
-  .event-filter-pill:hover:not(.active) {
-    background: hsl(var(--muted) / 0.5);
-  }
-  .event-filter-pill.active {
-    background: hsl(var(--primary) / 0.12);
-    color: hsl(var(--primary));
-    border-color: hsl(var(--primary) / 0.3);
-    font-weight: 600;
   }
 
   .chat-container {

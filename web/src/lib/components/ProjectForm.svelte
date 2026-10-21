@@ -6,6 +6,7 @@
   import { ApiError } from '../api';
   import { router } from '../router';
   import Button from './ui/button.svelte';
+  import PageHeader from './PageHeader.svelte';
 
   interface Props {
     projectId?: string;
@@ -164,20 +165,20 @@
   }
 </script>
 
+<PageHeader title={isEdit ? 'Edit Project' : 'Register Project'} titleClass="form-panel-title">
+  {#snippet actions()}
+    {#if created}
+      <Button variant="default" size="sm" onclick={handleWarningClose}>Close</Button>
+    {:else}
+      <Button variant="ghost" size="sm" onclick={handleCancel}>Cancel</Button>
+      <Button variant="default" size="sm" disabled={!canSubmit} onclick={handleSubmit}>
+        {submitting ? 'Saving...' : isEdit ? 'Save' : 'Register'}
+      </Button>
+    {/if}
+  {/snippet}
+</PageHeader>
+
 <div class="form-panel scroll-thin">
-  <div class="form-panel-header">
-    <h2 class="form-panel-title">{isEdit ? 'Edit Project' : 'Register Project'}</h2>
-    <div class="form-panel-actions">
-      {#if created}
-        <Button variant="default" onclick={handleWarningClose}>Close</Button>
-      {:else}
-        <Button variant="ghost" onclick={handleCancel}>Cancel</Button>
-        <Button variant="default" disabled={!canSubmit} onclick={handleSubmit}>
-          {submitting ? 'Saving...' : isEdit ? 'Save' : 'Register'}
-        </Button>
-      {/if}
-    </div>
-  </div>
 
   {#if isEdit && projectQuery.isLoading}
     <div class="form-loading">Loading project...</div>

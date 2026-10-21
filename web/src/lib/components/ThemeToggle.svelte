@@ -4,28 +4,19 @@
 <script lang="ts">
   import Button from './ui/button.svelte';
   import { onMount } from 'svelte';
-  import { theme } from '../stores/appState';
+  import { theme, applyTheme, safeGetItem } from '../stores/appState';
 
-  let mode: 'dark' | 'light' = $state('dark');
-
-  function applyMode() {
-    const root = document.documentElement.classList;
-    if (mode === 'light') root.add('light'); else root.remove('light');
-    theme.set(mode);
-  }
+  // The store is the source of truth so this and the nav rail toggle stay in sync.
+  let mode = $derived($theme);
 
   function toggle() {
-    mode = mode === 'dark' ? 'light' : 'dark';
-    applyMode();
+    applyTheme(mode === 'dark' ? 'light' : 'dark');
   }
 
   onMount(() => {
-    try {
-      const stored = localStorage.getItem('theme');
-      if (stored === 'light' || stored === 'dark') mode = stored;
-      else if (window.matchMedia('(prefers-color-scheme: light)').matches) mode = 'light';
-    } catch {}
-    applyMode();
+    const stored = safeGetItem('theme');
+    if (stored === 'light' || stored === 'dark') applyTheme(stored);
+    else applyTheme(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
   });
 </script>
 

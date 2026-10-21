@@ -189,12 +189,22 @@
     overflow: hidden;
   }
 
+  /* Doubles as the top row: same height as other page headers, starting after the brand lockup. */
   .tab-bar-container {
     display: flex;
-    align-items: center;
+    align-items: stretch;
+    height: var(--top-row-height);
+    box-sizing: border-box;
+    padding-left: calc(var(--brand-lockup-width) - var(--rail-width) + 0.5rem);
     border-bottom: 1px solid hsl(var(--border));
     background: hsl(var(--background));
     flex-shrink: 0;
+  }
+
+  @media (max-width: 768px) {
+    .tab-bar-container {
+      padding-left: 0;
+    }
   }
 
   :global(.wiki-tab-list) {
@@ -216,7 +226,7 @@
 
   .tab-wrapper {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     flex-shrink: 0;
     position: relative;
   }
@@ -266,6 +276,7 @@
     justify-content: center;
     width: 16px;
     height: 16px;
+    align-self: center;
     margin-right: 0.25rem;
     margin-left: -0.375rem;
     border: none;
@@ -290,6 +301,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    align-self: center;
     width: 28px;
     height: 28px;
     margin: 0 0.375rem;

@@ -4,6 +4,7 @@
 <script lang="ts">
   import McpServersSection from './McpServersSection.svelte';
   import ShareTagsSection from './ShareTagsSection.svelte';
+  import PageHeader from './PageHeader.svelte';
   import { escalationNotificationsEnabled, turnCompleteNotificationsEnabled } from '../stores/appState';
   import { requestNotificationPermission } from '../adapters/standalone';
   import { api, ApiError } from '../api';
@@ -43,9 +44,10 @@
   let permissionGranted = $derived(permissionState === 'granted');
 </script>
 
+<PageHeader title="Settings" noSidebar />
+
 <div class="settings-page">
   <div class="settings-content scroll-thin">
-    <h2 class="settings-title">Settings</h2>
 
     <section id="notifications" class="settings-section">
       <h3 class="section-heading">Notifications</h3>
@@ -134,13 +136,6 @@
     overflow-y: auto;
     padding: 1.5rem 2rem;
     min-width: 0;
-  }
-
-  .settings-title {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: hsl(var(--foreground));
-    margin-bottom: 1.5rem;
   }
 
   .settings-section {

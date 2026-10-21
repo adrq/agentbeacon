@@ -11,6 +11,7 @@
   import { executionsQuery, executionDetailQuery } from '../queries/executions';
   import { router } from '../router';
   import Button from './ui/button.svelte';
+  import PageHeader from './PageHeader.svelte';
   import ExecutionListItem from './ExecutionListItem.svelte';
   import StatusBadge from './StatusBadge.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
@@ -312,26 +313,27 @@
 
 </script>
 
+<PageHeader title={project?.name ?? ''} titleClass="detail-title">
+  {#snippet badges()}
+    {#if project?.is_git}
+      <span class="git-badge">git</span>
+    {/if}
+  {/snippet}
+  {#snippet actions()}
+    {#if project}
+      <Button variant="ghost" size="sm" onclick={() => { openSearchTab(project.id); router.navigate('#/wiki'); }}>Wiki</Button>
+      <Button variant="ghost" size="sm" onclick={() => router.navigate(`/projects/${project.id}/edit`)}>Edit</Button>
+      <Button variant="ghost" size="sm" onclick={() => showDeleteConfirm = true}>Delete</Button>
+    {/if}
+  {/snippet}
+</PageHeader>
+
 {#if projectQuery.isLoading}
   <div class="detail-loading">Loading project...</div>
 {:else if projectQuery.isError}
   <div class="detail-error">{projectQuery.error?.message ?? 'Not found'}</div>
 {:else if project}
   <div class="project-detail scroll-thin">
-    <div class="detail-header">
-      <div class="header-top">
-        <h2 class="detail-title">{project.name}</h2>
-        <div class="header-actions">
-          <Button variant="ghost" size="sm" onclick={() => { openSearchTab(project.id); router.navigate('#/wiki'); }}>Wiki</Button>
-          <Button variant="ghost" size="sm" onclick={() => router.navigate(`/projects/${project.id}/edit`)}>Edit</Button>
-          <Button variant="ghost" size="sm" onclick={() => showDeleteConfirm = true}>Delete</Button>
-        </div>
-      </div>
-      {#if project.is_git}
-        <span class="git-badge">git</span>
-      {/if}
-    </div>
-
     <div class="info-section">
       <div class="info-row">
         <span class="info-label">Slug</span>
@@ -633,28 +635,6 @@
     padding: 1rem;
   }
 
-  .detail-header {
-    margin-bottom: 1.5rem;
-  }
-
-  .header-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-  }
-
-  .detail-title {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: hsl(var(--foreground));
-  }
-
-  .header-actions {
-    display: flex;
-    gap: 0.25rem;
-  }
-
   .git-badge {
     display: inline-block;
     font-size: 0.625rem;
@@ -665,7 +645,6 @@
     color: hsl(var(--primary));
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-top: 0.375rem;
   }
 
   .info-section {

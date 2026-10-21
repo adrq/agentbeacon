@@ -6,7 +6,7 @@ import { apiGet, apiPost, ensureDriver } from './helpers';
 
 test('settings gear visible in NavRail (not in header)', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByText('AgentBeacon')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'AgentBeacon home' })).toBeVisible();
 
   // Gear icon should be in the nav rail
   const navRail = page.locator('.nav-rail');
@@ -19,7 +19,7 @@ test('settings gear visible in NavRail (not in header)', async ({ page }) => {
 
 test('settings gear navigates to settings page', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByText('AgentBeacon')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'AgentBeacon home' })).toBeVisible();
 
   // Click gear icon in NavRail
   await page.locator('.nav-rail').getByRole('button', { name: 'Settings' }).click();

@@ -30,7 +30,7 @@ test('add agent via sidebar', async ({ page }) => {
   await cleanupTestAgents();
 
   await page.goto('/#/agents');
-  await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
+  await expect(page.locator('.agents-welcome').getByRole('heading', { name: 'Agents' })).toBeVisible();
 
   // Click Add Agent in the welcome area (scope to avoid matching sidebar button)
   await page.locator('.agents-welcome').getByRole('button', { name: 'Add Agent' }).click();
@@ -44,7 +44,7 @@ test('add agent via sidebar', async ({ page }) => {
   await expect(page.getByLabel('Command')).toBeVisible({ timeout: 5000 });
   await page.getByLabel('Command').fill('echo');
 
-  await page.locator('.form-panel').getByRole('button', { name: 'Add' }).click();
+  await page.locator('.page-header .page-actions').getByRole('button', { name: 'Add' }).click();
 
   await expect(page.getByRole('heading', { name: 'Add Agent' })).not.toBeVisible({ timeout: 5000 });
   // Agent should appear in the sidebar list
@@ -96,5 +96,5 @@ test('delete agent via detail view', async ({ page }) => {
   await alertDialog.getByRole('button', { name: 'Delete' }).click();
 
   // Should navigate back to agents welcome
-  await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('.agents-welcome').getByRole('heading', { name: 'Agents' })).toBeVisible({ timeout: 5000 });
 });

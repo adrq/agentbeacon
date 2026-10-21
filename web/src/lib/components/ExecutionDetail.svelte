@@ -27,12 +27,13 @@
   import ExecutionOrgChart from './ExecutionOrgChart.svelte';
   import SidebarSessionTree from './SidebarSessionTree.svelte';
   import ExecutionAgentsDialog from './ExecutionAgentsDialog.svelte';
-  import { executionsWithQuestions } from '../stores/questionState';
   import Button from './ui/button.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
   import { router } from '../router';
-  import { executionPrefill, selectedSessionId, usageBySession, agentPoolDialogExecutionId } from '../stores/appState';
-  import type { EventFilter } from '../eventFilterGroups';
+  import { executionPrefill, selectedSessionId, usageBySession, agentPoolDialogExecutionId, sidebarOpen, theme } from '../stores/appState';
+  import logoDarkUrl from '../../assets/logo-mark-dark.svg';
+  import logoLightUrl from '../../assets/logo-mark-light.svg';
+  import { EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
 
   interface Props {
     executionId: string;
@@ -1106,16 +1107,35 @@
   <div class="detail-error">{error}</div>
 {:else if detail}
   <div class="detail-view scroll-thin">
-    <div class="detail-header">
-      <h2 class="detail-title">{displayTitle}</h2>
+    <div class="detail-header" class:brand-reserved={!$sidebarOpen}>
+      <!-- Mobile only: the app header and back row fold into this stacked breadcrumb. -->
+      <button class="mobile-back-chevron" onclick={() => router.navigate('/executions')} aria-label="Back to executions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+      </button>
+      <div class="title-stack">
+        <button class="mobile-brand" onclick={() => router.navigate('/executions')} tabindex="-1" aria-hidden="true">
+          <img src={$theme === 'light' ? logoLightUrl : logoDarkUrl} alt="" width="24" height="24" />
+          <span>AgentBeacon</span>
+        </button>
+        {#if !$sidebarOpen}
+          <span class="crumb-sep" aria-hidden="true">/</span>
+        {/if}
+        <h2 class="detail-title">{displayTitle}</h2>
+      </div>
       {#if activeAgent}
         <span class="header-settings" title={settingsTitle} aria-label={settingsTitle}>{summaryAgentName} · {savedModel} · {savedEffort}</span>
       {/if}
-      <StatusBadge status={detail.execution.status} hasQuestions={$executionsWithQuestions.has(detail.execution.id)} />
+      <!-- The question pill carries the attention colour, so the status badge stays muted. -->
+      <span class="status-slot">
+        <StatusBadge status={detail.execution.status} hasQuestions={false} />
+      </span>
+      <QuestionBanner execution={detail.execution} />
       {#if isTerminable}
-        <Button variant={isCompletionEligible ? 'outline' : 'destructive'} size="sm" disabled={terminateMut.isPending} onclick={() => { terminateError = null; showTerminateDialog = true; }}>
-          {terminateMut.isPending ? 'Terminating...' : isCompletionEligible ? 'Complete' : 'Cancel'}
-        </Button>
+        <span class="terminate-slot">
+          <Button variant={isCompletionEligible ? 'outline' : 'destructive'} size="sm" disabled={terminateMut.isPending} onclick={() => { terminateError = null; showTerminateDialog = true; }}>
+            {terminateMut.isPending ? 'Terminating...' : isCompletionEligible ? 'Complete' : 'Cancel'}
+          </Button>
+        </span>
       {/if}
       <span class="desktop-only-actions">
         <Button variant="ghost" size="sm" class="agents-action" aria-label={poolQuery.data ? `Manage execution agents (${poolQuery.data.length})` : 'Manage execution agents'} onclick={() => agentPoolDialogExecutionId.set(executionId)}>
@@ -1153,6 +1173,11 @@
                 </div>
                 <div class="overflow-sep" role="separator"></div>
               {/if}
+              {#if isTerminable}
+                <button class="overflow-item" disabled={terminateMut.isPending} onclick={() => { overflowMenuOpen = false; terminateError = null; showTerminateDialog = true; }}>
+                  {terminateMut.isPending ? 'Terminating...' : isCompletionEligible ? 'Complete' : 'Cancel'}
+                </button>
+              {/if}
               <button class="overflow-item" onclick={() => { overflowMenuOpen = false; agentPoolDialogExecutionId.set(executionId); }}>{poolQuery.data ? `Agents · ${poolQuery.data.length}` : 'Agents'}</button>
               {#if isRecoverable}
                 <button class="overflow-item" disabled={recoverMut.isPending} onclick={() => { overflowMenuOpen = false; handleRecover(); }}>{recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}</button>
@@ -1177,8 +1202,6 @@
       <div class="action-error">{recoverError}</div>
     {/if}
 
-    <QuestionBanner execution={detail.execution} />
-
     {#if showOverview}
       <ExecutionOrgChart
         sessions={detail.sessions}
@@ -1192,21 +1215,6 @@
       />
     {:else}
       <div class="events-header">
-        <span class="section-heading">Events</span>
-        {#if !isTerminal}
-          <span class="sse-indicator"
-            class:connected={sseActive}
-            class:reconnecting={sseReconnecting && !sseActive}
-            class:disconnected={!sseActive && !sseReconnecting}
-            title={sseActive ? 'Live (SSE)' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}
-          >
-            <span class="sse-dot"></span>
-            <span class="sse-label">{sseActive ? 'Live' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}</span>
-            {#if !sseActive && !sseReconnecting}
-              <button class="sse-retry" onclick={() => sseConnection?.reconnect()}>Retry</button>
-            {/if}
-          </span>
-        {/if}
         {#if !threadTarget}
           <div class="view-toggle-wrapper">
             <div class="view-toggle" role="tablist" aria-label="Event view mode">
@@ -1234,6 +1242,36 @@
             </div>
           </div>
         {/if}
+        {#if !threadTarget && viewMode !== 'diff' && showEventsPanelView}
+          <div class="event-filter-pills" role="radiogroup" aria-label="Filter events">
+            {#each EVENT_FILTER_PILLS as pill}
+              <button
+                class="event-filter-pill"
+                class:active={eventFilter === pill.value}
+                role="radio"
+                aria-checked={eventFilter === pill.value}
+                onclick={() => eventFilter = pill.value}
+              >{pill.label}</button>
+            {/each}
+          </div>
+        {/if}
+        {#if !isTerminal}
+          <span class="sse-indicator"
+            class:connected={sseActive}
+            class:reconnecting={sseReconnecting && !sseActive}
+            class:disconnected={!sseActive && !sseReconnecting}
+            title={sseActive ? 'Live (SSE)' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}
+          >
+            <span class="sse-dot"></span>
+            <!-- Healthy is just the dot; problems spell themselves out. -->
+            {#if !sseActive}
+              <span class="sse-label">{sseReconnecting ? 'Reconnecting...' : 'Disconnected'}</span>
+            {/if}
+            {#if !sseActive && !sseReconnecting}
+              <button class="sse-retry" onclick={() => sseConnection?.reconnect()}>Retry</button>
+            {/if}
+          </span>
+        {/if}
       </div>
 
       {#if threadTarget}
@@ -1251,9 +1289,9 @@
         <div class="events-panel">
           {#if showEventsPanelView}
             {#if viewMode === 'log'}
-              <EventsTimeline {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} agentPool={poolQuery.data} {eventFilter} onfilterchange={(f) => eventFilter = f} onready={onPanelReady} onprepending={setTailFence} />
+              <EventsTimeline {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} agentPool={poolQuery.data} {eventFilter} onready={onPanelReady} onprepending={setTailFence} />
             {:else}
-              <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} ephemeralToolCalls={ephemeralToolCalls.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} {viewedSessionSettled} onfilterchange={(f) => eventFilter = f} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} onready={onPanelReady} onprepending={setTailFence} />
+              <ChatView {events} {agents} sessions={detail.sessions} sessionId={activeSessionId} ephemeralText={ephemeralBuffers.get(activeSessionId ?? '')?.text ?? ''} ephemeralThinking={ephemeralThinkingBuffers.get(activeSessionId ?? '') ?? null} ephemeralToolCalls={ephemeralToolCalls.get(activeSessionId ?? '') ?? null} settledThinkingDuration={settledThinkingDurations.get(activeSessionId ?? '') ?? null} usageBySession={$usageBySession} {sessionIdentity} agentPool={poolQuery.data} {eventFilter} {viewedSessionSettled} onthreadopen={(a, b) => { threadTarget = { sessionA: a, sessionB: b }; }} onready={onPanelReady} onprepending={setTailFence} />
             {/if}
           {/if}
           {#if panelPhase !== 'live'}
@@ -1340,8 +1378,30 @@
     gap: 0.5rem;
     padding: 0.375rem 1rem;
     flex-shrink: 0;
-    min-height: 36px;
+    box-sizing: border-box;
+    min-height: var(--top-row-height);
     border-bottom: 1px solid hsl(var(--border));
+    transition: padding-left 0.2s ease;
+  }
+
+  /* With the sidebar collapsed, the brand lockup in AppShell overlays the start of this row. */
+  .detail-header.brand-reserved {
+    padding-left: calc(var(--brand-lockup-width) - var(--rail-width) + 0.5rem);
+  }
+
+  .mobile-back-chevron,
+  .mobile-brand {
+    display: none;
+  }
+
+  .title-stack {
+    display: contents;
+  }
+
+  .crumb-sep {
+    font-size: 0.875rem;
+    color: hsl(var(--muted-foreground));
+    flex-shrink: 0;
   }
 
   .detail-title {
@@ -1359,26 +1419,49 @@
   .events-header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem 0.375rem;
+    gap: 0.75rem;
+    padding: 0.375rem 1rem;
     flex-shrink: 0;
   }
 
-  .events-header .section-heading {
-    margin-right: auto;
+  .event-filter-pills {
+    display: flex;
+    gap: 2px;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .event-filter-pill {
+    padding: 0.1875rem 0.5rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.6875rem;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+  }
+  .event-filter-pill:hover:not(.active) {
+    background: hsl(var(--muted) / 0.5);
+  }
+  .event-filter-pill.active {
+    background: hsl(var(--primary) / 0.12);
+    color: hsl(var(--primary));
+    border-color: hsl(var(--primary) / 0.3);
+    font-weight: 600;
   }
 
   .sse-indicator {
     display: flex;
     align-items: center;
     gap: 0.375rem;
+    margin-left: auto;
+    flex-shrink: 0;
     font-size: 0.6875rem;
     font-weight: 500;
     color: hsl(var(--muted-foreground));
-    padding: 0.1875rem 0.5rem 0.1875rem 0.375rem;
-    border-radius: 999px;
-    border: 1px solid hsl(var(--border));
-    background: hsl(var(--muted) / 0.2);
   }
 
   .sse-dot {
@@ -1388,23 +1471,9 @@
     background: hsl(var(--muted-foreground) / 0.4);
   }
 
-  .sse-indicator.connected {
-    border-color: hsl(var(--status-success) / 0.3);
-    background: hsl(var(--status-success) / 0.08);
-  }
-
   .sse-indicator.connected .sse-dot {
     background: hsl(var(--status-success));
     box-shadow: 0 0 6px hsl(var(--status-success) / 0.5);
-  }
-
-  .sse-indicator.connected .sse-label {
-    color: hsl(var(--status-success));
-  }
-
-  .sse-indicator.reconnecting {
-    border-color: hsl(var(--status-attention) / 0.3);
-    background: hsl(var(--status-attention) / 0.08);
   }
 
   .sse-indicator.reconnecting .sse-dot {
@@ -1437,6 +1506,7 @@
 
   .view-toggle-wrapper {
     position: relative;
+    flex-shrink: 0;
   }
 
   .view-toggle {
@@ -1723,7 +1793,6 @@
   }
 
   @media (max-width: 768px) {
-    .events-header .section-heading,
     .events-header .sse-indicator {
       display: none;
     }
@@ -1731,8 +1800,79 @@
       padding: 0.25rem 1rem;
     }
     .desktop-only-actions,
-    .header-settings {
+    .header-settings,
+    .crumb-sep {
       display: none;
+    }
+    /* Two lines: chevron, wordmark and badges on top; the title gets the full width below. */
+    .detail-header {
+      flex-wrap: wrap;
+      row-gap: 0;
+    }
+    .detail-header > :global(*) {
+      order: 2;
+    }
+    .detail-header::after {
+      content: '';
+      order: 3;
+      flex-basis: 100%;
+    }
+    .terminate-slot {
+      display: none;
+    }
+    .status-slot {
+      order: 5;
+      flex-shrink: 0;
+    }
+    .mobile-back-chevron {
+      order: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      align-self: stretch;
+      width: 2rem;
+      flex-shrink: 0;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: hsl(var(--muted-foreground));
+      cursor: pointer;
+    }
+    .mobile-back-chevron svg {
+      width: 20px;
+      height: 20px;
+    }
+    /* Same size as the desktop and mobile app header wordmark. */
+    .mobile-brand {
+      order: 1;
+      margin-right: auto;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0;
+      border: none;
+      background: transparent;
+      font-size: 0.875rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: hsl(var(--foreground));
+      cursor: pointer;
+      user-select: none;
+    }
+    .mobile-brand img {
+      width: 1.5rem;
+      height: 1.5rem;
+    }
+    .title-stack .detail-title {
+      order: 4;
+      flex: 0 1 auto;
+      margin-left: 2.5rem;
+    }
+    /* The desktop sidebar state must not move anything on mobile. */
+    .detail-header,
+    .detail-header.brand-reserved {
+      padding-left: 0.25rem;
+      transition: none;
     }
     .overflow-menu-wrapper {
       display: block;

@@ -3,13 +3,16 @@
 
 <script lang="ts">
   import { get } from 'svelte/store';
-  import { activeSection, sidebarOpen, selectedExecutionId, selectedProjectId, selectedAgentId, actionPanelCollapsed, userExplicitlyCollapsed, homeFeedFilter, routeMode } from '../stores/appState';
+  import { activeSection, sidebarOpen, selectedExecutionId, selectedProjectId, selectedAgentId, actionPanelCollapsed, userExplicitlyCollapsed, decisionsOverlayOpen, homeFeedFilter, routeMode } from '../stores/appState';
   import { router } from '../router';
   import { decisionCount } from '../stores/questionState';
   import { executionsQuery } from '../queries/executions';
   // Import standalone adapter to bootstrap notification callback registration
   import { fireTurnCompleteNotification } from '../adapters/standalone';
   import AppHeader from './AppHeader.svelte';
+  import BrandRow from './BrandRow.svelte';
+  import BrandLockup from './BrandLockup.svelte';
+  import PageHeader from './PageHeader.svelte';
   import NavRail from './NavRail.svelte';
   import SplitPanel from './SplitPanel.svelte';
   import ExecutionList from './ExecutionList.svelte';
@@ -52,7 +55,9 @@
 
   let isHome = $derived($activeSection === 'home');
   let sidebarHidden = $derived($activeSection === 'home' || $activeSection === 'wiki' || $activeSection === 'settings');
-  let effectiveCollapsed = $derived(isMobile ? $actionPanelCollapsed : (isHome ? false : (isTablet || $actionPanelCollapsed)));
+  // Tablet Home keeps its wide inline panel; elsewhere below desktop width the panel overlays the content.
+  let overlayMode = $derived(isMobile || (isTablet && !isHome));
+  let effectiveCollapsed = $derived(overlayMode ? !$decisionsOverlayOpen : (isHome ? false : $actionPanelCollapsed));
 
   const execsQuery = executionsQuery();
   let hasExecutions = $derived((execsQuery.data ?? []).length > 0);
@@ -65,13 +70,22 @@
     $routeMode === 'edit'
   );
 
+  // The mobile execution screen folds the app header and back row into its own header.
+  let mobileExecutionView = $derived(
+    isMobile && $activeSection === 'executions' && $selectedExecutionId != null && $routeMode !== 'new'
+  );
+
   function handleMobileBack() {
     const section = get(activeSection);
     router.navigate(`/${section}`);
   }
 
   function toggleActionPanel() {
-    if (!isMobile && (isTablet || isHome)) return;
+    if (overlayMode) {
+      decisionsOverlayOpen.update(v => !v);
+      return;
+    }
+    if (isHome) return;
     actionPanelCollapsed.update(v => {
       const next = !v;
       if (next) {
@@ -95,6 +109,7 @@
     if (count === 0 && prevDecisionCount > 0) {
       userExplicitlyCollapsed.set(false);
       actionPanelCollapsed.set(true);
+      decisionsOverlayOpen.set(false);
     }
     prevDecisionCount = count;
   });
@@ -133,6 +148,12 @@
     }
   });
 
+  // Navigating closes the overlay, so the page you went to isn't hidden behind it.
+  $effect(() => {
+    void [$activeSection, $selectedExecutionId, $selectedProjectId, $selectedAgentId, $routeMode];
+    decisionsOverlayOpen.set(false);
+  });
+
   // Reset home feed filter when navigating away from Home and Executions
   $effect(() => {
     const s = $activeSection;
@@ -150,13 +171,17 @@
   onclick={(e: MouseEvent) => { e.preventDefault(); document.getElementById('main-content')?.focus(); }}
 >Skip to main content</a>
 
-<AppHeader />
+{#if !mobileExecutionView}
+  <AppHeader />
+{/if}
 
 <div class="shell-body">
+  <BrandLockup />
   <NavRail onToggleDecisions={toggleActionPanel} panelOpen={!effectiveCollapsed} />
-  <SplitPanel storageKey="agentbeacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35} collapsed={sidebarHidden || !$sidebarOpen} {mobileShowRight} onMobileBack={handleMobileBack}>
+  <SplitPanel storageKey="agentbeacon-main-split" initialLeftWidth={22} minWidth={15} maxWidth={35} collapsed={sidebarHidden || !$sidebarOpen} {mobileShowRight} onMobileBack={mobileExecutionView ? undefined : handleMobileBack}>
     {#snippet left()}
       <div class="sidebar">
+        <BrandRow showNew={$activeSection === 'executions'} />
         <div class="sidebar-panel" class:hidden={$activeSection !== 'executions'}>
           <ExecutionList />
         </div>
@@ -171,6 +196,7 @@
     {#snippet right()}
       <div class="main-content" id="main-content" tabindex="-1">
         {#if $activeSection === 'home'}
+          <BrandRow showNew />
           {#if hasExecutions}
             <div class="home-view scroll-thin">
               <OpsSummary executions={execsQuery.data ?? []} />
@@ -184,13 +210,16 @@
             <NewExecutionForm />
           {:else if $selectedExecutionId}
             <ExecutionDetail executionId={$selectedExecutionId} />
-          {:else if hasExecutions}
-            <div class="home-view scroll-thin">
-              <OpsSummary executions={execsQuery.data ?? []} />
-              <ActivityFeed executions={execsQuery.data ?? []} />
-            </div>
           {:else}
-            <EmptyState />
+            <PageHeader title="Executions" />
+            {#if hasExecutions}
+              <div class="home-view scroll-thin">
+                <OpsSummary executions={execsQuery.data ?? []} />
+                <ActivityFeed executions={execsQuery.data ?? []} />
+              </div>
+            {:else}
+              <EmptyState />
+            {/if}
           {/if}
         {:else if $activeSection === 'projects'}
           {#if $routeMode === 'new'}
@@ -225,6 +254,7 @@
     onToggle={toggleActionPanel}
     decisionCount={$decisionCount}
     wide={isHome && !isMobile}
+    overlay={overlayMode}
   />
 </div>
 
@@ -239,12 +269,14 @@
 
   .sidebar {
     height: 100%;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
     border-right: 1px solid hsl(var(--border));
   }
 
   .sidebar-panel {
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
   }
 

@@ -10,9 +10,11 @@
     onToggle: () => void;
     decisionCount: number;
     wide?: boolean;
+    // Opens over the content instead of beside it; content keeps the collapsed strip's width.
+    overlay?: boolean;
   }
 
-  let { collapsed, onToggle, decisionCount, wide = false }: Props = $props();
+  let { collapsed, onToggle, decisionCount, wide = false, overlay = false }: Props = $props();
 
   const STORAGE_KEY = 'agentbeacon-action-panel-width';
   const DEFAULT_WIDTH = 420;
@@ -31,7 +33,7 @@
   let committedWidth = $state(DEFAULT_WIDTH);
   $effect(() => {
     if (!isDragging) {
-      committedWidth = isMobile ? 0 : (collapsed ? COLLAPSED_WIDTH : (wide ? 0 : panelWidth));
+      committedWidth = isMobile ? 0 : (collapsed || overlay ? COLLAPSED_WIDTH : (wide ? 0 : panelWidth));
     }
   });
   $effect(() => {
@@ -88,6 +90,7 @@
   class:collapsed
   class:wide
   class:mobile={isMobile}
+  class:overlay
   class:dragging={isDragging}
   aria-label="Decisions panel"
   style={!collapsed && !wide ? `width: ${panelWidth}px` : ''}
@@ -133,7 +136,7 @@
   {/if}
 </aside>
 
-{#if isMobile && !collapsed}
+{#if (isMobile || overlay) && !collapsed}
   <button class="mobile-backdrop" onclick={onToggle} aria-label="Close decisions panel"></button>
 {/if}
 
@@ -162,6 +165,11 @@
 
   .action-panel.collapsed {
     width: 40px;
+  }
+
+  .action-panel.overlay:not(.collapsed) {
+    z-index: 50;
+    box-shadow: -8px 0 24px rgb(0 0 0 / 0.25);
   }
 
   .resize-handle {

@@ -98,4 +98,11 @@
     color: hsl(var(--foreground));
     background: hsl(var(--accent) / 0.3);
   }
+
+  /* Desktop moves these into the nav rail and sidebar brand row. */
+  @media (min-width: 769px) {
+    .app-header {
+      display: none;
+    }
+  }
 </style>

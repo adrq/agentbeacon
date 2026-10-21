@@ -7,6 +7,7 @@
   import { agentFormPrefill } from '../stores/appState';
   import { router } from '../router';
   import Button from './ui/button.svelte';
+  import PageHeader from './PageHeader.svelte';
   import DriverConfigForm from './agent-form/DriverConfigForm.svelte';
   import RawJsonPanel from './agent-form/RawJsonPanel.svelte';
 
@@ -222,16 +223,16 @@
   }
 </script>
 
+<PageHeader title={isEdit ? 'Edit Agent' : 'Add Agent'} titleClass="form-panel-title">
+  {#snippet actions()}
+    <Button variant="ghost" size="sm" onclick={handleCancel}>Cancel</Button>
+    <Button variant="default" size="sm" disabled={!canSubmit} onclick={handleSubmit}>
+      {submitting ? 'Saving...' : isEdit ? 'Save' : 'Add'}
+    </Button>
+  {/snippet}
+</PageHeader>
+
 <div class="form-panel scroll-thin">
-  <div class="form-panel-header">
-    <h2 class="form-panel-title">{isEdit ? 'Edit Agent' : 'Add Agent'}</h2>
-    <div class="form-panel-actions">
-      <Button variant="ghost" onclick={handleCancel}>Cancel</Button>
-      <Button variant="default" disabled={!canSubmit} onclick={handleSubmit}>
-        {submitting ? 'Saving...' : isEdit ? 'Save' : 'Add'}
-      </Button>
-    </div>
-  </div>
 
   {#if isEdit && agentQuery.isLoading}
     <div class="form-loading">Loading agent...</div>

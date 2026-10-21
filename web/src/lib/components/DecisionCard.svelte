@@ -6,6 +6,7 @@
   import type { QuestionState } from '../questions';
   import { ApiError } from '../api';
   import { router } from '../router';
+  import { decisionsOverlayOpen } from '../stores/appState';
   import { toasts } from '../stores/toasts';
   import {
     markBatchSubmitted,
@@ -111,6 +112,8 @@
   }
 
   function viewExecution() {
+    // Navigation closes the overlay too, but not when this execution is already open.
+    decisionsOverlayOpen.set(false);
     router.navigate(`/execution/${executionId}`);
   }
 </script>

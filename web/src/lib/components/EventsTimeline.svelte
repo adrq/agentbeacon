@@ -5,7 +5,7 @@
   import type { Event, Agent, AgentPoolEntry, SessionSummary, AgentType } from '../types';
   import { isMessagePayload, isStateChangePayload, isEscalateData, isDelegateData, isTurnCompleteData, isPlanData, isModelRefusalFallbackData, isModelRefusalNoFallbackData, refusalModelName, refusalDisplayText } from '../types';
   import { normalizeDataPart, type NormalizedToolCall } from '../normalize';
-  import { EVENT_FILTER_PILLS, matchesFilter, type EventFilter } from '../eventFilterGroups';
+  import { matchesFilter, type EventFilter } from '../eventFilterGroups';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import { tick } from 'svelte';
   import { useQueryClient } from '@tanstack/svelte-query';
@@ -23,7 +23,6 @@
     sessionId?: string | null;
     agentPool?: AgentPoolEntry[];
     eventFilter?: EventFilter;
-    onfilterchange?: (filter: EventFilter) => void;
     /** Reports whether the list is holding its head, for the session named. */
     onprepending?: (sessionId: string, held: boolean) => void;
     // Fired once after the first render frame has committed and the initial
@@ -32,7 +31,7 @@
     onready?: () => void;
   }
 
-  let { events, agents = [], sessions = [], sessionId = null, agentPool, eventFilter = 'all', onfilterchange, onready, onprepending }: Props = $props();
+  let { events, agents = [], sessions = [], sessionId = null, agentPool, eventFilter = 'all', onready, onprepending }: Props = $props();
 
   let readySignaled = false;
   function signalReady() {
@@ -554,17 +553,6 @@
 </script>
 
 <div class="timeline-section">
-  <div class="event-filter-pills" role="radiogroup" aria-label="Filter events">
-    {#each EVENT_FILTER_PILLS as pill}
-      <button
-        class="event-filter-pill"
-        class:active={eventFilter === pill.value}
-        role="radio"
-        aria-checked={eventFilter === pill.value}
-        onclick={() => onfilterchange?.(pill.value)}
-      >{pill.label}</button>
-    {/each}
-  </div>
   <!-- Focusable so a keyboard reader can page it, as the chat list is. -->
   <div class="timeline-scroll scroll-thin" bind:this={scrollContainer} onscroll={handleScroll} tabindex="-1">
     <div class="timeline-top" bind:this={topEl}>
@@ -620,33 +608,6 @@
 </div>
 
 <style>
-  .event-filter-pills {
-    display: flex;
-    gap: 2px;
-    padding: 0.375rem 1rem;
-    flex-shrink: 0;
-  }
-  .event-filter-pill {
-    padding: 0.1875rem 0.5rem;
-    border: 1px solid hsl(var(--border));
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: hsl(var(--muted-foreground));
-    font-size: 0.6875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 0.1s, color 0.1s, border-color 0.1s;
-  }
-  .event-filter-pill:hover:not(.active) {
-    background: hsl(var(--muted) / 0.5);
-  }
-  .event-filter-pill.active {
-    background: hsl(var(--primary) / 0.12);
-    color: hsl(var(--primary));
-    border-color: hsl(var(--primary) / 0.3);
-    font-weight: 600;
-  }
-
   .load-full-btn {
     font-size: 0.6875rem;
     margin-left: 0.5rem;
