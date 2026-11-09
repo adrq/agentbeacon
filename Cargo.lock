@@ -489,6 +489,7 @@ name = "common"
 version = "0.16.0"
 dependencies = [
  "chrono",
+ "dirs",
  "fluent-uri",
  "jsonschema",
  "lazy_static",

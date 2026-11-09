@@ -38,6 +38,8 @@ make pre-commit     # Run pre-commit hooks on staged files
 | Vite dev port   | `AGENTBEACON_PORT + 1000`   | 10456    |
 | SQLite DB file  | `scheduler-{port}.db`       | `scheduler-9456.db` |
 
+These files land in the current directory for builds from source (`make all`, `cargo build`/`cargo run`, release profile or not). Packaged builds (`build-musl-*` with the `installed-paths` feature, used for the wheels and npm packages) keep the DB and wiki index under the data directory instead (`$AGENTBEACON_DATA_DIR/db/` or the platform data directory). The user is created with `agentbeacon --setup-user`; `agentbeacon --setup` only installs SDK dependencies.
+
 ```bash
 # Run a second instance (no conflicts with the first):
 AGENTBEACON_PORT=9457 make run

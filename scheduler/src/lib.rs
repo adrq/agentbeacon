@@ -12,6 +12,7 @@ pub mod resolution;
 pub mod search;
 pub mod services;
 pub mod slugs;
+pub mod storage;
 pub mod supervisor;
 pub mod telemetry;
 pub mod test_pause;

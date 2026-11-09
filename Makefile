@@ -72,7 +72,7 @@ build-musl-x64: build-frontend executors build-docs
 	@command -v cargo-zigbuild >/dev/null 2>&1 || { echo "Installing cargo-zigbuild..."; cargo install cargo-zigbuild; }
 	@rustup target list --installed | grep -q x86_64-unknown-linux-musl || rustup target add x86_64-unknown-linux-musl
 	@echo "Building musl-static x86_64 binaries..."
-	PATH="$(ZIG_DIR):$$PATH" RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo zigbuild --target x86_64-unknown-linux-musl --release
+	PATH="$(ZIG_DIR):$$PATH" RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo zigbuild --target x86_64-unknown-linux-musl --release --features scheduler/installed-paths
 	@output=$$(readelf -d target/x86_64-unknown-linux-musl/release/agentbeacon) \
 		|| { echo "ERROR: readelf failed on agentbeacon"; exit 1; }; \
 		if echo "$$output" | grep -q NEEDED; then echo "ERROR: agentbeacon has dynamic dependencies"; exit 1; fi
@@ -86,7 +86,7 @@ build-musl-arm64: build-frontend executors build-docs
 	@command -v cargo-zigbuild >/dev/null 2>&1 || { echo "Installing cargo-zigbuild..."; cargo install cargo-zigbuild; }
 	@rustup target list --installed | grep -q aarch64-unknown-linux-musl || rustup target add aarch64-unknown-linux-musl
 	@echo "Building musl-static aarch64 binaries (cross-compiling)..."
-	PATH="$(ZIG_DIR):$$PATH" RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo zigbuild --target aarch64-unknown-linux-musl --release
+	PATH="$(ZIG_DIR):$$PATH" RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo zigbuild --target aarch64-unknown-linux-musl --release --features scheduler/installed-paths
 	@output=$$(readelf -d target/aarch64-unknown-linux-musl/release/agentbeacon) \
 		|| { echo "ERROR: readelf failed on agentbeacon"; exit 1; }; \
 		if echo "$$output" | grep -q NEEDED; then echo "ERROR: agentbeacon has dynamic dependencies"; exit 1; fi
@@ -178,7 +178,7 @@ test-all: test-rust test-int test-e2e
 
 # Run target
 run: all
-	@./bin/agentbeacon --setup --user-only --port $${AGENTBEACON_PORT:-9456}
+	@./bin/agentbeacon --setup-user --port $${AGENTBEACON_PORT:-9456}
 	@echo "Starting AgentBeacon on port $${AGENTBEACON_PORT:-9456}..."
 	AGENTBEACON_EXECUTORS_DIR=$${AGENTBEACON_EXECUTORS_DIR:-$(CURDIR)/executors/dist} \
 		./bin/agentbeacon --port $${AGENTBEACON_PORT:-9456}
@@ -201,7 +201,7 @@ pre-commit:
 
 # Development mode - run scheduler in dev mode
 dev-backend: build-docs
-	@cargo run --bin agentbeacon -- --setup --user-only --port $${AGENTBEACON_PORT:-9456}
+	@cargo run --bin agentbeacon -- --setup-user --port $${AGENTBEACON_PORT:-9456}
 	@echo "Starting scheduler in dev mode on port $${AGENTBEACON_PORT:-9456}..."
 	DEV_MODE=1 cargo run --bin agentbeacon -- --port $${AGENTBEACON_PORT:-9456}
 

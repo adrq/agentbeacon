@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
+dirs = "6"
 fluent-uri = "0.3.2"
 jsonschema = { workspace = true, features = ["resolve-file"] }
 lazy_static = "1.5.0"

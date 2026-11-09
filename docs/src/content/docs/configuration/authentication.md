@@ -7,17 +7,26 @@ Every API request is authenticated. Only the health, readiness, version and docu
 
 ## The user
 
-AgentBeacon has one user, created with `--setup` against the database you run with (the same `--port` or `--db-url`):
+AgentBeacon has one user, created with `--setup-user` against the database you run with (the same `--port` or `--db-url`). `--setup-user` first prints where the user is stored. `--setup` installs agent SDK dependencies and doesn't touch the user.
 
 ```bash
-agentbeacon --setup                       # prompts for a username and password
-AGENTBEACON_USERNAME=admin AGENTBEACON_PASSWORD='…' agentbeacon --setup --user-only
+agentbeacon --setup-user                  # prompts for a username and password
+AGENTBEACON_USERNAME=admin AGENTBEACON_PASSWORD='…' agentbeacon --setup-user
 ```
 
 - The username is 1–64 characters of letters, digits, `.`, `_` and `-`.
 - The password is 8–256 characters.
-- `--user-only` creates or updates the user and skips SDK installation. Without credentials and with a user already present, it changes nothing.
-- Running `--setup` again with a new password changes it and signs out every existing login. Running it with a different username is refused: only one user is supported.
+- Without credentials and with a user already present, `--setup-user` changes nothing. It never prompts to change an existing password.
+- To change the password, run `--setup-user` with the same username and the new password in the environment. Every existing login is signed out. Running it with a different username is refused: only one user is supported.
+
+```bash
+AGENTBEACON_USERNAME=admin AGENTBEACON_PASSWORD='…' agentbeacon --setup-user
+
+# bash: keep the password out of shell history
+read -rs -p 'New password: ' AGENTBEACON_PASSWORD; echo
+AGENTBEACON_USERNAME=admin AGENTBEACON_PASSWORD="$AGENTBEACON_PASSWORD" agentbeacon --setup-user
+unset AGENTBEACON_PASSWORD
+```
 
 ## Signing in
 

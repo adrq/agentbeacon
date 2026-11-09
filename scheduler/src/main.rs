@@ -7,8 +7,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use common::DataDir;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -20,7 +20,8 @@ use scheduler::{
     db,
     queue::TaskQueue,
     search::WikiSearchIndex,
-    services,
+    services, storage,
+    storage::DefaultLocation,
     supervisor::Supervisor,
     telemetry,
 };
@@ -39,12 +40,27 @@ struct Cli {
     /// Examples:
     ///   sqlite:///tmp/scheduler.db
     ///   postgres://user:pass@localhost/dbname
-    /// Defaults to sqlite://scheduler-{port}.db?mode=rwc when not specified.
+    /// SQLite URLs take a path and optionally ?mode=rwc, ?mode=rw or ?mode=ro.
+    #[cfg_attr(
+        feature = "installed-paths",
+        doc = "Defaults to db/scheduler-{port}.db in the data directory ($AGENTBEACON_DATA_DIR or the platform data directory)."
+    )]
+    #[cfg_attr(
+        not(feature = "installed-paths"),
+        doc = "Defaults to scheduler-{port}.db in the current directory."
+    )]
     #[arg(long, env = "DATABASE_URL")]
     db_url: Option<String>,
 
     /// Directory for wiki search index files.
-    /// Defaults to wiki-index-{port}/ when not specified.
+    #[cfg_attr(
+        feature = "installed-paths",
+        doc = "Defaults to db/wiki-index-{port}/ in the data directory ($AGENTBEACON_DATA_DIR or the platform data directory)."
+    )]
+    #[cfg_attr(
+        not(feature = "installed-paths"),
+        doc = "Defaults to wiki-index-{port}/ in the current directory."
+    )]
     #[arg(long, env = "AGENTBEACON_WIKI_INDEX_DIR")]
     wiki_index_dir: Option<String>,
 
@@ -69,18 +85,13 @@ struct Cli {
     #[arg(long)]
     worker_poll_interval: Option<String>,
 
-    /// Create or update the user, then run SDK setup (delegates to worker binary)
+    /// Install or update agent SDKs, then exit
     #[arg(long, help_heading = "Setup")]
     setup: bool,
 
-    /// With --setup: only create or update the user; skip SDK setup
-    #[arg(
-        long,
-        requires = "setup",
-        conflicts_with = "status",
-        help_heading = "Setup"
-    )]
-    user_only: bool,
+    /// Create the user or change its password, then exit
+    #[arg(long, conflicts_with = "setup", help_heading = "Setup")]
+    setup_user: bool,
 
     /// Show installed SDK status without installing (use with --setup)
     #[arg(long, requires = "setup", help_heading = "Setup")]
@@ -113,22 +124,26 @@ fn main() -> Result<()> {
 
 async fn run(cli: Cli, setup_credentials: Result<Option<(String, String)>, String>) -> Result<()> {
     if cli.setup {
-        if !cli.status {
-            run_user_setup(&cli, setup_credentials).await?;
-        }
-        if cli.user_only {
-            return Ok(());
-        }
         return run_scheduler_setup(&cli);
+    }
+
+    if cli.setup_user {
+        return run_user_setup(&cli, setup_credentials).await;
     }
 
     if cli.detect_orphans {
         sqlx::any::install_default_drivers();
-        let db_url = detector_db_url(
-            cli.db_url
-                .clone()
-                .unwrap_or_else(|| format!("sqlite://scheduler-{}.db", cli.port)),
-        );
+        let data_dir = common::platform_data_dir();
+        let location =
+            match storage::resolve_db(cli.db_url.as_deref(), cli.port, default_location(&data_dir))
+            {
+                Ok(location) => location,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                }
+            };
+        let db_url = detector_db_url(location.url);
         let code = db::detector::run_orphan_detector(&db_url).await;
         std::process::exit(code);
     }
@@ -180,11 +195,17 @@ fn detector_db_url(url: String) -> String {
     format!("{base}?{}", params.join("&"))
 }
 
-/// The database URL for the port or `--db-url` in use.
-fn resolve_db_url(cli: &Cli) -> String {
-    cli.db_url
-        .clone()
-        .unwrap_or_else(|| format!("sqlite://scheduler-{}.db?mode=rwc", cli.port))
+const DEFAULT_PORT: u16 = 9456;
+
+const INSTALLED_PATHS: bool = cfg!(feature = "installed-paths");
+
+/// The default storage location for this build.
+fn default_location(data_dir: &DataDir) -> DefaultLocation<'_> {
+    if INSTALLED_PATHS {
+        DefaultLocation::DataDir(data_dir)
+    } else {
+        DefaultLocation::WorkingDir
+    }
 }
 
 async fn run_user_setup(
@@ -192,30 +213,75 @@ async fn run_user_setup(
     setup_credentials: Result<Option<(String, String)>, String>,
 ) -> Result<()> {
     use scheduler::services::auth::setup::{self, SetupMode, SetupOutcome};
+    use std::io::IsTerminal;
 
     sqlx::any::install_default_drivers();
-    let db_url = resolve_db_url(cli);
-    let pool = db::pool::create(&db_url)
+    let data_dir = common::platform_data_dir();
+    let location =
+        match storage::resolve_db(cli.db_url.as_deref(), cli.port, default_location(&data_dir)) {
+            Ok(location) => location,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+    let target = storage::describe(&location.url);
+    println!("User database: {target}");
+    if !location.given {
+        eprintln!(
+            "warning: no database URL given; using {target}. To use a different database, \
+             pass --db-url or set DATABASE_URL, here and when starting AgentBeacon."
+        );
+    }
+    if std::io::stdin().is_terminal() && storage::needs_create_confirmation(&location) {
+        let create =
+            setup::confirm_default_yes("No database exists at this location. Create it? [Y/n] ")
+                .map_err(anyhow::Error::msg)?;
+        if !create {
+            eprintln!(
+                "No database was created. Pass --db-url or set DATABASE_URL to use a different database."
+            );
+            std::process::exit(1);
+        }
+    }
+    if let Some(path) = &location.default_path
+        && let Err(e) = storage::prepare_default(path)
+    {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+
+    let pool = db::pool::create(&location.url)
         .await
         .context("Failed to create database pool")?;
-    db::migrations::run(&pool, &db_url)
+    db::migrations::run(&pool, &location.url)
         .await
         .context("Failed to run database migrations")?;
     let supplied = setup_credentials.map_err(anyhow::Error::msg)?;
-    let mode = SetupMode::detect(!cli.user_only);
+    let mode = SetupMode::detect();
     match setup::run(&pool, supplied, &mode).await {
-        Ok(SetupOutcome::Created) => println!("User created."),
+        Ok(SetupOutcome::Created) => println!("User created in {target}."),
         Ok(SetupOutcome::PasswordChanged) => {
-            println!("Password changed. Every existing login was signed out.")
+            println!("Password changed in {target}. Every existing login was signed out.")
         }
-        Ok(SetupOutcome::Unchanged) => println!("User unchanged."),
-        Ok(SetupOutcome::Skipped) => println!("User exists; nothing to change."),
+        Ok(SetupOutcome::Unchanged) => println!("User unchanged in {target}."),
+        Ok(SetupOutcome::Skipped) => println!("User exists in {target}; nothing to change."),
         Err(message) => {
             eprintln!("setup failed: {message}");
             std::process::exit(1);
         }
     }
     pool.close().await;
+    if location.given {
+        println!(
+            "Start AgentBeacon with the same --db-url or DATABASE_URL, or it will not find this user."
+        );
+    } else if cli.port != DEFAULT_PORT {
+        println!(
+            "Start AgentBeacon with --port {port} (or AGENTBEACON_PORT={port}) to use this database.",
+            port = cli.port
+        );
+    }
     Ok(())
 }
 
@@ -245,9 +311,24 @@ fn run_scheduler_setup(cli: &Cli) -> Result<()> {
 async fn bootstrap(cli: Cli) -> Result<()> {
     let dev_mode = std::env::var("DEV_MODE").map(|v| v == "1").unwrap_or(false);
 
-    let db_url = resolve_db_url(&cli);
+    let data_dir = common::platform_data_dir();
+    let location =
+        storage::resolve_db(cli.db_url.as_deref(), cli.port, default_location(&data_dir))?;
+    let wiki_index_dir = storage::resolve_wiki_index_dir(
+        cli.wiki_index_dir.as_deref(),
+        cli.port,
+        default_location(&data_dir),
+    )?;
+    if let Some(path) = &location.default_path {
+        storage::prepare_default(path)?;
+    }
+    if INSTALLED_PATHS && cli.wiki_index_dir.is_none() {
+        storage::prepare_default_index(&wiki_index_dir)?;
+    }
+    let db_url = location.url;
+    let target = storage::describe(&db_url);
 
-    info!("Connecting to database: {}", db_url);
+    info!("Connecting to database: {target}");
     let db_pool = db::pool::create(&db_url)
         .await
         .context("Failed to create database pool")?;
@@ -265,7 +346,9 @@ async fn bootstrap(cli: Cli) -> Result<()> {
     info!("Database migrations completed successfully");
 
     match db::users::get_single(&db_pool).await {
-        Ok(None) => warn!("No user exists; run `agentbeacon --setup` to create one"),
+        Ok(None) => warn!(
+            "No user exists in {target}; run `agentbeacon --setup-user` with the same --port or --db-url to create one"
+        ),
         Ok(Some(_)) => {}
         Err(e) => warn!(error = %e, "Could not check for a user"),
     }
@@ -299,11 +382,8 @@ async fn bootstrap(cli: Cli) -> Result<()> {
         info!(public_url = %url, "Using PUBLIC_URL for agent card");
     }
 
-    let wiki_index_dir = cli
-        .wiki_index_dir
-        .unwrap_or_else(|| format!("wiki-index-{}", cli.port));
-    let wiki_search = WikiSearchIndex::new(PathBuf::from(&wiki_index_dir));
-    info!(dir = %wiki_index_dir, "Initializing wiki search index");
+    let wiki_search = WikiSearchIndex::new(wiki_index_dir.clone());
+    info!(dir = %wiki_index_dir.display(), "Initializing wiki search index");
 
     let rebuild_start = std::time::Instant::now();
     let pages = db::wiki::list_all_pages_for_indexing(&db_pool)

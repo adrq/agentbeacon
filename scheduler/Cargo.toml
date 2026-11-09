@@ -7,6 +7,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+installed-paths = []
+
 [[bin]]
 name = "agentbeacon"
 path = "src/main.rs"

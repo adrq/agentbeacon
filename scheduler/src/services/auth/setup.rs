@@ -26,15 +26,12 @@ pub enum SetupOutcome {
 pub struct SetupMode {
     /// Prompts are allowed (stdin is a terminal).
     pub interactive: bool,
-    /// Offer a password change when a user exists and no credentials were supplied.
-    pub offer_password_change: bool,
 }
 
 impl SetupMode {
-    pub fn detect(offer_password_change: bool) -> Self {
+    pub fn detect() -> Self {
         Self {
             interactive: std::io::stdin().is_terminal(),
-            offer_password_change,
         }
     }
 }
@@ -66,23 +63,11 @@ pub async fn run(
         .await
         .map_err(|e| e.to_string())?;
     match existing {
-        Some(user) => {
-            if !(mode.interactive && mode.offer_password_change) {
-                return Ok(SetupOutcome::Skipped);
-            }
-            if !confirm(&format!(
-                "User '{}' exists. Change its password? [y/N] ",
-                user.username
-            ))? {
-                return Ok(SetupOutcome::Skipped);
-            }
-            let password = prompt_new_password()?;
-            apply(pool, &user.username, &password).await
-        }
+        Some(_) => Ok(SetupOutcome::Skipped),
         None => {
             if !mode.interactive {
                 return Err(format!(
-                    "no user exists: set {USERNAME_ENV} and {PASSWORD_ENV}, or run --setup in a terminal"
+                    "no user exists: set {USERNAME_ENV} and {PASSWORD_ENV}, or run --setup-user in a terminal"
                 ));
             }
             let username = prompt_line("Username: ")?;
@@ -124,7 +109,7 @@ async fn apply(pool: &DbPool, username: &str, password: &str) -> Result<SetupOut
         .map_err(|e| e.to_string())?
     else {
         let _ = tx.rollback().await;
-        return Err("the user disappeared during setup; run --setup again".to_string());
+        return Err("the user disappeared during setup; run --setup-user again".to_string());
     };
     if user.username != username {
         let _ = tx.rollback().await;
@@ -162,9 +147,20 @@ fn prompt_line(prompt: &str) -> Result<String, String> {
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
-fn confirm(prompt: &str) -> Result<bool, String> {
-    let answer = prompt_line(prompt)?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
+/// Asks a yes/no question that defaults to yes. End of input counts as no.
+pub fn confirm_default_yes(prompt: &str) -> Result<bool, String> {
+    print!("{prompt}");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    let read = std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    if read == 0 {
+        return Ok(false);
+    }
+    let answer = line.trim();
+    Ok(answer.is_empty() || answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
 fn prompt_new_password() -> Result<String, String> {

@@ -21,18 +21,19 @@ pip install --user agentbeacon
 npm install -g agentbeacon
 ```
 
-Then create your user, install agent SDK dependencies, and start:
+Then install agent SDK dependencies, create your user, and start:
 
 ```bash
-agentbeacon --setup          # create your user, then install Claude + Copilot SDK dependencies
+agentbeacon --setup          # install Claude + Copilot SDK dependencies
+agentbeacon --setup-user     # create your user
 agentbeacon                  # start AgentBeacon
 # Open http://localhost:9456 and sign in
 ```
 
-`--setup` asks for a username and password. For scripted installs, set `AGENTBEACON_USERNAME` and `AGENTBEACON_PASSWORD` instead; `agentbeacon --setup --user-only` creates or updates the user without installing SDKs. See [Authentication](/docs/configuration/authentication/).
+`--setup-user` shows where the user is stored and asks for a username and password when it creates the user. For scripted installs, set `AGENTBEACON_USERNAME` and `AGENTBEACON_PASSWORD` instead. Run `agentbeacon --setup` again after upgrading to update the SDKs; it doesn't touch the user. See [Authentication](/docs/configuration/authentication/).
 
 :::tip[Set up PostgreSQL]
-AgentBeacon defaults to SQLite in your current directory, which is fine for trying things out. For anything beyond experimentation, set up PostgreSQL — see [Storage](/docs/configuration/storage/).
+AgentBeacon defaults to a SQLite database in its data directory, which is fine for local use. For production, set up PostgreSQL — see [Storage](/docs/configuration/storage/).
 :::
 
 ## Prerequisites

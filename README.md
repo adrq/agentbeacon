@@ -58,13 +58,16 @@ pip install --user agentbeacon
 npm install -g agentbeacon
 ```
 
-Then install the agent SDK dependencies and start:
+Then install the agent SDK dependencies, create your user, and start:
 
 ```bash
 agentbeacon --setup          # install Claude + Copilot SDK dependencies
+agentbeacon --setup-user     # create your user
 agentbeacon                  # start AgentBeacon
-# Open http://localhost:9456
+# Open http://localhost:9456 and sign in
 ```
+
+Data is kept in the platform data directory (see [Storage](docs/src/content/docs/configuration/storage.md)).
 
 <details>
 <summary>Build from source</summary>

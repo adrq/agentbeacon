@@ -5,23 +5,31 @@ description: Database configuration for SQLite and PostgreSQL.
 
 ## Default: SQLite
 
-Out of the box, AgentBeacon uses SQLite with a database file in your **current working directory**:
+Out of the box, AgentBeacon uses a SQLite database in its data directory:
 
 ```
-scheduler-{port}.db    # e.g. scheduler-9456.db
+~/.local/share/agentbeacon/db/scheduler-{port}.db    # Linux, e.g. scheduler-9456.db
 ```
 
-This means you should always start AgentBeacon from the same directory, or your data won't be there. SQLite is convenient for trying things out but we recommend PostgreSQL for any serious use.
+On other platforms the data directory is the platform's application data directory (for example `~/Library/Application Support/agentbeacon` on macOS). The wiki search index sits beside the database in `db/wiki-index-{port}/`; it is rebuilt from the database on every start and can be deleted.
 
-To use a fixed SQLite path regardless of where you run from:
+Set `AGENTBEACON_DATA_DIR` to use a different data directory; the database and index move with it. The database file is created readable only by your user.
+
+Binaries built from source (for example with `make all` or `cargo build --release`) keep `scheduler-{port}.db` and `wiki-index-{port}/` in the current directory instead.
+
+SQLite is for local and development use; PostgreSQL is recommended for production.
+
+To use a specific SQLite file:
 
 ```bash
 DATABASE_URL=sqlite:///home/you/agentbeacon.db agentbeacon
 ```
 
+SQLite URLs take the forms `sqlite:<path>`, `sqlite://<path>` or `sqlite:///<absolute path>`, optionally followed by exactly one of `?mode=rwc`, `?mode=rw` or `?mode=ro`. Other SQLite URL options are not accepted.
+
 ## Recommended: PostgreSQL
 
-PostgreSQL is recommended for anything beyond experimentation. It gives you proper concurrent access, standard backup tooling, and you don't need to worry about which directory you started from.
+PostgreSQL gives you proper concurrent access and standard backup tooling.
 
 Set the `DATABASE_URL` environment variable:
 
@@ -35,4 +43,10 @@ Or use the `--db-url` flag:
 agentbeacon --db-url postgres://user:password@localhost:5432/agentbeacon
 ```
 
+Pass the same `--db-url` or `DATABASE_URL` to `agentbeacon --setup-user` and to every start; the user lives in that database.
+
 AgentBeacon runs migrations automatically on startup — just point it at an empty database and it handles the rest.
+
+## Services and containers
+
+When AgentBeacon runs under a service manager or in a container, set `AGENTBEACON_DATA_DIR` or `--db-url` so the database location doesn't depend on the service's environment.

@@ -17,6 +17,7 @@ from tests.testhelpers import (
     anonymous_headers,
     assert_unauthorized,
     db_conn,
+    db_location,
     human_headers,
     scheduler_context,
 )
@@ -33,7 +34,7 @@ def _setup(db_url, username=None, password=None, *extra, cwd=None):
         env["AGENTBEACON_USERNAME"] = username
     if password is not None:
         env["AGENTBEACON_PASSWORD"] = password
-    args = [str(SCHEDULER_BIN), "--setup", "--user-only", *extra]
+    args = [str(SCHEDULER_BIN), "--setup-user", *extra]
     if db_url is not None:
         args += ["--db-url", db_url]
     return subprocess.run(
@@ -98,7 +99,7 @@ def fresh_sqlite():
 def test_setup_creates_user_from_env(test_database):
     result = _setup(test_database, "first-admin", "correct horse battery")
     assert result.returncode == 0, result.stderr
-    assert "User created." in result.stdout
+    assert f"User created in {db_location(test_database)}." in result.stdout
     users = _users(test_database)
     assert len(users) == 1
     assert users[0][0] == "first-admin"
@@ -116,7 +117,10 @@ def test_setup_new_password_deletes_logins(test_database):
 
         result = _setup(test_database, TEST_USERNAME, "a-brand-new-password")
         assert result.returncode == 0, result.stderr
-        assert "Password changed." in result.stdout
+        assert (
+            f"Password changed in {db_location(test_database)}. "
+            "Every existing login was signed out."
+        ) in result.stdout
 
         assert_unauthorized(_logins(url, first))
         assert_unauthorized(_logins(url, second))
@@ -131,7 +135,7 @@ def test_setup_same_password_keeps_logins(test_database):
         token = human_headers(ctx["url"])["Authorization"].split(" ", 1)[1]
         result = _setup(test_database, TEST_USERNAME, TEST_PASSWORD)
         assert result.returncode == 0, result.stderr
-        assert "User unchanged." in result.stdout
+        assert f"User unchanged in {db_location(test_database)}." in result.stdout
         assert _logins_status(ctx["url"], token) == 200
         assert _user_login_count(test_database) == 1
 
@@ -139,18 +143,23 @@ def test_setup_same_password_keeps_logins(test_database):
 def test_setup_without_credentials_or_tty_fails_when_no_user(fresh_sqlite):
     result = _setup(fresh_sqlite)
     assert result.returncode == 1
-    assert "AGENTBEACON_USERNAME" in result.stderr
-    assert "AGENTBEACON_PASSWORD" in result.stderr
+    assert (
+        "setup failed: no user exists: set AGENTBEACON_USERNAME and AGENTBEACON_PASSWORD, "
+        "or run --setup-user in a terminal"
+    ) in result.stderr
     assert _users(fresh_sqlite) == []
 
 
 @DUAL_BACKEND
-def test_setup_user_only_without_credentials_keeps_existing_user(test_database):
+def test_setup_user_without_credentials_keeps_existing_user(test_database):
     with scheduler_context(db_url=test_database) as ctx:
         token = human_headers(ctx["url"])["Authorization"].split(" ", 1)[1]
         result = _setup(test_database)
         assert result.returncode == 0, result.stderr
-        assert "nothing to change" in result.stdout
+        assert (
+            f"User exists in {db_location(test_database)}; nothing to change."
+            in result.stdout
+        )
         assert _logins_status(ctx["url"], token) == 200
         assert [u[0] for u in _users(test_database)] == [TEST_USERNAME]
 
@@ -206,10 +215,14 @@ def test_scheduler_without_user_starts_and_refuses_login(test_database):
 def test_scheduler_without_user_logs_setup_hint():
     with scheduler_context(create_user=False) as ctx:
         log = Path(ctx["process"].log_path).read_text()
-        assert log.count("run `agentbeacon --setup`") == 1
+        hint = (
+            f"No user exists in {db_location(ctx['db_url'])}; run `agentbeacon --setup-user` "
+            "with the same --port or --db-url to create one"
+        )
+        assert log.count(hint) == 1
     with scheduler_context() as ctx:
         log = Path(ctx["process"].log_path).read_text()
-        assert "run `agentbeacon --setup`" not in log
+        assert "No user exists" not in log
 
 
 def test_setup_status_touches_no_database():
@@ -233,3 +246,4 @@ def test_setup_status_touches_no_database():
         assert result.returncode == 0, result.stderr
         assert "claude:" in result.stdout
         assert list(Path(workdir).iterdir()) == []
+        assert list(Path(data).glob("**/scheduler-*.db")) == []

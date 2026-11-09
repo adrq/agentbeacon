@@ -6,14 +6,15 @@ description: Create your first execution in 5 minutes.
 ## Start the System
 
 ```bash
-agentbeacon --setup   # once: create your user
+agentbeacon --setup        # once: install agent SDK dependencies
+agentbeacon --setup-user   # once: create your user
 agentbeacon
 ```
 
 Open [http://localhost:9456](http://localhost:9456) in your browser and sign in with the username and password you chose.
 
 :::tip[Set up PostgreSQL]
-AgentBeacon defaults to SQLite in your current directory, which is fine for trying things out. For anything beyond experimentation, set up PostgreSQL — see [Storage](/docs/configuration/storage/).
+AgentBeacon defaults to a SQLite database in its data directory, which is fine for local use. For production, set up PostgreSQL — see [Storage](/docs/configuration/storage/).
 :::
 
 ## Create an Agent Config

@@ -169,8 +169,7 @@ def test_open_sse_stream_ends_when_credential_invalid(cause):
             result = subprocess.run(
                 [
                     "./bin/agentbeacon",
-                    "--setup",
-                    "--user-only",
+                    "--setup-user",
                     "--db-url",
                     ctx["db_url"],
                 ],

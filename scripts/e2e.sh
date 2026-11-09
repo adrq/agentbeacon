@@ -42,7 +42,7 @@ touch "$DB_PATH"
 export AGENTBEACON_USERNAME="${AGENTBEACON_USERNAME:-e2e-admin}"
 export AGENTBEACON_PASSWORD="${AGENTBEACON_PASSWORD:-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
 echo "==> Setting up the user on port ${AGENTBEACON_PORT}..."
-./bin/agentbeacon --setup --user-only --port "$AGENTBEACON_PORT" < /dev/null
+./bin/agentbeacon --setup-user --port "$AGENTBEACON_PORT" < /dev/null
 
 echo "==> Starting scheduler on port ${AGENTBEACON_PORT}..."
 ./bin/agentbeacon --max-workers 0 --port "$AGENTBEACON_PORT" 2>&1 &

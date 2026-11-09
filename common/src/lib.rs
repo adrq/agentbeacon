@@ -18,6 +18,28 @@ pub fn agentbeacon_projects_dir() -> PathBuf {
         .join(".agentbeacon/projects")
 }
 
+/// Where AgentBeacon's data directory is, as seen by the scheduler.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DataDir {
+    /// `AGENTBEACON_DATA_DIR` is set (possibly to a non-UTF-8 value).
+    Override(PathBuf),
+    /// The platform data directory, e.g. `~/.local/share/agentbeacon`.
+    Platform(PathBuf),
+    /// Neither is available.
+    Unavailable,
+}
+
+/// `AGENTBEACON_DATA_DIR`, else the platform data directory joined with `agentbeacon`.
+pub fn platform_data_dir() -> DataDir {
+    if let Some(dir) = std::env::var_os("AGENTBEACON_DATA_DIR") {
+        return DataDir::Override(PathBuf::from(dir));
+    }
+    match dirs::data_dir() {
+        Some(dir) => DataDir::Platform(dir.join("agentbeacon")),
+        None => DataDir::Unavailable,
+    }
+}
+
 pub fn execution_dir(project_id: &str, exec_id: &str) -> PathBuf {
     agentbeacon_projects_dir()
         .join(project_id)

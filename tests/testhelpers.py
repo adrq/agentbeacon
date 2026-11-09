@@ -9,10 +9,14 @@ temporary files to reduce duplication and flakiness across tests.
 
 from __future__ import annotations
 
+import fcntl
 import os
+import pty
+import select
 import socket
 import subprocess
 import tempfile
+import termios
 import threading
 import time
 from contextlib import contextmanager
@@ -527,7 +531,7 @@ _AUTH_LOCK = threading.RLock()
 
 
 def bootstrap_user(db_url: str, base_dir: Path = None, env: dict = None) -> None:
-    """Create the test user in `db_url` with `agentbeacon --setup --user-only`."""
+    """Create the test user in `db_url` with `agentbeacon --setup-user`."""
     if base_dir is None:
         base_dir = Path(__file__).parent.parent
     setup_env = os.environ.copy()
@@ -536,7 +540,7 @@ def bootstrap_user(db_url: str, base_dir: Path = None, env: dict = None) -> None
     setup_env["AGENTBEACON_USERNAME"] = TEST_USERNAME
     setup_env["AGENTBEACON_PASSWORD"] = TEST_PASSWORD
     result = subprocess.run(
-        ["./bin/agentbeacon", "--setup", "--user-only", "--db-url", db_url],
+        ["./bin/agentbeacon", "--setup-user", "--db-url", db_url],
         cwd=base_dir,
         env=setup_env,
         capture_output=True,
@@ -548,6 +552,79 @@ def bootstrap_user(db_url: str, base_dir: Path = None, env: dict = None) -> None
         raise RuntimeError(
             f"user setup failed ({result.returncode}): {result.stdout}{result.stderr}"
         )
+
+
+def _set_controlling_tty():
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+
+def run_pty(argv, cwd, env, replies=(), timeout=90):
+    """Run `argv` with a terminal as stdin, stdout and controlling tty, answering prompts in order."""
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdin=slave,
+        stdout=slave,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        preexec_fn=_set_controlling_tty,
+    )
+    os.close(slave)
+    pending = list(replies)
+    output = b""
+    answered = 0
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([master], [], [], 0.1)
+            if not ready:
+                if proc.poll() is not None:
+                    break
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                if proc.poll() is not None:
+                    break
+                continue
+            output += chunk
+            if pending:
+                prompt = pending[0][0].encode()
+                found = output.find(prompt, answered)
+                if found != -1:
+                    answered = found + len(prompt)
+                    os.write(master, pending.pop(0)[1].encode())
+        else:
+            proc.kill()
+        proc.wait(timeout=10)
+        stderr = proc.stderr.read().decode()
+    finally:
+        proc.stderr.close()
+        os.close(master)
+    return (
+        proc.returncode,
+        output.decode(errors="replace").replace("\r\n", "\n"),
+        stderr,
+    )
+
+
+def db_location(db_url: str) -> str:
+    """How `agentbeacon` names the database at `db_url` in its output."""
+    if db_url.startswith("sqlite:"):
+        path = db_url[len("sqlite:") :].split("?", 1)[0]
+        if path.startswith("//"):
+            path = path[2:]
+        return f"SQLite at {os.path.abspath(path)}"
+    parsed = urlparse(db_url)
+    database = parsed.path.lstrip("/") or parsed.username
+    return (
+        f'PostgreSQL database "{database}" on {parsed.hostname}:{parsed.port or 5432}'
+        f" as {parsed.username}"
+    )
 
 
 def _port_of(url: str) -> int:
