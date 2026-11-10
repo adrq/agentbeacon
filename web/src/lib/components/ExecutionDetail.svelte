@@ -28,12 +28,14 @@
   import SidebarSessionTree from './SidebarSessionTree.svelte';
   import ExecutionAgentsDialog from './ExecutionAgentsDialog.svelte';
   import Button from './ui/button.svelte';
-  import { openSearchTab } from '../stores/wikiState.svelte';
+  import ViewMenu from './ViewMenu.svelte';
+  import { menuNav } from '../menuNav';
   import { router } from '../router';
   import { executionPrefill, selectedSessionId, usageBySession, agentPoolDialogExecutionId, sidebarOpen, theme } from '../stores/appState';
   import logoDarkUrl from '../../assets/logo-mark-dark.svg';
   import logoLightUrl from '../../assets/logo-mark-light.svg';
   import { EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
+  import { VIEW_OPTIONS, viewReminder, type ViewMode } from '../viewMode';
 
   interface Props {
     executionId: string;
@@ -93,18 +95,13 @@
     mql.addEventListener('change', handler);
     return () => mql.removeEventListener('change', handler);
   });
-  $effect(() => {
-    if (!overflowMenuOpen) return;
-    let handler: ((e: Event) => void) | null = null;
-    const timerId = setTimeout(() => {
-      handler = () => { overflowMenuOpen = false; };
-      document.addEventListener('click', handler, { once: true });
-    }, 0);
-    return () => {
-      clearTimeout(timerId);
-      if (handler) document.removeEventListener('click', handler);
-    };
-  });
+  let overflowTrigger: HTMLButtonElement | undefined = $state();
+
+  // Close the overflow menu after an item is chosen, returning focus to its button.
+  function closeOverflow() {
+    overflowMenuOpen = false;
+    overflowTrigger?.focus();
+  }
 
   // Debounced query invalidation — collapses rapid SSE state_change events
   // (e.g. a burst on page load) into a single batch of invalidations.
@@ -204,8 +201,7 @@
     }
   });
 
-  // View toggle: log, chat, or diff — persisted to both URL hash param and localStorage
-  type ViewMode = 'log' | 'chat' | 'diff';
+  // View mode: log, chat, or diff — persisted to both URL hash param and localStorage
   const validModes = new Set<string>(['log', 'chat', 'diff']);
 
   function getHashViewParam(): ViewMode | null {
@@ -250,6 +246,16 @@
     try { if (typeof window !== 'undefined') localStorage.setItem('agentbeacon-event-view-mode', viewMode); } catch { /* localStorage unavailable */ }
     setHashViewParam(viewMode);
   });
+
+  // View controls and the reminder chip don't apply while a thread or the overview replaces the events panel.
+  let viewControlsHidden = $derived(!!threadTarget || showOverview);
+  // Shown in the header when the view or filter differs from Chat + All.
+  let reminder = $derived(viewControlsHidden ? '' : viewReminder(viewMode, eventFilter));
+
+  function resetView() {
+    viewMode = 'chat';
+    eventFilter = 'all';
+  }
 
   let leadSession = $derived(detail?.sessions.find(s => !s.parent_session_id) ?? null);
   let displayTitle = $derived(detail?.execution.title ?? executionId.slice(0, 8));
@@ -1107,7 +1113,7 @@
   <div class="detail-error">{error}</div>
 {:else if detail}
   <div class="detail-view scroll-thin">
-    <div class="detail-header" class:brand-reserved={!$sidebarOpen}>
+    <div class="detail-header" class:brand-reserved={!$sidebarOpen} class:has-chips={!!reminder || (!isTerminal && !sseActive)}>
       <!-- Mobile only: the app header and back row fold into this stacked breadcrumb. -->
       <button class="mobile-back-chevron" onclick={() => router.navigate('/executions')} aria-label="Back to executions">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
@@ -1129,6 +1135,28 @@
       <span class="status-slot">
         <StatusBadge status={detail.execution.status} hasQuestions={false} />
       </span>
+      {#if reminder}
+        <span class="view-reminder">
+          <span>{reminder}</span>
+          <button class="view-reminder-reset" aria-label="Reset view" title="Back to Chat, All" onclick={resetView}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          </button>
+        </span>
+      {/if}
+      <!-- A healthy connection shows nothing; problems spell themselves out. -->
+      {#if !isTerminal && !sseActive}
+        <span class="sse-indicator"
+          class:reconnecting={sseReconnecting}
+          class:disconnected={!sseReconnecting}
+          title={sseReconnecting ? 'Reconnecting…' : 'Disconnected'}
+        >
+          <span class="sse-dot"></span>
+          <span class="sse-label">{sseReconnecting ? 'Reconnecting…' : 'Disconnected'}</span>
+          {#if !sseReconnecting}
+            <button class="sse-retry" onclick={() => sseConnection?.reconnect()}>Retry</button>
+          {/if}
+        </span>
+      {/if}
       <QuestionBanner execution={detail.execution} />
       {#if isTerminable}
         <span class="terminate-slot">
@@ -1156,43 +1184,56 @@
             Overview
           </Button>
         {/if}
-        {#if detail.execution.project_id}
-          <Button variant="ghost" size="sm" onclick={() => { openSearchTab(detail!.execution.project_id!); router.navigate('#/wiki'); }}>
-            Wiki
-          </Button>
+        {#if !viewControlsHidden}
+          <ViewMenu {viewMode} {eventFilter} onview={(mode) => { viewMode = mode; }} onfilter={(filter) => { eventFilter = filter; }} />
         {/if}
       </span>
       <div class="overflow-menu-wrapper">
-          <button class="overflow-menu-btn" aria-label="More actions" onclick={(e) => { e.stopPropagation(); overflowMenuOpen = !overflowMenuOpen; }}>⋯</button>
+          <button class="overflow-menu-btn" aria-label="More actions" aria-haspopup="menu" aria-expanded={overflowMenuOpen} bind:this={overflowTrigger} onclick={() => { overflowMenuOpen = !overflowMenuOpen; }}>⋯</button>
           {#if overflowMenuOpen}
-            <div class="overflow-menu">
+            <div class="overflow-menu" role="menu" aria-label="More actions" tabindex="-1" use:menuNav={{ trigger: overflowTrigger, onclose: () => { overflowMenuOpen = false; } }}>
               {#if activeAgent}
-                <div class="overflow-summary" title={settingsTitle} aria-label={settingsTitle}>
+                <div class="overflow-summary" role="group" title={settingsTitle} aria-label={settingsTitle}>
                   <span class="overflow-summary-agent">{summaryAgentName}</span>
                   <span class="overflow-summary-meta">{savedModel} · {savedEffort}</span>
                 </div>
                 <div class="overflow-sep" role="separator"></div>
               {/if}
               {#if isTerminable}
-                <button class="overflow-item" disabled={terminateMut.isPending} onclick={() => { overflowMenuOpen = false; terminateError = null; showTerminateDialog = true; }}>
+                <button class="overflow-item" role="menuitem" tabindex="-1" disabled={terminateMut.isPending} onclick={() => { closeOverflow(); terminateError = null; showTerminateDialog = true; }}>
                   {terminateMut.isPending ? 'Terminating...' : isCompletionEligible ? 'Complete' : 'Cancel'}
                 </button>
               {/if}
-              <button class="overflow-item" onclick={() => { overflowMenuOpen = false; agentPoolDialogExecutionId.set(executionId); }}>{poolQuery.data ? `Agents · ${poolQuery.data.length}` : 'Agents'}</button>
+              <button class="overflow-item" role="menuitem" tabindex="-1" onclick={() => { closeOverflow(); agentPoolDialogExecutionId.set(executionId); }}>{poolQuery.data ? `Agents · ${poolQuery.data.length}` : 'Agents'}</button>
               {#if isRecoverable}
-                <button class="overflow-item" disabled={recoverMut.isPending} onclick={() => { overflowMenuOpen = false; handleRecover(); }}>{recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}</button>
+                <button class="overflow-item" role="menuitem" tabindex="-1" disabled={recoverMut.isPending} onclick={() => { closeOverflow(); handleRecover(); }}>{recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}</button>
               {/if}
               {#if isTerminal}
-                <button class="overflow-item" disabled={!poolQuery.data} onclick={() => { overflowMenuOpen = false; handleRerun(); }}>Re-run</button>
+                <button class="overflow-item" role="menuitem" tabindex="-1" disabled={!poolQuery.data} onclick={() => { closeOverflow(); handleRerun(); }}>Re-run</button>
               {/if}
               {#if (detail?.sessions.length ?? 0) > 1}
-                <button class="overflow-item" onclick={() => { overflowMenuOpen = false; showOverview = !showOverview; }}>Overview</button>
-              {/if}
-              {#if detail.execution.project_id}
-                <button class="overflow-item" onclick={() => { overflowMenuOpen = false; openSearchTab(detail!.execution.project_id!); router.navigate('#/wiki'); }}>Wiki</button>
+                <button class="overflow-item" role="menuitem" tabindex="-1" onclick={() => { closeOverflow(); showOverview = !showOverview; }}>Overview</button>
               {/if}
               {#if isMobile}
-                <button class="overflow-item" onclick={() => { overflowMenuOpen = false; showDetailsOverlay = true; }}>Execution Details</button>
+                <button class="overflow-item" role="menuitem" tabindex="-1" onclick={() => { closeOverflow(); showDetailsOverlay = true; }}>Execution Details</button>
+              {/if}
+              {#if !viewControlsHidden}
+                <div class="overflow-sep" role="separator"></div>
+                <div role="group" aria-label="View">
+                  <div class="overflow-heading" aria-hidden="true">View</div>
+                  {#each VIEW_OPTIONS as option}
+                    <button class="overflow-item overflow-radio" role="menuitemradio" tabindex="-1" aria-checked={viewMode === option.value} onclick={() => { closeOverflow(); viewMode = option.value; }}>{option.label}</button>
+                  {/each}
+                </div>
+                {#if viewMode !== 'diff'}
+                  <div class="overflow-sep" role="separator"></div>
+                  <div role="group" aria-label="Filter">
+                    <div class="overflow-heading" aria-hidden="true">Filter</div>
+                    {#each EVENT_FILTER_PILLS as pill}
+                      <button class="overflow-item overflow-radio" role="menuitemradio" tabindex="-1" aria-checked={eventFilter === pill.value} onclick={() => { closeOverflow(); eventFilter = pill.value; }}>{pill.label}</button>
+                    {/each}
+                  </div>
+                {/if}
               {/if}
             </div>
           {/if}
@@ -1214,66 +1255,6 @@
         onstatuschange={() => queryClient.invalidateQueries({ queryKey: ['execution', executionId] })}
       />
     {:else}
-      <div class="events-header">
-        {#if !threadTarget}
-          <div class="view-toggle-wrapper">
-            <div class="view-toggle" role="tablist" aria-label="Event view mode">
-              <button
-                class="toggle-btn"
-                class:active={viewMode === 'log'}
-                role="tab"
-                aria-selected={viewMode === 'log'}
-                onclick={() => viewMode = 'log'}
-              >Log</button>
-              <button
-                class="toggle-btn"
-                class:active={viewMode === 'chat'}
-                role="tab"
-                aria-selected={viewMode === 'chat'}
-                onclick={() => viewMode = 'chat'}
-              >Chat</button>
-              <button
-                class="toggle-btn"
-                class:active={viewMode === 'diff'}
-                role="tab"
-                aria-selected={viewMode === 'diff'}
-                onclick={() => viewMode = 'diff'}
-              >Diff</button>
-            </div>
-          </div>
-        {/if}
-        {#if !threadTarget && viewMode !== 'diff' && showEventsPanelView}
-          <div class="event-filter-pills" role="radiogroup" aria-label="Filter events">
-            {#each EVENT_FILTER_PILLS as pill}
-              <button
-                class="event-filter-pill"
-                class:active={eventFilter === pill.value}
-                role="radio"
-                aria-checked={eventFilter === pill.value}
-                onclick={() => eventFilter = pill.value}
-              >{pill.label}</button>
-            {/each}
-          </div>
-        {/if}
-        {#if !isTerminal}
-          <span class="sse-indicator"
-            class:connected={sseActive}
-            class:reconnecting={sseReconnecting && !sseActive}
-            class:disconnected={!sseActive && !sseReconnecting}
-            title={sseActive ? 'Live (SSE)' : sseReconnecting ? 'Reconnecting...' : 'Disconnected'}
-          >
-            <span class="sse-dot"></span>
-            <!-- Healthy is just the dot; problems spell themselves out. -->
-            {#if !sseActive}
-              <span class="sse-label">{sseReconnecting ? 'Reconnecting...' : 'Disconnected'}</span>
-            {/if}
-            {#if !sseActive && !sseReconnecting}
-              <button class="sse-retry" onclick={() => sseConnection?.reconnect()}>Retry</button>
-            {/if}
-          </span>
-        {/if}
-      </div>
-
       {#if threadTarget}
         <ThreadView
           sessionA={threadTarget.sessionA}
@@ -1416,48 +1397,10 @@
     margin: 0;
   }
 
-  .events-header {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.375rem 1rem;
-    flex-shrink: 0;
-  }
-
-  .event-filter-pills {
-    display: flex;
-    gap: 2px;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .event-filter-pill {
-    padding: 0.1875rem 0.5rem;
-    border: 1px solid hsl(var(--border));
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: hsl(var(--muted-foreground));
-    font-size: 0.6875rem;
-    font-weight: 500;
-    white-space: nowrap;
-    cursor: pointer;
-    transition: background 0.1s, color 0.1s, border-color 0.1s;
-  }
-  .event-filter-pill:hover:not(.active) {
-    background: hsl(var(--muted) / 0.5);
-  }
-  .event-filter-pill.active {
-    background: hsl(var(--primary) / 0.12);
-    color: hsl(var(--primary));
-    border-color: hsl(var(--primary) / 0.3);
-    font-weight: 600;
-  }
-
   .sse-indicator {
     display: flex;
     align-items: center;
     gap: 0.375rem;
-    margin-left: auto;
     flex-shrink: 0;
     font-size: 0.6875rem;
     font-weight: 500;
@@ -1469,11 +1412,6 @@
     height: 0.5rem;
     border-radius: 50%;
     background: hsl(var(--muted-foreground) / 0.4);
-  }
-
-  .sse-indicator.connected .sse-dot {
-    background: hsl(var(--status-success));
-    box-shadow: 0 0 6px hsl(var(--status-success) / 0.5);
   }
 
   .sse-indicator.reconnecting .sse-dot {
@@ -1504,41 +1442,44 @@
     color: hsl(var(--primary));
   }
 
-  .view-toggle-wrapper {
-    position: relative;
+  .view-reminder {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
     flex-shrink: 0;
-  }
-
-  .view-toggle {
-    display: flex;
+    height: 1.25rem;
+    padding: 0 0.125rem 0 0.375rem;
     border: 1px solid hsl(var(--border));
-    border-radius: var(--radius);
-    overflow: hidden;
-  }
-
-  .toggle-btn {
-    padding: 0.1875rem 0.625rem;
+    border-radius: var(--radius-sm);
+    background: hsl(var(--muted) / 0.4);
+    color: hsl(var(--muted-foreground));
     font-size: 0.6875rem;
     font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .view-reminder-reset {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
+    padding: 0;
     border: none;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: hsl(var(--muted-foreground));
     cursor: pointer;
-    transition: background 0.1s, color 0.1s;
   }
 
-  .toggle-btn:not(:last-child) {
-    border-right: 1px solid hsl(var(--border));
+  .view-reminder-reset:hover {
+    background: hsl(var(--muted));
+    color: hsl(var(--foreground));
   }
 
-  .toggle-btn.active {
-    background: hsl(var(--primary) / 0.12);
-    color: hsl(var(--primary));
-    font-weight: 600;
-  }
-
-  .toggle-btn:hover:not(.active) {
-    background: hsl(var(--muted) / 0.5);
+  .view-reminder-reset svg {
+    width: 10px;
+    height: 10px;
   }
 
   .detail-loading, .detail-error {
@@ -1609,6 +1550,11 @@
     color: hsl(var(--muted-foreground));
   }
 
+  .overflow-menu-wrapper {
+    position: relative;
+    display: none;
+  }
+
   /* Constrained desktop widths: move the settings summary and actions into
      the overflow menu instead of wrapping the header. */
   @container detail-view (max-width: 720px) {
@@ -1640,11 +1586,6 @@
     display: flex;
     justify-content: flex-end;
     gap: 0.5rem;
-  }
-
-  .overflow-menu-wrapper {
-    position: relative;
-    display: none;
   }
 
   .overflow-menu-btn {
@@ -1728,6 +1669,33 @@
     cursor: not-allowed;
   }
 
+  .overflow-heading {
+    padding: 0.25rem 0.625rem 0.125rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .overflow-radio {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .overflow-radio::before {
+    content: '';
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .overflow-radio[aria-checked='true']::before {
+    background: hsl(var(--foreground));
+  }
+
   .details-backdrop {
     position: fixed;
     inset: 0;
@@ -1793,12 +1761,6 @@
   }
 
   @media (max-width: 768px) {
-    .events-header .sse-indicator {
-      display: none;
-    }
-    .events-header {
-      padding: 0.25rem 1rem;
-    }
     .desktop-only-actions,
     .header-settings,
     .crumb-sep {
@@ -1823,6 +1785,15 @@
     .status-slot {
       order: 5;
       flex-shrink: 0;
+    }
+    .view-reminder,
+    .sse-indicator {
+      order: 6;
+    }
+    /* Chips share the title line while the title keeps a readable width; past that they wrap. */
+    .detail-header.has-chips .title-stack .detail-title {
+      flex: 1 1 0;
+      min-width: 45%;
     }
     .mobile-back-chevron {
       order: 0;

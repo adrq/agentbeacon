@@ -22,9 +22,64 @@
     { label: 'Wiki', section: 'wiki' },
   ];
 
+  // Mobile "More" menu: Settings, theme and Docs, which have their own rail icons on desktop.
+  let moreOpen = $state(false);
+  let moreWrapper: HTMLDivElement | undefined = $state();
+
+  $effect(() => {
+    if (!moreOpen) return;
+    const close = () => { moreOpen = false; };
+    const onPointerDown = (e: PointerEvent) => {
+      if (moreWrapper && !moreWrapper.contains(e.target as Node)) close();
+    };
+    const onKeydown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !moreWrapper?.contains(document.activeElement)) return;
+      close();
+      moreWrapper?.querySelector<HTMLElement>('button[aria-controls="nav-more-menu"]')?.focus();
+    };
+    // Focus leaving the wrapper closes the menu. A press inside it can blur the
+    // More button first (some browsers don't focus buttons on press), so focus
+    // changes during that press are ignored.
+    let pressInside = false;
+    const onPressInside = () => {
+      pressInside = true;
+      setTimeout(() => { pressInside = false; });
+    };
+    const onFocusOut = (e: FocusEvent) => {
+      if (pressInside) return;
+      const next = e.relatedTarget as Node | null;
+      if (!next || !moreWrapper?.contains(next)) close();
+    };
+    const wrapper = moreWrapper;
+    wrapper?.addEventListener('pointerdown', onPressInside);
+    wrapper?.addEventListener('focusout', onFocusOut);
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeydown);
+    window.addEventListener('hashchange', close);
+    return () => {
+      wrapper?.removeEventListener('pointerdown', onPressInside);
+      wrapper?.removeEventListener('focusout', onFocusOut);
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeydown);
+      window.removeEventListener('hashchange', close);
+    };
+  });
+
+  function toggleMore() {
+    decisionsOverlayOpen.set(false);
+    moreOpen = !moreOpen;
+  }
+
+  function openSettings() {
+    moreOpen = false;
+    decisionsOverlayOpen.set(false);
+    router.navigate('#/settings');
+  }
+
   function handleNavClick(section: NavSection) {
     // Any nav tap closes the decisions overlay, even when it doesn't change the route.
     decisionsOverlayOpen.set(false);
+    moreOpen = false;
     if (section === 'home') {
       router.navigate('#/');
       return;
@@ -151,18 +206,72 @@
   </button>
 
   <button
-    class="nav-rail-item"
+    class="nav-rail-item desktop-only"
     class:active={$activeSection === 'settings'}
     aria-label="Settings"
     title="Settings"
     aria-current={$activeSection === 'settings' ? 'page' : undefined}
-    onclick={() => { decisionsOverlayOpen.set(false); router.navigate('#/settings'); }}
+    onclick={openSettings}
   >
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M6.5 1L6.2 2.6C5.8 2.8 5.4 3 5.1 3.3L3.5 2.7L2 5.3L3.4 6.4C3.4 6.6 3.3 6.8 3.3 7V7C3.3 7.2 3.4 7.4 3.4 7.6L2 8.7L3.5 11.3L5.1 10.7C5.4 11 5.8 11.2 6.2 11.4L6.5 13H9.5L9.8 11.4C10.2 11.2 10.6 11 10.9 10.7L12.5 11.3L14 8.7L12.6 7.6C12.6 7.4 12.7 7.2 12.7 7V7C12.7 6.8 12.6 6.6 12.6 6.4L14 5.3L12.5 2.7L10.9 3.3C10.6 3 10.2 2.8 9.8 2.6L9.5 1H6.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
       <circle cx="8" cy="7" r="2" stroke="currentColor" stroke-width="1.2"/>
     </svg>
   </button>
+
+  <div class="more-wrapper mobile-only" bind:this={moreWrapper}>
+    <button
+      class="nav-rail-item"
+      class:active={$activeSection === 'settings'}
+      aria-label="More"
+      title="More"
+      aria-expanded={moreOpen}
+      aria-controls="nav-more-menu"
+      aria-current={$activeSection === 'settings' ? 'page' : undefined}
+      onclick={toggleMore}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="5" cy="12" r="1" />
+        <circle cx="12" cy="12" r="1" />
+        <circle cx="19" cy="12" r="1" />
+      </svg>
+    </button>
+    {#if moreOpen}
+      <div class="more-menu" id="nav-more-menu" role="group" aria-label="More">
+        <button class="more-item" onclick={openSettings}>Settings</button>
+        <button
+          class="more-item"
+          aria-label={$theme === 'dark' ? 'Activate light theme' : 'Activate dark theme'}
+          aria-pressed={$theme === 'light'}
+          onclick={() => applyTheme($theme === 'dark' ? 'light' : 'dark')}
+        >
+          {#if $theme === 'dark'}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+            Dark
+          {:else}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="5" />
+              <line x1="12" y1="1" x2="12" y2="3" />
+              <line x1="12" y1="21" x2="12" y2="23" />
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+              <line x1="1" y1="12" x2="3" y2="12" />
+              <line x1="21" y1="12" x2="23" y2="12" />
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+            </svg>
+            Light
+          {/if}
+        </button>
+        <a class="more-item" href="/docs/" target="_blank" rel="noopener" onclick={() => { moreOpen = false; }}>
+          Docs
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7" /><path d="M7 7h10v10" /></svg>
+        </a>
+      </div>
+    {/if}
+  </div>
 </nav>
 
 <style>
@@ -235,6 +344,54 @@
     flex: 1;
   }
 
+  .mobile-only {
+    display: none;
+  }
+
+  .more-wrapper {
+    position: relative;
+  }
+
+  .more-menu {
+    position: absolute;
+    bottom: calc(100% + 0.5rem);
+    right: 0;
+    min-width: 10rem;
+    padding: 0.25rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    box-shadow: 0 4px 12px hsl(var(--shadow-hsl) / 0.2);
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+  }
+
+  .more-item {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 0.75rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: hsl(var(--foreground));
+    font-size: 0.8125rem;
+    font-weight: 500;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .more-item:hover {
+    background: hsl(var(--muted) / 0.5);
+  }
+
+  .more-item svg {
+    width: 14px;
+    height: 14px;
+  }
+
   .decisions-toggle.panel-open {
     color: hsl(var(--primary));
     background: hsl(var(--primary) / 0.1);
@@ -286,6 +443,10 @@
     .nav-rail-spacer,
     .desktop-only {
       display: none;
+    }
+
+    .mobile-only {
+      display: flex;
     }
 
     .nav-rail-item.active::before {

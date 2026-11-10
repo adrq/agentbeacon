@@ -45,6 +45,13 @@ export function applyTheme(next: Theme): void {
   if (next === 'light') root.add('light'); else root.remove('light');
   theme.set(next);
 }
+
+// Apply the saved theme once at startup, falling back to the system preference.
+if (typeof window !== 'undefined') {
+  const stored = safeGetItem('theme');
+  if (stored === 'light' || stored === 'dark') applyTheme(stored);
+  else applyTheme(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+}
 export const activeSection = writable<NavSection>('home');
 export const sidebarOpen = writable<boolean>(false);
 export const selectedExecutionId = writable<string | null>(null);

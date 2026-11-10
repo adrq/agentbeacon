@@ -161,7 +161,7 @@ test.describe('mobile navigation', () => {
     const steps: { item: string; url: RegExp }[] = [
       { item: 'Executions', url: /#\/executions$/ },
       { item: 'Projects', url: /#\/projects$/ },
-      { item: 'Settings', url: /#\/settings$/ },
+      { item: 'More', url: /#\/projects$/ },
     ];
     for (const { item, url } of steps) {
       await navButton(page, 'Toggle decisions panel').click();
@@ -174,6 +174,10 @@ test.describe('mobile navigation', () => {
       await expect(panel, item).toHaveClass(/(^|\s)collapsed(\s|$)/);
       await expect(backdrop(page), item).toHaveCount(0);
     }
+
+    await page.locator('#nav-more-menu').getByRole('button', { name: 'Settings', exact: true }).click();
+    await expect(page).toHaveURL(/#\/settings$/);
+    await expect(page.locator('#nav-more-menu')).toHaveCount(0);
   });
 });
 
