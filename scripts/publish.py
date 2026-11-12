@@ -5,7 +5,7 @@
 
 Usage:
     python scripts/publish.py pypi [--dry-run] [--publish-url URL] [--check-url URL]
-    python scripts/publish.py npm [--dry-run]
+    python scripts/publish.py npm [--dry-run] [--resume]
     python scripts/publish.py github [--dry-run] [--tag TAG]
     python scripts/publish.py all [--dry-run] [--tag TAG] [--publish-url URL] [--check-url URL]
 
@@ -332,6 +332,48 @@ def validate_npm_versions(
         )
 
 
+def validate_npm_wrapper_dependencies(wrapper_dir: Path, version: str) -> None:
+    """Verify the wrapper's optionalDependencies list every platform package.
+
+    Each expected platform package must appear at the release version, with
+    no missing or extra entries. Raises ValueError describing the mismatch.
+    """
+    expected = {
+        f"{NPM_SCOPE}/cli-{suffix}": version for suffix in TARGET_TO_NPM_SUFFIX.values()
+    }
+    data = json.loads((wrapper_dir / "package.json").read_text())
+    actual = data.get("optionalDependencies")
+    if actual is None:
+        actual = {}
+    elif not isinstance(actual, dict):
+        raise ValueError(
+            f"npm wrapper optionalDependencies is not an object: {actual!r}. "
+            f"Rebuild with: make build-npm-wrapper"
+        )
+
+    missing = sorted(set(expected) - set(actual))
+    unexpected = sorted(set(actual) - set(expected))
+    wrong_version = sorted(
+        f"{name}@{actual[name]}"
+        for name in set(expected) & set(actual)
+        if actual[name] != version
+    )
+
+    problems: list[str] = []
+    if missing:
+        problems.append(f"missing {', '.join(missing)}")
+    if unexpected:
+        problems.append(f"unexpected {', '.join(unexpected)}")
+    if wrong_version:
+        problems.append(f"wrong version {', '.join(wrong_version)}")
+    if problems:
+        raise ValueError(
+            f"npm wrapper optionalDependencies mismatch (expected {version}): "
+            f"{'; '.join(problems)}. "
+            f"Rebuild with: make build-npm-wrapper"
+        )
+
+
 def find_npm_packages(dist_npm_dir: Path) -> tuple[list[Path], Path]:
     """Discover npm platform and wrapper package directories.
 
@@ -436,12 +478,49 @@ def publish_pypi(
 # ---------------------------------------------------------------------------
 
 
-def publish_npm(dist_npm_dir: Path, version: str, *, dry_run: bool = False) -> None:
-    """Publish npm packages (platform packages first, then wrapper)."""
+def npm_version_published(name: str, version: str, auth_args: list[str]) -> bool:
+    """Return True if ``name@version`` is already on the npm registry.
+
+    Raises RuntimeError if the registry answer can't be classified.
+    """
+    cmd = ["npm", "view", f"{name}@{version}", "version", "--json"] + auth_args
+    print(f"Checking registry: {name}@{version}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    stdout = result.stdout.strip()
+
+    if result.returncode == 0:
+        if not stdout:
+            return False
+        try:
+            published = json.loads(stdout)
+        except json.JSONDecodeError:
+            published = None
+        if published == version:
+            return True
+        raise RuntimeError(
+            f"Unexpected npm view output for {name}@{version}: {stdout!r}"
+        )
+
+    if "E404" in result.stdout or "E404" in result.stderr:
+        return False
+    raise RuntimeError(
+        f"npm view failed for {name}@{version} (exit {result.returncode}): "
+        f"{result.stderr.strip() or stdout}"
+    )
+
+
+def publish_npm(
+    dist_npm_dir: Path, version: str, *, dry_run: bool = False, resume: bool = False
+) -> None:
+    """Publish npm packages (platform packages first, then wrapper).
+
+    With resume, packages already on the registry at this version are skipped.
+    """
     require_tool("npm")
     platform_dirs, wrapper_dir = find_npm_packages(dist_npm_dir)
     validate_npm_platform_set(platform_dirs)
     validate_npm_versions(platform_dirs, wrapper_dir, version)
+    validate_npm_wrapper_dependencies(wrapper_dir, version)
 
     # Temp .npmrc for auth if NPM_TOKEN is set.
     npm_token = os.environ.get("NPM_TOKEN")
@@ -458,6 +537,25 @@ def publish_npm(dist_npm_dir: Path, version: str, *, dry_run: bool = False) -> N
     npm_propagation_delay = 10
 
     try:
+        publish_wrapper = True
+        if resume:
+            pending: list[Path] = []
+            for pkg_dir in platform_dirs:
+                name = f"{NPM_SCOPE}/{pkg_dir.name}"
+                if npm_version_published(name, version, auth_args):
+                    print(f"Skipping {name}@{version}: already published")
+                else:
+                    pending.append(pkg_dir)
+            platform_dirs = pending
+
+            if npm_version_published(PACKAGE_NAME, version, auth_args):
+                print(f"Skipping {PACKAGE_NAME}@{version}: already published")
+                publish_wrapper = False
+
+            if not platform_dirs and not publish_wrapper:
+                print(f"All npm packages for {version} are already published")
+                return
+
         for pkg_dir in platform_dirs:
             cmd = (
                 ["npm", "publish", str(pkg_dir), "--access", "public"]
@@ -466,6 +564,9 @@ def publish_npm(dist_npm_dir: Path, version: str, *, dry_run: bool = False) -> N
                 + (["--dry-run"] if dry_run else [])
             )
             run_cmd(cmd, dry_run=False)
+
+        if not publish_wrapper:
+            return
 
         if not dry_run:
             print(
@@ -623,6 +724,11 @@ def main(argv: list[str] | None = None) -> None:
     p_npm = sub.add_parser("npm", help="Publish npm packages")
     p_npm.add_argument("--dry-run", action="store_true", help="Simulate publish")
     p_npm.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip packages already published at this version",
+    )
+    p_npm.add_argument(
         "--dist-npm-dir",
         type=Path,
         default=None,
@@ -681,7 +787,7 @@ def main(argv: list[str] | None = None) -> None:
 
     elif args.command == "npm":
         dist_npm_dir = args.dist_npm_dir or args.dist_dir / "npm"
-        publish_npm(dist_npm_dir, version, dry_run=args.dry_run)
+        publish_npm(dist_npm_dir, version, dry_run=args.dry_run, resume=args.resume)
 
     elif args.command == "github":
         tag = args.tag or f"v{version}"

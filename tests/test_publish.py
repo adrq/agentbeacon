@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -19,6 +21,19 @@ _spec = importlib.util.spec_from_file_location(
 )
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
+
+_scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+
+
+def _load_script(name: str):
+    spec = importlib.util.spec_from_file_location(name, _scripts_dir / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_build_wheel = _load_script("build_wheel")
+_build_npm = _load_script("build_npm")
 
 semver_to_pep440 = _mod.semver_to_pep440
 is_prerelease = _mod.is_prerelease
@@ -33,6 +48,8 @@ validate_wheel_set = _mod.validate_wheel_set
 find_npm_packages = _mod.find_npm_packages
 validate_npm_platform_set = _mod.validate_npm_platform_set
 validate_npm_versions = _mod.validate_npm_versions
+validate_npm_wrapper_dependencies = _mod.validate_npm_wrapper_dependencies
+publish_npm = _mod.publish_npm
 run_cmd = _mod.run_cmd
 BINARIES = _mod.BINARIES
 NPM_SCOPE = _mod.NPM_SCOPE
@@ -69,6 +86,20 @@ def _make_stub_wheels(dist_dir: Path) -> list[Path]:
     return paths
 
 
+def _wrapper_deps(version: str) -> dict[str, str]:
+    return {f"{NPM_SCOPE}/cli-{s}": version for s in TARGET_TO_NPM_SUFFIX.values()}
+
+
+def _write_wrapper(dist_npm_dir: Path, version: str, deps: dict[str, str]) -> None:
+    wrapper_dir = dist_npm_dir / PACKAGE_NAME
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    (wrapper_dir / "package.json").write_text(
+        json.dumps(
+            {"name": PACKAGE_NAME, "version": version, "optionalDependencies": deps}
+        )
+    )
+
+
 def _make_stub_npm_packages(dist_npm_dir: Path, version: str = "0.1.0") -> None:
     for suffix in ["linux-x64", "linux-arm64"]:
         pkg_dir = dist_npm_dir / NPM_SCOPE / f"cli-{suffix}"
@@ -77,11 +108,7 @@ def _make_stub_npm_packages(dist_npm_dir: Path, version: str = "0.1.0") -> None:
         (pkg_dir / "package.json").write_text(
             f'{{"name": "{name}", "version": "{version}"}}'
         )
-    wrapper_dir = dist_npm_dir / PACKAGE_NAME
-    wrapper_dir.mkdir(parents=True, exist_ok=True)
-    (wrapper_dir / "package.json").write_text(
-        f'{{"name": "agentbeacon", "version": "{version}"}}'
-    )
+    _write_wrapper(dist_npm_dir, version, _wrapper_deps(version))
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +470,349 @@ def test_validate_npm_versions_wrong_name_raises(tmp_path):
     platform_dirs, wrapper_dir = find_npm_packages(tmp_path)
     with pytest.raises(ValueError, match="name mismatch.*cli-linux-x64.*wrong-package"):
         validate_npm_versions(platform_dirs, wrapper_dir, "1.0.0")
+
+
+# ---------------------------------------------------------------------------
+# npm wrapper dependency validation
+# ---------------------------------------------------------------------------
+
+
+def test_validate_npm_wrapper_dependencies_correct(tmp_path):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
+
+
+def test_validate_npm_wrapper_dependencies_missing_raises(tmp_path):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    deps = _wrapper_deps("1.2.3")
+    del deps[f"{NPM_SCOPE}/cli-linux-arm64"]
+    _write_wrapper(tmp_path, "1.2.3", deps)
+    with pytest.raises(
+        ValueError,
+        match=r"optionalDependencies mismatch \(expected 1\.2\.3\): "
+        r"missing @agentbeacon/cli-linux-arm64\. Rebuild",
+    ):
+        validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
+
+
+def test_validate_npm_wrapper_dependencies_absent_field_raises(tmp_path):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    (tmp_path / PACKAGE_NAME / "package.json").write_text(
+        '{"name": "agentbeacon", "version": "1.2.3"}'
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"missing @agentbeacon/cli-linux-arm64, @agentbeacon/cli-linux-x64\.",
+    ):
+        validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
+
+
+def test_validate_npm_wrapper_dependencies_null_treated_as_empty(tmp_path):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    (tmp_path / PACKAGE_NAME / "package.json").write_text(
+        '{"name": "agentbeacon", "version": "1.2.3", "optionalDependencies": null}'
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"missing @agentbeacon/cli-linux-arm64, @agentbeacon/cli-linux-x64\.",
+    ):
+        validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
+
+
+@pytest.mark.parametrize(
+    "value, shown",
+    [
+        ("0", "0"),
+        ("7", "7"),
+        ("[]", r"\[\]"),
+        ('["@agentbeacon/cli-linux-x64"]', r"\["),
+    ],
+    ids=["zero", "number", "empty-array", "array"],
+)
+def test_validate_npm_wrapper_dependencies_non_object_raises(tmp_path, value, shown):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    (tmp_path / PACKAGE_NAME / "package.json").write_text(
+        f'{{"name": "agentbeacon", "version": "1.2.3", "optionalDependencies": {value}}}'
+    )
+    with pytest.raises(
+        ValueError,
+        match=rf"^npm wrapper optionalDependencies is not an object: {shown}.*\. "
+        r"Rebuild with: make build-npm-wrapper$",
+    ):
+        validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
+
+
+def test_validate_npm_wrapper_dependencies_extra_raises(tmp_path):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    deps = _wrapper_deps("1.2.3")
+    deps[f"{NPM_SCOPE}/cli-win32-x64"] = "1.2.3"
+    _write_wrapper(tmp_path, "1.2.3", deps)
+    with pytest.raises(
+        ValueError, match=r": unexpected @agentbeacon/cli-win32-x64\. Rebuild"
+    ):
+        validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
+
+
+def test_validate_npm_wrapper_dependencies_wrong_version_raises(tmp_path):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    deps = _wrapper_deps("1.2.3")
+    deps[f"{NPM_SCOPE}/cli-linux-x64"] = "1.2.2"
+    _write_wrapper(tmp_path, "1.2.3", deps)
+    with pytest.raises(
+        ValueError, match=r": wrong version @agentbeacon/cli-linux-x64@1\.2\.2\. "
+    ):
+        validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
+
+
+def test_publish_npm_rejects_bad_wrapper_before_publishing(tmp_path, monkeypatch):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    _write_wrapper(tmp_path, "1.2.3", {})
+    registry = _FakeRegistry(monkeypatch, published=set())
+    with pytest.raises(ValueError, match="optionalDependencies mismatch"):
+        publish_npm(tmp_path, "1.2.3")
+    assert registry.calls == []
+
+
+# ---------------------------------------------------------------------------
+# npm publish and --resume
+# ---------------------------------------------------------------------------
+
+
+class _FakeRegistry:
+    """Stands in for the npm CLI: answers `npm view` from a set of
+    published `name@version` strings and records every command."""
+
+    def __init__(self, monkeypatch, published, view_result=None):
+        self.published = published
+        self.view_result = view_result
+        self.calls: list[list[str]] = []
+        self.sleeps: list[float] = []
+        monkeypatch.setattr(_mod.subprocess, "run", self.run)
+        monkeypatch.setattr(_mod, "require_tool", lambda name: Path("/usr/bin") / name)
+        monkeypatch.setattr(_mod.time, "sleep", self.sleeps.append)
+        monkeypatch.delenv("NPM_TOKEN", raising=False)
+
+    def run(self, cmd, check=False, capture_output=False, text=False):
+        self.calls.append(cmd)
+        if cmd[:2] != ["npm", "view"]:
+            return subprocess.CompletedProcess(cmd, 0)
+        if self.view_result is not None:
+            returncode, stdout, stderr = self.view_result
+            return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+        spec = cmd[2]
+        name, version = spec.rsplit("@", 1)
+        if spec in self.published:
+            return subprocess.CompletedProcess(cmd, 0, f'"{version}"\n', "")
+        if any(p.rsplit("@", 1)[0] == name for p in self.published):
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            "",
+            f"npm error code E404\nnpm error 404 '{spec}' is not in this registry.\n",
+        )
+
+    def views(self) -> list[str]:
+        return [c[2] for c in self.calls if c[:2] == ["npm", "view"]]
+
+    def publishes(self) -> list[str]:
+        return [Path(c[2]).name for c in self.calls if c[:2] == ["npm", "publish"]]
+
+
+def test_publish_npm_without_resume_never_queries_registry(tmp_path, monkeypatch):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    registry = _FakeRegistry(monkeypatch, published={"agentbeacon@1.2.3"})
+    publish_npm(tmp_path, "1.2.3")
+    assert registry.views() == []
+    assert registry.publishes() == ["cli-linux-arm64", "cli-linux-x64", PACKAGE_NAME]
+    assert registry.sleeps == [10]
+
+
+def test_publish_npm_resume_partial_platform_publish(tmp_path, monkeypatch):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    registry = _FakeRegistry(
+        monkeypatch,
+        published={"@agentbeacon/cli-linux-arm64@1.2.3", "agentbeacon@1.2.2"},
+    )
+    publish_npm(tmp_path, "1.2.3", resume=True)
+    assert registry.views() == [
+        "@agentbeacon/cli-linux-arm64@1.2.3",
+        "@agentbeacon/cli-linux-x64@1.2.3",
+        "agentbeacon@1.2.3",
+    ]
+    assert registry.publishes() == ["cli-linux-x64", PACKAGE_NAME]
+    assert registry.sleeps == [10]
+    assert registry.calls[-1] == [
+        "npm",
+        "publish",
+        str(tmp_path / PACKAGE_NAME),
+        "--access",
+        "public",
+    ]
+
+
+def test_publish_npm_resume_only_wrapper_missing(tmp_path, monkeypatch):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    registry = _FakeRegistry(
+        monkeypatch,
+        published={
+            "@agentbeacon/cli-linux-arm64@1.2.3",
+            "@agentbeacon/cli-linux-x64@1.2.3",
+        },
+    )
+    publish_npm(tmp_path, "1.2.3", resume=True)
+    assert registry.publishes() == [PACKAGE_NAME]
+    assert registry.sleeps == [10]
+
+
+def test_publish_npm_resume_everything_published(tmp_path, monkeypatch, capsys):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    registry = _FakeRegistry(
+        monkeypatch,
+        published={
+            "@agentbeacon/cli-linux-arm64@1.2.3",
+            "@agentbeacon/cli-linux-x64@1.2.3",
+            "agentbeacon@1.2.3",
+        },
+    )
+    publish_npm(tmp_path, "1.2.3", resume=True)
+    assert registry.publishes() == []
+    assert registry.sleeps == []
+    assert "All npm packages for 1.2.3 are already published" in capsys.readouterr().out
+
+
+def test_publish_npm_resume_prerelease_dry_run_with_token(tmp_path, monkeypatch):
+    _make_stub_npm_packages(tmp_path, version="1.0.0-rc.1")
+    registry = _FakeRegistry(
+        monkeypatch, published={"@agentbeacon/cli-linux-arm64@1.0.0-rc.1"}
+    )
+    monkeypatch.setenv("NPM_TOKEN", "test-token")
+    publish_npm(tmp_path, "1.0.0-rc.1", dry_run=True, resume=True)
+
+    view = registry.calls[0]
+    assert view[:5] == [
+        "npm",
+        "view",
+        "@agentbeacon/cli-linux-arm64@1.0.0-rc.1",
+        "version",
+        "--json",
+    ]
+    assert view[5] == "--userconfig"
+    npmrc = view[6]
+    assert registry.publishes() == ["cli-linux-x64", PACKAGE_NAME]
+    for cmd in registry.calls[3:]:
+        assert cmd[3:] == [
+            "--access",
+            "public",
+            "--userconfig",
+            npmrc,
+            "--tag",
+            "next",
+            "--dry-run",
+        ]
+    assert registry.sleeps == []
+    assert not Path(npmrc).exists()
+
+
+@pytest.mark.parametrize(
+    "view_result, message",
+    [
+        ((1, "", "npm error code ENOTFOUND\n"), "npm view failed .*ENOTFOUND"),
+        ((1, "", "npm error code E401\n"), "npm view failed .*E401"),
+        ((0, '"9.9.9"\n', ""), "Unexpected npm view output .*9\\.9\\.9"),
+        ((0, "not json\n", ""), "Unexpected npm view output .*not json"),
+        ((0, '["1.2.3"]\n', ""), "Unexpected npm view output"),
+    ],
+    ids=["network-error", "auth-error", "other-version", "non-json", "json-array"],
+)
+def test_publish_npm_resume_registry_error_aborts(
+    tmp_path, monkeypatch, view_result, message
+):
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    registry = _FakeRegistry(monkeypatch, published=set(), view_result=view_result)
+    with pytest.raises(RuntimeError, match=message):
+        publish_npm(tmp_path, "1.2.3", resume=True)
+    assert registry.publishes() == []
+
+
+def test_main_npm_resume_flag(tmp_path, monkeypatch):
+    cargo = tmp_path / "Cargo.toml"
+    cargo.write_text('[workspace.package]\nversion = "1.2.3"\n')
+    _make_stub_npm_packages(tmp_path / "dist" / "npm", version="1.2.3")
+    registry = _FakeRegistry(
+        monkeypatch,
+        published={
+            "@agentbeacon/cli-linux-arm64@1.2.3",
+            "@agentbeacon/cli-linux-x64@1.2.3",
+        },
+    )
+    _mod.main(
+        [
+            "--cargo-toml",
+            str(cargo),
+            "--dist-dir",
+            str(tmp_path / "dist"),
+            "npm",
+            "--resume",
+        ]
+    )
+    assert registry.publishes() == [PACKAGE_NAME]
+
+
+# ---------------------------------------------------------------------------
+# Platform lists agree across build and publish scripts
+# ---------------------------------------------------------------------------
+
+
+def _resolve_js_platforms() -> dict[str, str]:
+    resolve_js = _scripts_dir.parent / "npm" / "lib" / "resolve.js"
+    script = (
+        "const fs = require('fs'); const vm = require('vm');"
+        "const src = fs.readFileSync(process.argv[1], 'utf8');"
+        "const ctx = {module: {exports: {}}, require, process};"
+        "process.stdout.write(JSON.stringify(vm.runInNewContext("
+        "src + '\\n;PLATFORMS', ctx)));"
+    )
+    out = subprocess.run(
+        ["node", "-e", script, str(resolve_js)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(out.stdout)
+
+
+def test_platform_targets_agree():
+    targets = set(_build_wheel.PLATFORM_MAP)
+    assert set(_build_npm.TARGET_MAP) == targets
+    assert set(TARGET_TO_NPM_SUFFIX) == targets
+    assert set(TARGET_TO_WHEEL_TAG) == targets
+
+
+def test_platform_npm_suffixes_agree():
+    for target, info in _build_npm.TARGET_MAP.items():
+        assert TARGET_TO_NPM_SUFFIX.get(target) == info["suffix"], target
+
+
+def test_platform_wheel_tags_agree():
+    for target, tag in TARGET_TO_WHEEL_TAG.items():
+        assert tag in _build_wheel.PLATFORM_MAP.get(target, []), target
+
+
+def test_platform_resolve_js_agrees():
+    expected = {
+        f"{info['os']}-{info['cpu']}": f"{NPM_SCOPE}/cli-{info['suffix']}"
+        for info in _build_npm.TARGET_MAP.values()
+    }
+    assert _resolve_js_platforms() == expected
+
+
+def test_platform_wrapper_dependencies_agree(tmp_path):
+    generated = json.loads(_build_npm.generate_wrapper_package_json("1.2.3"))
+    assert generated["optionalDependencies"] == _wrapper_deps("1.2.3")
+    _make_stub_npm_packages(tmp_path, version="1.2.3")
+    _write_wrapper(tmp_path, "1.2.3", generated["optionalDependencies"])
+    validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
 
 
 # ---------------------------------------------------------------------------

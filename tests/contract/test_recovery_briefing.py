@@ -51,13 +51,7 @@ _BRIEFING_MARKER = "# AgentBeacon Environment"
 
 
 def _resolve_data_dir():
-    data_dir = os.environ.get("AGENTBEACON_DATA_DIR")
-    if data_dir:
-        return data_dir
-    xdg = os.environ.get("XDG_DATA_HOME")
-    if xdg:
-        return os.path.join(xdg, "agentbeacon")
-    return os.path.join(os.path.expanduser("~"), ".local", "share", "agentbeacon")
+    return os.environ["AGENTBEACON_DATA_DIR"]
 
 
 def _codex_config_toml_has_briefing(session_id):

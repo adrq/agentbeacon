@@ -96,6 +96,14 @@ def _with_injected_auth(request_url, path, headers, content):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _isolated_data_dir(tmp_path_factory):
+    """Give every process the tests start a private AGENTBEACON_DATA_DIR."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("AGENTBEACON_DATA_DIR", str(tmp_path_factory.mktemp("data")))
+        yield
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _inject_test_credentials():
     """Send the harness's credentials with requests to test schedulers.
 

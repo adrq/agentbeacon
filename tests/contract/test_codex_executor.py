@@ -387,16 +387,7 @@ def test_codex_home_config_toml_structure(test_database):
                 timeout=30,
             ), "Codex session did not reach idle for config test"
 
-            data_dir = os.environ.get(
-                "AGENTBEACON_DATA_DIR",
-                os.path.join(
-                    os.environ.get(
-                        "XDG_DATA_HOME",
-                        os.path.join(os.path.expanduser("~"), ".local", "share"),
-                    ),
-                    "agentbeacon",
-                ),
-            )
+            data_dir = os.environ["AGENTBEACON_DATA_DIR"]
             codex_home = os.path.join(data_dir, "codex-state", session_id, ".codex")
             config_path = os.path.join(codex_home, "config.toml")
 
@@ -443,16 +434,7 @@ def test_codex_home_config_toml_structure(test_database):
 
 
 def _load_codex_config_toml(session_id):
-    data_dir = os.environ.get(
-        "AGENTBEACON_DATA_DIR",
-        os.path.join(
-            os.environ.get(
-                "XDG_DATA_HOME",
-                os.path.join(os.path.expanduser("~"), ".local", "share"),
-            ),
-            "agentbeacon",
-        ),
-    )
+    data_dir = os.environ["AGENTBEACON_DATA_DIR"]
     config_path = os.path.join(
         data_dir, "codex-state", session_id, ".codex", "config.toml"
     )
