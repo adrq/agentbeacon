@@ -23,7 +23,7 @@ WORKER_BIN = BASE_DIR / "bin" / "agentbeacon-worker"
 
 def test_worker_extracts_embedded_executors():
     """Worker extracts embedded executors to data dir when no override set."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="ab data ") as tmpdir:
         env = os.environ.copy()
         env["AGENTBEACON_DATA_DIR"] = tmpdir
         launch_args, launch_env = worker_launch("http://127.0.0.1:1")

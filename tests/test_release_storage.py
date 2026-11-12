@@ -1,10 +1,16 @@
 # SPDX-FileCopyrightText: Copyright 2026 Adrian Quiroga
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Default storage of the packaged (musl) binaries, under the data directory.
+"""Default storage of the packaged binaries, under the data directory.
 
-These tests require the host-architecture musl binaries: make build-musl-x64 or build-musl-arm64
+On Linux these tests use the host-architecture musl binary: make build-musl-x64 or build-musl-arm64
 Run with: uv run pytest -v -m musl
+
+On an Apple Silicon Mac, after make build-macos-native:
+    AGENTBEACON_TEST_RELEASE_BIN=target/aarch64-apple-darwin/release/agentbeacon \\
+        uv run pytest -v -m packaging tests/test_release_storage.py
+
+When AGENTBEACON_TEST_RELEASE_BIN is set, a missing binary fails every test instead of skipping.
 """
 
 import json
@@ -12,6 +18,7 @@ import os
 import platform
 import stat
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,8 +29,22 @@ import pytest
 from tests.testhelpers import PortManager, anonymous_headers, run_pty
 
 BASE_DIR = Path(__file__).parent.parent
-TRIPLE = f"{platform.machine()}-unknown-linux-musl"
-BIN = BASE_DIR / "target" / TRIPLE / "release" / "agentbeacon"
+RELEASE_BIN_ENV = "AGENTBEACON_TEST_RELEASE_BIN"
+EXPLICIT_BIN = os.environ.get(RELEASE_BIN_ENV)
+if sys.platform == "darwin":
+    TRIPLE = "aarch64-apple-darwin"
+else:
+    TRIPLE = f"{platform.machine()}-unknown-linux-musl"
+if EXPLICIT_BIN is None:
+    BIN = BASE_DIR / "target" / TRIPLE / "release" / "agentbeacon"
+elif EXPLICIT_BIN:
+    BIN = Path(EXPLICIT_BIN).resolve()
+else:
+    BIN = Path(EXPLICIT_BIN)
+if sys.platform == "darwin":
+    DEFAULT_DATA_DIR = Path("Library") / "Application Support" / "agentbeacon"
+else:
+    DEFAULT_DATA_DIR = Path(".local") / "share" / "agentbeacon"
 PASSWORD = "release-password"
 NOT_UTF8 = "AGENTBEACON_DATA_DIR is not valid UTF-8"
 CREATE_PROMPT = "Create it?"
@@ -31,8 +52,17 @@ CREATE_PROMPT = "Create it?"
 pytestmark = [
     pytest.mark.musl,
     pytest.mark.packaging,
-    pytest.mark.skipif(not BIN.is_file(), reason=f"musl binary not built: {BIN}"),
+    pytest.mark.skipif(
+        EXPLICIT_BIN is None and not BIN.is_file(),
+        reason=f"release binary not built: {BIN}",
+    ),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _require_explicit_binary():
+    if EXPLICIT_BIN is not None and not BIN.is_file():
+        pytest.fail(f"{RELEASE_BIN_ENV} is set but {BIN} is not a file")
 
 
 def _env(tmp_path, credentials=True, data=True, **extra):
@@ -204,15 +234,7 @@ def test_release_default_uses_platform_data_dir_without_override(tmp_path):
     cwd = _workdir(tmp_path)
     setup = _run(["--setup-user"], cwd, _env(tmp_path, data=False))
     assert setup.returncode == 0, setup.stderr
-    db = (
-        tmp_path
-        / "home"
-        / ".local"
-        / "share"
-        / "agentbeacon"
-        / "db"
-        / "scheduler-9456.db"
-    )
+    db = tmp_path / "home" / DEFAULT_DATA_DIR / "db" / "scheduler-9456.db"
     assert setup.stdout.splitlines()[0] == f"User database: SQLite at {db}"
     assert db.is_file()
 

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,11 @@ def test_platform_tags_unknown_raises():
 # ---------------------------------------------------------------------------
 
 
+def test_wheel_filename_darwin():
+    name = wheel_filename("agentbeacon", "1.2.3", platform_tags("aarch64-apple-darwin"))
+    assert name == "agentbeacon-1.2.3-py3-none-macosx_11_0_arm64.whl"
+
+
 def test_wheel_filename_format():
     tags = ["manylinux_2_17_x86_64", "manylinux2014_x86_64", "musllinux_1_1_x86_64"]
     name = wheel_filename("agentbeacon", "0.1.0", tags)
@@ -122,7 +128,7 @@ def test_wheel_filename_format():
 
 
 def test_generate_metadata_fields():
-    meta = generate_metadata("agentbeacon", "0.1.0")
+    meta = generate_metadata("agentbeacon", "0.1.0", "x86_64-unknown-linux-musl")
     lines = meta.splitlines()
     assert lines[0] == "Metadata-Version: 2.4"
     assert "Name: agentbeacon" in lines
@@ -135,6 +141,21 @@ def test_generate_metadata_fields():
     # PEP 639 deprecates License: and license classifiers alongside License-Expression.
     assert [line for line in lines if line.startswith("License:")] == []
     assert [line for line in lines if line.startswith("Classifier: License ::")] == []
+
+
+@pytest.mark.parametrize(
+    "target, classifier",
+    [
+        ("x86_64-unknown-linux-musl", "Operating System :: POSIX :: Linux"),
+        ("aarch64-unknown-linux-musl", "Operating System :: POSIX :: Linux"),
+        ("aarch64-apple-darwin", "Operating System :: MacOS"),
+    ],
+)
+def test_generate_metadata_os_classifier(target, classifier):
+    lines = generate_metadata("agentbeacon", "0.1.0", target).splitlines()
+    assert [line for line in lines if line.startswith("Classifier:")] == [
+        f"Classifier: {classifier}"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -242,3 +263,46 @@ def test_wheel_reproducible(tmp_path):
     )
 
     assert whl1.read_bytes() == whl2.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# darwin wheel
+# ---------------------------------------------------------------------------
+
+
+def test_build_wheel_darwin(tmp_path):
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    for name in BINARIES:
+        (binary_dir / name).write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 100)
+    pkg_dir = tmp_path / "pkg"
+    pkg_dir.mkdir()
+    for f in WRAPPER_FILES:
+        (pkg_dir / f).write_text("# wrapper stub")
+    cargo = tmp_path / "Cargo.toml"
+    cargo.write_text('[workspace.package]\nversion = "1.2.3"\n')
+    (tmp_path / "LICENSE").write_text("stub LICENSE")
+
+    whl = build_wheel(
+        target="aarch64-apple-darwin",
+        binary_dir=binary_dir,
+        python_pkg_dir=pkg_dir,
+        output_dir=tmp_path / "dist",
+        cargo_toml=cargo,
+    )
+
+    assert whl.name == "agentbeacon-1.2.3-py3-none-macosx_11_0_arm64.whl"
+    with zipfile.ZipFile(whl) as zf:
+        names = zf.namelist()
+        metadata = zf.read("agentbeacon-1.2.3.dist-info/METADATA").decode()
+        wheel_info = zf.read("agentbeacon-1.2.3.dist-info/WHEEL").decode()
+    meta_lines = metadata.splitlines()
+    assert "Classifier: Operating System :: MacOS" in meta_lines
+    assert "Classifier: Operating System :: POSIX :: Linux" not in meta_lines
+    assert "License-Expression: AGPL-3.0-or-later" in meta_lines
+    assert "License-File: LICENSE" in meta_lines
+    assert [line for line in wheel_info.splitlines() if line.startswith("Tag:")] == [
+        "Tag: py3-none-macosx_11_0_arm64"
+    ]
+    for name in BINARIES:
+        assert f"agentbeacon-1.2.3.data/scripts/{name}" in names

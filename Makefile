@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2025 Adrian Quiroga
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-.PHONY: all build build-frontend build-docs build-rust-workspace build-scheduler build-worker install-bins npm-install executors mock-sdks test test-rust test-int test-e2e test-e2e-serial test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm run clean pre-commit dev-backend dev-frontend dev-docs
+.PHONY: all build build-frontend build-docs build-rust-workspace build-scheduler build-worker install-bins npm-install executors mock-sdks test test-rust test-int test-e2e test-e2e-serial test-all build-musl build-musl-x64 build-musl-arm64 test-musl build-wheel-x64 build-wheel-arm64 build-wheels test-packaging build-npm-x64 build-npm-arm64 build-npm-wrapper build-npm test-npm build-macos-native package-wheel-darwin-arm64 package-npm-darwin-arm64 run clean pre-commit dev-backend dev-frontend dev-docs
 
 RUST_STRICT_FLAGS ?= -Dwarnings
 
@@ -130,6 +130,34 @@ build-npm-x64: build-musl-x64
 # Generate npm platform package for aarch64
 build-npm-arm64: build-musl-arm64
 	uv run python scripts/build_npm.py platform --target aarch64-unknown-linux-musl --output-dir dist/npm/
+
+# Build, sign and verify the Apple Silicon binaries (run on an Apple Silicon Mac)
+DARWIN_ARM64_DIR := target/aarch64-apple-darwin/release
+
+build-macos-native:
+	@[ "$$(uname -s)" = Darwin ] && [ "$$(uname -m)" = arm64 ] \
+		|| { echo "ERROR: build-macos-native must run on an Apple Silicon Mac"; exit 1; }
+	$(MAKE) build-frontend executors build-docs
+	@rustup target list --installed | grep -q aarch64-apple-darwin || rustup target add aarch64-apple-darwin
+	rm -f $(DARWIN_ARM64_DIR)/agentbeacon $(DARWIN_ARM64_DIR)/agentbeacon-worker
+	MACOSX_DEPLOYMENT_TARGET=11.0 RUSTFLAGS="$(RUST_STRICT_FLAGS) $${RUSTFLAGS}" cargo build --release --target aarch64-apple-darwin --features scheduler/installed-paths
+	@set -e; for b in agentbeacon agentbeacon-worker; do \
+		f=$(DARWIN_ARM64_DIR)/$$b; \
+		codesign -s - --force "$$f"; \
+		codesign -v --strict "$$f"; \
+		[ "$$(lipo -archs "$$f")" = arm64 ] || { echo "ERROR: $$f is not arm64-only"; exit 1; }; \
+		vtool -show-build "$$f" | grep -qE 'minos 11\.0$$' || { echo "ERROR: $$f minimum macOS is not 11.0"; exit 1; }; \
+	done
+	@echo "Signed arm64 binaries verified at $(DARWIN_ARM64_DIR)/"
+
+# Package the staged Apple Silicon binaries (no compile; stage them from build-macos-native first)
+package-wheel-darwin-arm64:
+	@scripts/check_darwin_arm64.sh $(DARWIN_ARM64_DIR)/agentbeacon $(DARWIN_ARM64_DIR)/agentbeacon-worker
+	uv run python scripts/build_wheel.py --target aarch64-apple-darwin --output-dir dist/
+
+package-npm-darwin-arm64:
+	@scripts/check_darwin_arm64.sh $(DARWIN_ARM64_DIR)/agentbeacon $(DARWIN_ARM64_DIR)/agentbeacon-worker
+	uv run python scripts/build_npm.py platform --target aarch64-apple-darwin --output-dir dist/npm/
 
 # Generate npm wrapper package
 build-npm-wrapper:

@@ -6,6 +6,7 @@
 Usage:
     python scripts/build_wheel.py --target x86_64-unknown-linux-musl
     python scripts/build_wheel.py --target aarch64-unknown-linux-musl --output-dir dist/
+    python scripts/build_wheel.py --target aarch64-apple-darwin --output-dir dist/
 
 Follows the zig-pypi / ruff pattern: raw ELF binaries placed in .data/scripts/
 so pip copies them directly to <venv>/bin/. Thin Python wrapper in agentbeacon/.
@@ -37,6 +38,9 @@ PLATFORM_MAP: dict[str, list[str]] = {
         "manylinux_2_17_aarch64",
         "manylinux2014_aarch64",
         "musllinux_1_1_aarch64",
+    ],
+    "aarch64-apple-darwin": [
+        "macosx_11_0_arm64",
     ],
 }
 
@@ -124,7 +128,14 @@ def wheel_filename(name: str, version: str, tags: list[str]) -> str:
     return f"{name}-{version}-py3-none-{platform_str}.whl"
 
 
-def generate_metadata(name: str, version: str) -> str:
+def os_classifier(target: str) -> str:
+    """Trove operating-system classifier for a Rust target triple."""
+    if target.endswith("-apple-darwin"):
+        return "Operating System :: MacOS"
+    return "Operating System :: POSIX :: Linux"
+
+
+def generate_metadata(name: str, version: str, target: str) -> str:
     """Core metadata 2.4 METADATA content (PEP 639 license fields)."""
     return (
         f"Metadata-Version: 2.4\n"
@@ -134,7 +145,7 @@ def generate_metadata(name: str, version: str) -> str:
         f"License-Expression: AGPL-3.0-or-later\n"
         f"License-File: LICENSE\n"
         f"Requires-Python: >=3.10\n"
-        f"Classifier: Operating System :: POSIX :: Linux\n"
+        f"Classifier: {os_classifier(target)}\n"
         f"Project-URL: Homepage, https://github.com/adrq/agentbeacon\n"
         f"Project-URL: Repository, https://github.com/adrq/agentbeacon\n"
     )
@@ -255,7 +266,7 @@ def build_wheel(
         records.append(record_entry(arcname, file_data))
 
         # 4. METADATA
-        metadata_content = generate_metadata(PACKAGE_NAME, version).encode()
+        metadata_content = generate_metadata(PACKAGE_NAME, version, target).encode()
         arcname = f"{dist_info}/METADATA"
         zf.write_file(arcname, metadata_content)
         records.append(record_entry(arcname, metadata_content))

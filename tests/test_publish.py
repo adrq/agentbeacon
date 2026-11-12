@@ -77,6 +77,7 @@ def _make_stub_wheels(dist_dir: Path) -> list[Path]:
     names = [
         "agentbeacon-0.1.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.musllinux_1_1_x86_64.whl",
         "agentbeacon-0.1.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.musllinux_1_1_aarch64.whl",
+        "agentbeacon-0.1.0-py3-none-macosx_11_0_arm64.whl",
     ]
     paths = []
     for name in names:
@@ -101,7 +102,7 @@ def _write_wrapper(dist_npm_dir: Path, version: str, deps: dict[str, str]) -> No
 
 
 def _make_stub_npm_packages(dist_npm_dir: Path, version: str = "0.1.0") -> None:
-    for suffix in ["linux-x64", "linux-arm64"]:
+    for suffix in TARGET_TO_NPM_SUFFIX.values():
         pkg_dir = dist_npm_dir / NPM_SCOPE / f"cli-{suffix}"
         pkg_dir.mkdir(parents=True, exist_ok=True)
         name = f"{NPM_SCOPE}/cli-{suffix}"
@@ -300,7 +301,7 @@ def test_generate_checksums_includes_all_files(tmp_path):
 def test_find_wheels_finds_whl_files(tmp_path):
     wheels = _make_stub_wheels(tmp_path)
     found = find_wheels(tmp_path, "0.1.0")
-    assert len(found) == 2
+    assert len(found) == 3
     assert found == sorted(wheels)
 
 
@@ -319,7 +320,7 @@ def test_find_wheels_ignores_other_versions(tmp_path):
     )
     stale.write_bytes(b"PK\x03\x04")
     found = find_wheels(tmp_path, "0.1.0")
-    assert len(found) == 2
+    assert len(found) == 3
     assert all("0.1.0" in f.name for f in found)
 
 
@@ -343,6 +344,16 @@ def test_validate_wheel_set_missing_arch_raises(tmp_path):
     whl.write_bytes(b"PK\x03\x04")
     with pytest.raises(FileNotFoundError, match="Missing wheels.*aarch64"):
         validate_wheel_set([whl])
+
+
+def test_validate_wheel_set_missing_darwin_raises(tmp_path):
+    wheels = [w for w in _make_stub_wheels(tmp_path) if "macosx" not in w.name]
+    with pytest.raises(
+        FileNotFoundError,
+        match=r"^Missing wheels for platforms: macosx_11_0_arm64\. "
+        r"Build with: make build-wheels package-wheel-darwin-arm64$",
+    ):
+        validate_wheel_set(wheels)
 
 
 def test_validate_wheel_set_duplicate_arch_raises(tmp_path):
@@ -431,6 +442,19 @@ def test_validate_npm_platform_set_missing_suffix_raises(tmp_path):
         validate_npm_platform_set([pkg_dir])
 
 
+def test_validate_npm_platform_set_missing_darwin_raises(tmp_path):
+    _make_stub_npm_packages(tmp_path)
+    platform_dirs, _ = find_npm_packages(tmp_path)
+    linux_only = [d for d in platform_dirs if d.name != "cli-darwin-arm64"]
+    assert len(linux_only) == 2
+    with pytest.raises(
+        FileNotFoundError,
+        match=r"^Missing npm platform packages: cli-darwin-arm64\. "
+        r"Build with: make build-npm-x64 build-npm-arm64 package-npm-darwin-arm64$",
+    ):
+        validate_npm_platform_set(linux_only)
+
+
 def test_validate_npm_platform_set_unexpected_raises(tmp_path):
     _make_stub_npm_packages(tmp_path)
     platform_dirs, _ = find_npm_packages(tmp_path)
@@ -502,7 +526,8 @@ def test_validate_npm_wrapper_dependencies_absent_field_raises(tmp_path):
     )
     with pytest.raises(
         ValueError,
-        match=r"missing @agentbeacon/cli-linux-arm64, @agentbeacon/cli-linux-x64\.",
+        match=r"missing @agentbeacon/cli-darwin-arm64, @agentbeacon/cli-linux-arm64, "
+        r"@agentbeacon/cli-linux-x64\.",
     ):
         validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
 
@@ -514,7 +539,8 @@ def test_validate_npm_wrapper_dependencies_null_treated_as_empty(tmp_path):
     )
     with pytest.raises(
         ValueError,
-        match=r"missing @agentbeacon/cli-linux-arm64, @agentbeacon/cli-linux-x64\.",
+        match=r"missing @agentbeacon/cli-darwin-arm64, @agentbeacon/cli-linux-arm64, "
+        r"@agentbeacon/cli-linux-x64\.",
     ):
         validate_npm_wrapper_dependencies(tmp_path / PACKAGE_NAME, "1.2.3")
 
@@ -624,7 +650,12 @@ def test_publish_npm_without_resume_never_queries_registry(tmp_path, monkeypatch
     registry = _FakeRegistry(monkeypatch, published={"agentbeacon@1.2.3"})
     publish_npm(tmp_path, "1.2.3")
     assert registry.views() == []
-    assert registry.publishes() == ["cli-linux-arm64", "cli-linux-x64", PACKAGE_NAME]
+    assert registry.publishes() == [
+        "cli-darwin-arm64",
+        "cli-linux-arm64",
+        "cli-linux-x64",
+        PACKAGE_NAME,
+    ]
     assert registry.sleeps == [10]
 
 
@@ -636,11 +667,12 @@ def test_publish_npm_resume_partial_platform_publish(tmp_path, monkeypatch):
     )
     publish_npm(tmp_path, "1.2.3", resume=True)
     assert registry.views() == [
+        "@agentbeacon/cli-darwin-arm64@1.2.3",
         "@agentbeacon/cli-linux-arm64@1.2.3",
         "@agentbeacon/cli-linux-x64@1.2.3",
         "agentbeacon@1.2.3",
     ]
-    assert registry.publishes() == ["cli-linux-x64", PACKAGE_NAME]
+    assert registry.publishes() == ["cli-darwin-arm64", "cli-linux-x64", PACKAGE_NAME]
     assert registry.sleeps == [10]
     assert registry.calls[-1] == [
         "npm",
@@ -656,6 +688,7 @@ def test_publish_npm_resume_only_wrapper_missing(tmp_path, monkeypatch):
     registry = _FakeRegistry(
         monkeypatch,
         published={
+            "@agentbeacon/cli-darwin-arm64@1.2.3",
             "@agentbeacon/cli-linux-arm64@1.2.3",
             "@agentbeacon/cli-linux-x64@1.2.3",
         },
@@ -670,6 +703,7 @@ def test_publish_npm_resume_everything_published(tmp_path, monkeypatch, capsys):
     registry = _FakeRegistry(
         monkeypatch,
         published={
+            "@agentbeacon/cli-darwin-arm64@1.2.3",
             "@agentbeacon/cli-linux-arm64@1.2.3",
             "@agentbeacon/cli-linux-x64@1.2.3",
             "agentbeacon@1.2.3",
@@ -684,7 +718,7 @@ def test_publish_npm_resume_everything_published(tmp_path, monkeypatch, capsys):
 def test_publish_npm_resume_prerelease_dry_run_with_token(tmp_path, monkeypatch):
     _make_stub_npm_packages(tmp_path, version="1.0.0-rc.1")
     registry = _FakeRegistry(
-        monkeypatch, published={"@agentbeacon/cli-linux-arm64@1.0.0-rc.1"}
+        monkeypatch, published={"@agentbeacon/cli-darwin-arm64@1.0.0-rc.1"}
     )
     monkeypatch.setenv("NPM_TOKEN", "test-token")
     publish_npm(tmp_path, "1.0.0-rc.1", dry_run=True, resume=True)
@@ -693,14 +727,14 @@ def test_publish_npm_resume_prerelease_dry_run_with_token(tmp_path, monkeypatch)
     assert view[:5] == [
         "npm",
         "view",
-        "@agentbeacon/cli-linux-arm64@1.0.0-rc.1",
+        "@agentbeacon/cli-darwin-arm64@1.0.0-rc.1",
         "version",
         "--json",
     ]
     assert view[5] == "--userconfig"
     npmrc = view[6]
-    assert registry.publishes() == ["cli-linux-x64", PACKAGE_NAME]
-    for cmd in registry.calls[3:]:
+    assert registry.publishes() == ["cli-linux-arm64", "cli-linux-x64", PACKAGE_NAME]
+    for cmd in registry.calls[4:]:
         assert cmd[3:] == [
             "--access",
             "public",
@@ -742,6 +776,7 @@ def test_main_npm_resume_flag(tmp_path, monkeypatch):
     registry = _FakeRegistry(
         monkeypatch,
         published={
+            "@agentbeacon/cli-darwin-arm64@1.2.3",
             "@agentbeacon/cli-linux-arm64@1.2.3",
             "@agentbeacon/cli-linux-x64@1.2.3",
         },
@@ -757,6 +792,21 @@ def test_main_npm_resume_flag(tmp_path, monkeypatch):
         ]
     )
     assert registry.publishes() == [PACKAGE_NAME]
+
+
+def test_publish_all_warns_github_is_linux_only(tmp_path, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(_mod, "publish_pypi", lambda *a, **k: calls.append("pypi"))
+    monkeypatch.setattr(_mod, "publish_npm", lambda *a, **k: calls.append("npm"))
+    monkeypatch.setattr(_mod, "publish_github", lambda *a, **k: calls.append("github"))
+    _mod.publish_all("1.2.3", "v1.2.3", tmp_path, tmp_path / "npm", tmp_path)
+    out = capsys.readouterr().out
+    assert calls == ["pypi", "npm", "github"]
+    assert out.splitlines()[0] == (
+        "Warning: the GitHub release includes only the Linux binaries "
+        "(x86_64-unknown-linux-musl, aarch64-unknown-linux-musl); "
+        "macOS is published to PyPI and npm only."
+    )
 
 
 # ---------------------------------------------------------------------------

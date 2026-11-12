@@ -3,9 +3,11 @@
 
 import os
 import signal
+import sys
 import time
 
 import psutil
+import pytest
 from tests.testhelpers import (
     create_execution_via_api,
     orchestrator_context,
@@ -44,6 +46,9 @@ def _get_worker_children(orchestrator_pid):
         return []
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="requires the Linux parent-death signal"
+)
 def test_scheduler_crash_kills_workers():
     with orchestrator_context(
         worker_poll_interval="1s",
@@ -68,6 +73,9 @@ def test_scheduler_crash_kills_workers():
         ), f"Worker PIDs {worker_pids} still alive after scheduler SIGKILL"
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="requires the Linux parent-death signal"
+)
 def test_worker_crash_kills_executor():
     with orchestrator_context(
         worker_poll_interval="1s",

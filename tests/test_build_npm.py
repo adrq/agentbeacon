@@ -66,6 +66,11 @@ def test_target_to_platform_aarch64():
     assert result == {"os": "linux", "cpu": "arm64", "suffix": "linux-arm64"}
 
 
+def test_target_to_platform_darwin_arm64():
+    result = target_to_platform("aarch64-apple-darwin")
+    assert result == {"os": "darwin", "cpu": "arm64", "suffix": "darwin-arm64"}
+
+
 def test_target_to_platform_unknown_raises():
     with pytest.raises(ValueError, match="Unknown target"):
         target_to_platform("powerpc-unknown-linux-musl")
@@ -82,6 +87,12 @@ def test_platform_package_name_aarch64():
     assert (
         platform_package_name("aarch64-unknown-linux-musl")
         == "@agentbeacon/cli-linux-arm64"
+    )
+
+
+def test_platform_package_name_darwin_arm64():
+    assert (
+        platform_package_name("aarch64-apple-darwin") == "@agentbeacon/cli-darwin-arm64"
     )
 
 
@@ -110,6 +121,17 @@ def test_platform_package_json_os_cpu_are_arrays():
     assert isinstance(pkg_json["cpu"], list)
     assert pkg_json["os"] == ["linux"]
     assert pkg_json["cpu"] == ["x64"]
+
+
+def test_platform_package_json_darwin_arm64():
+    pkg_json = json.loads(
+        generate_platform_package_json("aarch64-apple-darwin", "1.2.3")
+    )
+    assert pkg_json["name"] == "@agentbeacon/cli-darwin-arm64"
+    assert pkg_json["version"] == "1.2.3"
+    assert pkg_json["os"] == ["darwin"]
+    assert pkg_json["cpu"] == ["arm64"]
+    assert pkg_json["license"] == "AGPL-3.0-or-later"
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +163,15 @@ def test_wrapper_optional_deps_match_platforms():
     for target in TARGET_MAP:
         pkg_name = platform_package_name(target)
         assert pkg_name in opt_deps, f"{pkg_name} missing from optionalDependencies"
+
+
+def test_wrapper_optional_deps_include_darwin_arm64():
+    pkg_json = json.loads(generate_wrapper_package_json("0.1.0"))
+    assert pkg_json["optionalDependencies"] == {
+        "@agentbeacon/cli-darwin-arm64": "0.1.0",
+        "@agentbeacon/cli-linux-arm64": "0.1.0",
+        "@agentbeacon/cli-linux-x64": "0.1.0",
+    }
 
 
 def test_wrapper_optional_deps_version_sync():

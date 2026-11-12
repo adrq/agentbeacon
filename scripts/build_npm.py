@@ -38,6 +38,11 @@ TARGET_MAP: dict[str, dict[str, str]] = {
         "cpu": "arm64",
         "suffix": "linux-arm64",
     },
+    "aarch64-apple-darwin": {
+        "os": "darwin",
+        "cpu": "arm64",
+        "suffix": "darwin-arm64",
+    },
 }
 
 WRAPPER_JS_FILES = [

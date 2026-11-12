@@ -46,11 +46,13 @@ TARGETS = [
 TARGET_TO_NPM_SUFFIX: dict[str, str] = {
     "x86_64-unknown-linux-musl": "linux-x64",
     "aarch64-unknown-linux-musl": "linux-arm64",
+    "aarch64-apple-darwin": "darwin-arm64",
 }
 
 TARGET_TO_WHEEL_TAG: dict[str, str] = {
     "x86_64-unknown-linux-musl": "manylinux_2_17_x86_64",
     "aarch64-unknown-linux-musl": "manylinux_2_17_aarch64",
+    "aarch64-apple-darwin": "macosx_11_0_arm64",
 }
 
 
@@ -211,13 +213,13 @@ def find_wheels(dist_dir: Path, version: str) -> list[Path]:
     if not dist_dir.is_dir():
         raise FileNotFoundError(
             f"Distribution directory not found: {dist_dir}. "
-            f"Build with: make build-wheels"
+            f"Build with: make build-wheels package-wheel-darwin-arm64"
         )
     wheels = sorted(dist_dir.glob(f"{PACKAGE_NAME}-{version}-*.whl"))
     if not wheels:
         raise FileNotFoundError(
             f"No .whl files for version {version} in {dist_dir}. "
-            f"Build with: make build-wheels"
+            f"Build with: make build-wheels package-wheel-darwin-arm64"
         )
     return wheels
 
@@ -242,7 +244,7 @@ def validate_wheel_set(wheels: list[Path]) -> None:
     if missing:
         raise FileNotFoundError(
             f"Missing wheels for platforms: {', '.join(missing)}. "
-            f"Build with: make build-wheels"
+            f"Build with: make build-wheels package-wheel-darwin-arm64"
         )
 
     duplicates = {t: ws for t, ws in tag_to_wheels.items() if len(ws) > 1}
@@ -278,7 +280,7 @@ def validate_npm_platform_set(platform_dirs: list[Path]) -> None:
         names = ", ".join(f"cli-{s}" for s in sorted(missing))
         raise FileNotFoundError(
             f"Missing npm platform packages: {names}. "
-            f"Build with: make build-npm-x64 build-npm-arm64"
+            f"Build with: make build-npm-x64 build-npm-arm64 package-npm-darwin-arm64"
         )
 
     expected_names = {f"cli-{s}" for s in expected_suffixes}
@@ -383,7 +385,8 @@ def find_npm_packages(dist_npm_dir: Path) -> tuple[list[Path], Path]:
     if not dist_npm_dir.is_dir():
         raise FileNotFoundError(
             f"npm distribution directory not found: {dist_npm_dir}. "
-            f"Build with: make build-npm-x64 build-npm-arm64 build-npm-wrapper"
+            f"Build with: make build-npm-x64 build-npm-arm64 "
+            f"package-npm-darwin-arm64 build-npm-wrapper"
         )
 
     # Discover platform packages via glob.
@@ -391,7 +394,7 @@ def find_npm_packages(dist_npm_dir: Path) -> tuple[list[Path], Path]:
     if not platform_dirs:
         raise FileNotFoundError(
             f"No platform packages found in {dist_npm_dir}/{NPM_SCOPE}/. "
-            f"Build with: make build-npm-x64 build-npm-arm64"
+            f"Build with: make build-npm-x64 build-npm-arm64 package-npm-darwin-arm64"
         )
 
     for pkg_dir in platform_dirs:
@@ -658,6 +661,10 @@ def publish_all(
 
     Fail-fast: reports completed channels on error.
     """
+    print(
+        f"Warning: the GitHub release includes only the Linux binaries "
+        f"({', '.join(TARGETS)}); macOS is published to PyPI and npm only."
+    )
     completed: list[str] = []
     try:
         publish_pypi(
