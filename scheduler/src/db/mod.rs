@@ -18,6 +18,7 @@ pub mod pool;
 pub mod project_agents;
 pub mod project_mcp_servers;
 pub mod projects;
+pub mod secrets;
 pub mod sessions;
 pub mod task_queue;
 pub mod users;

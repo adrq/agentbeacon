@@ -33,6 +33,7 @@ export default defineConfig({
             { label: 'Authentication', slug: 'configuration/authentication' },
             { label: 'Drivers', slug: 'configuration/drivers' },
             { label: 'MCP Servers', slug: 'configuration/mcp-servers' },
+            { label: 'Secrets', slug: 'configuration/secrets' },
             { label: 'Storage', slug: 'configuration/storage' },
           ],
         },

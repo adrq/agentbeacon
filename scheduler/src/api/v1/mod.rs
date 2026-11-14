@@ -7,7 +7,7 @@ use tower_http::compression::CompressionLayer;
 use crate::api::problem::{Problem, ProblemCode};
 use crate::api::{
     agents, auth_routes, config, decisions, drivers, escalate, executions, mcp_servers, messages,
-    projects, sessions, sse, wiki, wiki_tags, workers,
+    projects, secrets, sessions, sse, wiki, wiki_tags, workers,
 };
 use crate::app::AppState;
 
@@ -41,6 +41,7 @@ pub fn routes() -> Router<AppState> {
         .merge(mcp_servers::routes())
         .merge(messages::routes())
         .merge(projects::routes())
+        .merge(secrets::routes())
         .merge(sessions::routes())
         .merge(wiki::routes())
         .merge(wiki_tags::routes())

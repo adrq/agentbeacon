@@ -12,6 +12,7 @@ from tests.dual_backend import DUAL_BACKEND
 from tests.testhelpers import (
     TEST_PASSWORD,
     TEST_USERNAME,
+    agent_headers,
     anonymous_headers,
     create_execution_via_api,
     create_project_via_api,
@@ -591,7 +592,7 @@ def test_discovery(test_database):
         )
         _exact(body["server"], {"version"}, "server info")
         assert isinstance(body["server"]["version"], str) and body["server"]["version"]
-        _exact(body["limits"], {"events", "decisions"}, "limits")
+        _exact(body["limits"], {"events", "decisions", "secrets"}, "limits")
 
 
 @DUAL_BACKEND
@@ -797,6 +798,11 @@ EXACT_CHECKED = {
     ("PATCH", "/projects/{id}"),
     ("GET", "/projects/{id}/agents"),
     ("GET", "/projects/{id}/mcp-servers"),
+    ("GET", "/projects/{id}/secrets"),
+    ("POST", "/projects/{id}/secrets"),
+    ("PATCH", "/projects/{id}/secrets/{name}"),
+    ("GET", "/executions/{id}/secrets"),
+    ("GET", "/secrets/{name}"),
     ("GET", "/sessions"),
     ("GET", "/sessions/{id}"),
     ("GET", "/sessions/{id}/events"),
@@ -827,6 +833,9 @@ EXCLUDED = {
     ("DELETE", "/projects/{id}/mcp-servers/{mcp_server_id}"): "204 with no body",
     ("POST", "/executions/{id}/agents"): "204 with no body",
     ("DELETE", "/executions/{id}/agents/{agent_id}"): "204 with no body",
+    ("DELETE", "/projects/{id}/secrets/{name}"): "204 with no body",
+    ("POST", "/executions/{id}/secrets"): "204 with no body",
+    ("DELETE", "/executions/{id}/secrets/{name}"): "204 with no body",
     ("DELETE", "/mcp-servers/{id}"): "204 with no body",
     ("DELETE", "/sessions/{id}/worktree"): "204 with no body",
     ("DELETE", "/projects/{project_id}/wiki/pages/{slug}"): "204 with no body",
@@ -902,6 +911,10 @@ WIKI_TAG_MEMBER = {
     "created_at",
 }
 PROJECT_MCP_SERVER = {"mcp_server_id", "name", "transport_type", "config"}
+PROJECT_SECRET = {"name", "created_at", "updated_at", "attached_executions"}
+ATTACHED_EXECUTION = {"execution_id", "attached_at"}
+EXECUTION_SECRET = {"name", "attached_at"}
+SECRET_VALUE = {"name", "value"}
 CONFIG_ENTRY = {"name", "value", "created_at", "updated_at"}
 
 WIKI_PROJECT_TAG = {"tag_id", "name", "shared", "page_count"}
@@ -1244,3 +1257,62 @@ def test_every_mutation_serves_its_own_shape(test_database):
         assert raised.status_code == 200, raised.text
         _exact(raised.json(), WIKI_TAG_MEMBER, "updated tag member")
         assert raised.json()["access_level"] == "read_write"
+
+
+@DUAL_BACKEND
+def test_secrets_endpoints(test_database):
+    with scheduler_context(db_url=test_database) as ctx:
+        url = f"{ctx['url']}/api/v1"
+        agent_id = seed_test_agent(ctx["db_url"], name="wire-secrets")
+        project = create_project_via_api(ctx["url"], "wire-secrets")
+        secrets_url = f"{url}/projects/{project['id']}/secrets"
+
+        created = httpx.post(
+            secrets_url, json={"name": "WIRE_TOKEN", "value": "v1"}, timeout=10
+        )
+        assert created.status_code == 201, created.text
+        _exact(created.json(), PROJECT_SECRET, "created secret")
+
+        launched = httpx.post(
+            f"{url}/executions",
+            json={
+                "root_agent_id": agent_id,
+                "agent_ids": [agent_id],
+                "parts": [{"text": "task"}],
+                "project_id": project["id"],
+                "secrets": ["WIRE_TOKEN"],
+            },
+            timeout=10,
+        )
+        assert launched.status_code == 201, launched.text
+        exec_id = launched.json()["execution"]["id"]
+        session_id = launched.json()["session_id"]
+
+        listed = httpx.get(secrets_url, timeout=10)
+        assert listed.status_code == 200, listed.text
+        assert listed.json(), "an empty list would assert nothing"
+        for entry in listed.json():
+            _exact(entry, PROJECT_SECRET, "project secret")
+            assert entry["attached_executions"], "no attachment to check"
+            for attached in entry["attached_executions"]:
+                _exact(attached, ATTACHED_EXECUTION, "attached execution")
+
+        rotated = httpx.patch(
+            f"{secrets_url}/WIRE_TOKEN", json={"value": "v2"}, timeout=10
+        )
+        assert rotated.status_code == 200, rotated.text
+        _exact(rotated.json(), PROJECT_SECRET, "rotated secret")
+
+        attached = httpx.get(f"{url}/executions/{exec_id}/secrets", timeout=10)
+        assert attached.status_code == 200, attached.text
+        assert attached.json(), "an empty list would assert nothing"
+        for entry in attached.json():
+            _exact(entry, EXECUTION_SECRET, "execution secret")
+
+        fetched = httpx.get(
+            f"{url}/secrets/WIRE_TOKEN",
+            headers=agent_headers(ctx["url"], session_id),
+            timeout=10,
+        )
+        assert fetched.status_code == 200, fetched.text
+        _exact(fetched.json(), SECRET_VALUE, "secret value")

@@ -53,6 +53,7 @@ def test_limits_cover_every_advertised_bound(test_database):
             "resolved_default_page": 50,
             "resolved_max_page": 200,
         }
+        assert limits["secrets"] == {"value_max_bytes": 65536}
 
 
 @DUAL_BACKEND

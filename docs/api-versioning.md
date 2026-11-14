@@ -36,7 +36,8 @@ Cache-Control: no-store
   "limits": {
     "events":    { "default_page": 100, "max_page": 500,
                    "string_leaf_max_bytes": 16384, "payload_budget_bytes": 65536 },
-    "decisions": { "resolved_default_page": 50, "resolved_max_page": 200 }
+    "decisions": { "resolved_default_page": 50, "resolved_max_page": 200 },
+    "secrets":   { "value_max_bytes": 65536 }
   }
 }
 ```

@@ -30,6 +30,8 @@ EXPECTED_TABLES = [
     "wiki_tag_members",
     "users",
     "credentials",
+    "secrets",
+    "execution_secrets",
 ]
 
 EXPECTED_COLUMNS = {

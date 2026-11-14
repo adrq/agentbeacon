@@ -77,6 +77,7 @@ pub const ROUTES: &[(&str, &str, Access)] = &[
     ("DELETE", "/mcp", Agent),
     ("POST", "/api/v1/messages", Agent),
     ("POST", "/api/v1/escalate", Agent),
+    ("GET", "/api/v1/secrets/{name}", Agent),
     // Reads within the agent's own execution.
     (
         "GET",
@@ -106,6 +107,11 @@ pub const ROUTES: &[(&str, &str, Access)] = &[
     (
         "GET",
         "/api/v1/executions/{id}/sessions",
+        HumanOrAgent(ExecutionPath),
+    ),
+    (
+        "GET",
+        "/api/v1/executions/{id}/secrets",
         HumanOrAgent(ExecutionPath),
     ),
     ("GET", "/api/v1/sessions/{id}", HumanOrAgent(SessionPath)),
@@ -205,6 +211,8 @@ pub const ROUTES: &[(&str, &str, Access)] = &[
     ("POST", "/api/v1/executions/{id}/terminate", Human),
     ("POST", "/api/v1/executions/{id}/agents", Human),
     ("DELETE", "/api/v1/executions/{id}/agents/{agent_id}", Human),
+    ("POST", "/api/v1/executions/{id}/secrets", Human),
+    ("DELETE", "/api/v1/executions/{id}/secrets/{name}", Human),
     ("DELETE", "/api/v1/sessions/{id}/worktree", Human),
     ("POST", "/api/v1/sessions/{id}/message", Human),
     ("POST", "/api/v1/sessions/{id}/terminate", Human),
@@ -251,6 +259,10 @@ pub const ROUTES: &[(&str, &str, Access)] = &[
         "/api/v1/projects/{id}/mcp-servers/{mcp_server_id}",
         Human,
     ),
+    ("GET", "/api/v1/projects/{id}/secrets", Human),
+    ("POST", "/api/v1/projects/{id}/secrets", Human),
+    ("PATCH", "/api/v1/projects/{id}/secrets/{name}", Human),
+    ("DELETE", "/api/v1/projects/{id}/secrets/{name}", Human),
     // Human-only: wiki share-tag administration.
     ("GET", "/api/v1/wiki/tags", Human),
     ("POST", "/api/v1/wiki/tags/{tag_id}/members", Human),

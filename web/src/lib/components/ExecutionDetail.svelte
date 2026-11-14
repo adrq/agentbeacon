@@ -27,11 +27,13 @@
   import ExecutionOrgChart from './ExecutionOrgChart.svelte';
   import SidebarSessionTree from './SidebarSessionTree.svelte';
   import ExecutionAgentsDialog from './ExecutionAgentsDialog.svelte';
+  import ExecutionSecretsDialog from './ExecutionSecretsDialog.svelte';
+  import { executionSecretsQuery } from '../queries/secrets';
   import Button from './ui/button.svelte';
   import ViewMenu from './ViewMenu.svelte';
   import { menuNav } from '../menuNav';
   import { router } from '../router';
-  import { executionPrefill, selectedSessionId, usageBySession, agentPoolDialogExecutionId, sidebarOpen, theme } from '../stores/appState';
+  import { executionPrefill, selectedSessionId, usageBySession, agentPoolDialogExecutionId, secretsDialogExecutionId, sidebarOpen, theme } from '../stores/appState';
   import logoDarkUrl from '../../assets/logo-mark-dark.svg';
   import logoLightUrl from '../../assets/logo-mark-light.svg';
   import { EVENT_FILTER_PILLS, type EventFilter } from '../eventFilterGroups';
@@ -51,6 +53,7 @@
 
   const detailQuery = executionDetailQuery(() => executionId);
   const poolQuery = executionAgentsQuery(() => executionId);
+  const secretsQuery = executionSecretsQuery(() => (detailQuery.data?.execution.project_id ? executionId : null));
   const sessionsQuery = executionSessionsQuery(() => executionId);
   let sessionIdentity = $derived(buildSessionIdentityMap(sessionsQuery.data ?? []));
   const terminateMut = terminateExecutionMutation();
@@ -182,6 +185,7 @@
       overflowMenuOpen = false;
       showDetailsOverlay = false;
       agentPoolDialogExecutionId.set(null);
+      secretsDialogExecutionId.set(null);
       const hashView = getHashViewParam();
       if (hashView) viewMode = hashView;
       lastPersistedSeq.clear();
@@ -1169,6 +1173,11 @@
         <Button variant="ghost" size="sm" class="agents-action" aria-label={poolQuery.data ? `Manage execution agents (${poolQuery.data.length})` : 'Manage execution agents'} onclick={() => agentPoolDialogExecutionId.set(executionId)}>
           {poolQuery.data ? `Agents · ${poolQuery.data.length}` : 'Agents'}
         </Button>
+        {#if detail.execution.project_id}
+          <Button variant="ghost" size="sm" class="secrets-action" aria-label={secretsQuery.data ? `Manage execution secrets (${secretsQuery.data.length})` : 'Manage execution secrets'} onclick={() => secretsDialogExecutionId.set(executionId)}>
+            {secretsQuery.data ? `Secrets · ${secretsQuery.data.length}` : 'Secrets'}
+          </Button>
+        {/if}
         {#if isRecoverable}
           <Button variant="secondary" size="sm" disabled={recoverMut.isPending} onclick={handleRecover}>
             {recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}
@@ -1205,6 +1214,9 @@
                 </button>
               {/if}
               <button class="overflow-item" role="menuitem" tabindex="-1" onclick={() => { closeOverflow(); agentPoolDialogExecutionId.set(executionId); }}>{poolQuery.data ? `Agents · ${poolQuery.data.length}` : 'Agents'}</button>
+              {#if detail.execution.project_id}
+                <button class="overflow-item" role="menuitem" tabindex="-1" onclick={() => { closeOverflow(); secretsDialogExecutionId.set(executionId); }}>{secretsQuery.data ? `Secrets · ${secretsQuery.data.length}` : 'Secrets'}</button>
+              {/if}
               {#if isRecoverable}
                 <button class="overflow-item" role="menuitem" tabindex="-1" disabled={recoverMut.isPending} onclick={() => { closeOverflow(); handleRecover(); }}>{recoverMut.isPending ? 'Recovering...' : 'Attempt Recovery'}</button>
               {/if}
@@ -1312,11 +1324,22 @@
     </div>
   {/if}
 
-  <ExecutionAgentsDialog
-    {executionId}
-    projectId={detail.execution.project_id}
-    bind:open={() => $agentPoolDialogExecutionId === executionId, (v) => agentPoolDialogExecutionId.set(v ? executionId : null)}
-  />
+  {#key executionId}
+    <ExecutionAgentsDialog
+      {executionId}
+      projectId={detail.execution.project_id}
+      bind:open={() => $agentPoolDialogExecutionId === executionId, (v) => agentPoolDialogExecutionId.set(v ? executionId : null)}
+    />
+
+    {#if detail.execution.project_id}
+      <ExecutionSecretsDialog
+        {executionId}
+        projectId={detail.execution.project_id}
+        live={detail.execution.desired !== 'terminate' && detail.execution.outcome == null}
+        bind:open={() => $secretsDialogExecutionId === executionId, (v) => secretsDialogExecutionId.set(v ? executionId : null)}
+      />
+    {/if}
+  {/key}
 
   <AlertDialog.Root bind:open={showTerminateDialog}>
     <AlertDialog.Portal>

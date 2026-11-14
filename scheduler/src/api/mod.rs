@@ -26,6 +26,7 @@ pub mod mcp_tools;
 pub mod messages;
 pub mod problem;
 pub mod projects;
+pub mod secrets;
 pub mod sessions;
 pub mod sse;
 pub mod types;

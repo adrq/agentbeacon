@@ -704,6 +704,18 @@ export interface McpServerPoolEntry {
 }
 
 // GET /api/v1/executions/{id}/agents — config pool
+export interface ProjectSecret {
+  name: string;
+  created_at: string;
+  updated_at: string;
+  attached_executions: { execution_id: string; attached_at: string }[];
+}
+
+export interface ExecutionSecret {
+  name: string;
+  attached_at: string;
+}
+
 export interface AgentPoolEntry {
   agent_id: string;
   name: string;

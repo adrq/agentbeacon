@@ -329,6 +329,7 @@ export function createExecutionMutation() {
       max_depth?: number;
       max_width?: number;
       sandbox_policy?: { fs_level: string };
+      secrets?: string[];
     }) => api.createExecution(req),
     onSuccess: (_data: CreateExecutionResponse) => {
       queryClient.invalidateQueries({ queryKey: ['executions'] });

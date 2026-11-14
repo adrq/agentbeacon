@@ -13,6 +13,7 @@
   import Button from './ui/button.svelte';
   import PageHeader from './PageHeader.svelte';
   import ExecutionListItem from './ExecutionListItem.svelte';
+  import ProjectSecretsSection from './ProjectSecretsSection.svelte';
   import StatusBadge from './StatusBadge.svelte';
   import { openSearchTab } from '../stores/wikiState.svelte';
   import { api } from '../api';
@@ -458,6 +459,13 @@
       {:else if availableMcpServers.length > 0}
         <button class="pool-add-btn" onclick={() => showAddMcpServer = true}>+ Add MCP Server</button>
       {/if}
+    </div>
+
+    <div class="pool-section">
+      <h3 class="section-heading">Secrets</h3>
+      {#key project.id}
+        <ProjectSecretsSection projectId={project.id} />
+      {/key}
     </div>
 
     <div class="executions-section">

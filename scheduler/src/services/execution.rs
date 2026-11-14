@@ -6,6 +6,7 @@ use std::path::Path;
 use serde_json::{Value as JsonValue, json};
 use uuid::Uuid;
 
+use crate::api::problem::{Problem, ProblemCode};
 use crate::db;
 use crate::db::DbPool;
 use crate::error::SchedulerError;
@@ -35,6 +36,7 @@ pub async fn create_execution(
     max_width: Option<i64>,
     sandbox_policy: &str,
     ceiling: &Ceiling,
+    secret_names: &[String],
 ) -> Result<CreateExecutionResult, SchedulerError> {
     // Validate parts non-empty
     if parts.is_empty() {
@@ -251,6 +253,7 @@ pub async fn create_execution(
         resolved_max_width,
         sandbox_policy,
         ceiling,
+        secret_names,
     )
     .await;
 
@@ -262,6 +265,26 @@ pub async fn create_execution(
     }
 
     result
+}
+
+/// Attach the named project secrets inside the execution-creation transaction.
+async fn attach_launch_secrets(
+    db_pool: &DbPool,
+    tx: &mut db::executions::ExecutionTx<'_>,
+    execution_id: &str,
+    project_id: &str,
+    secret_names: &[String],
+) -> Result<(), SchedulerError> {
+    match db::secrets::attach_batch_in_tx(tx, db_pool, execution_id, project_id, secret_names)
+        .await
+        .map_err(crate::api::secrets::internal)?
+    {
+        None => Ok(()),
+        Some(missing) => Err(SchedulerError::Problem(Box::new(
+            Problem::new(ProblemCode::RequestInvalid)
+                .with_detail(format!("secret not found in project: {missing}")),
+        ))),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -283,6 +306,7 @@ async fn persist_and_enqueue(
     max_width: i64,
     sandbox_policy: &str,
     ceiling: &Ceiling,
+    secret_names: &[String],
 ) -> Result<CreateExecutionResult, SchedulerError> {
     let (ceiling_mode, ceiling_entries) = ceiling.to_columns();
     let mut tx = db::executions::create_in_tx(
@@ -301,6 +325,15 @@ async fn persist_and_enqueue(
     let launch = match ceiling {
         Ceiling::Sandboxed(_) => write_ceiling_changed_in_tx(db_pool, &mut tx, None).await,
         Ceiling::Unsandboxed => Ok(()),
+    };
+    let launch = match (launch, project_id) {
+        (Ok(()), Some(pid)) if !secret_names.is_empty() => {
+            attach_launch_secrets(db_pool, &mut tx, execution_id, pid, secret_names).await
+        }
+        (Ok(()), None) if !secret_names.is_empty() => Err(SchedulerError::Problem(Box::new(
+            Problem::new(ProblemCode::RequestInvalid).with_detail("secrets require a project_id"),
+        ))),
+        (other, _) => other,
     };
     match launch {
         Ok(()) => tx

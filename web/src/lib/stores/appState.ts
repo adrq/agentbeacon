@@ -62,6 +62,8 @@ export const routeMode = writable<RouteMode>('view');
 export const executionPrefill = writable<ExecutionPrefill | null>(null);
 // Execution whose agent-pool dialog is open; set from the sidebar tree or the detail header.
 export const agentPoolDialogExecutionId = writable<string | null>(null);
+// Execution whose secrets dialog is open; set from the detail header or its overflow menu.
+export const secretsDialogExecutionId = writable<string | null>(null);
 export const agentFormPrefill = writable<{ driverId?: string } | null>(null);
 
 function createPersistedBoolStore(key: string, defaultValue: boolean) {

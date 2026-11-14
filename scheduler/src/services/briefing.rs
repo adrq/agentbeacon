@@ -110,7 +110,10 @@ Edit a wiki page (targeted find/replace -- the only way to update an existing pa
     -d \"{\\\"edits\\\": [{\\\"old_string\\\": \\\"find me\\\", \\\"new_string\\\": \\\"replace me\\\"}], \\\"revision_number\\\": 5}\"\n\
 - old_string must match exactly once (or set replace_all: true).\n\
 - edits are applied in order, all-or-nothing.\n\
-- revision_number must match the current page revision (GET it first).";
+- revision_number must match the current page revision (GET it first).\n\
+\n\
+Secrets: names `/api/v1/executions/$AGENTBEACON_EXECUTION_ID/secrets`, value `/api/v1/secrets/<NAME>`. \
+Use inline, never print; see /api/docs.";
 const DEFAULT_RECOVERY: &str = "When a child session crashes, the system automatically attempts recovery (up to 3 retries).\n\
 - Do NOT immediately re-delegate the same work to a new child.\n\
 - Do NOT assume the work is lost — the child retains its context through recovery.\n\

@@ -141,6 +141,8 @@ def test_messaging_section_contains_curl_examples(test_database):
             'PATCH "$AGENTBEACON_API_BASE/api/v1/projects/$AGENTBEACON_PROJECT_ID/wiki/pages/<slug>"'
             in prompt
         )
+        assert "/api/v1/executions/$AGENTBEACON_EXECUTION_ID/secrets" in prompt
+        assert "/api/v1/secrets/<NAME>" in prompt
 
 
 @pytest.mark.parametrize("test_database", ["sqlite", "postgres"], indirect=True)

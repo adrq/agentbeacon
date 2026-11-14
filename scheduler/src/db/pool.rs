@@ -30,6 +30,7 @@ pub enum TimestampColumn {
     CommandAt,
     CeilingAt,
     ExpiresAt,
+    AttachedAt,
 }
 
 impl TimestampColumn {
@@ -45,6 +46,7 @@ impl TimestampColumn {
             Self::CommandAt => "command_at",
             Self::CeilingAt => "ceiling_at",
             Self::ExpiresAt => "expires_at",
+            Self::AttachedAt => "attached_at",
         }
     }
 }

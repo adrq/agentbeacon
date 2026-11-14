@@ -5,7 +5,7 @@ import type {
   Agent, AgentPoolEntry, SessionDiscoveryEntry, ConfigEntry, Driver, DriverDescriptor, ModelSuggestion,
   Execution, ExecutionDetail, Session, Event, Project,
   CreateExecutionResponse, PostMessageResponse, DiffResponse, WorktreeInfo, BranchesResponse,
-  McpServer, McpServerPoolEntry,
+  McpServer, McpServerPoolEntry, ProjectSecret, ExecutionSecret,
   WikiPage, WikiPageListItem, WikiRevision, WikiRevisionListItem, PutWikiPageRequest,
   PatchWikiPageRequest, WikiSearchResult, WikiAccess, ShareTag, ShareTagMember,
   WikiTag, WikiSubscription, WikiChange, WikiPageExport,
@@ -323,6 +323,47 @@ class AgentBeaconAPI {
   }
 
   // Project MCP Servers
+  async getProjectSecrets(projectId: string): Promise<ProjectSecret[]> {
+    return this.fetchJSON<ProjectSecret[]>(`/projects/${pathSegment(projectId)}/secrets`);
+  }
+
+  async createProjectSecret(projectId: string, req: { name: string; value: string }): Promise<ProjectSecret> {
+    return this.fetchJSON(`/projects/${pathSegment(projectId)}/secrets`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async rotateProjectSecret(projectId: string, name: string, req: { value: string }): Promise<ProjectSecret> {
+    return this.fetchJSON(`/projects/${pathSegment(projectId)}/secrets/${pathSegment(name)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async deleteProjectSecret(projectId: string, name: string): Promise<void> {
+    return this.fetchNoContent(`/projects/${pathSegment(projectId)}/secrets/${pathSegment(name)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getExecutionSecrets(executionId: string): Promise<ExecutionSecret[]> {
+    return this.fetchJSON<ExecutionSecret[]>(`/executions/${pathSegment(executionId)}/secrets`);
+  }
+
+  async attachExecutionSecret(executionId: string, name: string): Promise<void> {
+    return this.fetchNoContent(`/executions/${pathSegment(executionId)}/secrets`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async detachExecutionSecret(executionId: string, name: string): Promise<void> {
+    return this.fetchNoContent(`/executions/${pathSegment(executionId)}/secrets/${pathSegment(name)}`, {
+      method: 'DELETE',
+    });
+  }
+
   async getProjectMcpServers(projectId: string): Promise<McpServerPoolEntry[]> {
     return this.fetchJSON<McpServerPoolEntry[]>(`/projects/${pathSegment(projectId)}/mcp-servers`);
   }
@@ -379,6 +420,7 @@ class AgentBeaconAPI {
     max_depth?: number;
     max_width?: number;
     sandbox_policy?: { fs_level: string };
+    secrets?: string[];
   }): Promise<CreateExecutionResponse> {
     return this.fetchJSON('/executions', {
       method: 'POST',

@@ -13,10 +13,13 @@
   import type { AgentPoolEntry } from '../types';
   import Button from './ui/button.svelte';
   import PageHeader from './PageHeader.svelte';
+  import SecretForm from './SecretForm.svelte';
+  import { projectSecretsQuery, createProjectSecretMutation, secretErrorText } from '../queries/secrets';
 
   const agents = agentsQuery();
   const projects = projectsQuery();
   const createMut = createExecutionMutation();
+  const createSecretMut = createProjectSecretMutation();
 
   let selectedRootAgentId = $state('');
   let selectedAgentIds = $state<Set<string>>(new Set());
@@ -29,6 +32,12 @@
   let maxWidth = $state('');
   let error: string | null = $state(null);
   let sourceExecutionId: string | undefined = undefined;
+  let selectedSecrets = $state<Set<string>>(new Set());
+  let showNewSecret = $state(false);
+  let secretError: string | null = $state(null);
+  // Id of the latest secret create request.
+  let secretCreateId = 0;
+  let secretCreatePending = $state(false);
 
   // Apply prefill store once on mount
   let prefillApplied = $state(false);
@@ -64,6 +73,7 @@
   let projectList = $derived(projects.data ?? []);
   let selectedProject = $derived(projectList.find(p => p.id === selectedProjectId) ?? null);
   let submitting = $derived(createMut.isPending);
+  const projectSecrets = projectSecretsQuery(() => selectedProjectId || null);
 
   let singleAgentMode = $derived(enabledAgents.length === 1);
   let poolAgents = $derived(enabledAgents.filter(a => selectedAgentIds.has(a.id)));
@@ -74,7 +84,19 @@
     && task.trim().length > 0
     && (!!selectedProjectId || !!cwd.trim())
     && !submitting
+    && !secretCreatePending
   );
+
+  // Clear the secret selection and pending create on project switch.
+  $effect(() => {
+    void selectedProjectId;
+    untrack(() => {
+      selectedSecrets = new Set();
+      secretCreateId++;
+      secretCreatePending = false;
+      secretError = null;
+    });
+  });
 
   // Auto-select agent when only one is available (skip when prefilled)
   $effect(() => {
@@ -127,6 +149,7 @@
         selectedProjectId,
         selectedRootAgentId,
         agentIds: [...selectedAgentIds].sort().join(','),
+        secrets: [...selectedSecrets].sort().join(','),
       }));
     }
   });
@@ -147,6 +170,7 @@
       selectedProjectId !== selBaseline.selectedProjectId
       || selectedRootAgentId !== selBaseline.selectedRootAgentId
       || [...selectedAgentIds].sort().join(',') !== selBaseline.agentIds
+      || [...selectedSecrets].sort().join(',') !== selBaseline.secrets
     );
   });
 
@@ -189,6 +213,34 @@
     selectedAgentIds = next;
   }
 
+  function toggleSecret(name: string) {
+    const next = new Set(selectedSecrets);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    selectedSecrets = next;
+  }
+
+  async function createAndSelect(name: string, value: string): Promise<boolean> {
+    if (submitting) return false;
+    const requestId = ++secretCreateId;
+    const forProjectId = selectedProjectId;
+    const current = () => requestId === secretCreateId && selectedProjectId === forProjectId;
+    secretCreatePending = true;
+    secretError = null;
+    try {
+      await createSecretMut.mutateAsync({ projectId: forProjectId, name, value });
+      if (!current()) return false;
+      selectedSecrets = new Set([...selectedSecrets, name]);
+      showNewSecret = false;
+      return true;
+    } catch (err) {
+      if (current()) secretError = `Failed to create secret: ${secretErrorText(err)}`;
+      return false;
+    } finally {
+      if (requestId === secretCreateId) secretCreatePending = false;
+    }
+  }
+
   function handleBranchInput(value: string) {
     branch = value;
     if (value.trim()) cwd = '';
@@ -222,6 +274,7 @@
       parts: [{ text: taskText }],
       title: title.trim() || generateTitle(taskText),
       ...(selectedProjectId && { project_id: selectedProjectId }),
+      ...(selectedProjectId && selectedSecrets.size > 0 && { secrets: [...selectedSecrets] }),
       ...(branch.trim() && { branch: branch.trim() }),
       ...(cwd.trim() && { cwd: cwd.trim() }),
       ...(parsedDepth !== undefined && !isNaN(parsedDepth) && { max_depth: parsedDepth }),
@@ -271,6 +324,47 @@
       {/each}
     </select>
   </div>
+
+  {#if selectedProjectId}
+    <div class="form-section-label">Secrets ({selectedSecrets.size} selected)</div>
+    <div class="pool-section">
+      {#each projectSecrets.data ?? [] as secret (secret.name)}
+        <label class="pool-checkbox">
+          <input
+            type="checkbox"
+            checked={selectedSecrets.has(secret.name)}
+            disabled={submitting}
+            onchange={() => toggleSecret(secret.name)}
+          />
+          <span>{secret.name}</span>
+        </label>
+      {:else}
+        {#if !projectSecrets.isError}
+          <span class="field-hint">{projectSecrets.data ? 'No secrets in this project.' : 'Loading secrets…'}</span>
+        {/if}
+      {/each}
+    </div>
+    {#if projectSecrets.isError}
+      <div class="form-error" role="alert">
+        <span>Failed to load secrets: {secretErrorText(projectSecrets.error)}</span>
+        <Button variant="outline" size="sm" disabled={projectSecrets.isFetching} onclick={() => projectSecrets.refetch()}>
+          {projectSecrets.isFetching ? 'Retrying…' : 'Retry'}
+        </Button>
+      </div>
+    {/if}
+    <div class="field">
+      {#if showNewSecret}
+        {#key selectedProjectId}
+          <SecretForm submitLabel="Create and attach" disabled={submitting} onsubmit={createAndSelect} />
+        {/key}
+      {:else}
+        <Button variant="ghost" size="sm" disabled={submitting} onclick={() => { showNewSecret = true; }}>+ New secret</Button>
+      {/if}
+      {#if secretError}
+        <div class="form-error" role="alert">{secretError}</div>
+      {/if}
+    </div>
+  {/if}
 
   {#if !singleAgentMode && enabledAgents.length > 1}
     <div class="form-section-label">Agent Pool ({selectedAgentIds.size} selected)</div>

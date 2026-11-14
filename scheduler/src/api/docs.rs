@@ -34,6 +34,22 @@ Query the configured agent pool — the agent configs available for delegation i
 `GET /api/v1/executions/{execution_id}/agents`
 Returns agent configs (id, name, description, type) available for delegation.
 
+## Secrets
+
+Credentials the user attached to your execution.
+
+### List attached secret names
+`GET /api/v1/executions/{execution_id}/secrets`
+Returns `[{"name", "attached_at"}]`.
+
+### Fetch a secret
+`GET /api/v1/secrets/{name}`
+Returns `{"name": "NAME", "value": "…"}`.
+
+- Use values inline and never print them (output, logs, messages, the wiki, committed files).
+- Fetch again each time you need one; the user may rotate or detach it.
+- If you need a secret you don't have, ask.
+
 ## Running Sessions
 
 Discover the live sessions (running agent instances) in your execution.

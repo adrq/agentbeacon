@@ -52,6 +52,9 @@ pub struct CreateExecutionRequest {
     pub sandbox_policy: Option<Option<serde_json::Value>>,
     #[serde(default, deserialize_with = "types::deserialize_optional_value")]
     pub network: Option<Option<serde_json::Value>>,
+    /// Names of project secrets to attach at launch.
+    #[serde(default)]
+    pub secrets: Vec<String>,
 }
 
 /// Response for create execution
@@ -213,6 +216,13 @@ async fn create_execution_handler(
         Some(Some(raw)) => Ceiling::parse_authored(&raw)?,
     };
 
+    let secret_names = crate::api::secrets::launch_secret_names(
+        &state.db_pool,
+        req.project_id.as_deref(),
+        &req.secrets,
+    )
+    .await?;
+
     let agent_id_refs: Vec<&str> = all_agent_ids.iter().map(|s| s.as_str()).collect();
     let result = execution::create_execution(
         &state.db_pool,
@@ -229,6 +239,7 @@ async fn create_execution_handler(
         req.max_width,
         &sandbox_policy_json,
         &ceiling,
+        &secret_names,
     )
     .await?;
 

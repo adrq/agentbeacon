@@ -25,6 +25,9 @@ pub const EVENT_STRING_LEAF_MAX_BYTES: usize = 16 * 1024;
 /// Size at which a served event payload is shortened.
 pub const EVENT_PAYLOAD_BUDGET_BYTES: usize = 64 * 1024;
 
+/// Largest secret value accepted, in bytes.
+pub const SECRET_VALUE_MAX_BYTES: usize = 64 * 1024;
+
 /// Default number of rows returned by a resolved-decisions page.
 pub const DECISIONS_RESOLVED_DEFAULT_PAGE: i64 = 50;
 
@@ -62,6 +65,12 @@ fn limits() -> Map<String, Value> {
         json!({
             "resolved_default_page": DECISIONS_RESOLVED_DEFAULT_PAGE,
             "resolved_max_page": DECISIONS_RESOLVED_MAX_PAGE,
+        }),
+    );
+    limits.insert(
+        "secrets".into(),
+        json!({
+            "value_max_bytes": SECRET_VALUE_MAX_BYTES,
         }),
     );
     limits
