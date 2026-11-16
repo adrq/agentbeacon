@@ -33,6 +33,7 @@ CLAUDE_DISALLOWED_TOOLS = [
     "ScheduleWakeup",
     "Monitor",
     "REPL",
+    "Eval",
     "RemoteTrigger",
     "PushNotification",
     "ProposeGoal",
@@ -46,9 +47,29 @@ CLAUDE_DISALLOWED_TOOLS = [
     "ClaudeDesign",
     "DesignSync",
     "Projects",
-    "ProposeSkills",
+    "propose_skills",
     "ShowOnboardingRolePicker",
     "ReportFindings",
+    "Yield",
+    "WrapUp",
+    "OfferChromeSetup",
+    "SendToProject",
+    "SendToProjectContext",
+    "PublishPlugin",
+    "ReadWidgetContext",
+    "mcp__easel__chart",
+    "SendFile",
+    "Poll",
+    "FetchInboxMessage",
+    "ObserverReport",
+    "EndConversation",
+    "ShareOnboardingGuide",
+    "enable__mcp__claude-in-chrome",
+    "enable__mcp__remote-devices__Claude_Browser",
+    "enable__mcp__remote-devices__computer",
+    "request_computer",
+    "SendUserMessage",
+    "SendUserFile",
 ]
 
 COPILOT_EXCLUDED_TOOLS = [
@@ -58,10 +79,12 @@ COPILOT_EXCLUDED_TOOLS = [
 ]
 
 
-def _start_executor(script_name):
+def _start_executor(script_name, env_overrides=None):
     script = os.path.join(MOCK_EXECUTORS_DIR, script_name)
     env = os.environ.copy()
     env["NODE_OPTIONS"] = "--preserve-symlinks --preserve-symlinks-main"
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.Popen(
         [NODE_PATH, script],
         stdin=subprocess.PIPE,
@@ -77,8 +100,8 @@ def _send_command(proc, cmd):
     proc.stdin.flush()
 
 
-def _run_session(script_name, timeout=30, start_overrides=None):
-    proc = _start_executor(script_name)
+def _run_session(script_name, timeout=30, start_overrides=None, env_overrides=None):
+    proc = _start_executor(script_name, env_overrides)
     try:
         stdout_events = []
         stderr_lines = []
@@ -188,6 +211,32 @@ def test_claude_executor_disables_auto_memory():
         f"Mock Claude SDK did not log envHasPath. stderr:\n{stderr_text}"
     )
     assert path_line.split("envHasPath=", 1)[1] == "true"
+
+
+def test_claude_executor_pins_code_mode_and_auto_background_off():
+    stdout_events, stderr_lines = _run_session(
+        "claude-executor.js",
+        env_overrides={
+            "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1",
+            "CLAUDE_AUTO_BACKGROUND_TASKS": "1",
+            "CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND": "0",
+        },
+    )
+
+    result_events = [e for e in stdout_events if e["type"] == "result"]
+    assert len(result_events) == 1
+
+    def logged(key):
+        line = next((line for line in stderr_lines if f"] {key}=" in line), None)
+        assert line is not None, (
+            f"Mock Claude SDK did not log {key}. stderr:\n" + "\n".join(stderr_lines)
+        )
+        return line.split(f"{key}=", 1)[1]
+
+    assert logged("codeModeEnv") == "0"
+    assert logged("autoBackgroundTasksEnv") == "0"
+    assert logged("disableMcpTaskBackgroundEnv") == "1"
+    assert logged("envHasPath") == "true"
 
 
 def test_copilot_executor_blocks_orchestration_tools():

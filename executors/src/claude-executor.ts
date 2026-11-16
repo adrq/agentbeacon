@@ -63,7 +63,8 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "CronList", // Scheduled task listing
   "ScheduleWakeup", // Deferred self-wake scheduling
   "Monitor", // Long-running process monitoring
-  "REPL", // Interactive REPL sessions
+  "REPL", // Code Mode JS tool; keep with Eval: listing it is what makes the CLI refuse Code Mode
+  "Eval", // Code Mode alias of REPL
   "RemoteTrigger", // External webhook/trigger invocation
   "PushNotification", // Push notification dispatch
   "ProposeGoal", // Session goal-setting handled externally
@@ -77,9 +78,29 @@ const DISALLOWED_ORCHESTRATION_TOOLS: string[] = [
   "ClaudeDesign", // Design/canvas feature
   "DesignSync", // Design synchronization
   "Projects", // claude.ai Projects integration
-  "ProposeSkills", // Proposes skills
+  "propose_skills", // Proposes skills (the tool's real name is snake_case)
   "ShowOnboardingRolePicker", // User-interaction UI
   "ReportFindings", // Code-review findings emit
+  "Yield", // Waits on background work and inbound messages
+  "WrapUp", // Next-step UI card we don't render
+  "OfferChromeSetup", // User-interaction UI
+  "SendToProject", // claude.ai Projects integration
+  "SendToProjectContext", // Companion of SendToProject
+  "PublishPlugin", // Publishes to the claude.ai org library
+  "ReadWidgetContext", // MCP App widget state from a UI we don't render
+  "mcp__easel__chart", // Built-in plugin chart drawn in a UI we don't render
+  "SendFile", // Sends files to another Claude Code session
+  "Poll", // Waits for queued harness events
+  "FetchInboxMessage", // Relayed inbox messages
+  "ObserverReport", // Reports to an observed or coordinating agent
+  "EndConversation", // We manage session lifecycle externally
+  "ShareOnboardingGuide", // Uploads to a claude.ai team share link
+  "enable__mcp__claude-in-chrome", // Prompts the user to enable host integrations
+  "enable__mcp__remote-devices__Claude_Browser",
+  "enable__mcp__remote-devices__computer",
+  "request_computer",
+  "SendUserMessage", // Brief-mode output channel; we read plain assistant text (Brief alias normalizes here)
+  "SendUserFile", // Brief-mode file delivery
 ];
 
 // --- Command queue (single stdin listener, cancel as side-effect) ---
@@ -415,7 +436,17 @@ async function main(): Promise<void> {
             // (autoMemoryEnabled stops read+write) and stop background
             // auto-dream consolidation (autoDreamEnabled). Spread process.env so
             // env replacement keeps PATH/HOME/API keys for the subprocess.
-            env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+            // The remaining pins override opt-ins inherited from the host: Code
+            // Mode, and MCP auto-backgrounding, whose results would arrive after
+            // our turn's result with no tool left to poll them. For Code Mode a
+            // process-env "0" also beats a settings opt-in.
+            env: {
+              ...process.env,
+              CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+              CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: "0",
+              CLAUDE_AUTO_BACKGROUND_TASKS: "0",
+              CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND: "1",
+            },
             settings: {
               autoMemoryEnabled: false,
               autoDreamEnabled: false,

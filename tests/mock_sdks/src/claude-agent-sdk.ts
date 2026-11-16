@@ -1661,6 +1661,15 @@ export async function* query(params: {
   process.stderr.write(
     `[mock-claude-sdk] envHasPath=${Boolean(optEnv?.PATH)}\n`,
   );
+  process.stderr.write(
+    `[mock-claude-sdk] codeModeEnv=${optEnv?.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE}\n`,
+  );
+  process.stderr.write(
+    `[mock-claude-sdk] autoBackgroundTasksEnv=${optEnv?.CLAUDE_AUTO_BACKGROUND_TASKS}\n`,
+  );
+  process.stderr.write(
+    `[mock-claude-sdk] disableMcpTaskBackgroundEnv=${optEnv?.CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND}\n`,
+  );
 
   const sandbox = params.options?.sandbox;
   const permMode = params.options?.permissionMode;

@@ -19,6 +19,7 @@ EXPECTED_CLAUDE_MODEL_IDS = [
     "fable",
     "claude-sonnet-5-5",
     "claude-sonnet-5",
+    "claude-fable-5-2",
     "claude-fable-5-1",
     "claude-fable-5",
     "claude-opus-5-5",
@@ -51,6 +52,7 @@ def test_claude_models_exact_ids(test_database):
         assert labels["fable"] == "Claude Fable (alias)"
         assert labels["claude-sonnet-5-5"] == "Claude Sonnet 5.5"
         assert labels["claude-sonnet-5"] == "Claude Sonnet 5"
+        assert labels["claude-fable-5-2"] == "Claude Fable 5.2"
         assert labels["claude-fable-5-1"] == "Claude Fable 5.1"
         assert labels["claude-fable-5"] == "Claude Fable 5"
         assert labels["claude-opus-5-5"] == "Claude Opus 5.5"
