@@ -44,7 +44,7 @@ One engineer, multiple features in flight, decisions as the main touchpoint.
 
 ## Quick Start
 
-**Platform:** Linux (x86_64 and aarch64). macOS support coming soon.
+**Platform:** Linux (x86_64 and aarch64) and macOS (Apple Silicon).
 
 Install via pip, npm, or build from source:
 

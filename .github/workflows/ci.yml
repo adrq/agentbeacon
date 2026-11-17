@@ -37,7 +37,7 @@ jobs:
 
   python-integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:17
@@ -77,7 +77,7 @@ jobs:
           enable-cache: true
 
       - name: Run integration tests
-        run: make test-int
+        run: make test-int-ci
 
       - name: Upload Python test artifacts (on failure)
         if: failure()

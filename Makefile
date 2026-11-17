@@ -186,7 +186,7 @@ test-int: all mock-sdks
 	uv run pytest -n8 -v tests
 
 # Build Rust binaries and run Python integration tests for CI only
-test-int-ci: all
+test-int-ci: all mock-sdks
 	@echo "Running Python integration tests with Rust binaries..."
 	uv run pytest -n4 -v tests
 
